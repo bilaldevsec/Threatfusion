@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+threatfusion-venv/
+
+# Environment/secrets
+.env
+.env.*
+!.env.example
+
+# Data and model artifacts
+data/raw/
+data/interim/
+data/processed/
+artifacts/models/
+artifacts/reports/
+*.pcap
+*.pcapng
+*.parquet
+*.onnx
+*.pkl
+*.joblib
+
+# Node/frontend
+node_modules/
+dist/
+build/
+.vite/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Logs
+logs/
+*.log
