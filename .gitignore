@@ -19,11 +19,18 @@ threatfusion-venv/
 !.env.example
 
 # Data and model artifacts
-data/raw/
-data/interim/
-data/processed/
-artifacts/models/
-artifacts/reports/
+data/raw/*
+data/interim/*
+data/processed/*
+artifacts/models/*
+artifacts/reports/*
+
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+!artifacts/models/.gitkeep
+!artifacts/reports/.gitkeep
+
 *.pcap
 *.pcapng
 *.parquet

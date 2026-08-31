@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -10,8 +10,8 @@ def valid_flow() -> dict:
     return {
         "source_dataset": "unsw_nb15",
         "flow_id": "flow-001",
-        "timestamp_start": datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-        "timestamp_end": datetime(2026, 1, 1, 12, 0, 1, tzinfo=timezone.utc),
+        "timestamp_start": datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        "timestamp_end": datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC),
         "src_ip": "192.168.1.10",
         "dst_ip": "10.0.0.5",
         "src_port": 49152,
@@ -41,7 +41,7 @@ def test_valid_network_flow_schema() -> None:
 
 def test_rejects_invalid_time_order() -> None:
     data = valid_flow()
-    data["timestamp_end"] = datetime(2026, 1, 1, 11, 59, 59, tzinfo=timezone.utc)
+    data["timestamp_end"] = datetime(2026, 1, 1, 11, 59, 59, tzinfo=UTC)
 
     with pytest.raises(ValidationError):
         NetworkFlow.model_validate(data)

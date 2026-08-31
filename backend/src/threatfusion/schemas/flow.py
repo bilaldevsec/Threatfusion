@@ -3,7 +3,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, IPvAnyAddress, model_validator
 
-
 Protocol = Literal["tcp", "udp", "icmp", "other"]
 
 
