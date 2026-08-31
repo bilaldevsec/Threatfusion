@@ -4,9 +4,25 @@ version = "0.1.0"
 description = "ThreatFusion: AI-driven SOC alert triage FYP platform"
 requires-python = ">=3.11,<3.12"
 dependencies = [
+    "pandas>=2,<3",
     "pydantic>=2,<3",
+    "pydantic-settings>=2,<3",
     "PyYAML>=6,<7",
 ]
+
+[dependency-groups]
+dev = [
+    "black>=26,<27",
+    "pytest>=9,<10",
+    "ruff>=0.15,<0.16",
+]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["backend/src"]
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
