@@ -1,3 +1,6 @@
+import pytest
+
+from threatfusion.datasets.adapters.base import SourceRowValidationError
 from threatfusion.datasets.adapters.mordor import adapt_mordor_row
 
 
@@ -66,3 +69,31 @@ def test_mordor_authentication_event_is_classified() -> None:
     assert event.event_type == "authentication"
     assert event.user == "administrator"
     assert event.provider == "Security"
+
+
+@pytest.mark.parametrize(
+    ("removed_fields", "expected_fields"),
+    [
+        (("RecordID",), "RecordID, EventRecordID, event_id"),
+        (("UtcTime",), r"UtcTime, @timestamp, TimeCreated, timestamp"),
+        (("Computer",), "Computer, host"),
+    ],
+)
+def test_mordor_missing_required_alias_raises(
+    removed_fields: tuple[str, ...], expected_fields: str
+) -> None:
+    row = {
+        "RecordID": "1001",
+        "UtcTime": "2026-01-01T12:00:00Z",
+        "Computer": "win10-lab",
+    }
+    for field in removed_fields:
+        del row[field]
+
+    with pytest.raises(SourceRowValidationError, match=expected_fields):
+        adapt_mordor_row(row)
+
+
+def test_mordor_unparseable_timestamp_raises() -> None:
+    with pytest.raises(SourceRowValidationError, match=r"Mordor.*UtcTime.*parseable"):
+        adapt_mordor_row({"RecordID": "1001", "UtcTime": "not-a-time", "Computer": "win10-lab"})

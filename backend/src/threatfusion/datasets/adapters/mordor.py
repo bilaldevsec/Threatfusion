@@ -1,8 +1,11 @@
-from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
 
+from threatfusion.datasets.adapters.base import (
+    parse_required_timestamp,
+    required_alias,
+)
 from threatfusion.schemas.host_event import HostEvent
 
 
@@ -15,13 +18,6 @@ def _string_or_none(value: Any) -> str | None:
         return None
 
     return text
-
-
-def _parse_time(value: Any) -> datetime:
-    parsed = pd.to_datetime(value, errors="coerce", utc=True)
-    if pd.isna(parsed):
-        return datetime.now(tz=UTC)
-    return parsed.to_pydatetime()
 
 
 def _classify_event_type(row: dict[str, Any]) -> str:
@@ -42,24 +38,19 @@ def _classify_event_type(row: dict[str, Any]) -> str:
 
 
 def adapt_mordor_row(row: dict[str, Any]) -> HostEvent:
-    event_id = _string_or_none(row.get("RecordID")) or _string_or_none(row.get("EventRecordID"))
-    if event_id is None:
-        event_id = _string_or_none(row.get("event_id")) or "mordor-unknown"
-
-    timestamp = _parse_time(
-        row.get("UtcTime")
-        or row.get("@timestamp")
-        or row.get("TimeCreated")
-        or row.get("timestamp")
+    source = "Mordor"
+    _, event_id_value = required_alias(row, source, ("RecordID", "EventRecordID", "event_id"))
+    timestamp_field, timestamp_value = required_alias(
+        row, source, ("UtcTime", "@timestamp", "TimeCreated", "timestamp")
     )
+    _, host_value = required_alias(row, source, ("Computer", "host"))
+    timestamp = parse_required_timestamp(timestamp_value, source, timestamp_field)
 
     return HostEvent(
         source_dataset="mordor",
-        event_id=event_id,
+        event_id=str(event_id_value).strip(),
         timestamp=timestamp,
-        host=_string_or_none(row.get("Computer"))
-        or _string_or_none(row.get("host"))
-        or "unknown-host",
+        host=str(host_value).strip(),
         user=_string_or_none(row.get("User")) or _string_or_none(row.get("TargetUserName")),
         event_type=_classify_event_type(row),
         provider=_string_or_none(row.get("ProviderName")) or _string_or_none(row.get("Channel")),

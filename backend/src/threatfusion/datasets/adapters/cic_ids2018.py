@@ -3,42 +3,48 @@ from typing import Any
 from threatfusion.datasets.adapters.base import (
     end_timestamp,
     mean_size,
-    normalize_protocol,
-    parse_timestamp,
+    parse_required_timestamp,
     rate_per_second,
-    to_float,
-    to_int,
+    required_alias,
+    required_float,
+    required_int,
+    required_ip,
+    required_protocol,
+    required_string,
 )
 from threatfusion.schemas.flow import NetworkFlow
 
 
 def adapt_cic_row(row: dict[str, Any]) -> NetworkFlow:
-    duration_ms = to_float(row.get("Flow Duration")) / 1000.0
+    source = "CSE-CIC-IDS2018"
+    duration_ms = required_float(row, source, "Flow Duration") / 1000.0
 
-    fwd_packets = to_int(row.get("Tot Fwd Pkts"))
-    bwd_packets = to_int(row.get("Tot Bwd Pkts"))
-    fwd_bytes = to_int(row.get("TotLen Fwd Pkts"))
-    bwd_bytes = to_int(row.get("TotLen Bwd Pkts"))
+    fwd_packets = required_int(row, source, "Tot Fwd Pkts")
+    bwd_packets = required_int(row, source, "Tot Bwd Pkts")
+    fwd_bytes = required_int(row, source, "TotLen Fwd Pkts")
+    bwd_bytes = required_int(row, source, "TotLen Bwd Pkts")
 
-    start = parse_timestamp(row.get("Timestamp"))
+    start = parse_required_timestamp(row.get("Timestamp"), source, "Timestamp")
     end = end_timestamp(start, duration_ms)
 
-    label_raw = str(row.get("Label", "Benign")).strip()
+    label_raw = required_string(row, source, "Label")
     label = "Normal" if label_raw.lower() == "benign" else "Attack"
 
     total_packets = fwd_packets + bwd_packets
     total_bytes = fwd_bytes + bwd_bytes
 
+    _, flow_id = required_alias(row, source, ("Flow ID", "flow_id"))
+
     return NetworkFlow(
         source_dataset="cse_cic_ids2018",
-        flow_id=str(row.get("Flow ID", row.get("flow_id", "cic-unknown"))),
+        flow_id=str(flow_id).strip(),
         timestamp_start=start,
         timestamp_end=end,
-        src_ip=str(row.get("Src IP", "0.0.0.0")),
-        dst_ip=str(row.get("Dst IP", "0.0.0.0")),
-        src_port=to_int(row.get("Src Port")),
-        dst_port=to_int(row.get("Dst Port")),
-        protocol=normalize_protocol(row.get("Protocol")),
+        src_ip=required_ip(row, source, "Src IP"),
+        dst_ip=required_ip(row, source, "Dst IP"),
+        src_port=required_int(row, source, "Src Port", maximum=65535),
+        dst_port=required_int(row, source, "Dst Port", maximum=65535),
+        protocol=required_protocol(row, source, "Protocol"),
         duration_ms=duration_ms,
         fwd_packets=fwd_packets,
         bwd_packets=bwd_packets,

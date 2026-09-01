@@ -3,24 +3,28 @@ from typing import Any
 from threatfusion.datasets.adapters.base import (
     end_timestamp,
     mean_size,
-    normalize_protocol,
-    parse_timestamp,
+    parse_required_timestamp,
     rate_per_second,
-    to_float,
-    to_int,
+    required_alias,
+    required_float,
+    required_int,
+    required_ip,
+    required_protocol,
 )
 from threatfusion.schemas.flow import NetworkFlow
 
 
 def adapt_unsw_row(row: dict[str, Any]) -> NetworkFlow:
-    duration_ms = to_float(row.get("dur")) * 1000.0
+    source = "UNSW-NB15"
+    duration_ms = required_float(row, source, "dur") * 1000.0
 
-    fwd_packets = to_int(row.get("spkts"))
-    bwd_packets = to_int(row.get("dpkts"))
-    fwd_bytes = to_int(row.get("sbytes"))
-    bwd_bytes = to_int(row.get("dbytes"))
+    fwd_packets = required_int(row, source, "spkts")
+    bwd_packets = required_int(row, source, "dpkts")
+    fwd_bytes = required_int(row, source, "sbytes")
+    bwd_bytes = required_int(row, source, "dbytes")
 
-    start = parse_timestamp(row.get("stime") or row.get("timestamp"))
+    timestamp_field, timestamp_value = required_alias(row, source, ("stime", "timestamp"))
+    start = parse_required_timestamp(timestamp_value, source, timestamp_field)
     end = end_timestamp(start, duration_ms)
 
     total_packets = fwd_packets + bwd_packets
@@ -31,19 +35,21 @@ def adapt_unsw_row(row: dict[str, Any]) -> NetworkFlow:
     if attack_category in {"", "-", "nan", "None"}:
         attack_category = None
 
-    label_value = str(row.get("label", "")).strip()
-    label = "Attack" if label_value == "1" else "Normal"
+    label_value = required_int(row, source, "label", maximum=1)
+    label = "Attack" if label_value == 1 else "Normal"
+
+    _, flow_id = required_alias(row, source, ("id", "flow_id"))
 
     return NetworkFlow(
         source_dataset="unsw_nb15",
-        flow_id=str(row.get("id", row.get("flow_id", "unsw-unknown"))),
+        flow_id=str(flow_id).strip(),
         timestamp_start=start,
         timestamp_end=end,
-        src_ip=str(row.get("srcip", "0.0.0.0")),
-        dst_ip=str(row.get("dstip", "0.0.0.0")),
-        src_port=to_int(row.get("sport")),
-        dst_port=to_int(row.get("dsport")),
-        protocol=normalize_protocol(row.get("proto")),
+        src_ip=required_ip(row, source, "srcip"),
+        dst_ip=required_ip(row, source, "dstip"),
+        src_port=required_int(row, source, "sport", maximum=65535),
+        dst_port=required_int(row, source, "dsport", maximum=65535),
+        protocol=required_protocol(row, source, "proto"),
         duration_ms=duration_ms,
         fwd_packets=fwd_packets,
         bwd_packets=bwd_packets,
