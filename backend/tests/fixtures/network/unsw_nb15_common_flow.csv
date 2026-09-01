@@ -1,0 +1,2 @@
+id,stime,srcip,dstip,sport,dsport,proto,dur,spkts,dpkts,sbytes,dbytes,label,attack_cat
+unsw-parity-1,2026-01-01T00:00:00Z,192.0.2.10,198.51.100.20,49152,443,tcp,2.5,10,8,1200,900,1,Generic

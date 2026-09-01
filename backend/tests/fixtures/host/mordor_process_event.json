@@ -1,0 +1,12 @@
+{
+  "EventID": 1,
+  "RecordID": "mordor-process-1",
+  "UtcTime": "2026-01-01T00:00:00Z",
+  "Computer": "workstation-01.example.test",
+  "User": "EXAMPLE\\analyst",
+  "Image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+  "ParentImage": "C:\\Windows\\System32\\cmd.exe",
+  "CommandLine": "powershell.exe -NoProfile -Command Get-Process",
+  "TechniqueID": "T1059.001",
+  "label": "malicious"
+}

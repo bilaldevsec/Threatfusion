@@ -1,0 +1,2 @@
+Flow ID,Timestamp,Src IP,Dst IP,Src Port,Dst Port,Protocol,Flow Duration,Tot Fwd Pkts,Tot Bwd Pkts,TotLen Fwd Pkts,TotLen Bwd Pkts,Label
+cic-parity-1,2026-01-01T00:00:00Z,192.0.2.10,198.51.100.20,49152,443,6,2500000,10,8,1200,900,SSH-Bruteforce
