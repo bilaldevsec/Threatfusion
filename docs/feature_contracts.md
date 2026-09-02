@@ -57,6 +57,34 @@ separate dataset adapters. Each adapter converts only semantically valid fields 
 
 If a feature cannot be mapped honestly, it must remain dataset-specific.
 
+## network_behavior_v1
+
+`network_behavior_v1` is the portable model-input contract for evaluation across a complete
+`NetworkFlow` and a feature-only external benchmark record. It contains exactly 11 predictors in
+this order:
+
+1. `duration_ms`
+2. `fwd_packets`
+3. `bwd_packets`
+4. `fwd_bytes`
+5. `bwd_bytes`
+6. `packets_per_second`
+7. `bytes_per_second`
+8. `fwd_packet_length_mean`
+9. `bwd_packet_length_mean`
+10. `dst_port`
+11. `protocol`
+
+It deliberately excludes `src_port`. The selected official CSE-CIC-IDS2018 processed exports do
+not contain source ports, source or destination IP addresses, or flow identifiers. No 12-input
+model trained with `flow_common_v1` may be evaluated as though an 11-input CIC row satisfied that
+contract.
+
+The feature-only `NetworkBenchmarkRecord` keeps source dataset, file basename, one-based row
+number, source timestamp, normalized label, and attack name as evaluation provenance. Those
+fields—as well as identifiers, IP addresses, source port, timestamps, and labels—are forbidden
+model inputs. A benchmark record is not a correlatable incident flow.
+
 ## Academic Claim Boundary
 
 Allowed claim:
