@@ -1,5 +1,5 @@
 name: unsw_nb15
-version: official pre-partitioned training and testing sets (local snapshot)
+version: official raw and pre-partitioned files (local snapshot)
 source_url: https://research.unsw.edu.au/projects/unsw-nb15-dataset
 license_note: >-
   UNSW-NB15 is provided by the UNSW Canberra Cyber Range Lab for research use;
@@ -13,6 +13,26 @@ files:
     sha256: 734fe6642edf758f7c94d7d9149426b49d202fe8e7bf0bef47392489c3c0a559
     rows: 82332
     role: test
+  - path: data/raw/unsw_nb15/official/NUSW-NB15_features.csv
+    sha256: c55f19cceebb6360dc50f44f8a5f246ccefbcf8a6c604ac1ad46e643869cafce
+    rows: 49
+    role: raw
+  - path: data/raw/unsw_nb15/official/UNSW-NB15_1.csv
+    sha256: 7d851bbeabd27894ce39c8e78835c73341fc946652fb7743b9eff193b55eb511
+    rows: 700001
+    role: raw
+  - path: data/raw/unsw_nb15/official/UNSW-NB15_2.csv
+    sha256: 6130ad02873cc6069ae695cf2844f2e8c2e9a9a1b7532dd82ab8f202757cacf8
+    rows: 700001
+    role: raw
+  - path: data/raw/unsw_nb15/official/UNSW-NB15_3.csv
+    sha256: ae990a96c3dfcd425ce2801aadb1727a34d5e0ae6d8215dbcdae60dedfaef640
+    rows: 700001
+    role: raw
+  - path: data/raw/unsw_nb15/official/UNSW-NB15_4.csv
+    sha256: cdf563692d51d405541dd659ddcdad9fa01f001f05fe9fc4b67f00ca12fbc96a
+    rows: 440044
+    role: raw
 notes: >-
   Exact local files extracted from the official CSV archive. Raw CSV contents are
   intentionally excluded from Git.
