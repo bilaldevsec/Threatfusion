@@ -1,6 +1,8 @@
+import re
 from typing import Any
 
 from threatfusion.datasets.adapters.base import (
+    SourceRowValidationError,
     end_timestamp,
     mean_size,
     parse_required_timestamp,
@@ -10,6 +12,7 @@ from threatfusion.datasets.adapters.base import (
     required_int,
     required_ip,
     required_protocol,
+    required_value,
 )
 from threatfusion.schemas.flow import NetworkFlow
 
@@ -28,6 +31,26 @@ UNSW_REQUIRED_FIELD_ALIASES: tuple[tuple[str, ...], ...] = (
     ("dbytes",),
     ("label",),
 )
+
+_UNSW_HEXADECIMAL_PORT = re.compile(r"0x[0-9a-f]+", re.IGNORECASE)
+_UNSW_DECIMAL_PORT = re.compile(r"[0-9]+")
+
+
+def _required_unsw_port(row: dict[str, Any], field: str) -> int:
+    """Parse strict decimal or official hexadecimal UNSW port representations."""
+    source = "UNSW-NB15"
+    value = required_value(row, source, field)
+
+    if isinstance(value, str):
+        text = value.strip()
+        if _UNSW_HEXADECIMAL_PORT.fullmatch(text):
+            return required_int({field: int(text, 16)}, source, field, maximum=65535)
+        if not _UNSW_DECIMAL_PORT.fullmatch(text):
+            raise SourceRowValidationError(source, field, "must be an integer")
+    elif not isinstance(value, int) or isinstance(value, bool):
+        raise SourceRowValidationError(source, field, "must be an integer")
+
+    return required_int(row, source, field, maximum=65535)
 
 
 def adapt_unsw_row(row: dict[str, Any]) -> NetworkFlow:
@@ -63,8 +86,8 @@ def adapt_unsw_row(row: dict[str, Any]) -> NetworkFlow:
         timestamp_end=end,
         src_ip=required_ip(row, source, "srcip"),
         dst_ip=required_ip(row, source, "dstip"),
-        src_port=required_int(row, source, "sport", maximum=65535),
-        dst_port=required_int(row, source, "dsport", maximum=65535),
+        src_port=_required_unsw_port(row, "sport"),
+        dst_port=_required_unsw_port(row, "dsport"),
         protocol=required_protocol(row, source, "proto"),
         duration_ms=duration_ms,
         fwd_packets=fwd_packets,

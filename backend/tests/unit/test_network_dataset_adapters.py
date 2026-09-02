@@ -179,3 +179,45 @@ def test_unsw_invalid_ip_port_or_label_raises(field: str, value: str) -> None:
 
     with pytest.raises(SourceRowValidationError, match=rf"UNSW-NB15.*{field}"):
         adapt_unsw_row(row)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("sport", "0xc0a8", 49320),
+        ("dsport", "0xcc09", 52233),
+        ("sport", "0XC0A8", 49320),
+        ("dsport", "0XCC09", 52233),
+        ("sport", "0xffff", 65535),
+        ("dsport", "00443", 443),
+    ],
+)
+def test_unsw_accepts_strict_hexadecimal_and_existing_decimal_ports(
+    field: str, value: str, expected: int
+) -> None:
+    row = _valid_unsw_row()
+    row[field] = value
+
+    flow = adapt_unsw_row(row)
+
+    actual = flow.src_port if field == "sport" else flow.dst_port
+    assert actual == expected
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sport", "0x10000"),
+        ("dsport", "0xGG"),
+        ("sport", "-1"),
+        ("dsport", "443.0"),
+        ("sport", 443.0),
+        ("dsport", ""),
+    ],
+)
+def test_unsw_rejects_invalid_port_representations(field: str, value: object) -> None:
+    row: dict[str, object] = _valid_unsw_row()
+    row[field] = value
+
+    with pytest.raises(SourceRowValidationError, match=rf"UNSW-NB15.*{field}"):
+        adapt_unsw_row(row)
