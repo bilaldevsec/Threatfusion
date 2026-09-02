@@ -1,0 +1,18 @@
+name: unsw_nb15
+version: official pre-partitioned training and testing sets (local snapshot)
+source_url: https://research.unsw.edu.au/projects/unsw-nb15-dataset
+license_note: >-
+  UNSW-NB15 is provided by the UNSW Canberra Cyber Range Lab for research use;
+  consult the official dataset page for current access, citation, and reuse terms.
+files:
+  - path: data/raw/unsw_nb15/official/Training and Testing Sets/UNSW_NB15_training-set.csv
+    sha256: bec7dd5ec88dc2a0ccc7a07879d338395ed7421750f675fd0339e07dfe0648fa
+    rows: 175341
+    role: train
+  - path: data/raw/unsw_nb15/official/Training and Testing Sets/UNSW_NB15_testing-set.csv
+    sha256: 734fe6642edf758f7c94d7d9149426b49d202fe8e7bf0bef47392489c3c0a559
+    rows: 82332
+    role: test
+notes: >-
+  Exact local files extracted from the official CSV archive. Raw CSV contents are
+  intentionally excluded from Git.

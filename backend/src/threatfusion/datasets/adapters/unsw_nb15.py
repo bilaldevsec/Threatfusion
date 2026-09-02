@@ -13,6 +13,22 @@ from threatfusion.datasets.adapters.base import (
 )
 from threatfusion.schemas.flow import NetworkFlow
 
+UNSW_REQUIRED_FIELD_ALIASES: tuple[tuple[str, ...], ...] = (
+    ("id", "flow_id"),
+    ("stime", "timestamp"),
+    ("srcip",),
+    ("dstip",),
+    ("sport",),
+    ("dsport",),
+    ("proto",),
+    ("dur",),
+    ("spkts",),
+    ("dpkts",),
+    ("sbytes",),
+    ("dbytes",),
+    ("label",),
+)
+
 
 def adapt_unsw_row(row: dict[str, Any]) -> NetworkFlow:
     source = "UNSW-NB15"
