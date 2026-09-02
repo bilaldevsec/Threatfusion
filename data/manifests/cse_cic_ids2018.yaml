@@ -1,0 +1,21 @@
+name: cse_cic_ids2018
+version: approved processed CSV benchmark subset (local snapshot)
+source_url: https://www.unb.ca/cic/datasets/ids-2018.html
+license_note: >-
+  CSE-CIC-IDS2018 is published by the Canadian Institute for Cybersecurity for
+  research use; use and redistribution must retain the dataset citation and a
+  link to the official dataset page.
+files:
+  - path: data/raw/cse_cic_ids2018/official/Wednesday-14-02-2018_TrafficForML_CICFlowMeter.csv
+    sha256: acff8bc61376ee031d80878ee6099e0b1a87a1bd711d8068298421418c9f8147
+    rows: 1048575
+    role: validation
+  - path: data/raw/cse_cic_ids2018/official/Thursday-15-02-2018_TrafficForML_CICFlowMeter.csv
+    sha256: fa2947a8256d81ee9103ae16139d62d0e17aa23e696ee80d9e76fb51c01c9c4b
+    rows: 1048575
+    role: validation
+notes: >-
+  These files are external feature-benchmark validation inputs, not complete
+  incident-correlation sources. Each export contains exactly 1,048,575 data
+  rows; a possible export row cap means completeness of the original captures
+  cannot be claimed. Raw CSV contents remain excluded from Git.

@@ -10,6 +10,20 @@ CIC exports can both supply honestly. `NetworkBenchmarkRecord` carries those pre
 with non-predictive evaluation provenance. It cannot represent an incident-correlation event and
 must not enter the correlation pipeline.
 
+The predictors, in contract order, are:
+
+1. `duration_ms`
+2. `fwd_packets`
+3. `bwd_packets`
+4. `fwd_bytes`
+5. `bwd_bytes`
+6. `packets_per_second`
+7. `bytes_per_second`
+8. `fwd_packet_length_mean`
+9. `bwd_packet_length_mean`
+10. `dst_port`
+11. `protocol`
+
 The processed-CIC reader accepts strict UTF-8, removes surrounding header whitespace, and requires
 the exact 80 unique, nonblank official headers. It yields one row at a time in source order and
 adds only the source file basename and one-based data-row number. Wrong headers and row widths
@@ -40,6 +54,46 @@ Each selected CSV has exactly 1,048,575 data rows. With its header, that is 1,04
 which may indicate a spreadsheet export limit. ThreatFusion must describe benchmark results as
 covering these acquired exports rather than claiming they contain every flow captured that day.
 
-Phase 0K-c2 defines and tests the contract using tiny synthetic fixtures only. It does not read the
-downloaded raw files, create a dataset manifest, process the complete dataset, create training
-splits, or train a model.
+## Registered benchmark files
+
+`data/manifests/cse_cic_ids2018.yaml` registers the approved files as external validation inputs:
+
+| File | Bytes | Data rows | SHA-256 |
+| --- | ---: | ---: | --- |
+| `Wednesday-14-02-2018_TrafficForML_CICFlowMeter.csv` | 358,223,333 | 1,048,575 | `acff8bc61376ee031d80878ee6099e0b1a87a1bd711d8068298421418c9f8147` |
+| `Thursday-15-02-2018_TrafficForML_CICFlowMeter.csv` | 375,945,899 | 1,048,575 | `fa2947a8256d81ee9103ae16139d62d0e17aa23e696ee80d9e76fb51c01c9c4b` |
+
+The manifest verifier checks the registered paths and SHA-256 digests before benchmark validation
+starts. The streaming validation then enforces the manifest's exact row counts. The command is run
+from the repository root:
+
+```console
+python scripts/validate_cic_benchmark.py
+```
+
+It streams both CSVs through `CicProcessedReader` and the strict feature-only adapter. Accepted
+records are discarded immediately. Only aggregate counts and at most 20 sanitized rejection
+examples are retained by the batch-quality reporter. Reports are written beneath
+`artifacts/reports/cse_cic_ids2018/`; neither reports nor raw files are tracked by Git.
+
+## Full validation results
+
+The Phase 0K-d full streaming run produced:
+
+| File | Total | Accepted | Rejected | Rejection rate | Completed |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Wednesday | 1,048,575 | 1,048,570 | 5 | 0.00047684% | `true` |
+| Thursday | 1,048,575 | 1,048,575 | 0 | 0% | `true` |
+
+All five Wednesday rejections identify `Flow Duration` with the sanitized reason “must be finite
+and within allowed numeric bounds.” The bounded examples contain row numbers and the rejected
+field name, but not raw values or complete rows. Thursday had no rejection reasons.
+
+The generated reports are:
+
+- `artifacts/reports/cse_cic_ids2018/Wednesday-14-02-2018_TrafficForML_CICFlowMeter_quality.json`
+- `artifacts/reports/cse_cic_ids2018/Thursday-15-02-2018_TrafficForML_CICFlowMeter_quality.json`
+
+This registration validates the acquired exports as external feature-benchmark data. It does not
+turn CIC into incident-correlation data, create processed datasets or training splits, or train a
+model.
