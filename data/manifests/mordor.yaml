@@ -1,0 +1,16 @@
+name: mordor
+version: cmd_sharpview_pcre_net (local extracted snapshot)
+source_url: https://github.com/OTRF/Security-Datasets/tree/master/datasets/atomic/windows/execution/host
+license_note: >-
+  OTRF Security-Datasets is distributed under the MIT License included in the
+  upstream repository.
+files:
+  - path: data/raw/mordor/incoming/cmd_sharpview_pcre_net_2020-10-2920232423.json
+    sha256: b3df9616bb41ee1b464595eb0d5a5b612f475d34d78429786a6fa8ee8a16be9d
+    rows: 267
+    role: test
+notes: >-
+  Attack/test-only Mordor host telemetry extracted from the selected official
+  cmd_sharpview_pcre_net archive. The registered NDJSON file is 415,506 bytes.
+  It is not benign training data; synthetic_lab supplies benign host activity.
+  The rejected PowerShell candidate is not registered.

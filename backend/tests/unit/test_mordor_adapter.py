@@ -74,9 +74,12 @@ def test_mordor_authentication_event_is_classified() -> None:
 @pytest.mark.parametrize(
     ("removed_fields", "expected_fields"),
     [
-        (("RecordID",), "RecordID, EventRecordID, event_id"),
+        (
+            ("RecordID",),
+            "RecordID, EventRecordID, event_id, __mordor_ingestion_id",
+        ),
         (("UtcTime",), r"UtcTime, @timestamp, TimeCreated, timestamp"),
-        (("Computer",), "Computer, host"),
+        (("Computer",), "Computer, host, Hostname"),
     ],
 )
 def test_mordor_missing_required_alias_raises(
@@ -97,3 +100,17 @@ def test_mordor_missing_required_alias_raises(
 def test_mordor_unparseable_timestamp_raises() -> None:
     with pytest.raises(SourceRowValidationError, match=r"Mordor.*UtcTime.*parseable"):
         adapt_mordor_row({"RecordID": "1001", "UtcTime": "not-a-time", "Computer": "win10-lab"})
+
+
+@pytest.mark.parametrize("unsupported_identifier", ["EventID", "ProcessGuid"])
+def test_event_code_and_process_guid_are_not_event_identifiers(
+    unsupported_identifier: str,
+) -> None:
+    with pytest.raises(SourceRowValidationError, match="__mordor_ingestion_id"):
+        adapt_mordor_row(
+            {
+                unsupported_identifier: "1",
+                "@timestamp": "2020-10-29T20:23:24.000Z",
+                "Hostname": "fixture-host",
+            }
+        )

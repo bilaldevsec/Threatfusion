@@ -3,7 +3,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-DatasetName = Literal["unsw_nb15", "cse_cic_ids2018", "mordor"]
+DatasetName = Literal["unsw_nb15", "cse_cic_ids2018", "mordor", "synthetic_lab"]
 Sha256Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
@@ -11,7 +11,14 @@ class DatasetFile(BaseModel):
     path: Path
     sha256: Sha256Digest | None = None
     rows: int | None = Field(default=None, ge=0)
-    role: Literal["train", "test", "validation", "raw", "sample"]
+    role: Literal[
+        "train",
+        "test",
+        "validation",
+        "raw",
+        "sample",
+        "development_fixture",
+    ]
 
     @field_validator("path")
     @classmethod

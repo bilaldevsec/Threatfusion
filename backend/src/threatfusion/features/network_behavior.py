@@ -24,12 +24,17 @@ NETWORK_BEHAVIOR_V1_FEATURE_NAMES: tuple[str, ...] = tuple(
     feature.name for feature in NETWORK_BEHAVIOR_V1_FEATURES
 )
 
+# This tuple, including its order, is the complete cross-dataset predictor allowlist.
+NETWORK_BEHAVIOR_V1_ALLOWED_MODEL_FIELDS = NETWORK_BEHAVIOR_V1_FEATURE_NAMES
+
 NETWORK_BEHAVIOR_V1_FORBIDDEN_MODEL_FIELDS: frozenset[str] = frozenset(
     {
         "schema_version",
         "source_dataset",
         "source_file",
+        "filename",
         "source_row_number",
+        "row_number",
         "source_timestamp",
         "flow_id",
         "timestamp_start",
@@ -41,6 +46,17 @@ NETWORK_BEHAVIOR_V1_FORBIDDEN_MODEL_FIELDS: frozenset[str] = frozenset(
         "attack_category",
         "attack_name",
         "risk_score",
+        "event_id",
+        "record_id",
+        "event_record_id",
+        "ingestion_id",
+        "__mordor_ingestion_id",
+        "process_guid",
+        "host",
+        "user",
+        "username",
+        "command_line",
+        "secret",
     }
 )
 

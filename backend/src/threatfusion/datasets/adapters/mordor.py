@@ -6,6 +6,7 @@ from threatfusion.datasets.adapters.base import (
     parse_required_timestamp,
     required_alias,
 )
+from threatfusion.datasets.mordor_raw import MORDOR_INGESTION_ID_FIELD
 from threatfusion.schemas.host_event import HostEvent
 
 
@@ -39,11 +40,15 @@ def _classify_event_type(row: dict[str, Any]) -> str:
 
 def adapt_mordor_row(row: dict[str, Any]) -> HostEvent:
     source = "Mordor"
-    _, event_id_value = required_alias(row, source, ("RecordID", "EventRecordID", "event_id"))
+    _, event_id_value = required_alias(
+        row,
+        source,
+        ("RecordID", "EventRecordID", "event_id", MORDOR_INGESTION_ID_FIELD),
+    )
     timestamp_field, timestamp_value = required_alias(
         row, source, ("UtcTime", "@timestamp", "TimeCreated", "timestamp")
     )
-    _, host_value = required_alias(row, source, ("Computer", "host"))
+    _, host_value = required_alias(row, source, ("Computer", "host", "Hostname"))
     timestamp = parse_required_timestamp(timestamp_value, source, timestamp_field)
 
     return HostEvent(

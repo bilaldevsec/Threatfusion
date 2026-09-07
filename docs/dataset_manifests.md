@@ -12,3 +12,7 @@ metadata and fingerprints needed to identify those local files without distribut
 Integrity verification checks that every declared local file exists and matches its recorded
 SHA-256 digest. Model training will later refuse to use inputs that have not passed this
 verification.
+
+The `development_fixture` role is explicitly non-training evidence used only to exercise pipeline
+behavior. Generic role-based training selection must select `train` and therefore cannot include a
+development fixture.

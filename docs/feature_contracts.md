@@ -8,15 +8,17 @@ is shared only when its meaning, unit and direction are documented.
 
 ## flow_common_v1
 
-`flow_common_v1` is the canonical network-flow contract used before ML/DL inference.
+`flow_common_v1` is the complete canonical network-flow contract. Its 12-field model projection is
+an UNSW-only contract for the currently registered datasets because it includes `src_port`, which
+the selected processed CIC exports do not provide. It must not be presented as the common
+UNSW/CIC model interface.
 
 It is used by:
 
 - UNSW-NB15 adapter
 - CSE-CIC-IDS2018 adapter
 - live sensor flow extractor
-- classical ML models
-- deep-learning anomaly models
+- UNSW-only or complete-flow models
 - correlation and risk engine
 
 ## Accepted Common Features
@@ -79,6 +81,24 @@ It deliberately excludes `src_port`. The selected official CSE-CIC-IDS2018 proce
 not contain source ports, source or destination IP addresses, or flow identifiers. No 12-input
 model trained with `flow_common_v1` may be evaluated as though an 11-input CIC row satisfied that
 contract.
+
+`dst_port` remains in `network_behavior_v1` because both registered UNSW and CIC inputs provide
+the destination-side service endpoint with the same validated integer bounds. It is an approved
+behavioral feature, not identity or provenance. Any later transformation must still be fitted on
+training data only.
+
+## host_behavior_v1
+
+`host_event_v1` holds canonical event evidence, including sensitive and provenance fields, so its
+fields are not automatically model predictors. `host_behavior_v1` instead reduces a caller-defined
+source/session group to an exact ordered vector of coarse event-type counts and safe presence
+counts. It never retains individual events or uses event IDs, timestamps, hosts, users, command
+lines, IPs, file paths, registry keys, ATT&CK IDs, labels, or ingestion provenance.
+
+The exact host predictors are total event count; process, network, authentication, file, registry,
+privilege, and other event counts; and counts of events where provider, process name, or parent
+process name is present. The source/session grouping and observation window remain responsibilities
+of the leakage-safe split and feature-building phase; the contract does not invent either.
 
 The feature-only `NetworkBenchmarkRecord` keeps source dataset, file basename, one-based row
 number, source timestamp, normalized label, and attack name as evaluation provenance. Those
