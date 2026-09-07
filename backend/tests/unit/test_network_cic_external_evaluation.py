@@ -1,0 +1,211 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import numpy as np
+import pytest
+from numpy.lib.format import open_memmap
+
+from threatfusion.datasets.adapters.cic_ids2018_benchmark import adapt_cic_benchmark_row
+from threatfusion.features.network_behavior import (
+    NETWORK_BEHAVIOR_V1_FEATURE_NAMES,
+    NETWORK_BEHAVIOR_V1_FORBIDDEN_MODEL_FIELDS,
+    project_network_behavior,
+)
+from threatfusion.models.network_cic_external_evaluation import (
+    CATEGORY_CODES,
+    NetworkBaselineError,
+    category_recall,
+    evaluate_file_and_pooled,
+    run_cic_external_evaluation,
+    transform_cic_records,
+    verify_cic_evidence,
+    verify_semantic_compatibility,
+    write_cic_failure_status,
+)
+from threatfusion.models.network_logistic_baseline import calculate_binary_metrics
+from threatfusion.preprocessing.network_behavior_v1 import (
+    TRANSFORMED_FEATURE_NAMES,
+    NetworkBehaviorPreprocessor,
+)
+
+
+def _row(**updates: Any) -> dict[str, Any]:
+    row = {
+        "__source_file": "fixture.csv",
+        "__source_row_number": 1,
+        "Timestamp": "14/02/2018 08:31:01",
+        "Dst Port": "443",
+        "Protocol": "6",
+        "Flow Duration": "2500000",
+        "Tot Fwd Pkts": "10",
+        "Tot Bwd Pkts": "8",
+        "TotLen Fwd Pkts": "1200",
+        "TotLen Bwd Pkts": "900",
+        "Label": "SSH-Bruteforce",
+    }
+    row.update(updates)
+    return row
+
+
+def _preprocessor() -> NetworkBehaviorPreprocessor:
+    return NetworkBehaviorPreprocessor(
+        training_row_count=10,
+        numeric_means=(0.0,) * 10,
+        numeric_scales=(1.0,) * 10,
+        zero_variance_features=(),
+    )
+
+
+def _quality_report() -> dict[str, Any]:
+    return {
+        "source": "CSE-CIC-IDS2018 benchmark/fixture.csv",
+        "completed": True,
+        "total_rows": 3,
+        "accepted_count": 2,
+        "rejected_count": 1,
+        "rejection_rate": 1 / 3,
+        "rejection_details": [
+            {
+                "row_number": 2,
+                "fields": ["Flow Duration"],
+                "reason": "must be finite and within allowed numeric bounds",
+            }
+        ],
+        "source_file": "fixture.csv",
+        "expected_column_count": 80,
+        "canonical_label_counts": {"Attack": 1, "Normal": 1},
+        "attack_category_counts": {"SSH-Bruteforce": 1},
+    }
+
+
+def test_feature_only_semantics_exclude_prohibited_fields_and_preserve_state(
+    tmp_path: Path,
+) -> None:
+    assert verify_semantic_compatibility()["record_type"] == "feature-only NetworkBenchmarkRecord"
+    assert not NETWORK_BEHAVIOR_V1_FORBIDDEN_MODEL_FIELDS.intersection(
+        NETWORK_BEHAVIOR_V1_FEATURE_NAMES
+    )
+    record = adapt_cic_benchmark_row(_row())
+    assert len(project_network_behavior(record)) == 11
+    assert not hasattr(record, "src_ip") and not hasattr(record, "src_port")
+
+    state = _preprocessor()
+    before = state.to_dict()
+    matrix = open_memmap(
+        tmp_path / "X.npy", mode="w+", dtype=np.float64, shape=(2, len(TRANSFORMED_FEATURE_NAMES))
+    )
+    labels = open_memmap(tmp_path / "y.npy", mode="w+", dtype=np.uint8, shape=(2,))
+    categories = open_memmap(tmp_path / "c.npy", mode="w+", dtype=np.uint8, shape=(2,))
+    rows = [_row(), _row(**{"Flow Duration": "Infinity"}), _row(Label="BENIGN")]
+    transform_cic_records(rows, state, matrix, labels, categories, _quality_report(), batch_size=1)
+
+    assert labels.tolist() == [1, 0]
+    assert categories.tolist() == [CATEGORY_CODES["SSH-Bruteforce"], 0]
+    assert state.to_dict() == before
+
+
+def test_rejection_or_output_alignment_mismatch_fails_closed(tmp_path: Path) -> None:
+    matrix = open_memmap(
+        tmp_path / "X.npy", mode="w+", dtype=np.float64, shape=(2, len(TRANSFORMED_FEATURE_NAMES))
+    )
+    labels = open_memmap(tmp_path / "y.npy", mode="w+", dtype=np.uint8, shape=(2,))
+    categories = open_memmap(tmp_path / "c.npy", mode="w+", dtype=np.uint8, shape=(2,))
+    with pytest.raises(NetworkBaselineError, match="cic_source_validation_reconciliation_failed"):
+        transform_cic_records(
+            [_row(), _row(Label="BENIGN")],
+            _preprocessor(),
+            matrix,
+            labels,
+            categories,
+            _quality_report(),
+        )
+
+
+class _ScoreModel:
+    classes_ = np.asarray([0, 1])
+
+    def predict_proba(self, matrix: np.ndarray) -> np.ndarray:
+        scores = np.asarray(matrix[:, 0], dtype=np.float64)
+        return np.column_stack((1.0 - scores, scores))
+
+
+def test_per_file_and_pooled_metrics_are_computed_from_rows(tmp_path: Path) -> None:
+    matrices = (np.asarray([[0.1], [0.9]]), np.asarray([[0.4], [0.6]]))
+    labels = (np.asarray([0, 1], dtype=np.uint8), np.asarray([1, 0], dtype=np.uint8))
+    categories = (
+        np.asarray([0, CATEGORY_CODES["SSH-Bruteforce"]], dtype=np.uint8),
+        np.asarray([CATEGORY_CODES["FTP-BruteForce"], 0], dtype=np.uint8),
+    )
+    model = SimpleNamespace(name="logistic_regression", model=_ScoreModel())
+    per_file, pooled = evaluate_file_and_pooled(
+        (model,), matrices, labels, categories, ("first.csv", "second.csv"), tmp_path
+    )
+
+    expected = calculate_binary_metrics(
+        np.asarray([0, 1, 1, 0], dtype=np.uint8), np.asarray([0.1, 0.9, 0.4, 0.6])
+    )
+    assert pooled["logistic_regression"]["attack_f1"] == expected["attack_f1"]
+    assert per_file["first.csv"]["logistic_regression"]["attack_recall"] == 1.0
+    assert pooled["logistic_regression"]["attack_categories"]["FTP-BruteForce"] == {
+        "support": 1,
+        "recall": 0.0,
+    }
+
+
+def test_batch_boundaries_are_consistent(tmp_path: Path) -> None:
+    rows = [_row(), _row(**{"Flow Duration": "Infinity"}), _row(Label="BENIGN")]
+    outputs = []
+    for batch_size in (1, 10):
+        directory = tmp_path / str(batch_size)
+        directory.mkdir()
+        matrix = open_memmap(
+            directory / "X.npy",
+            mode="w+",
+            dtype=np.float64,
+            shape=(2, len(TRANSFORMED_FEATURE_NAMES)),
+        )
+        labels = open_memmap(directory / "y.npy", mode="w+", dtype=np.uint8, shape=(2,))
+        categories = open_memmap(directory / "c.npy", mode="w+", dtype=np.uint8, shape=(2,))
+        transform_cic_records(
+            rows,
+            _preprocessor(),
+            matrix,
+            labels,
+            categories,
+            _quality_report(),
+            batch_size=batch_size,
+        )
+        outputs.append(np.asarray(matrix).copy())
+    np.testing.assert_array_equal(outputs[0], outputs[1])
+
+
+def test_partial_corrupt_or_mismatched_cic_evidence_fails(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text("not: [valid", encoding="utf-8")
+    with pytest.raises(NetworkBaselineError, match="cic_manifest_unreadable"):
+        verify_cic_evidence(tmp_path, manifest, tmp_path, tmp_path / "missing.json")
+
+
+def test_category_metadata_is_sanitized_and_undefined_recall_is_explicit() -> None:
+    labels = np.asarray([0, 1], dtype=np.uint8)
+    scores = np.asarray([0.1, 0.9])
+    categories = np.asarray([0, CATEGORY_CODES["SSH-Bruteforce"]], dtype=np.uint8)
+    result = category_recall(labels, scores, categories)
+    assert result["SSH-Bruteforce"] == {"support": 1, "recall": 1.0}
+    assert result["DoS attacks-GoldenEye"] == {"support": 0, "recall": None}
+    assert all("/" not in name and "\\" not in name for name in result)
+
+
+def test_runner_has_no_fit_call_and_failure_evidence_is_incomplete(tmp_path: Path) -> None:
+    assert "fit" not in run_cic_external_evaluation.__code__.co_names
+    path = write_cic_failure_status(tmp_path, "fixture_failure")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload == {
+        "schema_version": "cic_classical_external_evaluation_v1",
+        "completed": False,
+        "failure_code": "fixture_failure",
+    }
