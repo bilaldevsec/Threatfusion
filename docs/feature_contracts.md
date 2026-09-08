@@ -61,9 +61,10 @@ If a feature cannot be mapped honestly, it must remain dataset-specific.
 
 ## network_behavior_v1
 
-`network_behavior_v1` is the portable model-input contract for evaluation across a complete
-`NetworkFlow` and a feature-only external benchmark record. It contains exactly 11 predictors in
-this order:
+`network_behavior_v1` is the frozen model-input projection accepted from a complete `NetworkFlow`
+or a feature-only external benchmark record. Projection availability is not evidence that two
+source representations measure every field equivalently and does not itself approve cross-source
+inference. It contains exactly 11 predictors in this order:
 
 1. `duration_ms`
 2. `fwd_packets`
@@ -82,10 +83,32 @@ not contain source ports, source or destination IP addresses, or flow identifier
 model trained with `flow_common_v1` may be evaluated as though an 11-input CIC row satisfied that
 contract.
 
-`dst_port` remains in `network_behavior_v1` because both registered UNSW and CIC inputs provide
-the destination-side service endpoint with the same validated integer bounds. It is an approved
-behavioral feature, not identity or provenance. Any later transformation must still be fitted on
-training data only.
+`dst_port` remains in the historical model projection because both inputs provide a bounded
+destination port. Its cross-source directional meaning is conditional on exporter orientation; a
+matching integer bound alone does not prove semantic equivalence. It remains behavior rather than
+identity/provenance, and any learned transformation must still be fitted on training data only.
+
+## Cross-source compatibility gate
+
+Compatibility is a separate typed decision keyed by the input representation, fitted-source
+representation, contract version, and exact model/preprocessing requirements. The current
+UNSW-NB15 Argus-derived raw representation is supported for the same-source UNSW-trained classical
+pipeline. This is a narrow inference-use decision, not production or global readiness.
+
+The registered processed CICFlowMeter-V3 representation is **demonstrably incompatible** with
+that pipeline for `fwd_bytes`, `bwd_bytes`, `bytes_per_second`,
+`fwd_packet_length_mean`, and `bwd_packet_length_mean`: UNSW uses Argus transaction bytes while
+the inspected CIC implementation accumulates transport payload bytes. Direction, duration, flow
+termination, and historical configurations remain unresolved. Missing, unknown, or mismatched
+compatibility evidence is never approved by default. See the
+[`network feature comparability audit`](network_feature_comparability_audit.md).
+
+The CIC evaluator enforces this decision after verifying registered source, preprocessing, and
+model provenance but before transforming/predicting or creating a run directory. There is no CLI
+bypass. Historical completed CIC reports remain immutable/readable, but their legacy
+`semantic_feature_compatibility_verified=true` field records the earlier shape/formula assertion;
+it is not current compatibility approval. Completion and compatibility must be read separately.
+The gate changes no model, preprocessing state, feature order, or accuracy.
 
 ## host_behavior_v1
 

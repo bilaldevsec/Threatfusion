@@ -12,8 +12,11 @@ SOURCE_ROOT = Path(__file__).resolve().parents[1] / "backend/src"
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
-from threatfusion.datasets.cic_profile import profile_cic_files, write_cic_profile
-from threatfusion.datasets.manifests import load_dataset_manifest, verify_dataset_manifest
+from threatfusion.datasets.cic_profile import profile_cic_files, write_cic_profile  # noqa: E402
+from threatfusion.datasets.manifests import (  # noqa: E402
+    load_dataset_manifest,
+    verify_dataset_manifest,
+)
 
 
 class CicProfileError(RuntimeError):

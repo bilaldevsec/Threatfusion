@@ -15,12 +15,20 @@ SOURCE_ROOT = Path(__file__).resolve().parents[1] / "backend/src"
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
-from threatfusion.datasets.adapters.cic_ids2018_benchmark import adapt_cic_benchmark_row
-from threatfusion.datasets.batch import BatchQualityReport, stream_adapt_rows
-from threatfusion.datasets.cic_processed import CIC_PROCESSED_COLUMN_COUNT, CicProcessedReader
-from threatfusion.datasets.manifests import load_dataset_manifest, verify_dataset_manifest
-from threatfusion.schemas.dataset_manifest import DatasetManifest
-from threatfusion.schemas.network_benchmark import NetworkBenchmarkRecord
+from threatfusion.datasets.adapters.cic_ids2018_benchmark import (  # noqa: E402
+    adapt_cic_benchmark_row,
+)
+from threatfusion.datasets.batch import BatchQualityReport, stream_adapt_rows  # noqa: E402
+from threatfusion.datasets.cic_processed import (  # noqa: E402
+    CIC_PROCESSED_COLUMN_COUNT,
+    CicProcessedReader,
+)
+from threatfusion.datasets.manifests import (  # noqa: E402
+    load_dataset_manifest,
+    verify_dataset_manifest,
+)
+from threatfusion.schemas.dataset_manifest import DatasetManifest  # noqa: E402
+from threatfusion.schemas.network_benchmark import NetworkBenchmarkRecord  # noqa: E402
 
 REJECTION_EXAMPLE_LIMIT = 20
 

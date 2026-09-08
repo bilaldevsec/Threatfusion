@@ -11,8 +11,8 @@ SOURCE_ROOT = Path(__file__).resolve().parents[1] / "backend/src"
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
-from threatfusion.datasets.unsw_profile import profile_unsw_rows, write_unsw_profile
-from threatfusion.datasets.unsw_raw import UnswRawReader
+from threatfusion.datasets.unsw_profile import profile_unsw_rows, write_unsw_profile  # noqa: E402
+from threatfusion.datasets.unsw_raw import UnswRawReader  # noqa: E402
 
 RAW_FILENAMES: tuple[str, ...] = tuple(f"UNSW-NB15_{part}.csv" for part in range(1, 5))
 FEATURE_FILENAME = "NUSW-NB15_features.csv"

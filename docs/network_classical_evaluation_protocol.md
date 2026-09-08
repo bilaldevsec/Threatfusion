@@ -34,3 +34,21 @@ The read-only audit found no implementation defect in the inspected prediction p
 The replay matched stored transformed features exactly for 989 accepted Wednesday samples and 1,000 Thursday samples. Direct `predict_proba` calls and the evaluator path differed by at most `1.67e-16`, consistent with floating-point roundoff, and produced no threshold disagreements. Pooled confusion counts reconcile with the per-file counts. Code inspection confirms that pooled average precision and ROC-AUC are computed from pooled continuous scores rather than averaged file metrics. Individual score arrays were intentionally not retained, so the audit did not independently reconstruct the full pooled average precision or ROC-AUC.
 
 Weak cross-dataset transfer is observed, particularly for the Random Forest. It does not establish domain shift as the sole cause. Capture-level directional equivalence, capture conditions, row-cap effects, timezone, and other semantic or population comparability remain incompletely established. CIC outcomes are now known, and every future experiment must disclose that exposure. All previously reported metrics and frozen protocol decisions remain unchanged.
+
+## Post-audit compatibility enforcement
+
+The later feature-comparability audit demonstrated that the five byte-dependent CIC predictors do
+not share the UNSW/Argus byte-accounting semantics. New use of these CIC exports with the saved
+UNSW-trained models is therefore rejected with
+`cross_source_byte_semantics_incompatible` after source, preprocessing, and model provenance are
+verified but before CIC transformation, prediction, or run-directory creation. Unknown or missing
+representation/contract/requirements evidence also fails closed. There is no permissive CLI flag.
+
+The historical v1 run above remains completed execution evidence and its files/hashes are unchanged.
+Its legacy `semantic_feature_compatibility_verified=true` check described the earlier field
+shape/unit/formula assertion and must not be interpreted as approval under the current typed
+compatibility decision. The historical-report reader exposes `completed` and current
+compatibility separately and classifies this exact representation as
+`demonstrated_incompatibility`. Any future report uses the v2 schema with an explicit compatibility
+decision rather than sharing the legacy schema. This safeguard does not improve either model's
+accuracy, establish compatible measurements, resolve weak transfer, or change any readiness gate.

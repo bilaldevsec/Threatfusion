@@ -28,9 +28,16 @@ from threatfusion.datasets.batch import BatchQualityReport, SourceRow, stream_ad
 from threatfusion.datasets.cic_processed import CIC_PROCESSED_COLUMN_COUNT, CicProcessedReader
 from threatfusion.datasets.manifests import load_dataset_manifest, verify_dataset_manifest
 from threatfusion.features.network_behavior import (
+    CIC_IDS2018_CICFLOWMETER_V3_PROCESSED_REPRESENTATION_V1,
     NETWORK_BEHAVIOR_V1_FEATURE_NAMES,
-    NETWORK_BEHAVIOR_V1_FEATURES,
-    NETWORK_BEHAVIOR_V1_FORBIDDEN_MODEL_FIELDS,
+    NETWORK_BEHAVIOR_V1_CONTRACT_VERSION,
+    UNSW_NB15_ARGUS_RAW_REPRESENTATION_V1,
+    UNSW_TRAINED_CLASSICAL_REQUIREMENTS_V1,
+    NetworkCompatibilityDecision,
+    NetworkCompatibilityError,
+    NetworkCompatibilityKey,
+    decide_network_compatibility,
+    require_supported_network_compatibility,
 )
 from threatfusion.models.network_classical_evaluation import (
     NetworkBaselineError,
@@ -49,13 +56,15 @@ from threatfusion.models.network_random_forest_baseline import (
 )
 from threatfusion.preprocessing.network_behavior_v1 import (
     LABEL_MAPPING,
+    PREPROCESSING_SCHEMA_VERSION,
     TRANSFORMED_FEATURE_NAMES,
     NetworkBehaviorPreprocessor,
     encode_binary_label,
 )
 from threatfusion.utils.checksum import sha256_file
 
-CIC_EVALUATION_SCHEMA_VERSION = "cic_classical_external_evaluation_v1"
+HISTORICAL_CIC_EVALUATION_SCHEMA_VERSION = "cic_classical_external_evaluation_v1"
+CIC_EVALUATION_SCHEMA_VERSION = "cic_classical_external_evaluation_v2"
 BASELINE_COMMIT = "ba21aa19aa1f6fdadd6445810581b8c291f4cc2b"
 DEFAULT_BATCH_SIZE = 10_000
 MINIMUM_FREE_BYTES = 2 * 1024**3
@@ -76,6 +85,8 @@ EXPECTED_FILES: dict[str, dict[str, int]] = {
 CATEGORY_NAMES: tuple[str, ...] = tuple(sorted(CIC_APPROVED_ATTACK_LABELS))
 CATEGORY_CODES = {name: index + 1 for index, name in enumerate(CATEGORY_NAMES)}
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+_UNSW_RAW_BASENAMES = tuple(f"UNSW-NB15_{part}.csv" for part in range(1, 5))
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +110,7 @@ class VerifiedCicEvidence:
     manifest_sha256: str
     files: tuple[VerifiedCicFile, ...]
     profile_sha256: str
+    source_representation: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +122,16 @@ class CicEvaluationResult:
     accepted_rows: int
     rejected_rows: int
     elapsed_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalCicEvaluation:
+    """Readable historical report with completion and current compatibility separated."""
+
+    configuration: dict[str, Any]
+    report: dict[str, Any]
+    completed: bool
+    compatibility: NetworkCompatibilityDecision
 
 
 def _read_json(path: Path, code: str) -> dict[str, Any]:
@@ -140,36 +162,6 @@ def write_cic_failure_status(run_directory: Path, code: str) -> Path:
         },
     )
     return path
-
-
-def verify_semantic_compatibility() -> dict[str, str]:
-    """Fail closed unless the portable contract retains the reviewed CIC semantics."""
-    expected = (
-        ("duration_ms", "float", "milliseconds"),
-        ("fwd_packets", "integer", "count"),
-        ("bwd_packets", "integer", "count"),
-        ("fwd_bytes", "integer", "bytes"),
-        ("bwd_bytes", "integer", "bytes"),
-        ("packets_per_second", "float", "packets/second"),
-        ("bytes_per_second", "float", "bytes/second"),
-        ("fwd_packet_length_mean", "float", "bytes"),
-        ("bwd_packet_length_mean", "float", "bytes"),
-        ("dst_port", "integer", "port"),
-        ("protocol", "category", "tcp/udp/icmp/other"),
-    )
-    actual = tuple((item.name, item.dtype, item.unit) for item in NETWORK_BEHAVIOR_V1_FEATURES)
-    if actual != expected or NETWORK_BEHAVIOR_V1_FORBIDDEN_MODEL_FIELDS.intersection(
-        NETWORK_BEHAVIOR_V1_FEATURE_NAMES
-    ):
-        raise NetworkBaselineError("cic_semantic_contract_mismatch")
-    return {
-        "duration": "Flow Duration microseconds converted to milliseconds",
-        "directions": "Tot Fwd/Bwd packets and bytes retain source directions",
-        "derived_rates": "recomputed from directional totals and duration",
-        "derived_means": "recomputed bytes divided by directional packet counts",
-        "port_protocol": "shared destination-port and protocol normalization",
-        "record_type": "feature-only NetworkBenchmarkRecord",
-    }
 
 
 def _quality_path(quality_directory: Path, basename: str) -> Path:
@@ -257,6 +249,7 @@ def verify_cic_evidence(
         manifest_sha256=sha256_file(manifest_path),
         files=tuple(verified_files),
         profile_sha256=sha256_file(profile_path),
+        source_representation=CIC_IDS2018_CICFLOWMETER_V3_PROCESSED_REPRESENTATION_V1,
     )
 
 
@@ -450,6 +443,123 @@ def _git_provenance(project_root: Path) -> dict[str, Any]:
     }
 
 
+def _compatibility_key_for_verified_inputs(
+    preprocessing: Any,
+    evidence: VerifiedCicEvidence,
+    models: tuple[Any, Any],
+) -> NetworkCompatibilityKey:
+    configuration = preprocessing.configuration
+    source = configuration.get("source")
+    registered_files = source.get("registered_raw_files") if isinstance(source, dict) else None
+    raw_basenames = (
+        tuple(item.get("name") for item in registered_files)
+        if isinstance(registered_files, list)
+        and all(isinstance(item, dict) for item in registered_files)
+        else ()
+    )
+    fitted_representation = (
+        UNSW_NB15_ARGUS_RAW_REPRESENTATION_V1 if raw_basenames == _UNSW_RAW_BASENAMES else None
+    )
+    exact_requirements = (
+        configuration.get("schema_version") == PREPROCESSING_SCHEMA_VERSION
+        and configuration.get("feature_contract") == NETWORK_BEHAVIOR_V1_CONTRACT_VERSION
+        and configuration.get("input_feature_names") == list(NETWORK_BEHAVIOR_V1_FEATURE_NAMES)
+        and configuration.get("transformed_feature_names") == list(TRANSFORMED_FEATURE_NAMES)
+        and tuple(item.name for item in models) == ("logistic_regression", "random_forest")
+        and all(
+            getattr(item.model, "n_features_in_", None) == len(TRANSFORMED_FEATURE_NAMES)
+            for item in models
+        )
+    )
+    return NetworkCompatibilityKey(
+        source_representation=evidence.source_representation,
+        fitted_source_representation=fitted_representation,
+        feature_contract_version=configuration.get("feature_contract"),
+        model_preprocessing_requirements=(
+            UNSW_TRAINED_CLASSICAL_REQUIREMENTS_V1 if exact_requirements else None
+        ),
+    )
+
+
+def _require_approved_cic_use(
+    preprocessing: Any,
+    evidence: VerifiedCicEvidence,
+    models: tuple[Any, Any],
+) -> NetworkCompatibilityDecision:
+    """Enforce reviewed representation compatibility before transformation or inference."""
+    key = _compatibility_key_for_verified_inputs(preprocessing, evidence, models)
+    try:
+        return require_supported_network_compatibility(key)
+    except NetworkCompatibilityError as exc:
+        raise NetworkBaselineError(exc.code) from exc
+
+
+def _historical_compatibility_key(configuration: dict[str, Any]) -> NetworkCompatibilityKey:
+    cic_evidence = configuration.get("cic_evidence")
+    files = cic_evidence.get("files") if isinstance(cic_evidence, dict) else None
+    basenames = (
+        tuple(item.get("basename") for item in files)
+        if isinstance(files, list) and all(isinstance(item, dict) for item in files)
+        else ()
+    )
+    source_representation = (
+        CIC_IDS2018_CICFLOWMETER_V3_PROCESSED_REPRESENTATION_V1
+        if configuration.get("external_dataset") == "cse_cic_ids2018"
+        and basenames == tuple(EXPECTED_FILES)
+        else None
+    )
+    preprocessing = configuration.get("preprocessing")
+    models = configuration.get("models")
+    hashes_present = (
+        isinstance(preprocessing, dict)
+        and all(
+            isinstance(preprocessing.get(name), str)
+            and _SHA256.fullmatch(preprocessing[name]) is not None
+            for name in ("state_sha256", "configuration_sha256", "report_sha256")
+        )
+        and isinstance(models, dict)
+        and set(models) == {"logistic_regression", "random_forest"}
+    )
+    exact_requirements = (
+        configuration.get("schema_version") == HISTORICAL_CIC_EVALUATION_SCHEMA_VERSION
+        and configuration.get("transformed_feature_names") == list(TRANSFORMED_FEATURE_NAMES)
+        and hashes_present
+    )
+    return NetworkCompatibilityKey(
+        source_representation=source_representation,
+        fitted_source_representation=(
+            UNSW_NB15_ARGUS_RAW_REPRESENTATION_V1 if exact_requirements else None
+        ),
+        feature_contract_version=(
+            NETWORK_BEHAVIOR_V1_CONTRACT_VERSION if exact_requirements else None
+        ),
+        model_preprocessing_requirements=(
+            UNSW_TRAINED_CLASSICAL_REQUIREMENTS_V1 if exact_requirements else None
+        ),
+    )
+
+
+def read_historical_cic_evaluation(run_directory: Path) -> HistoricalCicEvaluation:
+    """Read immutable legacy evidence without treating completion as compatibility approval."""
+    configuration_path = run_directory / "evaluation_config.json"
+    report_path = run_directory / "evaluation_report.json"
+    configuration = _read_json(configuration_path, "historical_cic_configuration_unreadable")
+    report = _read_json(report_path, "historical_cic_report_unreadable")
+    if (
+        report.get("schema_version") != HISTORICAL_CIC_EVALUATION_SCHEMA_VERSION
+        or report.get("configuration_sha256") != sha256_file(configuration_path)
+        or not isinstance(report.get("completed"), bool)
+    ):
+        raise NetworkBaselineError("historical_cic_evidence_mismatch")
+    compatibility = decide_network_compatibility(_historical_compatibility_key(configuration))
+    return HistoricalCicEvaluation(
+        configuration=configuration,
+        report=report,
+        completed=report["completed"],
+        compatibility=compatibility,
+    )
+
+
 def _verify_common_inputs(
     project_root: Path,
     manifest_path: Path,
@@ -458,15 +568,15 @@ def _verify_common_inputs(
     preprocessing_directory: Path,
     logistic_directory: Path,
     forest_directory: Path,
-) -> tuple[Any, VerifiedCicEvidence, tuple[Any, Any], dict[str, str]]:
-    semantics = verify_semantic_compatibility()
+) -> tuple[Any, VerifiedCicEvidence, tuple[Any, Any], NetworkCompatibilityDecision]:
     preprocessing = verify_preprocessing_artifacts(preprocessing_directory)
     evidence = verify_cic_evidence(project_root, manifest_path, quality_directory, profile_path)
     models = (
         verify_saved_model(logistic_directory, preprocessing, name="logistic_regression"),
         verify_saved_model(forest_directory, preprocessing, name="random_forest"),
     )
-    return preprocessing, evidence, models, semantics
+    compatibility = _require_approved_cic_use(preprocessing, evidence, models)
+    return preprocessing, evidence, models, compatibility
 
 
 def run_cic_smoke(
@@ -554,9 +664,8 @@ def run_cic_external_evaluation(
     allowed = (project_root / "artifacts/reports/network_cic_external_evaluation").resolve()
     if artifact_root != allowed:
         raise NetworkBaselineError("artifact_root_invalid")
-    artifact_root.mkdir(parents=True, exist_ok=True)
     verification_started = time.monotonic()
-    preprocessing, evidence, models, semantics = _verify_common_inputs(
+    preprocessing, evidence, models, compatibility = _verify_common_inputs(
         project_root,
         manifest_path,
         quality_directory,
@@ -565,6 +674,7 @@ def run_cic_external_evaluation(
         logistic_directory,
         forest_directory,
     )
+    artifact_root.mkdir(parents=True, exist_ok=True)
     accepted_total = sum(item.accepted_rows for item in evidence.files)
     resources = _resource_evidence(artifact_root, accepted_total)
     verification_seconds = time.monotonic() - verification_started
@@ -585,7 +695,7 @@ def run_cic_external_evaluation(
         "label_mapping": LABEL_MAPPING,
         "decision_threshold": {"operator": ">=", "probability": ATTACK_THRESHOLD},
         "transformed_feature_names": list(TRANSFORMED_FEATURE_NAMES),
-        "semantic_mapping": semantics,
+        "compatibility_decision": compatibility.to_dict(),
         "no_fit_selection_or_tuning": True,
         "cic_evidence": {
             "manifest_sha256": evidence.manifest_sha256,
@@ -728,7 +838,7 @@ def run_cic_external_evaluation(
             },
             "checks": {
                 "registered_inputs_and_validation_evidence_verified": True,
-                "semantic_feature_compatibility_verified": True,
+                "compatibility_approved_for_inference": compatibility.approved_for_inference,
                 "feature_only_adapter_used": True,
                 "preprocessing_state_unchanged_and_not_refit": True,
                 "saved_models_unchanged_and_not_refit": True,
@@ -755,7 +865,7 @@ def run_cic_external_evaluation(
                 "the acquired files may be row-capped exports",
                 "CIC source timezone is unknown",
                 "CIC aggregate profiles and labels were known before evaluation",
-                "cross-dataset semantic compatibility does not prove capture comparability",
+                "compatibility approval does not establish production readiness or accuracy",
                 "results do not establish operational or future-period performance",
                 "host training remains blocked and global readiness is unchanged",
             ],

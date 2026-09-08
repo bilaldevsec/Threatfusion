@@ -3,11 +3,9 @@
 ## Snapshot
 
 Status date: 2026-09-08. Branch: `main`. Latest commit:
-`f49e7de5b64f274bc080d6fb9e93e43bc8689790` (`Add frozen CIC external evaluation and audit
-findings`). At the start of this requirements milestone the index was empty and the working tree was
-dirty only because [`network_feature_comparability_audit.md`](network_feature_comparability_audit.md)
-was untracked. This milestone adds `AGENTS.md`, this file, [`product_charter.md`](product_charter.md),
-and [`issue_register.md`](issue_register.md) as documentation-only untracked files. Nothing is staged.
+`4bd0e5fbf729c7a1e35c30f127b84651ca8d2d5e` (`Record product reliability requirements and
+compatibility issues`). The baseline was clean. The working tree now contains only the scoped
+compatibility-gate source, test, documentation, and narrow CLI lint changes; nothing is staged.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0
 readiness report still says split assignments are missing, but the later completed full assignment and
@@ -31,13 +29,21 @@ integrated product acceptance are absent.
 - Both saved models were evaluated without refitting on February UNSW and the two registered CIC
   exports. The targeted CIC audit verified the inspected prediction path, hashes, feature order,
   probability mapping, single scaling, rejection alignment, bounded replay, and confusion arithmetic.
+- A typed compatibility decision now keys the actual input/fitted-source representations, contract
+  version, and model/preprocessing requirements. Same-source verified UNSW use is supported; the
+  registered CIC representation is rejected before transformation/inference or run artifact creation.
+  Unknown and incomplete evidence fails closed. Historical completion remains separately readable.
+- Repository-wide Ruff passes. Four direct-execution CLIs retain their intentional `backend/src`
+  bootstrap with import-level `E402` suppressions matching the established script convention; their
+  `--help` paths exit without starting data work or creating artifacts.
 
 ## Implemented with limitations
 
 - `network_behavior_v1` is valid as the frozen input order for the historical UNSW models, but its
   cross-source byte mapping is not a validated common measurement contract. Five byte-dependent CIC
   predictors have incompatible documented semantics; direction/flow policy remains uncertain. See
-  [`network_feature_comparability_audit.md`](network_feature_comparability_audit.md) and TF-001.
+  [`network_feature_comparability_audit.md`](network_feature_comparability_audit.md) and TF-012. The
+  gate prevents unapproved use; it does not improve accuracy or establish compatible measurements.
 - CIC metrics are preserved historical research evidence, not proof of compatible external transfer or
   operational usefulness. February and CIC outcomes are known and must be disclosed in future work.
 - Host-event schemas, Mordor ingestion/validation, `host_behavior_v1`, and the synthetic fixture exercise
@@ -51,7 +57,7 @@ integrated product acceptance are absent.
 - Global training readiness remains false even though the authorized network baselines completed.
 - Deep-learning work remains paused pending a feature-comparability remediation decision.
 - New claims of independent February/CIC evaluation are blocked because those outcomes are known.
-- Cross-source compatibility approval is blocked by TF-001 and TF-003.
+- Cross-source compatibility approval is blocked by TF-012 and TF-003.
 
 ## Not yet implemented
 
@@ -65,20 +71,14 @@ integrated product acceptance are absent.
 
 ## One next implementation task
 
-Implement a **cross-source compatibility gate** that prevents unverified compatibility from being
-represented as approved in the affected contract/evaluation path. Likely scope is a small
-machine-readable disposition beside `network_behavior_v1`, CIC evaluation verification/report fields,
-focused unit tests, and updates to the feature/evaluation documentation. Preserve UNSW-NB15, both saved
-model families, historical artifacts, scores, and hashes; do not retrain or reinterpret old metrics.
+Implement an explicitly **UNSW-source-specific inference boundary** as the first integrated vertical
+slice. It should accept only the verified UNSW Argus raw representation and existing frozen
+preprocessor/model bundles, emit a versioned alert candidate with model/source provenance, and reject
+CIC or unknown representations through the compatibility gate. Reuse current readers, validation,
+projection, preprocessing, and model verification; do not retrain.
 
-Acceptance tests must prove that:
-
-1. the five known byte-dependent UNSW/CIC mappings cannot be marked equivalent;
-2. conditional direction/duration mappings remain explicitly unresolved;
-3. a new CIC result cannot claim approved compatible external evaluation or silently pass the gate;
-4. the same-source UNSW inference path and exact feature/model order remain unchanged;
-5. historical reports remain readable and retain their original provenance and exposure notices; and
-6. malformed/missing compatibility evidence fails closed with sanitized errors.
-
-This task should precede an integrated vertical slice. It does not authorize or automatically launch a
-same-PCAP extraction study, model training, or another benchmark evaluation.
+Acceptance tests should prove supported UNSW input reaches a bounded inference/alert interface with
+stable identity and exact feature order; malformed input, duplicate ingestion, artifact mismatch, and
+unsupported representation fail visibly and idempotently; no external service is required; and no
+result claims production readiness or independent evaluation. This is source-specific operation, not
+a substitute for resolving TF-012, and it does not authorize containment or deployment.
