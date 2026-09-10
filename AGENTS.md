@@ -3,6 +3,17 @@
 These instructions apply to the entire repository. More specific instructions may add constraints but
 must not weaken this file, the product charter, an explicit user instruction, or a safety requirement.
 
+## Working policy and model recommendations
+
+- Explanations, status, and routine prompts: Sol Medium.
+- Git checkpoints, formatting, and straightforward commands: Sol Low.
+- Scoped implementation and ordinary debugging: Sol Medium.
+- Ambiguous extractor behavior, feature semantics, and difficult failures: Astra Medium.
+- Final leakage, experiment-design, and critical-security review: Astra High, narrowly scoped.
+- These are model recommendations, not claims of automatic model switching.
+- State what each milestone does and why; minimize repeated context, unnecessary reruns, and verbose
+  output.
+
 ## Start and evidence discipline
 
 - Before relevant product, data, model, integration, evaluation, or release work, read

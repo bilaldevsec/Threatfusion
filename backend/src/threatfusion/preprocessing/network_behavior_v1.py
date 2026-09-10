@@ -288,6 +288,13 @@ class NetworkBehaviorPreprocessor:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise NetworkPreprocessingError("fitted_state_unreadable") from exc
+        return cls.from_dict(payload)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> NetworkBehaviorPreprocessor:
+        """Validate already-decoded state, including a caller's verified byte snapshot."""
+        if not isinstance(payload, dict):
+            raise NetworkPreprocessingError("fitted_state_contract_mismatch")
         expected_static = {
             "schema_version": PREPROCESSING_SCHEMA_VERSION,
             "feature_contract": "network_behavior_v1",

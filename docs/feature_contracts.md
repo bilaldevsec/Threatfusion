@@ -1,10 +1,20 @@
 # ThreatFusion Feature Contracts
 
-ThreatFusion uses explicit feature contracts so that model training, dataset adapters and live
-packet capture produce comparable inputs.
+ThreatFusion uses explicit feature contracts to define model inputs. Matching a contract's field
+shape does not prove that dataset adapters or live packet capture produce comparable measurements.
 
 The key rule is simple: datasets are not merged just because column names look similar. A feature
 is shared only when its meaning, unit and direction are documented.
+
+## Supported product inference boundary
+
+Product inference is source-specific. Only the verified
+`unsw_nb15.argus.raw_49.transaction_bytes.v1` representation is supported by the frozen UNSW model
+bundle through [`network_behavior_v1`](unsw_network_inference_boundary.md). Matching field names or
+shapes do not grant compatibility. The registered CICFlowMeter representation remains rejected by the
+compatibility gate and preserved only as historical research evidence.
+Representation declarations are trusted-adapter attestations, not authentication of arbitrary caller
+measurements; see the [inference trust boundary](unsw_network_inference_boundary.md#security-and-scientific-claim-boundary).
 
 ## flow_common_v1
 
@@ -54,8 +64,8 @@ These are not part of `flow_common_v1` unless later parity tests prove equivalen
 ## Dataset Alignment Rule
 
 UNSW-NB15 and CSE-CIC-IDS2018 are heterogeneous network-flow datasets. ThreatFusion therefore uses
-separate dataset adapters. Each adapter converts only semantically valid fields into
-`flow_common_v1`.
+separate dataset adapters. Historical projection code is retained, but its availability does not approve
+inference: the registered CIC byte mapping is incompatible with the frozen UNSW representation.
 
 If a feature cannot be mapped honestly, it must remain dataset-specific.
 
