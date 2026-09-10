@@ -22,22 +22,65 @@ valid arbitrary-exporter or universal-generalization evidence.
 
 ## Interface and fail-closed behavior
 
-`UnswNetworkInferenceBoundary` accepts only feature values in this exact order:
+The supported application entry is `UnswNetworkInferenceBoundary(project_root=...)`, followed by
+`infer(raw_values)` or `infer_batch(raw_rows)`. Setup is trusted application configuration; the root
+is never taken from serialized client input. Each submitted record must be a plain list of exactly
+49 plain strings in the registered headerless UNSW raw-column order, with at most 1,024 characters per
+field. JSON arrays decode to this shape. Named mappings, additional provenance fields, precomputed
+11-value predictors, canonical events, internal requests, subclasses, and duck-typed substitutes are
+rejected. There is no source-selection or client-approval parameter. CIC's registered input remains
+rejected; this is not a generic source-admission mechanism.
+
+The exact supported call path is:
+
+`UnswNetworkInferenceBoundary.infer[_batch]` → shared `map_unsw_raw_values` reader mapping →
+`adapt_unsw_row` → validated concrete `NetworkFlow` → `project_network_behavior` → immutable private
+request with internally assigned UNSW provenance → private frozen predictor → existing compatibility,
+feature validation, preprocessing, and prediction.
+
+Trusted setup verifies the pinned UNSW manifest hash and validates its `DatasetManifest` schema,
+then verifies the registered 49-row feature-metadata hash. Parsing uses the same verified byte snapshots;
+neither file is reopened for decoding. These bounded reads reuse the TF-013 regular-file snapshot
+checks. This validates the registered representation definition; it does **not** verify submitted rows'
+membership in any registered raw dataset file. No full dataset is read by this entry path.
+
+The private request contains only frozen provenance and an immutable tuple of scalar predictors
+in this order:
 
 `duration_ms`, `fwd_packets`, `bwd_packets`, `fwd_bytes`, `bwd_bytes`,
 `packets_per_second`, `bytes_per_second`, `fwd_packet_length_mean`,
 `bwd_packet_length_mean`, `dst_port`, `protocol`.
 
-Every request must carry the exact source representation, fitted-source representation, contract
-version, and model/preprocessing requirements. Compatibility is checked before feature validation,
-transformation, or prediction. Missing/unknown evidence, CIC provenance, version/order changes,
+The pipeline assigns the exact source representation, fitted-source representation, contract
+version, and model/preprocessing requirements after successful adaptation. Compatibility is checked
+before feature validation, transformation, or prediction. Missing/unknown evidence, CIC provenance,
+internal feature version/order changes,
 missing/non-numeric/non-finite/negative values, invalid integer/count/byte relationships, an invalid
-port, or an unknown protocol is rejected with a stable reason code. Requests/provenance must be the
+port, or an unknown canonical protocol category is rejected with a stable reason code.
+Raw protocol aliases retain the adapter's existing normalization, including `other` for noncanonical
+protocols. Requests/provenance must be the
 declared concrete dataclasses, their ordered features must be tuples, and scalar values must be plain
-Python numbers/strings (not booleans or coercible/custom objects). `from_mapping` accepts only a plain
-11-entry dict. Integers losing precision on float64 conversion and forest inputs overflowing float32
-are rejected before prediction. The input type has no fields for
-IPs, labels, timestamps, filenames, secrets, or full source rows.
+Python numbers/strings (not booleans or coercible/custom objects). Raw packet/byte counts must be finite,
+nonnegative integers no larger than 2^53, preventing the shared adapter's historical float-mediated
+integer parsing from silently rounding counts. This is a conservative input bound, not a claim that
+every integer above 2^53 is inexact; the review retains that bound. Binary labels are checked for exact
+integrality and the range [0, 1] before float-mediated adapter parsing, even though they are not predictors.
+Duration and numeric epoch `stime` are checked for finite, nonnegative values before float conversion;
+a nonzero raw value converting to zero is rejected. Exact zero duration keeps the existing zero-rate
+behavior. UTC epoch conversion precedes adaptation and bypasses the generic date parser entirely,
+preventing warnings from echoing submitted timestamp text. Numeric epoch semantics are documented in
+[`network_training_split_design.md`](network_training_split_design.md#bounded-exploratory-check).
+Integers losing precision on float64 conversion and
+forest inputs overflowing float32 are rejected before prediction. The raw input includes endpoints,
+timestamps and labels because the existing adapter requires them; these, attack categories, reader IDs,
+paths, and all other non-allowlisted fields are excluded from predictors and never returned.
+Raw rates/means supplied in unused UNSW columns do not replace internally derived rates/means.
+
+The canonical event is local to adaptation and immediately projected; neither it nor the internal request
+is returned. Each raw list is snapshotted and adapted before requesting the next iterator item. Later
+mutation of the original list cannot change its prepared predictors. Internal request/provenance
+dataclasses are frozen, their contents immutable, and their reprs omit fields. The historical feature-level
+implementation is now private and retained for focused unit tests, not supported application submission.
 
 Initialization is a trusted, eager setup operation, independent of request submission. It verifies all
 nine frozen state/configuration/report/model files before any model deserialization. Each is opened
@@ -50,30 +93,54 @@ and inclusive Attack threshold 0.5 must agree. Unreadable/missing/truncated/mism
 sanitized setup error, never a fallback. Artifacts are never fitted or modified. Later on-disk changes
 do not alter a running instance; constructing a fresh instance verifies them again.
 
-The output contains only a generated correlation UUID, model identity/version, contract and approved
-source identity, Attack probability, threshold, predicted class, sanitized status/reason, UTC processing
+The output contains only a generated per-attempt correlation UUID, model identity/version, contract
+and approved source identity, Attack probability, threshold, predicted class, sanitized status/reason, UTC processing
 timestamp, and elapsed milliseconds. Failed inputs return no score/class and never echo feature values
 or unknown provenance. Audit provenance exposes hashes and versions without filesystem paths or raw
 features.
 
 Single-record inference and streaming batches up to 256 records are supported. At most 257 iterator
-items are requested. A 257th item or an iterator exception rejects the whole batch before prediction;
-no partial-batch success or count summary is returned. The errors are `batch_size_exceeded` and
+items are requested, and the 257th is never adapted. A 257th item or an iterator exception rejects
+the whole batch before prediction; no partial-batch success or count summary is returned.
+The errors are `batch_size_exceeded` and
 `batch_iteration_failed`, with internal exception context suppressed from displayed tracebacks. Invalid
 model selection also raises a sanitized batch/call error, including for empty batches. Within an
-accepted-size batch, malformed records and transformation/prediction failures remain ordered and each succeeds or
-fails independently; received/succeeded/rejected totals reconcile. This is an inference-to-alert
+accepted-size batch, malformed records and transformation/prediction failures remain ordered and each
+succeeds or fails independently; received/succeeded/rejected totals reconcile. This is an inference-to-alert
 boundary, not yet alert persistence, deduplication, correlation, explanation, or dashboard integration.
+Raw type, size, adaptation, and canonical-binding failures return `raw_input_rejected` with no score and
+an unapproved source identity. Setup registration errors are `unsw_registration_invalid`. Neither retains
+raw exception details in output. No log, report, raw record, or internal approval material is emitted.
 
 ## Security and scientific claim boundary
 
-Source provenance is a **caller attestation, not source authentication**. Even the exact approved string
-cannot prove that measurements came from UNSW/Argus. `approved_unsw()` is a convenience for a trusted
-adapter and the explicitly synthetic smoke, not a credential. Do not expose this component directly to
-untrusted clients that can label arbitrary measurements as UNSW. A trusted ingestion boundary must
-establish representation and derive provenance independently of client claims before product exposure.
-Correctly declared CIC inputs are rejected; deliberate relabelling cannot be detected from these 11
-numbers alone. TF-014 tracks this remaining integration gate.
+TF-014 binds the supported application entry path to actual UNSW raw adaptation and feature construction.
+Serialized clients cannot supply an internal feature vector and provenance assertion to that path.
+Source identity records the registered representation whose adapter successfully processed the input;
+it is assigned by repository code, not copied from a client field.
+
+This is **adaptation binding, not authentication of remote measurements or dataset membership**.
+A client can fabricate raw values or deliberately convert another source to a plausible 49-column row;
+schema/adapter validation cannot prove the physical exporter or capture origin. Such conversions have
+no compatibility approval. Future deployment must restrict upstream producers to the supported
+representation and define transport authentication/admission separately. No API or external transport
+exists in this milestone, and no remaining supported feature-vector submission path accepts caller
+attestation. TF-014 is resolved for this component integration; external service controls and readiness
+remain unverified under TF-008/TF-009.
+
+The mapping fixes column positions; it cannot detect swapping two otherwise valid numeric columns
+(for example forward and backward byte values). Reordering that violates a field's validation fails,
+but arbitrary reordering cannot honestly be claimed rejected. Unused raw columns are bounded strings,
+not a complete semantic validation of all 49 original measurements. They do not become predictors.
+Duplicate keys, aliases, path/root overrides and source declarations cannot enter as named payload
+fields because mappings are rejected. Root configuration is trusted setup; alternate roots still need
+the exact pinned manifest, metadata and artifact bytes. Adapter or predictor substitution requires
+trusted same-process code, not serialized input.
+
+Private names and concrete immutable classes prevent ordinary accidental misuse, not malicious Python
+code executing inside the process. They are not cryptographic authentication. Trusted application code,
+setup configuration, adapters, feature builders, and dependencies remain in the trusted computing base.
+No capability token, object-identity credential, HMAC, signing key, or global secret is introduced.
 
 Joblib/pickle loading executes code: hard-coded, reviewed hashes are the trust anchor, not a sandbox or
 a guarantee that an intentionally approved malicious pickle is safe. The code, installed dependencies,
@@ -86,16 +153,44 @@ rounding/underflow of sufficiently small values, remains unchanged. Input values
 zero upstream cannot be reconstructed. Reload probability tolerance remains 1e-15, not bitwise forest
 probability reproducibility. The correlation UUID identifies an inference attempt, **not** a stable
 ingestion identity, deduplication key, or persistence guarantee. Retrying generates a new UUID.
+No ingestion identifier is exposed or invented here. The shared reader's required flow-ID alias uses
+a fixed internal submission placeholder, discarded with the canonical event; it is not ingestion
+provenance and must never become a persistence key. Stable ingestion identity remains future work.
 
 The synchronous iterator limit bounds records, not time inside arbitrary caller code. Blocking
 iterators, service concurrency/admission limits, transport-body limits, process isolation, and
-restart/persistence recovery require the future ingestion/service boundary (TF-008/TF-009/TF-014).
+restart/persistence recovery require the future ingestion/service boundary (TF-008/TF-009).
 Component fixtures and code review do not establish complete product security or absence of all defects.
 
 The adversarial review reproduced and corrected a hash/reopen race, malformed-object provenance bypass
 and leakage, and uncaught malformed-record/iterator failure paths. Core rejection tests now run without
 ignored artifacts. Separate integration tests verify reload using the real pinned artifacts when they
 are available; those tests explicitly skip when unavailable. No evaluation or fitting was repeated.
+
+## TF-014 adversarial review, 2026-09-10
+
+Two medium-severity defects were demonstrated through the public entry and corrected:
+
+- Raw numeric validation allowed tiny positive or negative duration to round to zero, and fractional
+  or underflowing labels to round into accepted binary labels. Five regression cases reached prediction
+  before correction; exact preconversion checks now reject them with zero predictor calls.
+- Nonnumeric start timestamps could reach pandas' generic parser, emit a warning containing submitted
+  timestamp text and an internal source path, and still reach prediction. A sixth failing regression
+  now proves rejection without warnings or prediction using the registered numeric-epoch path.
+
+No high-severity supported-entry bypass was demonstrated. Private constructors, copy/pickle round trips,
+and internal factory substitutions in tests are not authentication mechanisms. Factory-substitution
+tests establish internal consistency checks only; public-path rejection tests and predictor spies
+establish the externally observable binding. Exact matrix assertions independently check label and
+provenance exclusion. The review also exercises numeric spelling/bounds, zero duration, numeric epochs,
+and iterator failure after 256 prepared rows. TF-014 is resolved for application-path adaptation binding;
+physical source authenticity, undetectable positional swaps, blocking iterators and service controls
+remain explicitly outside that disposition. TF-012 remains open.
+
+Validation after stabilization: 251 focused tests passed, including all 69 binding cases; the complete
+suite ran once with 499 passed and four existing TF-005 warnings. Repository-wide Ruff and five
+individual Black checks (30-second bounds) passed. All nine frozen artifact hashes still match their
+approved values and all nine files remain ignored/untracked. No training or full-data evaluation ran.
 
 ## Functional smoke
 
@@ -105,9 +200,10 @@ From the repository root:
 .venv/bin/python scripts/smoke_unsw_network_inference.py
 ```
 
-The CLI uses a synthetic, contract-valid feature-only request and the real frozen artifacts. Its JSON
-contains only the sanitized output schema. This demonstrates loading, validation, transformation, and
-prediction wiring; it is not accuracy, representative-traffic, readiness, or user-value evidence.
+The CLI uses one synthetic raw 49-column row, verified registered schema metadata, and the real frozen
+artifacts through the supported public path. Its JSON contains only the sanitized output schema.
+This demonstrates loading, adaptation, validation, transformation, and prediction wiring; it is not
+accuracy, representative-traffic, readiness, or user-value evidence.
 
 Deep learning remains paused until this boundary is validated. Adding another dataset or extractor
 requires demonstrated measurement compatibility and a preregistered evaluation protocol before it can

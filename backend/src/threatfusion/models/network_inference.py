@@ -10,8 +10,9 @@ import os
 import stat
 import time
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, replace
+from decimal import Decimal
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -19,8 +20,18 @@ from typing import Any
 
 import joblib
 import numpy as np
+import yaml
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
+
+from threatfusion.datasets.adapters.unsw_nb15 import adapt_unsw_row
+from threatfusion.datasets.unsw_raw import (
+    UNSW_RAW_COLUMN_COUNT,
+    map_unsw_raw_values,
+    parse_unsw_feature_names,
+)
+from threatfusion.schemas.dataset_manifest import DatasetManifest
+from threatfusion.schemas.flow import NetworkFlow
 
 from threatfusion.features.network_behavior import (
     NETWORK_BEHAVIOR_V1_CONTRACT_VERSION,
@@ -29,6 +40,7 @@ from threatfusion.features.network_behavior import (
     UNSW_TRAINED_CLASSICAL_REQUIREMENTS_V1,
     NetworkCompatibilityError,
     NetworkCompatibilityKey,
+    project_network_behavior,
     require_supported_network_compatibility,
 )
 from threatfusion.models.network_logistic_baseline import (
@@ -86,9 +98,9 @@ class NetworkInferenceError(RuntimeError):
         super().__init__(code)
 
 
-@dataclass(frozen=True, slots=True)
-class NetworkSourceProvenance:
-    """Mandatory representation evidence for one inference request."""
+@dataclass(frozen=True, slots=True, repr=False)
+class _NetworkSourceProvenance:
+    """Internal pipeline assertion, not a credential or serialized input interface."""
 
     source_representation: str
     fitted_source_representation: str
@@ -96,7 +108,7 @@ class NetworkSourceProvenance:
     model_preprocessing_requirements: str
 
     @classmethod
-    def approved_unsw(cls) -> NetworkSourceProvenance:
+    def approved_unsw(cls) -> _NetworkSourceProvenance:
         return cls(
             source_representation=UNSW_NB15_ARGUS_RAW_REPRESENTATION_V1,
             fitted_source_representation=UNSW_NB15_ARGUS_RAW_REPRESENTATION_V1,
@@ -113,11 +125,11 @@ class NetworkSourceProvenance:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class NetworkInferenceRequest:
-    """Ordered feature-only request; no metadata or sensitive fields are accepted."""
+@dataclass(frozen=True, slots=True, repr=False)
+class _NetworkInferenceRequest:
+    """Immutable internal projection; never accepted by the public raw boundary."""
 
-    provenance: NetworkSourceProvenance | None
+    provenance: _NetworkSourceProvenance | None
     feature_names: tuple[str, ...]
     feature_values: tuple[object, ...]
 
@@ -126,8 +138,8 @@ class NetworkInferenceRequest:
         cls,
         values: Mapping[str, object],
         *,
-        provenance: NetworkSourceProvenance | None,
-    ) -> NetworkInferenceRequest:
+        provenance: _NetworkSourceProvenance | None,
+    ) -> _NetworkInferenceRequest:
         # Only a bounded plain dict: arbitrary Mapping methods may execute caller code.
         if type(values) is not dict or len(values) != len(NETWORK_BEHAVIOR_V1_FEATURE_NAMES):
             raise NetworkInferenceError("feature_mapping_invalid")
@@ -334,7 +346,7 @@ def _verify_model(snapshot: dict[str, bytes], choice: NetworkModelChoice) -> _Lo
     return _LoadedModel(estimator, choice.value, expected_schema)
 
 
-def _feature_record(request: NetworkInferenceRequest) -> _FeatureRecord:
+def _feature_record(request: _NetworkInferenceRequest) -> _FeatureRecord:
     if (
         type(request.feature_names) is not tuple
         or len(request.feature_names) != len(NETWORK_BEHAVIOR_V1_FEATURE_NAMES)
@@ -385,8 +397,8 @@ def _feature_record(request: NetworkInferenceRequest) -> _FeatureRecord:
     )
 
 
-class UnswNetworkInferenceBoundary:
-    """Read-only boundary for approved UNSW representation and frozen models."""
+class _FrozenNetworkPredictor:
+    """Trusted internal feature-level implementation, not an application entry point."""
 
     def __init__(
         self,
@@ -412,7 +424,7 @@ class UnswNetworkInferenceBoundary:
 
     def infer(
         self,
-        request: NetworkInferenceRequest,
+        request: _NetworkInferenceRequest,
         *,
         model: NetworkModelChoice = NetworkModelChoice.RANDOM_FOREST,
     ) -> NetworkInferenceResult:
@@ -426,11 +438,11 @@ class UnswNetworkInferenceBoundary:
             raise NetworkInferenceError("model_not_supported")
         source_identity = "unapproved"
         try:
-            if type(request) is not NetworkInferenceRequest:
+            if type(request) is not _NetworkInferenceRequest:
                 raise NetworkInferenceError("request_type_invalid")
             if request.provenance is None:
                 raise NetworkInferenceError("provenance_missing")
-            if type(request.provenance) is not NetworkSourceProvenance:
+            if type(request.provenance) is not _NetworkSourceProvenance:
                 raise NetworkInferenceError("provenance_type_invalid")
             if any(
                 type(value) is not str or len(value) > 256
@@ -487,14 +499,14 @@ class UnswNetworkInferenceBoundary:
 
     def infer_batch(
         self,
-        requests: Iterable[NetworkInferenceRequest],
+        requests: Iterable[_NetworkInferenceRequest],
         *,
         model: NetworkModelChoice = NetworkModelChoice.RANDOM_FOREST,
     ) -> NetworkInferenceBatchResult:
         """Consume at most 256 streamed records, preserving order and per-record failures."""
         if type(model) is not NetworkModelChoice:
             raise NetworkInferenceError("model_not_supported")
-        bounded: list[NetworkInferenceRequest] = []
+        bounded: list[_NetworkInferenceRequest] = []
         try:
             iterator = iter(requests)
             for _ in range(MAX_INFERENCE_BATCH_SIZE + 1):
@@ -544,11 +556,152 @@ def default_artifact_directories(project_root: Path) -> tuple[Path, Path, Path]:
     )
 
 
-def synthetic_contract_valid_request() -> NetworkInferenceRequest:
-    """Return metadata-free functional smoke input; it is not accuracy evidence."""
-    values: Sequence[object] = (100.0, 2, 1, 120, 60, 30.0, 1800.0, 60.0, 60.0, 443, "tcp")
-    return NetworkInferenceRequest(
-        provenance=NetworkSourceProvenance.approved_unsw(),
-        feature_names=NETWORK_BEHAVIOR_V1_FEATURE_NAMES,
-        feature_values=tuple(values),
-    )
+def _registered_unsw_schema(project_root: Path) -> tuple[str, ...]:
+    """Verify the registered schema, not membership of submitted rows in a dataset."""
+    try:
+        manifest_bytes = _verified_bytes(
+            project_root / "data/manifests/unsw_nb15.yaml",
+            APPROVED_UNSW_MANIFEST_HASH,
+            "unsw_manifest_invalid",
+        )
+        manifest = DatasetManifest.model_validate(yaml.safe_load(manifest_bytes))
+        metadata = [
+            item
+            for item in manifest.files
+            if item.role == "raw" and item.path.name == "NUSW-NB15_features.csv"
+        ]
+        if manifest.name != "unsw_nb15" or len(metadata) != 1 or metadata[0].rows != 49:
+            raise ValueError
+        entry = metadata[0]
+        data = _verified_bytes(project_root / entry.path, entry.sha256, "unsw_schema_invalid")
+        return parse_unsw_feature_names(data, path=Path("<registered-schema>"))
+    except Exception:
+        raise NetworkInferenceError("unsw_registration_invalid") from None
+
+
+def _nonnegative_raw_float(text: str) -> float:
+    """Check raw sign/finiteness before float conversion can erase a nonzero value."""
+    number = Decimal(text)
+    if not number.is_finite() or number < 0:
+        raise ValueError
+    converted = float(text)
+    if not math.isfinite(converted) or (number != 0 and converted == 0):
+        raise ValueError
+    return converted
+
+
+class UnswNetworkInferenceBoundary:
+    """Supported application entry: registered UNSW raw columns to frozen inference.
+
+    Setup arguments and code are trusted. Submission accepts only plain raw string
+    lists, never requests, canonical objects, provenance declarations, or capabilities.
+    This enforces adaptation, not remote measurement authenticity.
+    """
+
+    def __init__(self, *, project_root: Path) -> None:
+        self._raw_feature_names = _registered_unsw_schema(project_root)
+        preprocessing, logistic, forest = default_artifact_directories(project_root)
+        self._predictor = _FrozenNetworkPredictor(
+            preprocessing_directory=preprocessing,
+            logistic_directory=logistic,
+            random_forest_directory=forest,
+        )
+
+    def _prepare(self, raw_values: object) -> _NetworkInferenceRequest | None:
+        # Snapshot before advancing caller iteration. Only immutable plain strings
+        # survive, with no caller-owned container retained in the internal request.
+        if type(raw_values) is not list or len(raw_values) != UNSW_RAW_COLUMN_COUNT:
+            return None
+        values = tuple(raw_values)
+        if any(type(value) is not str or len(value) > 1024 for value in values):
+            return None
+        try:
+            row = map_unsw_raw_values(
+                self._raw_feature_names,
+                values,
+                path=Path("<submission>"),
+                row_number=1,
+            )
+            # Check integral values exactly before the legacy adapter's float
+            # parsing, including the binary label needed for a valid raw event.
+            for name in ("spkts", "dpkts", "sbytes", "dbytes", "label"):
+                number = Decimal(row[name])
+                if (
+                    not number.is_finite()
+                    or number < 0
+                    or number > (1 if name == "label" else 2**53)
+                    or number != number.to_integral_value()
+                ):
+                    return None
+            duration = _nonnegative_raw_float(row["dur"])
+            # Registered raw stime is numeric epoch seconds. Passing the parsed
+            # UTC timestamp uses the existing adapter without its generic pandas
+            # date fallback, whose warnings can echo untrusted timestamp text.
+            start = datetime.fromtimestamp(_nonnegative_raw_float(row["stime"]), tz=UTC)
+            flow = adapt_unsw_row(row | {"dur": duration, "stime": start})
+            if (
+                type(flow) is not NetworkFlow
+                or flow.source_dataset != "unsw_nb15"
+                or flow.schema_version != "flow_common_v1"
+            ):
+                return None
+            return _NetworkInferenceRequest(
+                provenance=_NetworkSourceProvenance.approved_unsw(),
+                feature_names=NETWORK_BEHAVIOR_V1_FEATURE_NAMES,
+                feature_values=project_network_behavior(flow),
+            )
+        except Exception:
+            # Adapter/Pydantic/numeric details can include endpoints or raw values.
+            return None
+
+    def infer(
+        self,
+        raw_values: object,
+        *,
+        model: NetworkModelChoice = NetworkModelChoice.RANDOM_FOREST,
+    ) -> NetworkInferenceResult:
+        """Adapt one raw 49-column string list and predict without an exposed envelope."""
+        return self.infer_batch([raw_values], model=model).results[0]
+
+    def infer_batch(
+        self,
+        raw_rows: Iterable[object],
+        *,
+        model: NetworkModelChoice = NetworkModelChoice.RANDOM_FOREST,
+    ) -> NetworkInferenceBatchResult:
+        """Snapshot/adapt at most 256 rows; iterator failure aborts before prediction."""
+        if type(model) is not NetworkModelChoice:
+            raise NetworkInferenceError("model_not_supported")
+        prepared: list[_NetworkInferenceRequest | None] = []
+        oversized = False
+        try:
+            iterator = iter(raw_rows)
+            for index in range(MAX_INFERENCE_BATCH_SIZE + 1):
+                try:
+                    raw = next(iterator)
+                except StopIteration:
+                    break
+                if index == MAX_INFERENCE_BATCH_SIZE:
+                    oversized = True
+                    break
+                prepared.append(self._prepare(raw))
+        except Exception:
+            raise NetworkInferenceError("batch_iteration_failed") from None
+        if oversized:
+            raise NetworkInferenceError("batch_size_exceeded")
+        results = tuple(
+            (
+                replace(self._predictor.infer(None, model=model), reason="raw_input_rejected")
+                if request is None
+                else self._predictor.infer(request, model=model)
+            )
+            for request in prepared
+        )
+        succeeded = sum(result.status == "completed" for result in results)
+        return NetworkInferenceBatchResult(
+            len(results), succeeded, len(results) - succeeded, results
+        )
+
+    @property
+    def audit_provenance(self) -> dict[str, object]:
+        return self._predictor.audit_provenance

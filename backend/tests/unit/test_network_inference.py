@@ -19,13 +19,12 @@ from threatfusion.features.network_behavior import (
 from threatfusion.models.network_inference import (
     MAX_INFERENCE_BATCH_SIZE,
     NetworkInferenceError,
-    NetworkInferenceRequest,
+    _NetworkInferenceRequest,
     NetworkModelChoice,
-    NetworkSourceProvenance,
-    UnswNetworkInferenceBoundary,
+    _NetworkSourceProvenance,
+    _FrozenNetworkPredictor,
     _LoadedModel,
     default_artifact_directories,
-    synthetic_contract_valid_request,
 )
 
 PROJECT_ROOT = Path(__file__).parents[3]
@@ -33,12 +32,21 @@ ARTIFACT_DIRECTORIES = default_artifact_directories(PROJECT_ROOT)
 ARTIFACTS_AVAILABLE = all(path.is_dir() for path in ARTIFACT_DIRECTORIES)
 
 
+def _synthetic_contract_valid_request() -> _NetworkInferenceRequest:
+    """Test the private predictor separately; never a supported application input."""
+    return _NetworkInferenceRequest(
+        provenance=_NetworkSourceProvenance.approved_unsw(),
+        feature_names=NETWORK_BEHAVIOR_V1_FEATURE_NAMES,
+        feature_values=(100.0, 2, 1, 120, 60, 30.0, 1800.0, 60.0, 60.0, 443, "tcp"),
+    )
+
+
 @pytest.fixture(scope="module")
-def artifact_boundary() -> UnswNetworkInferenceBoundary:
+def artifact_boundary() -> _FrozenNetworkPredictor:
     if not ARTIFACTS_AVAILABLE:
         pytest.skip("ignored frozen model artifacts are unavailable")
     preprocessing, logistic, forest = ARTIFACT_DIRECTORIES
-    return UnswNetworkInferenceBoundary(
+    return _FrozenNetworkPredictor(
         preprocessing_directory=preprocessing,
         logistic_directory=logistic,
         random_forest_directory=forest,
@@ -46,9 +54,9 @@ def artifact_boundary() -> UnswNetworkInferenceBoundary:
 
 
 def test_valid_unsw_inference_uses_random_forest_by_default(
-    boundary: UnswNetworkInferenceBoundary,
+    boundary: _FrozenNetworkPredictor,
 ) -> None:
-    result = boundary.infer(synthetic_contract_valid_request())
+    result = boundary.infer(_synthetic_contract_valid_request())
 
     assert result.status == "completed"
     assert result.reason == "inference_succeeded"
@@ -64,19 +72,19 @@ def test_valid_unsw_inference_uses_random_forest_by_default(
     [
         (None, "provenance_missing"),
         (
-            replace(NetworkSourceProvenance.approved_unsw(), source_representation="unknown.v1"),
+            replace(_NetworkSourceProvenance.approved_unsw(), source_representation="unknown.v1"),
             "source_representation_unrecognized",
         ),
         (
             replace(
-                NetworkSourceProvenance.approved_unsw(),
+                _NetworkSourceProvenance.approved_unsw(),
                 source_representation=CIC_IDS2018_CICFLOWMETER_V3_PROCESSED_REPRESENTATION_V1,
             ),
             "cross_source_byte_semantics_incompatible",
         ),
         (
             replace(
-                NetworkSourceProvenance.approved_unsw(),
+                _NetworkSourceProvenance.approved_unsw(),
                 feature_contract_version="network_behavior_v2",
             ),
             "feature_contract_version_unrecognized",
@@ -84,11 +92,11 @@ def test_valid_unsw_inference_uses_random_forest_by_default(
     ],
 )
 def test_unapproved_provenance_fails_before_prediction(
-    boundary: UnswNetworkInferenceBoundary,
-    provenance: NetworkSourceProvenance | None,
+    boundary: _FrozenNetworkPredictor,
+    provenance: _NetworkSourceProvenance | None,
     reason: str,
 ) -> None:
-    request = replace(synthetic_contract_valid_request(), provenance=provenance)
+    request = replace(_synthetic_contract_valid_request(), provenance=provenance)
 
     result = boundary.infer(request)
 
@@ -99,7 +107,7 @@ def test_unapproved_provenance_fails_before_prediction(
     assert result.source_representation_identity == "unapproved"
 
 
-def test_cic_rejection_precedes_transformation(boundary: UnswNetworkInferenceBoundary) -> None:
+def test_cic_rejection_precedes_transformation(boundary: _FrozenNetworkPredictor) -> None:
     class TransformSpy:
         called = False
 
@@ -107,14 +115,14 @@ def test_cic_rejection_precedes_transformation(boundary: UnswNetworkInferenceBou
             self.called = True
             raise AssertionError("transform must not run")
 
-    clone = object.__new__(UnswNetworkInferenceBoundary)
+    clone = object.__new__(_FrozenNetworkPredictor)
     spy = TransformSpy()
     clone._preprocessor = spy
     clone._models = boundary._models
     request = replace(
-        synthetic_contract_valid_request(),
+        _synthetic_contract_valid_request(),
         provenance=replace(
-            NetworkSourceProvenance.approved_unsw(),
+            _NetworkSourceProvenance.approved_unsw(),
             source_representation=CIC_IDS2018_CICFLOWMETER_V3_PROCESSED_REPRESENTATION_V1,
         ),
     )
@@ -125,8 +133,8 @@ def test_cic_rejection_precedes_transformation(boundary: UnswNetworkInferenceBou
     assert spy.called is False
 
 
-def test_feature_order_mismatch_fails_closed(boundary: UnswNetworkInferenceBoundary) -> None:
-    request = synthetic_contract_valid_request()
+def test_feature_order_mismatch_fails_closed(boundary: _FrozenNetworkPredictor) -> None:
+    request = _synthetic_contract_valid_request()
     result = boundary.infer(replace(request, feature_names=tuple(reversed(request.feature_names))))
 
     assert result.status == "rejected"
@@ -143,9 +151,9 @@ def test_feature_order_mismatch_fails_closed(boundary: UnswNetworkInferenceBound
     ],
 )
 def test_missing_nonfinite_and_out_of_range_values_are_rejected(
-    boundary: UnswNetworkInferenceBoundary, index: int, value: object, reason: str
+    boundary: _FrozenNetworkPredictor, index: int, value: object, reason: str
 ) -> None:
-    request = synthetic_contract_valid_request()
+    request = _synthetic_contract_valid_request()
     values = list(request.feature_values)
     values[index] = value
 
@@ -156,9 +164,9 @@ def test_missing_nonfinite_and_out_of_range_values_are_rejected(
 
 
 def test_batch_is_bounded_and_accounts_for_each_record(
-    boundary: UnswNetworkInferenceBoundary,
+    boundary: _FrozenNetworkPredictor,
 ) -> None:
-    valid = synthetic_contract_valid_request()
+    valid = _synthetic_contract_valid_request()
     invalid = replace(valid, feature_values=(*valid.feature_values[:-1], "secret-invalid-protocol"))
 
     result = boundary.infer_batch(iter((valid, invalid)))
@@ -169,12 +177,12 @@ def test_batch_is_bounded_and_accounts_for_each_record(
         boundary.infer_batch(valid for _ in range(MAX_INFERENCE_BATCH_SIZE + 1))
 
 
-def test_failure_output_is_sanitized(boundary: UnswNetworkInferenceBoundary) -> None:
+def test_failure_output_is_sanitized(boundary: _FrozenNetworkPredictor) -> None:
     secret = "10.0.0.9 user-secret /private/input.csv"
-    request = NetworkInferenceRequest(
-        provenance=replace(NetworkSourceProvenance.approved_unsw(), source_representation=secret),
+    request = _NetworkInferenceRequest(
+        provenance=replace(_NetworkSourceProvenance.approved_unsw(), source_representation=secret),
         feature_names=(*NETWORK_BEHAVIOR_V1_FEATURE_NAMES[:-1], secret),
-        feature_values=synthetic_contract_valid_request().feature_values,
+        feature_values=_synthetic_contract_valid_request().feature_values,
     )
 
     payload = str(boundary.infer(request).to_dict())
@@ -185,7 +193,7 @@ def test_failure_output_is_sanitized(boundary: UnswNetworkInferenceBoundary) -> 
 
 
 def test_selected_model_failure_does_not_fall_back(
-    boundary: UnswNetworkInferenceBoundary,
+    boundary: _FrozenNetworkPredictor,
 ) -> None:
     class BrokenForest:
         classes_ = np.asarray([0, 1])
@@ -203,7 +211,7 @@ def test_selected_model_failure_does_not_fall_back(
             self.called = True
             return np.asarray([[0.1, 0.9]])
 
-    clone = object.__new__(UnswNetworkInferenceBoundary)
+    clone = object.__new__(_FrozenNetworkPredictor)
     clone._preprocessor = boundary._preprocessor
     spy = LogisticSpy()
     clone._models = {
@@ -215,7 +223,7 @@ def test_selected_model_failure_does_not_fall_back(
         ),
     }
 
-    result = clone.infer(synthetic_contract_valid_request())
+    result = clone.infer(_synthetic_contract_valid_request())
 
     assert result.status == "rejected"
     assert result.reason == "model_prediction_failed"
@@ -239,7 +247,7 @@ def test_hash_mismatch_blocks_artifact_loading(tmp_path: Path) -> None:
         handle.write(b"\n")
 
     with pytest.raises(NetworkInferenceError, match="preprocessing_state_hash_mismatch"):
-        UnswNetworkInferenceBoundary(
+        _FrozenNetworkPredictor(
             preprocessing_directory=copied,
             logistic_directory=logistic,
             random_forest_directory=forest,
@@ -258,7 +266,7 @@ def test_model_hash_mismatch_blocks_loading(tmp_path: Path) -> None:
         handle.write(b"x")
 
     with pytest.raises(NetworkInferenceError, match="logistic_regression_model_hash_mismatch"):
-        UnswNetworkInferenceBoundary(
+        _FrozenNetworkPredictor(
             preprocessing_directory=preprocessing,
             logistic_directory=copied,
             random_forest_directory=forest,
@@ -266,15 +274,15 @@ def test_model_hash_mismatch_blocks_loading(tmp_path: Path) -> None:
 
 
 def test_artifact_reload_preserves_predictions(
-    artifact_boundary: UnswNetworkInferenceBoundary,
+    artifact_boundary: _FrozenNetworkPredictor,
 ) -> None:
     preprocessing, logistic, forest = ARTIFACT_DIRECTORIES
-    reloaded = UnswNetworkInferenceBoundary(
+    reloaded = _FrozenNetworkPredictor(
         preprocessing_directory=preprocessing,
         logistic_directory=logistic,
         random_forest_directory=forest,
     )
-    request = synthetic_contract_valid_request()
+    request = _synthetic_contract_valid_request()
 
     for choice in NetworkModelChoice:
         first = artifact_boundary.infer(request, model=choice)
@@ -284,7 +292,7 @@ def test_artifact_reload_preserves_predictions(
 
 
 def test_audit_provenance_contains_no_paths_or_feature_values(
-    boundary: UnswNetworkInferenceBoundary,
+    boundary: _FrozenNetworkPredictor,
 ) -> None:
     provenance = boundary.audit_provenance
 
@@ -303,9 +311,9 @@ class _ScoreModel:
 
 
 @pytest.fixture
-def unit_boundary() -> UnswNetworkInferenceBoundary:
+def unit_boundary() -> _FrozenNetworkPredictor:
     """No ignored artifacts or fitting required for adversarial request tests."""
-    instance = object.__new__(UnswNetworkInferenceBoundary)
+    instance = object.__new__(_FrozenNetworkPredictor)
     instance._preprocessor = NetworkBehaviorPreprocessor(1, (0.0,) * 10, (1.0,) * 10, ())
     instance._models = {
         choice: _LoadedModel(_ScoreModel(), choice.value, "fixture_v1")
@@ -321,7 +329,7 @@ def boundary(unit_boundary):
 
 @pytest.mark.parametrize("bad", [None, {}, "secret /private/request"])
 def test_malformed_request_is_an_ordered_rejection(unit_boundary, bad):
-    result = unit_boundary.infer_batch([synthetic_contract_valid_request(), bad])
+    result = unit_boundary.infer_batch([_synthetic_contract_valid_request(), bad])
     assert (result.received, result.succeeded, result.rejected) == (2, 1, 1)
     assert result.results[1].reason == "request_type_invalid"
     assert "secret" not in str(result)
@@ -336,7 +344,7 @@ def test_malformed_request_is_an_ordered_rejection(unit_boundary, bad):
     ],
 )
 def test_malformed_request_fields_are_sanitized(unit_boundary, field, value):
-    result = unit_boundary.infer(replace(synthetic_contract_valid_request(), **{field: value}))
+    result = unit_boundary.infer(replace(_synthetic_contract_valid_request(), **{field: value}))
     assert result.status == "rejected"
     assert "secret" not in str(result.to_dict())
 
@@ -346,16 +354,16 @@ def test_provenance_object_cannot_supply_an_approved_key(unit_boundary):
         source_representation = "secret /private/provenance"
 
         def compatibility_key(self):
-            return NetworkSourceProvenance.approved_unsw().compatibility_key()
+            return _NetworkSourceProvenance.approved_unsw().compatibility_key()
 
-    result = unit_boundary.infer(replace(synthetic_contract_valid_request(), provenance=Spoof()))
+    result = unit_boundary.infer(replace(_synthetic_contract_valid_request(), provenance=Spoof()))
     assert result.status == "rejected"
     assert result.source_representation_identity == "unapproved"
     assert "secret" not in str(result.to_dict())
 
 
 def test_numeric_conversion_overflow_is_a_rejection(unit_boundary):
-    request = synthetic_contract_valid_request()
+    request = _synthetic_contract_valid_request()
     result = unit_boundary.infer(
         replace(request, feature_values=(10**1000, *request.feature_values[1:]))
     )
@@ -370,7 +378,7 @@ def test_generator_failure_aborts_before_any_predictions(unit_boundary, monkeypa
     monkeypatch.setattr(unit_boundary, "infer", forbidden)
 
     def broken():
-        yield synthetic_contract_valid_request()
+        yield _synthetic_contract_valid_request()
         raise RuntimeError("secret /private/source")
 
     with pytest.raises(NetworkInferenceError, match="^batch_iteration_failed$") as error:
@@ -381,7 +389,7 @@ def test_generator_failure_aborts_before_any_predictions(unit_boundary, monkeypa
 
 def test_unhashable_model_selection_is_sanitized(unit_boundary):
     with pytest.raises(NetworkInferenceError, match="^model_not_supported$"):
-        unit_boundary.infer(synthetic_contract_valid_request(), model=[])
+        unit_boundary.infer(_synthetic_contract_valid_request(), model=[])
 
 
 def test_verified_model_bytes_are_not_reopened(tmp_path, monkeypatch):
@@ -486,7 +494,7 @@ def test_no_deserialization_until_all_bundles_pass(tmp_path, monkeypatch):
     monkeypatch.setattr(inference, "_model_snapshot", model_snapshot)
     monkeypatch.setattr(inference.joblib, "load", forbidden)
     with pytest.raises(NetworkInferenceError, match="random_forest_report_hash_mismatch"):
-        UnswNetworkInferenceBoundary(
+        _FrozenNetworkPredictor(
             preprocessing_directory=tmp_path,
             logistic_directory=tmp_path,
             random_forest_directory=tmp_path,
@@ -513,7 +521,7 @@ def test_numeric_edge_cases_precede_transformation(unit_boundary, monkeypatch, v
             pytest.fail("invalid input reached transform")
 
     unit_boundary._preprocessor = Spy()
-    request = synthetic_contract_valid_request()
+    request = _synthetic_contract_valid_request()
     result = unit_boundary.infer(
         replace(
             request, feature_values=(request.feature_values[0], value, *request.feature_values[2:])
@@ -527,7 +535,7 @@ def test_forest_float32_overflow_precedes_prediction(unit_boundary, monkeypatch)
         pytest.fail("float32 overflow reached estimator")
 
     monkeypatch.setattr(inference, "attack_probabilities", forbidden)
-    request = synthetic_contract_valid_request()
+    request = _synthetic_contract_valid_request()
     result = unit_boundary.infer(
         replace(request, feature_values=(1e100, *request.feature_values[1:]))
     )
@@ -545,7 +553,7 @@ def test_class_mapping_and_inclusive_threshold(unit_boundary, score, predicted):
     unit_boundary._models[NetworkModelChoice.RANDOM_FOREST] = _LoadedModel(
         ReversedClasses(), "random_forest", "fixture_v1"
     )
-    result = unit_boundary.infer(synthetic_contract_valid_request())
+    result = unit_boundary.infer(_synthetic_contract_valid_request())
     assert result.attack_probability == score
     assert result.predicted_class == predicted
 
@@ -557,7 +565,7 @@ def test_batch_limit_consumes_only_257_without_prediction(unit_boundary, monkeyp
         nonlocal consumed
         while True:
             consumed += 1
-            yield synthetic_contract_valid_request()
+            yield _synthetic_contract_valid_request()
 
     def forbidden(*args, **kwargs):
         pytest.fail("oversized batch predicted")
@@ -570,12 +578,12 @@ def test_batch_limit_consumes_only_257_without_prediction(unit_boundary, monkeyp
 
 def test_mapping_constructor_is_bounded_and_rejects_prohibited_field():
     values = dict(
-        zip(NETWORK_BEHAVIOR_V1_FEATURE_NAMES, synthetic_contract_valid_request().feature_values)
+        zip(NETWORK_BEHAVIOR_V1_FEATURE_NAMES, _synthetic_contract_valid_request().feature_values)
     )
     values["label"] = "secret"
     with pytest.raises(NetworkInferenceError, match="feature_mapping_invalid"):
-        NetworkInferenceRequest.from_mapping(
-            values, provenance=NetworkSourceProvenance.approved_unsw()
+        _NetworkInferenceRequest.from_mapping(
+            values, provenance=_NetworkSourceProvenance.approved_unsw()
         )
 
 
@@ -583,7 +591,7 @@ def test_result_schema_utc_uuid_and_batch_order(unit_boundary):
     from datetime import datetime
     from uuid import UUID
 
-    good = synthetic_contract_valid_request()
+    good = _synthetic_contract_valid_request()
     bad = replace(good, provenance=None)
     results = unit_boundary.infer_batch([good, bad, good]).results
     assert [item.status for item in results] == ["completed", "rejected", "completed"]
@@ -620,7 +628,7 @@ def test_transform_failure_is_sanitized_and_batch_continues(unit_boundary):
             return original.transform(record)
 
     unit_boundary._preprocessor = FailOnce()
-    result = unit_boundary.infer_batch([synthetic_contract_valid_request()] * 2)
+    result = unit_boundary.infer_batch([_synthetic_contract_valid_request()] * 2)
     assert (result.received, result.rejected, result.succeeded) == (2, 1, 1)
     assert result.results[0].reason == "transformation_failed"
     assert "secret" not in str(result)
@@ -629,7 +637,7 @@ def test_transform_failure_is_sanitized_and_batch_continues(unit_boundary):
 def test_snapshot_preprocessor_reuses_exact_transformation(unit_boundary):
     original = unit_boundary._preprocessor
     reloaded = NetworkBehaviorPreprocessor.from_dict(original.to_dict())
-    record = inference._feature_record(synthetic_contract_valid_request())
+    record = inference._feature_record(_synthetic_contract_valid_request())
     assert np.array_equal(original.transform(record), reloaded.transform(record))
     assert original.to_dict() == reloaded.to_dict()
 
@@ -676,9 +684,9 @@ def test_custom_string_equality_cannot_approve_provenance(unit_boundary):
             return True
 
     request = replace(
-        synthetic_contract_valid_request(),
+        _synthetic_contract_valid_request(),
         provenance=replace(
-            NetworkSourceProvenance.approved_unsw(), source_representation=Alias("secret")
+            _NetworkSourceProvenance.approved_unsw(), source_representation=Alias("secret")
         ),
     )
     result = unit_boundary.infer(request)
@@ -707,7 +715,7 @@ def test_no_fit_calls_and_no_mutation_in_bounded_concurrent_inference(unit_bound
     monkeypatch.setattr(inference.RandomForestClassifier, "fit", forbidden)
     state = unit_boundary._preprocessor.to_dict()
     with ThreadPoolExecutor(max_workers=4) as executor:
-        results = list(executor.map(unit_boundary.infer, [synthetic_contract_valid_request()] * 8))
+        results = list(executor.map(unit_boundary.infer, [_synthetic_contract_valid_request()] * 8))
     assert all(result.attack_probability == 0.5 for result in results)
     assert unit_boundary._preprocessor.to_dict() == state
 
@@ -724,5 +732,5 @@ def test_smoke_artifact_error_is_json_only(monkeypatch, capsys):
     assert captured.err == ""
     assert json.loads(captured.out) == {
         "status": "failed",
-        "reason": "preprocessing_state_hash_mismatch",
+        "reason": "unsw_registration_invalid",
     }

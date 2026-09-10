@@ -1,4 +1,4 @@
-"""Run one metadata-free functional smoke through the UNSW inference boundary."""
+"""Run one synthetic raw UNSW row through the supported inference boundary."""
 
 from __future__ import annotations
 
@@ -16,8 +16,6 @@ from threatfusion.models.network_inference import (  # noqa: E402
     NetworkInferenceError,
     NetworkModelChoice,
     UnswNetworkInferenceBoundary,
-    default_artifact_directories,
-    synthetic_contract_valid_request,
 )
 
 
@@ -37,16 +35,26 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     project_root = SOURCE_ROOT.parents[1]
-    preprocessing, logistic, forest = default_artifact_directories(project_root)
     try:
-        boundary = UnswNetworkInferenceBoundary(
-            preprocessing_directory=preprocessing,
-            logistic_directory=logistic,
-            random_forest_directory=forest,
-        )
-        result = boundary.infer(
-            synthetic_contract_valid_request(), model=NetworkModelChoice(args.model)
-        )
+        boundary = UnswNetworkInferenceBoundary(project_root=project_root)
+        # Synthetic raw_49 fixture, never accuracy or capture-membership evidence.
+        row = ["0"] * 49
+        for index, value in {
+            0: "192.0.2.1",
+            1: "1234",
+            2: "198.51.100.2",
+            3: "443",
+            4: "tcp",
+            6: "0.1",
+            7: "120",
+            8: "60",
+            16: "2",
+            17: "1",
+            28: "1421928000",
+            29: "1421928001",
+        }.items():
+            row[index] = value
+        result = boundary.infer(row, model=NetworkModelChoice(args.model))
     except NetworkInferenceError as exc:
         print(json.dumps({"status": "failed", "reason": exc.code}, sort_keys=True))
         return 1

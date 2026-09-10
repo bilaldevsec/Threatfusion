@@ -13,8 +13,12 @@ Product inference is source-specific. Only the verified
 bundle through [`network_behavior_v1`](unsw_network_inference_boundary.md). Matching field names or
 shapes do not grant compatibility. The registered CICFlowMeter representation remains rejected by the
 compatibility gate and preserved only as historical research evidence.
-Representation declarations are trusted-adapter attestations, not authentication of arbitrary caller
-measurements; see the [inference trust boundary](unsw_network_inference_boundary.md#security-and-scientific-claim-boundary).
+The supported entry accepts raw 49-column string arrays, verifies registered schema metadata during
+trusted setup, and derives both provenance and the exact predictor tuple inside the UNSW adaptation
+pipeline. It accepts no caller feature vector or source-approval assertion. This enforces adaptation,
+not remote measurement authenticity or registered dataset membership; see the
+[inference trust boundary](unsw_network_inference_boundary.md#security-and-scientific-claim-boundary).
+The frozen predictor contract and order below have not changed.
 
 ## flow_common_v1
 

@@ -1,6 +1,7 @@
 """Streaming reader for the official headerless UNSW-NB15 raw CSV files."""
 
 import csv
+import io
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -45,10 +46,15 @@ def normalize_unsw_feature_name(name: str) -> str:
 
 def read_unsw_feature_names(path: Path) -> tuple[str, ...]:
     """Read the official ordered feature names, excluding its descriptive header."""
+    return parse_unsw_feature_names(path.read_bytes(), path=path)
+
+
+def parse_unsw_feature_names(data: bytes, *, path: Path) -> tuple[str, ...]:
+    """Decode metadata from a snapshot, including one already hash-verified by ingestion."""
     names: list[str] = []
     seen: set[str] = set()
 
-    with path.open(encoding="cp1252", newline="") as feature_file:
+    with io.StringIO(data.decode("cp1252"), newline="") as feature_file:
         reader = csv.reader(feature_file)
         next(reader, None)
         for row_number, row in enumerate(reader, start=2):
@@ -86,6 +92,26 @@ def read_unsw_feature_names(path: Path) -> tuple[str, ...]:
     return tuple(names)
 
 
+def map_unsw_raw_values(
+    feature_names: tuple[str, ...],
+    values: Sequence[str],
+    *,
+    path: Path,
+    row_number: int,
+) -> dict[str, str]:
+    """Shared raw-column mapping; reader location is provenance, never a predictor."""
+    if len(values) != UNSW_RAW_COLUMN_COUNT:
+        raise UnswStructureError(
+            path,
+            UnswStructureIssue.WRONG_RAW_COLUMN_COUNT,
+            row_number=row_number,
+            detail=f"expected {UNSW_RAW_COLUMN_COUNT} values, found {len(values)}",
+        )
+    row = dict(zip(feature_names, values, strict=True))
+    row["flow_id"] = f"{path.stem}:{row_number}"
+    return row
+
+
 @dataclass(frozen=True, slots=True)
 class UnswRawReader:
     """Lazily map official raw values to ordered feature names across files."""
@@ -121,15 +147,6 @@ class UnswRawReader:
         for raw_file in self.raw_files:
             with raw_file.open(encoding="utf-8-sig", newline="") as csv_file:
                 for row_number, values in enumerate(csv.reader(csv_file), start=1):
-                    if len(values) != UNSW_RAW_COLUMN_COUNT:
-                        raise UnswStructureError(
-                            raw_file,
-                            UnswStructureIssue.WRONG_RAW_COLUMN_COUNT,
-                            row_number=row_number,
-                            detail=(
-                                f"expected {UNSW_RAW_COLUMN_COUNT} values, found {len(values)}"
-                            ),
-                        )
-                    row = dict(zip(self.feature_names, values, strict=True))
-                    row["flow_id"] = f"{raw_file.stem}:{row_number}"
-                    yield row
+                    yield map_unsw_raw_values(
+                        self.feature_names, values, path=raw_file, row_number=row_number
+                    )
