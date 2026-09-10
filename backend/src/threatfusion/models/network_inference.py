@@ -10,12 +10,14 @@ import os
 import stat
 import time
 import uuid
+import csv
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import joblib
@@ -32,6 +34,7 @@ from threatfusion.datasets.unsw_raw import (
 )
 from threatfusion.schemas.dataset_manifest import DatasetManifest
 from threatfusion.schemas.flow import NetworkFlow
+from threatfusion.schemas.alert_candidate import derive_source_event_id
 
 from threatfusion.features.network_behavior import (
     NETWORK_BEHAVIOR_V1_CONTRACT_VERSION,
@@ -194,6 +197,16 @@ class NetworkInferenceBatchResult:
     results: tuple[NetworkInferenceResult, ...]
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class RegisteredUnswInferenceResult:
+    """Safe result bound to one verified registered offline source row."""
+
+    source_event_id: str
+    observed_at: datetime
+    model_artifact_sha256: str
+    inference: NetworkInferenceResult
+
+
 @dataclass(frozen=True, slots=True)
 class _FeatureRecord:
     duration_ms: float
@@ -214,6 +227,20 @@ class _LoadedModel:
     estimator: LogisticRegression | RandomForestClassifier
     identity: str
     version: str
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _RegisteredUnswMember:
+    path: Path
+    sha256: str
+    rows: int
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _RegisteredUnswSource:
+    manifest_sha256: str
+    feature_names: tuple[str, ...]
+    members_by_sha256: Mapping[str, _RegisteredUnswMember]
 
 
 def _read_json(data: bytes, code: str) -> dict[str, Any]:
@@ -556,8 +583,8 @@ def default_artifact_directories(project_root: Path) -> tuple[Path, Path, Path]:
     )
 
 
-def _registered_unsw_schema(project_root: Path) -> tuple[str, ...]:
-    """Verify the registered schema, not membership of submitted rows in a dataset."""
+def _registered_unsw_source(project_root: Path) -> _RegisteredUnswSource:
+    """Verify the pinned manifest/schema and retain its offline member identities."""
     try:
         manifest_bytes = _verified_bytes(
             project_root / "data/manifests/unsw_nb15.yaml",
@@ -574,9 +601,28 @@ def _registered_unsw_schema(project_root: Path) -> tuple[str, ...]:
             raise ValueError
         entry = metadata[0]
         data = _verified_bytes(project_root / entry.path, entry.sha256, "unsw_schema_invalid")
-        return parse_unsw_feature_names(data, path=Path("<registered-schema>"))
+        feature_names = parse_unsw_feature_names(data, path=Path("<registered-schema>"))
+        members: dict[str, _RegisteredUnswMember] = {}
+        for item in manifest.files:
+            if item.role != "raw" or item.path.name == "NUSW-NB15_features.csv":
+                continue
+            if item.sha256 is None or item.rows is None or item.rows <= 0 or item.sha256 in members:
+                raise ValueError
+            members[item.sha256] = _RegisteredUnswMember(item.path, item.sha256, item.rows)
+        if not members:
+            raise ValueError
+        return _RegisteredUnswSource(
+            manifest_sha256=APPROVED_UNSW_MANIFEST_HASH,
+            feature_names=feature_names,
+            members_by_sha256=MappingProxyType(members),
+        )
     except Exception:
         raise NetworkInferenceError("unsw_registration_invalid") from None
+
+
+def _registered_unsw_schema(project_root: Path) -> tuple[str, ...]:
+    """Retain the focused schema-verification helper used by security tests."""
+    return _registered_unsw_source(project_root).feature_names
 
 
 def _nonnegative_raw_float(text: str) -> float:
@@ -599,7 +645,9 @@ class UnswNetworkInferenceBoundary:
     """
 
     def __init__(self, *, project_root: Path) -> None:
-        self._raw_feature_names = _registered_unsw_schema(project_root)
+        self._project_root = project_root.resolve()
+        self._registered_source = _registered_unsw_source(self._project_root)
+        self._raw_feature_names = self._registered_source.feature_names
         preprocessing, logistic, forest = default_artifact_directories(project_root)
         self._predictor = _FrozenNetworkPredictor(
             preprocessing_directory=preprocessing,
@@ -607,7 +655,7 @@ class UnswNetworkInferenceBoundary:
             random_forest_directory=forest,
         )
 
-    def _prepare(self, raw_values: object) -> _NetworkInferenceRequest | None:
+    def _adapt_raw(self, raw_values: object) -> tuple[_NetworkInferenceRequest, datetime] | None:
         # Snapshot before advancing caller iteration. Only immutable plain strings
         # survive, with no caller-owned container retained in the internal request.
         if type(raw_values) is not list or len(raw_values) != UNSW_RAW_COLUMN_COUNT:
@@ -645,14 +693,103 @@ class UnswNetworkInferenceBoundary:
                 or flow.schema_version != "flow_common_v1"
             ):
                 return None
-            return _NetworkInferenceRequest(
-                provenance=_NetworkSourceProvenance.approved_unsw(),
-                feature_names=NETWORK_BEHAVIOR_V1_FEATURE_NAMES,
-                feature_values=project_network_behavior(flow),
+            return (
+                _NetworkInferenceRequest(
+                    provenance=_NetworkSourceProvenance.approved_unsw(),
+                    feature_names=NETWORK_BEHAVIOR_V1_FEATURE_NAMES,
+                    feature_values=project_network_behavior(flow),
+                ),
+                flow.timestamp_start,
             )
         except Exception:
             # Adapter/Pydantic/numeric details can include endpoints or raw values.
             return None
+
+    def _prepare(self, raw_values: object) -> _NetworkInferenceRequest | None:
+        adapted = self._adapt_raw(raw_values)
+        return adapted[0] if adapted is not None else None
+
+    def _registered_row(self, member: _RegisteredUnswMember, row_number: int) -> list[str]:
+        candidate = self._project_root / member.path
+        parent = candidate.parent.resolve()
+        if not parent.is_relative_to(self._project_root):
+            raise NetworkInferenceError("registered_event_unavailable")
+        path = parent / candidate.name
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, "rb") as handle:
+                initial = os.fstat(handle.fileno())
+                if not stat.S_ISREG(initial.st_mode):
+                    raise NetworkInferenceError("registered_event_unavailable")
+                digest = hashlib.sha256()
+
+                def verified_text_lines() -> Iterable[str]:
+                    first = True
+                    while raw_line := handle.readline():
+                        digest.update(raw_line)
+                        encoding = "utf-8-sig" if first else "utf-8"
+                        first = False
+                        yield raw_line.decode(encoding)
+
+                selected: list[str] | None = None
+                count = 0
+                for count, values in enumerate(csv.reader(verified_text_lines()), start=1):
+                    if count == row_number:
+                        selected = list(values)
+                after_parse = os.fstat(handle.fileno())
+                stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+                if (
+                    any(
+                        getattr(initial, field) != getattr(after_parse, field)
+                        for field in stable_fields
+                    )
+                    or digest.hexdigest() != member.sha256
+                ):
+                    raise NetworkInferenceError("registered_event_unavailable")
+        except (OSError, UnicodeError, csv.Error):
+            raise NetworkInferenceError("registered_event_unavailable") from None
+        if count != member.rows or selected is None:
+            raise NetworkInferenceError("registered_event_unavailable")
+        return selected
+
+    def infer_registered(
+        self,
+        *,
+        source_member_sha256: str,
+        row_number: int,
+        model: NetworkModelChoice = NetworkModelChoice.RANDOM_FOREST,
+    ) -> RegisteredUnswInferenceResult:
+        """Verify, adapt and infer one registered offline UNSW source row."""
+        if type(model) is not NetworkModelChoice:
+            raise NetworkInferenceError("model_not_supported")
+        if (
+            type(source_member_sha256) is not str
+            or len(source_member_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in source_member_sha256)
+            or type(row_number) is not int
+            or row_number <= 0
+        ):
+            raise NetworkInferenceError("registered_event_invalid")
+        member = self._registered_source.members_by_sha256.get(source_member_sha256)
+        if member is None or row_number > member.rows:
+            raise NetworkInferenceError("registered_event_invalid")
+        adapted = self._adapt_raw(self._registered_row(member, row_number))
+        if adapted is None:
+            raise NetworkInferenceError("registered_event_rejected")
+        request, observed_at = adapted
+        source_event_id = derive_source_event_id(
+            source_representation=UNSW_NB15_ARGUS_RAW_REPRESENTATION_V1,
+            manifest_sha256=self._registered_source.manifest_sha256,
+            source_member_sha256=member.sha256,
+            row_number=row_number,
+        )
+        result = self._predictor.infer(request, model=model)
+        return RegisteredUnswInferenceResult(
+            source_event_id=source_event_id,
+            observed_at=observed_at,
+            model_artifact_sha256=APPROVED_MODEL_HASHES[model.value]["model"],
+            inference=result,
+        )
 
     def infer(
         self,

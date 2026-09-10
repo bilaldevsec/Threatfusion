@@ -2,11 +2,10 @@
 
 ## Snapshot
 
-Status date: 2026-09-10. Branch: `main`. Verified starting HEAD and `origin/main`:
-`f1d794e81eef88b207f7cc2fda514bace07244dc`. TF-014 implementation began with a clean tree; the subsequent
-adversarial review verified exactly the nine expected uncommitted files and nothing staged. This
-supersedes the stale `344a8546...` snapshot previously recorded here. Implementation and review
-corrections remain local and unstaged; HEAD and `origin/main` remain at the starting checkpoint.
+Status date: 2026-09-10. Branch: `main`. The AlertCandidate/local-persistence milestone began from a
+clean tree with nothing staged and verified HEAD and `origin/main` at
+`4c566cb02e2862e7ef57d2772a6a1d08e79f3b7c`. The implementation below remains local and unstaged; HEAD
+and `origin/main` remain at that checkpoint.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0
 readiness report still says split assignments are missing, but the later completed full assignment and
@@ -76,6 +75,17 @@ integrated product acceptance are absent.
   All nine frozen hashes remain approved, with every artifact ignored/untracked. No high-severity
   supported-entry bypass was demonstrated. TF-014 remains resolved for adaptation binding after
   re-review, not remote source authentication or complete service security.
+- A registered-offline UNSW path now binds the pinned manifest digest, verified raw-member digest and
+  one-based CSV record ordinal to `unsw_registered_source_event_v1`, then creates an immutable
+  Attack-only `alert_candidate_v1`. Candidate identity additionally binds detector/model/artifact and
+  decision-policy versions using documented length-prefixed SHA-256 encoding; correlation UUID, score
+  and time do not alter the ID. Normal, rejected and failed inference is not actionable and is not
+  stored. The standard-library SQLite v1 repository provides atomic insertion, idempotent retry,
+  same-ID/content-conflict rejection, bounded deterministic listing, schema/integrity checks, bounded
+  lock wait and restart retrieval. Stored fields exclude raw rows, feature vectors, endpoints, labels,
+  categories, filenames, paths and exception details. Validation passed 266 focused tests and one full
+  516-test suite with the four existing TF-005 warnings; repository-wide Ruff and seven individual
+  Black checks pass. See [`alert_candidate_persistence.md`](alert_candidate_persistence.md).
 
 ## Implemented with limitations
 
@@ -99,8 +109,9 @@ integrated product acceptance are absent.
   larger integers. Trusted code, setup and dependencies
   remain in the trusted computing base; private Python classes are not cryptographic credentials.
   Model scores are not calibrated confidence, and request UUIDs are not stable ingestion/deduplication
-  identities. No stable ingestion identifier is introduced. External producer admission, service-level time,
-  concurrency, transport, and restart/recovery limits remain unverified (TF-008/TF-009). See the
+  identities. Stable identity exists only for registered offline UNSW members and row ordinals; it is
+  not a live-sensor identity. External producer admission, service-level time, concurrency, transport,
+  backup/recovery and total storage limits remain unverified (TF-008/TF-009). See the
   [inference trust boundary](unsw_network_inference_boundary.md#security-and-scientific-claim-boundary).
 
 ## Blocked
@@ -114,10 +125,10 @@ integrated product acceptance are absent.
 
 ## Not yet implemented
 
-- A supported end-to-end product path connecting ingestion, validation, inference, alert persistence,
-  deduplication/correlation, explanation, and dashboard display.
-- Product API/view-model contracts, dashboard behavior, persistence/restart recovery, optional-service
-  degradation, and integrated resource/latency evidence.
+- A supported end-to-end product path connecting the implemented registered-offline inference and
+  AlertCandidate persistence boundary to correlation, explanation and dashboard display.
+- Product API/view-model contracts, dashboard behavior, backup/recovery, optional-service degradation,
+  and integrated resource/latency evidence.
 - Approval-gated allowlisted containment with audit and rollback. No automatic containment is supported.
 - A verified jury requirements reference, confirmed target-user/environment decision, operational
   acceptance targets, manual-workflow baseline, or representative-user usefulness study.
@@ -125,14 +136,10 @@ integrated product acceptance are absent.
 ## One next implementation task
 
 Define the supported-producer admission/authentication and bounded transport policy under TF-008/TF-009
-before external exposure, without implementing a service or persistence. TF-012 stays open; CIC remains
-rejected and historical evidence unchanged. This handoff does not authorize persistence, API/dashboard
-or deep learning.
+before any external API work. TF-012 stays open; CIC remains rejected and historical evidence unchanged.
 
-Resume handoff: implementation, adversarial corrections and validation above are complete. Changed files are the shared UNSW
-raw reader, network inference module, existing inference tests, new `test_unsw_inference_binding.py`,
-smoke CLI, and `unsw_network_inference_boundary.md`, `feature_contracts.md`, `issue_register.md`, and
-this status document. This review amended only the inference module, binding tests, boundary document,
-issue register and status document within that existing nine-file scope. Nothing is staged, committed
-or pushed. No implementation blocker remains for
-TF-014's scoped binding; external trust/resource/recovery and integrated product acceptance remain open.
+Resume handoff: the AlertCandidate contract, registered-offline identity extension, SQLite repository,
+integration workflow, focused tests and documentation are implemented and validated locally. Nothing is
+staged, committed or pushed. No dataset/package download, training, fitting, regeneration, February/CIC
+evaluation, API/dashboard, LLM, correlation, SOAR or deep-learning work occurred. External producer
+trust, transport/resource controls, backup/retention and integrated product acceptance remain open.

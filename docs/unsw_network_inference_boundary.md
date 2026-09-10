@@ -106,8 +106,12 @@ The errors are `batch_size_exceeded` and
 `batch_iteration_failed`, with internal exception context suppressed from displayed tracebacks. Invalid
 model selection also raises a sanitized batch/call error, including for empty batches. Within an
 accepted-size batch, malformed records and transformation/prediction failures remain ordered and each
-succeeds or fails independently; received/succeeded/rejected totals reconcile. This is an inference-to-alert
-boundary, not yet alert persistence, deduplication, correlation, explanation, or dashboard integration.
+succeeds or fails independently; received/succeeded/rejected totals reconcile. Registered offline
+members may additionally use `infer_registered`, which binds the verified manifest member digest and
+one-based CSV record ordinal to a stable source-event identity for the Attack-only
+[AlertCandidate persistence boundary](alert_candidate_persistence.md). Ordinary raw-array inference
+remains ineligible for durable candidate creation because it has no trusted stable event identity.
+Correlation, explanation and dashboard integration remain unimplemented.
 Raw type, size, adaptation, and canonical-binding failures return `raw_input_rejected` with no score and
 an unapproved source identity. Setup registration errors are `unsw_registration_invalid`. Neither retains
 raw exception details in output. No log, report, raw record, or internal approval material is emitted.
@@ -153,9 +157,12 @@ rounding/underflow of sufficiently small values, remains unchanged. Input values
 zero upstream cannot be reconstructed. Reload probability tolerance remains 1e-15, not bitwise forest
 probability reproducibility. The correlation UUID identifies an inference attempt, **not** a stable
 ingestion identity, deduplication key, or persistence guarantee. Retrying generates a new UUID.
-No ingestion identifier is exposed or invented here. The shared reader's required flow-ID alias uses
-a fixed internal submission placeholder, discarded with the canonical event; it is not ingestion
-provenance and must never become a persistence key. Stable ingestion identity remains future work.
+The registered offline path now exposes a deterministic source-event ID derived from the pinned manifest
+digest, registered member digest and one-based CSV record ordinal; it contains no filename, path or raw
+value. This is not a live-sensor identity. The ordinary raw-array path still has no stable ingestion
+identifier. The shared reader's required flow-ID alias uses a fixed internal submission placeholder,
+discarded with the canonical event; it is not ingestion provenance and never becomes a persistence key.
+Live producer identity remains future work.
 
 The synchronous iterator limit bounds records, not time inside arbitrary caller code. Blocking
 iterators, service concurrency/admission limits, transport-body limits, process isolation, and

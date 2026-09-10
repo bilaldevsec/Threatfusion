@@ -2,6 +2,7 @@
 
 from dataclasses import FrozenInstanceError, asdict, replace
 from copy import copy, deepcopy
+import csv
 import hashlib
 import json
 import pickle
@@ -70,6 +71,10 @@ def registered_root(tmp_path, monkeypatch):
         f"{index},{name},type,fixture\n".encode() for index, name in enumerate(RAW_NAMES, 1)
     )
     (tmp_path / "NUSW-NB15_features.csv").write_bytes(metadata)
+    raw_path = tmp_path / "UNSW-NB15_1.csv"
+    with raw_path.open("w", encoding="utf-8", newline="") as handle:
+        csv.writer(handle, lineterminator="\n").writerow(raw_row())
+    raw_bytes = raw_path.read_bytes()
     manifest = yaml.safe_dump(
         {
             "name": "unsw_nb15",
@@ -81,7 +86,13 @@ def registered_root(tmp_path, monkeypatch):
                     "role": "raw",
                     "rows": 49,
                     "sha256": hashlib.sha256(metadata).hexdigest(),
-                }
+                },
+                {
+                    "path": "UNSW-NB15_1.csv",
+                    "role": "raw",
+                    "rows": 1,
+                    "sha256": hashlib.sha256(raw_bytes).hexdigest(),
+                },
             ],
         }
     ).encode()

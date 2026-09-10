@@ -20,6 +20,20 @@ not remote measurement authenticity or registered dataset membership; see the
 [inference trust boundary](unsw_network_inference_boundary.md#security-and-scientific-claim-boundary).
 The frozen predictor contract and order below have not changed.
 
+## alert_candidate_v1
+
+`alert_candidate_v1` is a post-inference storage contract, not a model feature contract. It represents
+only a successful Attack decision from the registered offline UNSW path. The immutable record contains
+stable source-event and candidate IDs; a separate per-attempt correlation UUID; detector, model,
+artifact, feature-contract and canonical-source identities; legitimate observed and UTC creation
+timestamps; an explicitly uncalibrated model score; the frozen threshold and decision-policy identity;
+and sanitized Attack/completed status codes.
+
+Raw records, raw/transformed predictor vectors, endpoints, labels, attack categories, filenames, paths,
+reader IDs, arbitrary provenance, secrets, severity, confidence, ATT&CK mapping and incident identity are
+not fields. Normal/rejected/failed decisions do not become AlertCandidates. Exact identity encoding and
+SQLite behavior are defined in the [AlertCandidate persistence boundary](alert_candidate_persistence.md).
+
 ## flow_common_v1
 
 `flow_common_v1` is the complete canonical network-flow contract. Its 12-field model projection is
