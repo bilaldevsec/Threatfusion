@@ -2,10 +2,10 @@
 
 ## Snapshot
 
-Status date: 2026-09-10. Branch: `main`. The AlertCandidate/local-persistence milestone began from a
+Status date: 2026-09-12. Branch: `main`. The producer admission/transport policy milestone began from a
 clean tree with nothing staged and verified HEAD and `origin/main` at
-`4c566cb02e2862e7ef57d2772a6a1d08e79f3b7c`. The implementation below remains local and unstaged; HEAD
-and `origin/main` remain at that checkpoint.
+`236cb666e843e485839dfab0f009259a907559fe`. The policy and first internal admission implementation
+below remain local and unstaged; HEAD and `origin/main` remain at that checkpoint.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0
 readiness report still says split assignments are missing, but the later completed full assignment and
@@ -89,6 +89,23 @@ integrated product acceptance are absent.
 
 ## Implemented with limitations
 
+- The first internal TF-008/TF-009 producer-admission boundary implements the exact v1 registered-UNSW
+  producer/source allowlist, immutable certificate registry and rotation-overlap checks, uniform
+  fail-closed certificate mapping, an exact immutable envelope, bounded exact-length body reads, strict
+  UTF-8/JSON decoding, trusted-UTC timestamp windows, request/nonce/reference validation, exact-body and
+  nonce digests, and an immutable admission record for the future replay journal. A compact allowlisted
+  response serializer has a measured 25,142-byte worst case for 256 records, below its 65,536-byte cap,
+  and never truncates. TLS peer evidence remains an assertion from the future directly terminating TLS
+  adapter; Python constructors are not credentials. The pure bounded reader makes only sized reads but
+  cannot impose wall-clock deadlines on an arbitrary blocking stream. All 63 admission tests and 218
+  focused admission/inference/binding/persistence tests pass; the full suite passes with 581 tests and
+  the four existing TF-005 warnings. Repository-wide Ruff and both individual bounded Black checks pass.
+  Predictor and repository spies remain at zero for every admission test. There is still no listener,
+  replay journal, rate/concurrency gate, durable security audit or live-source identity. The planned
+  Azure sensor remains disabled until a separate live representation and stable identity contract is
+  approved; it must not impersonate registered UNSW membership. See
+  [`producer_admission_transport_policy.md`](producer_admission_transport_policy.md).
+
 - `network_behavior_v1` is valid as the frozen input order for the historical UNSW models, but its
   cross-source byte mapping is not a validated common measurement contract. Five byte-dependent CIC
   predictors have incompatible documented semantics; direction/flow policy remains uncertain. See
@@ -127,6 +144,8 @@ integrated product acceptance are absent.
 
 - A supported end-to-end product path connecting the implemented registered-offline inference and
   AlertCandidate persistence boundary to correlation, explanation and dashboard display.
+- The durable producer replay journal, rate/concurrency enforcement, security-audit sink and directly
+  terminating loopback TLS transport with socket-enforced handshake/read/idle timeouts.
 - Product API/view-model contracts, dashboard behavior, backup/recovery, optional-service degradation,
   and integrated resource/latency evidence.
 - Approval-gated allowlisted containment with audit and rollback. No automatic containment is supported.
@@ -135,11 +154,12 @@ integrated product acceptance are absent.
 
 ## One next implementation task
 
-Define the supported-producer admission/authentication and bounded transport policy under TF-008/TF-009
-before any external API work. TF-012 stays open; CIC remains rejected and historical evidence unchanged.
+Implement and unit-test the versioned durable replay journal, including restart, concurrent claim and
+explicit `outcome_unknown` recovery behavior.
 
-Resume handoff: the AlertCandidate contract, registered-offline identity extension, SQLite repository,
-integration workflow, focused tests and documentation are implemented and validated locally. Nothing is
-staged, committed or pushed. No dataset/package download, training, fitting, regeneration, February/CIC
-evaluation, API/dashboard, LLM, correlation, SOAR or deep-learning work occurred. External producer
-trust, transport/resource controls, backup/retention and integrated product acceptance remain open.
+Resume handoff: the transport-independent producer schema, certificate registry, bounded reader,
+strict validation, replay-evidence record and bounded response serializer are implemented and tested.
+Actual TLS authentication, durable replay, rate/concurrency controls, audit durability and the service
+remain unimplemented; TF-008/TF-009 stay open. Nothing is staged, committed or pushed. No
+dataset/artifact access, package download, training, fitting, preprocessing, evaluation, listener,
+persistence change, dashboard, LLM, correlation, SOAR or deep-learning work occurred.
