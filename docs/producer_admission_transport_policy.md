@@ -5,7 +5,8 @@
 This document defines the implementation contract for the first authenticated ThreatFusion producer
 boundary under TF-008 and TF-009. The transport-independent schema, certificate registry, bounded body
 reader, strict decoder, timestamp/source admission, replay-evidence record, response serializer and
-durable request replay journal are implemented internally; this is not an implemented service. No HTTP
+durable request replay journal are implemented internally. The fixed v1 process-local rate bucket and
+nonqueueing concurrency gate are also implemented; this is not an implemented service. No HTTP
 listener, live-source adapter or AlertCandidate persistence change exists merely because these
 components are present.
 
@@ -173,20 +174,59 @@ Admission proceeds in this order:
 
 1. finish the bounded TLS handshake and authenticate/map the client certificate;
 2. check the current enabled credential and producer/source route allowlist before reading a body;
-3. enforce method, target, header, declared-size, rate, and concurrency limits;
-4. read exactly the declared bounded byte count; reject an early EOF or trailing bytes;
-5. decode strict UTF-8 and parse JSON with duplicate-key, non-finite-number, type, exact-key, and depth
+3. enforce method, target, header and declared-size limits, then charge the authenticated producer's
+   rate bucket;
+4. attempt the global and per-producer concurrency acquisition without waiting or queueing;
+5. read exactly the declared bounded byte count; reject an early EOF or trailing bytes;
+6. decode strict UTF-8 and parse JSON with duplicate-key, non-finite-number, type, exact-key, and depth
    rejection;
-6. validate the envelope, producer match, source allowlist, timestamp, nonce, request identity, and the
+7. validate the envelope, producer match, source allowlist, timestamp, nonce, request identity, and the
    entire batch of registered references;
-7. atomically claim the request and all stable source-event identities in the durable replay journal;
-8. only then invoke trusted registered UNSW inference and Attack-only persistence; and
-9. durably record the sanitized outcome before returning it.
+8. atomically claim the request and all stable source-event identities in the durable replay journal;
+9. only then invoke trusted registered UNSW inference and Attack-only persistence; and
+10. durably record the sanitized outcome before returning it.
 
-Any failure through step 7 causes zero calls to the predictor and zero calls to
+Any failure through step 8 causes zero calls to the predictor and zero calls to
 `AlertCandidateRepository.insert`. No partially read or partially validated batch reaches inference.
 The implementation must snapshot bounded plain built-in values before handing work to trusted code; no
 caller iterator crosses the admission boundary.
+
+The order deliberately consumes a rate token when an already authenticated attempt finds concurrency
+busy. Otherwise a producer could bypass the six-per-minute control by repeatedly probing a saturated
+worker. Authentication, disabled/revoked credential, or producer/source-route rejection occurs before
+the gate is called and creates no rate or concurrency state. Rate denial occurs before concurrency and
+body reading. Concurrency denial is immediate `server_busy`; queue capacity is exactly zero. The later
+orchestration layer, not the gate itself, will perform the replay claim.
+
+### Internal rate and concurrency algorithm
+
+The v1 configuration is immutable and contains exactly the sole producer
+`tf-demo-unsw-replay-01`, rate six attempts per minute, burst two, global concurrency one,
+per-producer concurrency one, and queue zero. There is no attacker-keyed producer map. A bucket stores
+integer nanoseconds of credit: one token is exactly `10_000_000_000` credit units and the cap is
+`20_000_000_000`. On each authenticated attempt, nonnegative integer monotonic nanoseconds replenish
+credit by exact elapsed nanoseconds up to the cap, then one complete token is charged before checking
+concurrency. Partial intervals accumulate but do not form a token early; floating-point arithmetic is
+not used.
+
+The monotonic clock is injected. Exceptions, booleans, negative values, non-integers, values outside
+the signed 64-bit nonnegative range, and movement behind the last accepted clock reading fail closed
+as `monotonic_clock_invalid` without adding credit or acquiring concurrency. Tests use a deterministic
+fake clock and never sleep. The current policy does not freeze an HTTP `Retry-After` representation, so
+the internal decision invents none; the later transport contract must decide that separately.
+
+Successful concurrency acquisition returns an immutable opaque lease containing a random 32-byte-
+equivalent capability. The gate retains only its digest and count state. Release requires the exact
+active token and gate instance, uses constant-time digest comparison, succeeds exactly once, and is
+also available through a context manager whose `finally` path covers normal return and exceptions.
+Stale, foreign, forged and double releases fail as sanitized `lease_not_active`. Snapshots contain
+counts only: available whole tokens, exact credit units, active counts and aggregate disposition/
+release/clock-rejection counts. They contain no producer, request, payload or credential data.
+
+Rate/concurrency state is memory-only and resets when the service process restarts. Separate gate
+instances enforce independently; this is not durable or multi-process rate enforcement. Correct v1
+operation therefore requires the same externally coordinated single-service-owner/process assumption
+as replay recovery. The operating service must instantiate exactly one shared gate.
 
 ## Replay, duplicate, and stable identity rules
 
@@ -265,7 +305,7 @@ weak lease are not treated as crash proof. The idempotent transaction changes on
 | Per-record processing | 30 seconds | terminate isolated worker; `processing_timeout` |
 | Whole request processing | 300 seconds | terminate isolated worker; retain completed work; `processing_timeout` |
 | Admission/alert SQLite busy wait | 500 ms per operation | `503 service_busy`; no retry loop or queue |
-| Processing concurrency | 1 request globally and 1 per producer | `429 service_busy`; no queue |
+| Processing concurrency | 1 request globally and 1 per producer | `429 server_busy`; no queue |
 | Rate | token bucket: 6 requests/minute, burst 2, per producer | `429 rate_limited`; no body read |
 | Response body | 65,536 bytes | reject serializer contract violation with bounded `500 internal_error`; never truncate |
 
@@ -321,7 +361,7 @@ SQL, or arbitrary object representations.
 
 Dedicated security events are required for `authentication_failed`, `credential_disabled`,
 `producer_mismatch`, `source_contract_denied`, `request_replay_rejected`, `request_in_progress`,
-`rate_limited`, `service_busy`, `request_timeout`, and `processing_timeout`. Audit writes are bounded and
+`rate_limited`, `server_busy`, `request_timeout`, and `processing_timeout`. Audit writes are bounded and
 must not block request processing indefinitely. Audit unavailability fails closed for authentication,
 replay, and revocation events; no request may proceed without the durable replay claim.
 
@@ -329,7 +369,8 @@ replay, and revocation events; no request may proceed without the durable replay
 
 For each newly admitted record, the intended code path is exactly:
 
-`mTLS authentication` → `producer/credential allowlist` → `bounded header/body read` →
+`mTLS authentication` → `producer/credential allowlist` → `bounded header validation` →
+`integer rate-token decision` → `nonqueueing concurrency lease` → `bounded body read` →
 `strict producer_ingest_request_v1 validation` → `timestamp and durable replay claim` →
 `unsw_registered_event_ref_v1 member/row allowlist` →
 `infer_and_persist_registered_attack` → `UnswNetworkInferenceBoundary.infer_registered` →
@@ -385,15 +426,17 @@ authentication or admission failure—not merely inspect response codes.
    timestamp/source gates, immutable replay-journal input and bounded sanitized response types without
    an external listener. **Implemented 2026-09-12.**
 2. Implement the versioned durable replay journal and its restart/concurrent-claim tests, including
-   explicit `outcome_unknown` recovery. **Implemented internally 2026-09-12.** Rate/concurrency gates,
-   stable source-event orchestration and the bounded sanitized security audit remain required before
-   transport exposure. This journal is separate from AlertCandidate persistence.
-3. Add an isolated synchronous loopback TLS service that directly terminates mTLS and connects only the
+   explicit `outcome_unknown` recovery. **Implemented internally 2026-09-12.** This journal is separate
+   from AlertCandidate persistence.
+3. Implement fixed process-local integer rate limiting and nonqueueing global/per-producer concurrency
+   leases. **Implemented internally 2026-09-12.** Stable source-event orchestration and the bounded
+   sanitized security audit remain required before transport exposure.
+4. Add an isolated synchronous loopback TLS service that directly terminates mTLS and connects only the
    admitted registered-reference request to the existing trusted workflow; run all zero-spy and timeout
    tests.
-4. Add bounded failure-injection and single-node restart/recovery evidence, then integrate correlation,
+5. Add bounded failure-injection and single-node restart/recovery evidence, then integrate correlation,
    explanation, and dashboard contracts separately.
-5. Before enabling Azure, approve a live representation and stable event/candidate identity, verify
+6. Before enabling Azure, approve a live representation and stable event/candidate identity, verify
    feature semantics, provision Azure-held credentials, and repeat admission/replay/resource tests in
    that deployment. Do not map Azure telemetry to registered UNSW identity.
 
@@ -402,7 +445,7 @@ reaches the dashboard with reconciled identity/status and all failure boundaries
 services are unavailable. TF-009 remains open until implemented end-to-end tests and measured evidence
 cover malformed/partial input, mismatch, restart/replay, idempotency, interruption, timeouts,
 concurrency/rate/body/queue bounds, database recovery/backup, and resource usage. Azure enablement is not
-a prerequisite for the single-node offline demo, but it cannot be claimed supported before milestone 5.
+a prerequisite for the single-node offline demo, but it cannot be claimed supported before milestone 6.
 
 Internal-milestone validation used synthetic requests and temporary SQLite databases with no
 dataset/model artifacts. All 44 replay-journal tests and 195 focused replay/admission/inference-binding/
@@ -410,5 +453,7 @@ persistence tests pass. The full suite passes with 625 tests and the four existi
 warnings. Repository-wide Ruff and all three individual 30-second-bounded Black checks pass. The
 response serializer test independently reproduces the 25,142-byte 256-record worst case, while journal
 tests accept exactly 65,536 valid bounded bytes and reject one byte more. These component results do not
-establish TLS, stable source-event orchestration, rate/concurrency, audit durability, backup/recovery or
-end-to-end service behavior.
+establish TLS, stable source-event orchestration, audit durability, backup/recovery or end-to-end
+service behavior. All 37 deterministic rate/concurrency cases and 232 directly related gate/admission/
+replay/inference-binding/persistence tests pass. The complete repository suite passes with 662 tests
+and the same four TF-005 warnings; repository-wide Ruff and both bounded gate-file Black checks pass.

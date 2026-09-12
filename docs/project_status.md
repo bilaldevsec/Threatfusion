@@ -101,7 +101,7 @@ integrated product acceptance are absent.
   focused admission/inference/binding/persistence tests pass; the full suite passes with 581 tests and
   the four existing TF-005 warnings. Repository-wide Ruff and both individual bounded Black checks pass.
   Predictor and repository spies remain at zero for every admission test. There is still no listener,
-  replay journal, rate/concurrency gate, durable security audit or live-source identity. The planned
+  durable security audit or live-source identity. The planned
   Azure sensor remains disabled until a separate live representation and stable identity contract is
   approved; it must not impersonate registered UNSW membership. See
   [`producer_admission_transport_policy.md`](producer_admission_transport_policy.md).
@@ -121,6 +121,22 @@ integrated product acceptance are absent.
   coverage. The complete suite passes with 625 tests and the four existing TF-005 warnings;
   repository-wide Ruff and all three individual bounded Black checks pass. Stable manifest-derived
   source-event orchestration is not implemented by the journal.
+
+- The internal v1 producer execution gate implements a fixed single-producer configuration, exact
+  integer-nanosecond token bucket (six/minute, one token per ten seconds, burst two), and immediate
+  global/per-producer concurrency limits of one with queue capacity zero. Certificate/producer
+  admission precedes rate charging; rate precedes concurrency; authenticated concurrency rejection
+  consumes its token to prevent saturation-probe bypass. An immutable unpredictable lease is required
+  for exactly-once release, including context-manager `finally` release; stale, foreign, forged and
+  double releases fail closed. Invalid, negative, oversized or backward clock values add no credit.
+  State and count-only metrics are bounded without a producer-keyed map. All state is process-local,
+  resets on restart and is independent across instances, so the supported design still requires one
+  externally coordinated process with exactly one shared gate. This is not durable or multi-process
+  enforcement and does not authenticate the supplied `AdmittedProducer`. Thirty-seven deterministic
+  gate tests pass without sleeping; predictor, replay-journal and alert-repository spies remain at zero
+  for denial and successful acquisition paths. All 232 directly related tests pass. The complete suite
+  passes with 662 tests and the four existing TF-005 warnings; repository-wide Ruff and both individual
+  bounded Black checks pass.
 
 - `network_behavior_v1` is valid as the frozen input order for the historical UNSW models, but its
   cross-source byte mapping is not a validated common measurement contract. Five byte-dependent CIC
@@ -143,7 +159,7 @@ integrated product acceptance are absent.
   remain in the trusted computing base; private Python classes are not cryptographic credentials.
   Model scores are not calibrated confidence, and request UUIDs are not stable ingestion/deduplication
   identities. Stable identity exists only for registered offline UNSW members and row ordinals; it is
-  not a live-sensor identity. External producer admission, service-level time, concurrency, transport,
+  not a live-sensor identity. External producer admission, service-level time, transport,
   backup/recovery and total storage limits remain unverified (TF-008/TF-009). See the
   [inference trust boundary](unsw_network_inference_boundary.md#security-and-scientific-claim-boundary).
 
@@ -160,7 +176,7 @@ integrated product acceptance are absent.
 
 - A supported end-to-end product path connecting the implemented registered-offline inference and
   AlertCandidate persistence boundary to correlation, explanation and dashboard display.
-- Stable source-event orchestration, rate/concurrency enforcement, the security-audit sink and directly
+- Stable source-event orchestration, the security-audit sink and directly
   terminating loopback TLS transport with socket-enforced handshake/read/idle timeouts.
 - Product API/view-model contracts, dashboard behavior, backup/recovery, optional-service degradation,
   and integrated resource/latency evidence.
@@ -170,11 +186,12 @@ integrated product acceptance are absent.
 
 ## One next implementation task
 
-Implement and unit-test the bounded internal producer rate/concurrency admission gates.
+Implement and unit-test the bounded sanitized producer security-audit sink.
 
 Resume handoff: the durable three-state request replay journal is implemented and tested on top of the
-transport-independent admission record. Actual TLS authentication, stable event orchestration,
-rate/concurrency controls, audit durability and the service remain unimplemented; TF-008/TF-009 stay
+transport-independent admission record. Process-local rate/concurrency controls are now implemented.
+Actual TLS authentication, stable event orchestration, audit durability and the service remain
+unimplemented; TF-008/TF-009 stay
 open. Nothing is staged, committed or pushed. No dataset/artifact access, package download, training,
 fitting, preprocessing, evaluation, listener, AlertCandidate persistence change, dashboard, LLM,
 correlation, SOAR or deep-learning work occurred.
