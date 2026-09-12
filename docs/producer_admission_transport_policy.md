@@ -6,7 +6,8 @@ This document defines the implementation contract for the first authenticated Th
 boundary under TF-008 and TF-009. The transport-independent schema, certificate registry, bounded body
 reader, strict decoder, timestamp/source admission, replay-evidence record, response serializer and
 durable request replay journal are implemented internally. The fixed v1 process-local rate bucket and
-nonqueueing concurrency gate are also implemented; this is not an implemented service. No HTTP
+nonqueueing concurrency gate and the bounded local security-audit repository are also implemented;
+this is not an implemented service. No HTTP
 listener, live-source adapter or AlertCandidate persistence change exists merely because these
 components are present.
 
@@ -350,20 +351,64 @@ authenticated submission. The stable source-event ID identifies a registered dat
 existing inference correlation UUID identifies one inference attempt. They are distinct and must not be
 used interchangeably.
 
-Internal audit records are structured and allowlisted. They contain event time, security-event code,
-server correlation UUID, producer ID when authenticated, credential fingerprint prefix or a separate
-opaque credential handle (never the full certificate), request ID only after syntax validation, source
-contract identifier, body length, body-digest prefix, record count, rate/concurrency disposition,
-request state, aggregate outcome counts, latency bucket, and stable event IDs only where operationally
-required. Audit renderers must never log certificates, keys, nonces, complete body digests, submitted
-payloads, raw rows/features, IP addresses or ports, paths, filenames, labels/categories, exception text,
-SQL, or arbitrary object representations.
+The immutable `producer_security_audit_event_v1` contract has exactly these fields:
 
-Dedicated security events are required for `authentication_failed`, `credential_disabled`,
-`producer_mismatch`, `source_contract_denied`, `request_replay_rejected`, `request_in_progress`,
-`rate_limited`, `server_busy`, `request_timeout`, and `processing_timeout`. Audit writes are bounded and
-must not block request processing indefinitely. Audit unavailability fails closed for authentication,
-replay, and revocation events; no request may proceed without the durable replay claim.
+- server-generated canonical UUIDv4 `audit_event_id` and trusted UTC `event_time`;
+- optional server handling `correlation_id` UUID;
+- fixed `event_type`, `processing_stage`, `outcome`, and granular `reason_code`;
+- optional canonical `producer_id` only after internal resolution and optional canonical
+  `source_contract_id`; and
+- optional complete lowercase SHA-256 digests for credential, validated request ID, and exact body only
+  when those digests already exist at the trusted boundary.
+
+It has no free-form message or exception-detail field. It cannot store raw rows/bodies, nonces,
+features, predictions, endpoints, labels/categories, submitted producer text, certificate/key contents,
+filenames/paths, stack traces, SQL, secrets/tokens, or cached inference responses. The complete
+credential fingerprint is an existing canonical identifier, not certificate content; it remains absent
+until authentication has internally resolved it. A request-ID digest is used instead of the submitted
+request text. Contract construction rejects extra fields, arbitrary identifiers, invalid UUIDs/digests,
+non-UTC time, wrong types, and any stage/outcome/reason combination outside the frozen table below.
+
+| v1 event type | fixed stage | fixed outcome | preserved canonical reason mapping |
+|---|---|---|---|
+| `authentication_rejected` | `authentication` | `rejected` | `authentication_failed`, `credential_disabled`, `credential_revoked`, `credential_not_yet_valid`, `credential_expired` |
+| `producer_admission_rejected` | `admission` | `rejected` | `producer_mismatch`, `source_contract_denied`, `invalid_request`, `request_time_invalid`, `request_too_large`, `body_incomplete` |
+| `rate_limited` | `rate_control` | `rejected` | `rate_limited` |
+| `server_busy` | `concurrency_control` | `rejected` | `server_busy` |
+| `request_admitted` | `admission` | `admitted` | `request_admitted` |
+| `replay_in_progress` | `replay` | `deferred` | `request_in_progress` |
+| `replay_conflict` | `replay` | `rejected` | `request_replay_rejected` |
+| `replay_outcome_unknown` | `replay` | `unknown` | `outcome_unknown` |
+| `request_completed` | `completion` | `completed` | `request_completed` |
+| `internal_failure` | `internal`, `processing`, or `audit` as fixed by reason | `failed` | `internal_error`, `registry_invalid`, `clock_unavailable`, `request_timeout`, `processing_timeout`, `audit_unavailable` |
+
+This preserves the policy's existing granular reason names beneath the broader frozen taxonomy instead
+of creating synonymous reason codes. The transport/orchestration milestone must select the mapping; the
+audit repository never accepts a client message or converts an exception to a field.
+
+`producer_security_audit_sqlite_v1` uses a strict validated metadata table, strict event table, and a
+unique `(event_time, audit_event_id)` ordering index with `PRAGMA user_version=1`. Initialization checks
+the exact schema, table SQL, indexes, constraints, metadata, and database integrity. Appends use
+`BEGIN IMMEDIATE`, a 500 ms busy timeout, and one transaction. A first ID returns an immutable sanitized
+`created` result; an identical retry returns `existing`; the same ID with different security content
+rolls back as `audit_event_identity_conflict`. The original timestamp and correlation UUID are excluded
+from retry equivalence because they are server attempt metadata, not the logical security fact named by
+the durable audit-event ID; the first stored values are retained. Every classification, canonical ID,
+and digest remains identity-significant.
+
+Listing is ordered by trusted timestamp then audit-event ID and requires a positive integer limit no
+greater than 100. There is no unbounded list/read and no application update or delete API. Reopening
+preserves events. The hard v1 repository capacity is 100,000 events. At capacity, identical retries may
+still resolve as `existing`, but a new event fails `audit_capacity_reached`; history is never silently
+deleted, overwritten, wrapped, or rotated. Orchestration must treat any audit storage/capacity failure as
+generic `audit_unavailable`, block a request that would otherwise proceed to prediction or persistence,
+and may return that generic outcome for a denial whose audit event cannot itself be stored.
+
+The cap is a demo/single-node safety bound, not a production retention policy. Export, retention,
+rotation, backup and recovery are future production work. SQLite supplies local durability and
+serialized application writes; it is not tamper-evident and offers no malicious-host protection against
+a filesystem owner, compromised process, SQLite administrator, or kernel. No hash chain, HMAC log,
+signature or encryption claim is made.
 
 ## End-to-end enforcement sequence
 
@@ -429,14 +474,16 @@ authentication or admission failure—not merely inspect response codes.
    explicit `outcome_unknown` recovery. **Implemented internally 2026-09-12.** This journal is separate
    from AlertCandidate persistence.
 3. Implement fixed process-local integer rate limiting and nonqueueing global/per-producer concurrency
-   leases. **Implemented internally 2026-09-12.** Stable source-event orchestration and the bounded
-   sanitized security audit remain required before transport exposure.
-4. Add an isolated synchronous loopback TLS service that directly terminates mTLS and connects only the
+   leases. **Implemented internally 2026-09-12.** Stable source-event orchestration remains required.
+4. Implement the bounded sanitized ten-event security-audit contract and local SQLite sink, including
+   capacity, failure-injection, concurrency, restart, drift/integrity and downstream-zero-call tests.
+   **Implemented internally 2026-09-13.** It is not yet wired to request handling.
+5. Add an isolated synchronous loopback TLS service that directly terminates mTLS and connects only the
    admitted registered-reference request to the existing trusted workflow; run all zero-spy and timeout
    tests.
-5. Add bounded failure-injection and single-node restart/recovery evidence, then integrate correlation,
+6. Add bounded failure-injection and single-node restart/recovery evidence, then integrate correlation,
    explanation, and dashboard contracts separately.
-6. Before enabling Azure, approve a live representation and stable event/candidate identity, verify
+7. Before enabling Azure, approve a live representation and stable event/candidate identity, verify
    feature semantics, provision Azure-held credentials, and repeat admission/replay/resource tests in
    that deployment. Do not map Azure telemetry to registered UNSW identity.
 
@@ -445,7 +492,7 @@ reaches the dashboard with reconciled identity/status and all failure boundaries
 services are unavailable. TF-009 remains open until implemented end-to-end tests and measured evidence
 cover malformed/partial input, mismatch, restart/replay, idempotency, interruption, timeouts,
 concurrency/rate/body/queue bounds, database recovery/backup, and resource usage. Azure enablement is not
-a prerequisite for the single-node offline demo, but it cannot be claimed supported before milestone 6.
+a prerequisite for the single-node offline demo, but it cannot be claimed supported before milestone 7.
 
 Internal-milestone validation used synthetic requests and temporary SQLite databases with no
 dataset/model artifacts. All 44 replay-journal tests and 195 focused replay/admission/inference-binding/
@@ -453,7 +500,18 @@ persistence tests pass. The full suite passes with 625 tests and the four existi
 warnings. Repository-wide Ruff and all three individual 30-second-bounded Black checks pass. The
 response serializer test independently reproduces the 25,142-byte 256-record worst case, while journal
 tests accept exactly 65,536 valid bounded bytes and reject one byte more. These component results do not
-establish TLS, stable source-event orchestration, audit durability, backup/recovery or end-to-end
+establish TLS, stable source-event orchestration, audit orchestration, backup/recovery or end-to-end
 service behavior. All 37 deterministic rate/concurrency cases and 232 directly related gate/admission/
 replay/inference-binding/persistence tests pass. The complete repository suite passes with 662 tests
 and the same four TF-005 warnings; repository-wide Ruff and both bounded gate-file Black checks pass.
+
+The subsequent bounded-audit milestone uses only synthetic events and temporary SQLite databases. All
+66 audit tests and 163 directly related admission, gate, replay-journal and alert-persistence tests
+pass. The complete repository suite passes with 728 tests and the same four TF-005 warnings;
+repository-wide Ruff and both individual audit-file Black checks pass. Failure tests cover concurrent
+identical and conflicting appends, rollback, 500 ms locking, restart, corruption/integrity and exact
+schema/index/constraint drift, privacy, deterministic listing, and a small internal capacity boundary
+while separately asserting the production constant is exactly 100,000. Predictor, replay-processing
+and AlertCandidate-repository spies remain at zero for every audit operation and failure. This does not
+establish TLS termination, socket deadlines, final orchestration, production retention/export/rotation,
+backup/recovery, or malicious-host tamper resistance.

@@ -2,9 +2,9 @@
 
 ## Snapshot
 
-Status date: 2026-09-12. Branch: `main`. The durable producer replay-journal milestone began from a
+Status date: 2026-09-13. Branch: `main`. The bounded producer security-audit milestone began from a
 clean tree with nothing staged and verified HEAD and `origin/main` at
-`2cd5868167ab7fbdf92fdf65cb87d76c7d95562b`. The implementation below remains local and unstaged;
+`f95e9de5e36c0fd1717769152185fed64122c9d8`. The implementation below remains local and unstaged;
 HEAD and `origin/main` remain at that checkpoint.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0
@@ -138,6 +138,23 @@ integrated product acceptance are absent.
   passes with 662 tests and the four existing TF-005 warnings; repository-wide Ruff and both individual
   bounded Black checks pass.
 
+- The separate internal `producer_security_audit_event_v1` contract and
+  `producer_security_audit_sqlite_v1` repository implement a fixed ten-event taxonomy over the
+  existing granular admission/replay reason codes. Events contain only trusted UTC time, a generated
+  UUIDv4, optional server correlation UUID, fixed stage/outcome/reason, internally resolved producer
+  and source-contract IDs, and optional already-available credential/request/body SHA-256 digests.
+  The strict SQLite v1 boundary uses atomic `BEGIN IMMEDIATE` appends, exact schema/index/integrity and
+  row validation, equivalent retry by audit-event ID, conflict rejection, 500 ms busy waits, stable
+  bounded listing, restart preservation, and a hard 100,000-event cap. A full sink fails closed without
+  deleting, overwriting, or wrapping history; later orchestration must map unpersistable denial evidence
+  to generic `audit_unavailable` and must block any request that would otherwise reach prediction or
+  persistence. The repository exposes no update/delete API and never calls replay processing, inference,
+  or AlertCandidate persistence. SQLite is not tamper-evident and provides no protection from a
+  filesystem owner, compromised process, SQLite administrator, or kernel. Export, retention, rotation,
+  backup, and recovery remain production work. All 66 audit tests and 163 directly related admission,
+  gate, replay, and alert-persistence tests pass. The complete suite passes with 728 tests and the four
+  existing TF-005 warnings; repository-wide Ruff and both individual bounded Black checks pass.
+
 - `network_behavior_v1` is valid as the frozen input order for the historical UNSW models, but its
   cross-source byte mapping is not a validated common measurement contract. Five byte-dependent CIC
   predictors have incompatible documented semantics; direction/flow policy remains uncertain. See
@@ -176,7 +193,7 @@ integrated product acceptance are absent.
 
 - A supported end-to-end product path connecting the implemented registered-offline inference and
   AlertCandidate persistence boundary to correlation, explanation and dashboard display.
-- Stable source-event orchestration, the security-audit sink and directly
+- Stable source-event orchestration and the directly
   terminating loopback TLS transport with socket-enforced handshake/read/idle timeouts.
 - Product API/view-model contracts, dashboard behavior, backup/recovery, optional-service degradation,
   and integrated resource/latency evidence.
@@ -186,12 +203,13 @@ integrated product acceptance are absent.
 
 ## One next implementation task
 
-Implement and unit-test the bounded sanitized producer security-audit sink.
+Implement and unit-test the directly terminating loopback TLS transport with socket-enforced
+handshake, total-read, and idle deadlines, without final orchestration.
 
 Resume handoff: the durable three-state request replay journal is implemented and tested on top of the
 transport-independent admission record. Process-local rate/concurrency controls are now implemented.
-Actual TLS authentication, stable event orchestration, audit durability and the service remain
-unimplemented; TF-008/TF-009 stay
+The bounded audit sink is implemented internally. Actual TLS authentication, stable event
+orchestration and the service remain unimplemented; TF-008/TF-009 stay
 open. Nothing is staged, committed or pushed. No dataset/artifact access, package download, training,
 fitting, preprocessing, evaluation, listener, AlertCandidate persistence change, dashboard, LLM,
 correlation, SOAR or deep-learning work occurred.
