@@ -7,9 +7,10 @@ boundary under TF-008 and TF-009. The transport-independent schema, certificate 
 reader, strict decoder, timestamp/source admission, replay-evidence record, response serializer and
 durable request replay journal are implemented internally. The fixed v1 process-local rate bucket and
 nonqueueing concurrency gate and the bounded local security-audit repository are also implemented;
-this is not an implemented service. No HTTP
-listener, live-source adapter or AlertCandidate persistence change exists merely because these
-components are present.
+the directly terminating loopback TLS transport component is now implemented as a staged internal
+boundary. This is not a long-running or production service. No final rate/replay/audit/inference/
+persistence orchestration, live-source adapter or AlertCandidate persistence change exists merely
+because these components are present.
 
 Protocol v1 supports only registered-offline UNSW replay on the same Linux workstation as the
 ThreatFusion backend. It preserves the existing registered source lookup, trusted 49-column adapter,
@@ -111,6 +112,22 @@ The body `producer_id` must exactly equal the TLS-derived producer ID. Changing 
 field requires a new nonce and request ID. TLS protects the bytes in transit; the durable replay journal
 binds their interpreted identity across connections and process restarts.
 
+The implemented server context uses Python's standard-library `ssl` directly with both minimum and
+maximum protocol versions fixed to `TLSVersion.TLSv1_3` and `verify_mode=CERT_REQUIRED`. It directly
+terminates the accepted loopback socket, obtains both the verified peer DER certificate and OpenSSL's
+decoded peer metadata, calculates the complete DER SHA-256 fingerprint, and extracts URI SAN entries
+only. It performs no common-name fallback. A successful server-side client-auth handshake establishes
+the chain and client-certificate-purpose checks before the resulting exact TLS version, fingerprint and
+URI SAN tuple are passed to the existing certificate registry. Only a registry-admitted peer is
+returned to later stages.
+
+`SSLContext.load_cert_chain` and `load_verify_locations` necessarily accept configured paths. Those
+paths, their contents, local filesystem semantics, OS permissions and setup process are trusted. Python
+`ssl` does not expose a descriptor-snapshot loading interface here, so this component makes no
+descriptor-level certificate/key/CA TOCTOU claim. Configuration and error representations omit paths,
+certificate contents and underlying TLS exceptions. Test credentials are generated beneath pytest
+temporary directories and removed at fixture teardown; no reusable credential is tracked.
+
 ### Storage, rotation, and revocation
 
 No CA private key, server private key, producer private key, certificate, credential bundle, admission
@@ -134,9 +151,71 @@ terminates active connections for that credential, and then replaces credentials
 all issued credentials and requires a new CA and server trust configuration. Replay records are retained
 by producer ID across ordinary credential rotation so a new certificate cannot replay old requests.
 
+## Strict loopback transport subset
+
+The implemented network bind is exactly IPv4 `127.0.0.1`; wildcard addresses, other loopback
+addresses, external addresses, IPv6 and hostname-resolved configuration are rejected before socket
+creation. Tests use port zero and inspect the assigned ephemeral port. The component never sets
+`SO_REUSEPORT`. It has no accept/serve-forever loop. The application queue capacity remains zero, but
+the kernel necessarily maintains a TCP listen backlog. V1 uses the smallest defensible configured
+backlog, one; it is bounded but cannot honestly be called zero. Final rate/concurrency rejection occurs
+after accept and authentication in the future orchestrator.
+
+The wire protocol is a strict single-request subset, not general-purpose or RFC-complete HTTP:
+
+`POST /v1/producer-events HTTP/1.1`
+
+It requires exactly one each of `Host: threatfusion-loopback`, `Content-Type: application/json`, a
+canonical unsigned-decimal `Content-Length`, and `Connection: close`. Header names are
+case-insensitive. Additional non-control extension headers are syntax/size checked, ignored and never
+retained. All duplicates are rejected. Transfer/content encoding, `Trailer`, `Upgrade`, `Keep-Alive`,
+proxy connection, `Expect` and `TE` controls are rejected. Request-line/header text is ASCII with exact
+CRLF framing; obs-fold, LF-only input, malformed separators, leading/trailing value whitespace and
+missing controls fail closed. Content length has no sign, whitespace or leading zeros, must be
+`1..131072`, and never authorizes a byte more.
+
+The external transport target is intentionally distinct from the existing internal admission tuple's
+`/v1/ingest/unsw-registered`. This milestone does not change `INGEST_TARGET` or admission identity.
+Only the future fixed orchestrator may translate the sole accepted external route to that existing
+internal route while preserving method, authenticated peer, exact body bytes and content length; no
+caller-selectable routing is permitted.
+
+The connection API rotates an unpredictable bearer capability across exact states:
+`authenticated` -> `head_validated` -> optionally `body_read` -> `closed`. The head reader consumes one
+application byte at a time through CRLFCRLF, so it returns no body byte before the future orchestrator
+can apply rate/concurrency gates. Python/OpenSSL or the kernel may already buffer encrypted/decrypted
+network data internally; this is not represented as application body consumption. A body read requires
+the post-head capability and reads exactly the declared bounded bytes. Already buffered/present excess
+or pipelined bytes are rejected; the mandatory close prevents reuse. A sanitized response is permitted
+after validated head (for a denial) or body, is written once, and always closes. Premature EOF, double
+reads/responses, pre-head body/response, stale/foreign/forged capabilities and post-close operations
+fail closed. Capability rotation and Python privacy are internal correctness controls, not cryptographic
+authorization against malicious in-process code.
+
+Handshake operations use a three-second total monotonic deadline. Head and body reads share a
+five-second total monotonic deadline and a one-second idle deadline. Before every socket receive, the
+smaller remaining total/idle value is applied with `settimeout`; progress refreshes only the idle
+deadline. Response writes use bounded five-second total/one-second-idle settings. Timeout, SSL, socket
+and monotonic-clock failures become fixed sanitized reasons and close the accepted socket. No worker
+thread is used by the implementation for cancellation; test threads exist only to synchronize real
+client/server sockets and are joined with bounded waits.
+
+Responses carry only a validated existing `producer_ingest_response_v1` body and a fixed status/reason
+mapping. The exact body length, including its final newline, is emitted as `Content-Length`, bounded by
+the existing 65,536-byte body ceiling, and `Connection: close` is mandatory. Invalid or oversized
+response input is never truncated; while the TLS channel remains usable, the writer emits a small fixed
+`producer_transport_response_v1` `internal_failure` body, then closes and reports a sanitized failure.
+No response renderer accepts raw evidence, endpoints, certificates, paths, SQL, exceptions or secrets.
+
+Every accepted socket is closed by successful response/explicit close or by any transport failure.
+The future orchestrator must retain the same `finally` discipline after a successful staged accept.
+Production deployment requires a separately reviewed maintained server/proxy while preserving direct
+authenticated-peer evidence at the trusted boundary; moving TLS termination elsewhere invalidates this
+component's authentication claim.
+
 ## Request contract and admission order
 
-The only method and target are `POST /v1/ingest/unsw-registered`. `Content-Type` must be exactly
+The internal admission method and target remain `POST /v1/ingest/unsw-registered`. `Content-Type` must be exactly
 `application/json`; parameters, content negotiation, compression, multipart bodies, chunked transfer,
 and any non-identity content encoding are rejected. `Content-Length` is mandatory.
 
@@ -478,10 +557,12 @@ authentication or admission failure—not merely inspect response codes.
 4. Implement the bounded sanitized ten-event security-audit contract and local SQLite sink, including
    capacity, failure-injection, concurrency, restart, drift/integrity and downstream-zero-call tests.
    **Implemented internally 2026-09-13.** It is not yet wired to request handling.
-5. Add an isolated synchronous loopback TLS service that directly terminates mTLS and connects only the
-   admitted registered-reference request to the existing trusted workflow; run all zero-spy and timeout
-   tests.
-6. Add bounded failure-injection and single-node restart/recovery evidence, then integrate correlation,
+5. Add an isolated synchronous loopback TLS transport that directly terminates mTLS, enforces socket
+   deadlines and exposes staged authenticated head/body/response handling. **Implemented internally
+   2026-09-13.** It does not connect downstream components or run a serving loop.
+6. Add the fixed orchestrator joining transport, admission, gates, audit, replay and the existing trusted
+   inference/persistence workflow, then add bounded integrated failure/restart/resource evidence and
+   integrate correlation,
    explanation, and dashboard contracts separately.
 7. Before enabling Azure, approve a live representation and stable event/candidate identity, verify
    feature semantics, provision Azure-held credentials, and repeat admission/replay/resource tests in
@@ -515,3 +596,15 @@ while separately asserting the production constant is exactly 100,000. Predictor
 and AlertCandidate-repository spies remain at zero for every audit operation and failure. This does not
 establish TLS termination, socket deadlines, final orchestration, production retention/export/rotation,
 backup/recovery, or malicious-host tamper resistance.
+
+The directly terminating transport milestone uses ephemeral OpenSSL certificates only beneath pytest
+temporary directories and removes them at fixture teardown. All 67 transport tests pass, including
+real TLS 1.3 success; TLS 1.2, plaintext, absent/untrusted/wrong-EKU clients; unknown fingerprint,
+URI-SAN mismatch, CN-only identity and disabled/revoked/time-invalid registry credentials; exact
+loopback binding; request/header/body/response boundaries; synchronized handshake/idle/total deadlines;
+capability/state misuse; sanitized clock/TLS/socket failures; and socket/listener/thread cleanup. All
+210 directly related admission, gate, replay and audit tests pass. The complete repository suite passes
+with 795 tests and the same four TF-005 warnings; repository-wide Ruff and both individual transport-
+file Black checks pass. Downstream replay, predictor, AlertCandidate and audit-repository spies remain
+at zero throughout transport tests. This component evidence does not establish final orchestration,
+integrated restart/recovery/resource behavior or a production-grade HTTP service.

@@ -2,9 +2,9 @@
 
 ## Snapshot
 
-Status date: 2026-09-13. Branch: `main`. The bounded producer security-audit milestone began from a
+Status date: 2026-09-13. Branch: `main`. The directly terminating loopback TLS transport milestone began from a
 clean tree with nothing staged and verified HEAD and `origin/main` at
-`f95e9de5e36c0fd1717769152185fed64122c9d8`. The implementation below remains local and unstaged;
+`273d65643308444a92e18829dc7dc2c36b35a31b`. The implementation below remains local and unstaged;
 HEAD and `origin/main` remain at that checkpoint.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0
@@ -155,6 +155,26 @@ integrated product acceptance are absent.
   gate, replay, and alert-persistence tests pass. The complete suite passes with 728 tests and the four
   existing TF-005 warnings; repository-wide Ruff and both individual bounded Black checks pass.
 
+- The internal producer TLS transport directly terminates TLS 1.3 on exactly IPv4 `127.0.0.1`,
+  requires a CA-verified client certificate, obtains verified DER and decoded peer metadata, derives
+  the DER SHA-256 fingerprint, accepts URI SAN identity only, and submits canonical peer evidence to
+  the existing certificate registry. Wildcard, external, hostname-resolved, other-loopback and IPv6
+  binds fail before socket creation. The staged one-request API freezes
+  `POST /v1/producer-events HTTP/1.1`, four required control headers, exact CRLF/ASCII and bounded
+  inert extension headers; rejects duplicate/folded/encoded/upgraded/keep-alive/pipelined input; and
+  separates authenticated head validation from explicit bounded body consumption. Rotating internal
+  capabilities enforce one legal head/body/response sequence and every success/failure path closes the
+  accepted socket. Monotonic socket deadlines are exactly three seconds for handshake and five total/
+  one idle for reads; synchronized tests use smaller internal bounds without changing production
+  constants. Responses validate the existing bounded producer response and send a small generic fixed
+  failure rather than truncate unsafe output. The listener backlog is one because the kernel TCP queue
+  cannot honestly be zero; the application adds no queue or serving loop. Certificate/key/CA paths,
+  filesystem/OS permissions and Python/OpenSSL remain trusted setup, with no descriptor-level load
+  TOCTOU claim. This strict subset is not production-grade HTTP and becomes invalid as an authentication
+  claim if TLS terminates elsewhere. All 67 TLS transport tests and 210 directly related admission,
+  gate, replay and audit tests pass. The complete suite passes with 795 tests and the four existing
+  TF-005 warnings; repository-wide Ruff and both individual bounded Black checks pass.
+
 - `network_behavior_v1` is valid as the frozen input order for the historical UNSW models, but its
   cross-source byte mapping is not a validated common measurement contract. Five byte-dependent CIC
   predictors have incompatible documented semantics; direction/flow policy remains uncertain. See
@@ -193,8 +213,8 @@ integrated product acceptance are absent.
 
 - A supported end-to-end product path connecting the implemented registered-offline inference and
   AlertCandidate persistence boundary to correlation, explanation and dashboard display.
-- Stable source-event orchestration and the directly
-  terminating loopback TLS transport with socket-enforced handshake/read/idle timeouts.
+- Stable orchestration joining TLS transport, admission, rate/concurrency gates, security audit,
+  replay, registered inference and AlertCandidate persistence.
 - Product API/view-model contracts, dashboard behavior, backup/recovery, optional-service degradation,
   and integrated resource/latency evidence.
 - Approval-gated allowlisted containment with audit and rollback. No automatic containment is supported.
@@ -203,13 +223,13 @@ integrated product acceptance are absent.
 
 ## One next implementation task
 
-Implement and unit-test the directly terminating loopback TLS transport with socket-enforced
-handshake, total-read, and idle deadlines, without final orchestration.
+Implement and unit-test the fixed fail-closed producer orchestrator joining the existing transport,
+admission, rate/concurrency, audit, replay, registered inference and Attack-only persistence boundaries.
 
 Resume handoff: the durable three-state request replay journal is implemented and tested on top of the
 transport-independent admission record. Process-local rate/concurrency controls are now implemented.
-The bounded audit sink is implemented internally. Actual TLS authentication, stable event
-orchestration and the service remain unimplemented; TF-008/TF-009 stay
+The bounded audit sink and directly terminating staged loopback TLS transport are implemented
+internally. Stable event orchestration and a service remain unimplemented; TF-008/TF-009 stay
 open. Nothing is staged, committed or pushed. No dataset/artifact access, package download, training,
 fitting, preprocessing, evaluation, listener, AlertCandidate persistence change, dashboard, LLM,
 correlation, SOAR or deep-learning work occurred.
