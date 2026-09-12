@@ -2,10 +2,10 @@
 
 ## Snapshot
 
-Status date: 2026-09-12. Branch: `main`. The producer admission/transport policy milestone began from a
+Status date: 2026-09-12. Branch: `main`. The durable producer replay-journal milestone began from a
 clean tree with nothing staged and verified HEAD and `origin/main` at
-`236cb666e843e485839dfab0f009259a907559fe`. The policy and first internal admission implementation
-below remain local and unstaged; HEAD and `origin/main` remain at that checkpoint.
+`2cd5868167ab7fbdf92fdf65cb87d76c7d95562b`. The implementation below remains local and unstaged;
+HEAD and `origin/main` remain at that checkpoint.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0
 readiness report still says split assignments are missing, but the later completed full assignment and
@@ -106,6 +106,22 @@ integrated product acceptance are absent.
   approved; it must not impersonate registered UNSW membership. See
   [`producer_admission_transport_policy.md`](producer_admission_transport_policy.md).
 
+- The separate standard-library producer replay journal implements exact SQLite schema/constraint/
+  index verification, global request-ID and nonce-digest uniqueness, 500 ms busy waits, atomic
+  `BEGIN IMMEDIATE` first claims, and hashed unpredictable ownership tokens. Its only states are
+  `in_progress`, `completed`, and terminal `outcome_unknown`. Exact in-progress retries cannot acquire
+  ownership; exact completed retries receive the original digest-verified bounded sanitized response;
+  any identity/evidence mismatch is a uniform replay rejection. Completion requires the exact active
+  token and service generation and stores state, response and response digest atomically. Explicit,
+  idempotent generation-scoped recovery changes only externally proven-abandoned `in_progress` rows to
+  `outcome_unknown`; ordinary connections never infer a crash or alter claims. This assumes one
+  externally coordinated service owner and deliberately uses no weak lease. Forty-four replay tests
+  and 195 directly related tests pass, including independent-connection races, reopen, locks, rollback,
+  corruption/schema drift, response tampering/bounds, zero-call inference/repository spies and ignore
+  coverage. The complete suite passes with 625 tests and the four existing TF-005 warnings;
+  repository-wide Ruff and all three individual bounded Black checks pass. Stable manifest-derived
+  source-event orchestration is not implemented by the journal.
+
 - `network_behavior_v1` is valid as the frozen input order for the historical UNSW models, but its
   cross-source byte mapping is not a validated common measurement contract. Five byte-dependent CIC
   predictors have incompatible documented semantics; direction/flow policy remains uncertain. See
@@ -144,7 +160,7 @@ integrated product acceptance are absent.
 
 - A supported end-to-end product path connecting the implemented registered-offline inference and
   AlertCandidate persistence boundary to correlation, explanation and dashboard display.
-- The durable producer replay journal, rate/concurrency enforcement, security-audit sink and directly
+- Stable source-event orchestration, rate/concurrency enforcement, the security-audit sink and directly
   terminating loopback TLS transport with socket-enforced handshake/read/idle timeouts.
 - Product API/view-model contracts, dashboard behavior, backup/recovery, optional-service degradation,
   and integrated resource/latency evidence.
@@ -154,12 +170,11 @@ integrated product acceptance are absent.
 
 ## One next implementation task
 
-Implement and unit-test the versioned durable replay journal, including restart, concurrent claim and
-explicit `outcome_unknown` recovery behavior.
+Implement and unit-test the bounded internal producer rate/concurrency admission gates.
 
-Resume handoff: the transport-independent producer schema, certificate registry, bounded reader,
-strict validation, replay-evidence record and bounded response serializer are implemented and tested.
-Actual TLS authentication, durable replay, rate/concurrency controls, audit durability and the service
-remain unimplemented; TF-008/TF-009 stay open. Nothing is staged, committed or pushed. No
-dataset/artifact access, package download, training, fitting, preprocessing, evaluation, listener,
-persistence change, dashboard, LLM, correlation, SOAR or deep-learning work occurred.
+Resume handoff: the durable three-state request replay journal is implemented and tested on top of the
+transport-independent admission record. Actual TLS authentication, stable event orchestration,
+rate/concurrency controls, audit durability and the service remain unimplemented; TF-008/TF-009 stay
+open. Nothing is staged, committed or pushed. No dataset/artifact access, package download, training,
+fitting, preprocessing, evaluation, listener, AlertCandidate persistence change, dashboard, LLM,
+correlation, SOAR or deep-learning work occurred.

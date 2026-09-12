@@ -92,6 +92,13 @@ SQLite provides local single-node durability and serialized writes, not distribu
 retention, automated migration, backup, or disaster recovery. Blocking file systems and total database
 size are not bounded by this component. Runtime database files and their WAL/SHM companions are ignored.
 
+The producer replay journal is a separate SQLite database and does not change this final Attack-only
+idempotency boundary. It durably prevents an exact completed producer request from invoking inference
+or this repository again, while `outcome_unknown` prohibits automatic reprocessing after an abandoned
+claim. The replay journal stores only request/evidence digests and a sanitized cached response; it does
+not store an AlertCandidate, raw evidence or model result internals. The AlertCandidate primary key
+remains the final idempotency boundary for later recovery reconciliation or a race after inference.
+
 ## Trust and future boundaries
 
 This is application-path enforcement, not cryptographic authentication. Trusted application code,

@@ -4,9 +4,10 @@
 
 This document defines the implementation contract for the first authenticated ThreatFusion producer
 boundary under TF-008 and TF-009. The transport-independent schema, certificate registry, bounded body
-reader, strict decoder, timestamp/source admission, replay-evidence record and response serializer are
-implemented internally; this is not an implemented service. No HTTP listener, admission journal,
-live-source adapter, or persistence change exists merely because these components are present.
+reader, strict decoder, timestamp/source admission, replay-evidence record, response serializer and
+durable request replay journal are implemented internally; this is not an implemented service. No HTTP
+listener, live-source adapter or AlertCandidate persistence change exists merely because these
+components are present.
 
 Protocol v1 supports only registered-offline UNSW replay on the same Linux workstation as the
 ThreatFusion backend. It preserves the existing registered source lookup, trusted 49-column adapter,
@@ -191,9 +192,13 @@ caller iterator crosses the admission boundary.
 
 The replay journal is a separate standard-library SQLite database with a versioned exact schema; it is
 not the AlertCandidate repository. Its configured path and WAL/SHM files remain outside the repository
-and ignored. It stores no body, raw row, feature, endpoint, filename, path, label, attack category, or
-secret. It stores producer ID, credential ID, request ID, nonce digest, exact-body digest, received time,
-request state, stable source-event IDs, per-record sanitized disposition, and completion time.
+and ignored. It stores no request body, raw nonce, raw row, feature, endpoint, filename, path, label,
+attack category, certificate, private key or claim token. It stores producer ID, credential ID, request
+ID, nonce digest, exact-body digest, exact accepted request metadata, produced/received/claim time,
+first server correlation ID, an ordered-record-set digest, service generation, request state, and—only
+for completed requests—the bounded sanitized response, its digest and completion time. The response
+contains the bounded per-record dispositions. Stable source-event IDs still require trusted manifest
+membership validation by the later orchestration layer and are not invented by this journal.
 
 After trusted manifest membership validation, each record's stable identity is the existing
 `unsw_registered_source_event_v1` value derived from source representation, pinned manifest digest,
@@ -201,12 +206,13 @@ member digest, and row ordinal. The request/correlation ID is never substituted 
 
 The claim transaction enforces these outcomes:
 
-- A new `(producer_id, request_id, nonce)` and new event set is admitted as `processing`.
+- A new `(producer_id, request_id, nonce)` and exact ordered reference set is committed as
+  `in_progress`; only its returned unpredictable ownership token may proceed to processing.
 - An exact retry with the same producer, request ID, nonce, body digest, and ordered event set returns
   the journaled sanitized result if `completed`; it makes zero predictor and repository calls.
 - Reuse of either request ID or nonce with any different authenticated tuple is `replay_rejected`; it
   makes zero predictor and repository calls.
-- A second concurrent exact request while the first is `processing` is `request_in_progress`; it is not
+- A second concurrent exact request while the first is `in_progress` is `request_in_progress`; it is not
   queued and makes zero predictor and repository calls.
 - An event submitted under another request after its completed disposition returns that per-event
   disposition as a duplicate without repeating prediction or persistence.
@@ -214,13 +220,27 @@ The claim transaction enforces these outcomes:
   equal Attack evidence is `existing`; conflicting same-ID evidence fails closed.
 
 The journal must be committed before inference begins. On restart, `completed` entries remain reusable
-and all replay uniqueness remains effective. A `processing` entry left by interruption becomes
+and all replay uniqueness remains effective. An `in_progress` entry left by interruption becomes
 `outcome_unknown`; it is not automatically re-executed or expired. Recovery may reconcile an Attack
 event by its stable candidate ID against the AlertCandidate repository, but Normal/rejected events have
 no durable candidate and therefore require an explicit audited operator disposition before retry. This
 deliberately prefers a visible unavailable result to possible duplicate prediction. Journal retention
 must be at least the greater of certificate lifetime plus 24 hours or the lifetime of the registered
 offline demo dataset; pruning/backup policy must be approved and tested before implementation.
+
+The implemented state machine has exactly `in_progress`, `completed`, and `outcome_unknown`; it has no
+automatic-retry failure state. First claim and request/nonce uniqueness use `BEGIN IMMEDIATE`. The raw
+32-byte-equivalent claim token is returned only once and only its SHA-256 digest is stored. Completion
+requires the exact active token and service generation, validates the response schema and first
+correlation ID, then changes state and stores response bytes/digest in one transaction. Exact completed
+retries revalidate the digest and response before returning the original bytes.
+
+Recovery is explicit and generation-scoped. Constructing another repository or opening another SQLite
+connection never changes a live claim. `recover_abandoned_generation` may be called only after an
+external single-service owner, such as the service manager, has proved the named previous generation is
+stopped and the replacement exclusively owns service startup. SQLite connections, elapsed time and a
+weak lease are not treated as crash proof. The idempotent transaction changes only that generation's
+`in_progress` rows to terminal `outcome_unknown`; completed and already-unknown rows are unchanged.
 
 ## Exact bounded-transport limits
 
@@ -351,7 +371,7 @@ datasets or generated model artifacts. Predictor and repository spies are mandat
 | Per-record or request processing timeout | worker terminated; partial state visible | only completed records | only completed Attacks |
 | Admission or alert database busy beyond 500 ms | service busy | 0 before claim; otherwise journaled | 0 before claim; otherwise bounded |
 | Restart with completed journal entry | cached response | 0 | 0 |
-| Restart with `processing` journal entry | outcome unknown; no automatic retry | 0 | 0 |
+| Restart with `in_progress` journal entry | outcome unknown after explicit recovery; no automatic retry | 0 | 0 |
 
 Tests must additionally prove body buffers never exceed 131,072 bytes, parser depth/field limits hold,
 no request queue forms at concurrency saturation, timeouts terminate workers, security audits are
@@ -365,8 +385,9 @@ authentication or admission failure—not merely inspect response codes.
    timestamp/source gates, immutable replay-journal input and bounded sanitized response types without
    an external listener. **Implemented 2026-09-12.**
 2. Implement the versioned durable replay journal and its restart/concurrent-claim tests, including
-   explicit `outcome_unknown` recovery, plus the rate/concurrency gates and bounded sanitized security
-   audit required before transport exposure. This is separate from AlertCandidate persistence.
+   explicit `outcome_unknown` recovery. **Implemented internally 2026-09-12.** Rate/concurrency gates,
+   stable source-event orchestration and the bounded sanitized security audit remain required before
+   transport exposure. This journal is separate from AlertCandidate persistence.
 3. Add an isolated synchronous loopback TLS service that directly terminates mTLS and connects only the
    admitted registered-reference request to the existing trusted workflow; run all zero-spy and timeout
    tests.
@@ -383,9 +404,11 @@ cover malformed/partial input, mismatch, restart/replay, idempotency, interrupti
 concurrency/rate/body/queue bounds, database recovery/backup, and resource usage. Azure enablement is not
 a prerequisite for the single-node offline demo, but it cannot be claimed supported before milestone 5.
 
-Internal-milestone validation used synthetic in-memory requests and no dataset/model artifacts. All 63
-producer-admission tests and 218 focused admission/inference/binding/persistence tests pass. The full
-suite passes with 581 tests and the four existing TF-005 timestamp warnings. Repository-wide Ruff and
-both individual 30-second-bounded Black checks pass. The response serializer test independently
-reproduces the 25,142-byte 256-record worst case. These component results do not establish TLS,
-replay/restart, rate/concurrency, audit durability, or end-to-end service behavior.
+Internal-milestone validation used synthetic requests and temporary SQLite databases with no
+dataset/model artifacts. All 44 replay-journal tests and 195 focused replay/admission/inference-binding/
+persistence tests pass. The full suite passes with 625 tests and the four existing TF-005 timestamp
+warnings. Repository-wide Ruff and all three individual 30-second-bounded Black checks pass. The
+response serializer test independently reproduces the 25,142-byte 256-record worst case, while journal
+tests accept exactly 65,536 valid bounded bytes and reject one byte more. These component results do not
+establish TLS, stable source-event orchestration, rate/concurrency, audit durability, backup/recovery or
+end-to-end service behavior.

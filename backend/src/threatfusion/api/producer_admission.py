@@ -633,7 +633,9 @@ class ProducerRecordDisposition:
         if (
             type(self.record_index) is not int
             or not 1 <= self.record_index <= MAX_RECORDS
+            or type(self.disposition) is not str
             or self.disposition not in RESPONSE_DISPOSITIONS
+            or type(self.reason) is not str
             or self.reason not in RESPONSE_REASONS
         ):
             raise _fail("response_invalid", status_code=500, security_event="internal_error")
@@ -655,6 +657,7 @@ class ProducerResponse:
         if (
             self.schema_version != PRODUCER_INGEST_RESPONSE_SCHEMA_VERSION
             or not _is_uuid4(self.correlation_id)
+            or type(self.reason) is not str
             or self.reason not in RESPONSE_REASONS
             or type(self.records) is not tuple
             or len(self.records) > MAX_RECORDS
@@ -694,3 +697,54 @@ def serialize_producer_response(response: ProducerResponse) -> bytes:
     if len(encoded) > MAX_RESPONSE_BYTES:
         raise _fail("internal_error", status_code=500, security_event="internal_error")
     return encoded
+
+
+def decode_producer_response(encoded: bytes) -> ProducerResponse:
+    """Validate cached response bytes without accepting non-contract or sensitive fields."""
+    if type(encoded) is not bytes or not 1 <= len(encoded) <= MAX_RESPONSE_BYTES:
+        raise _fail("response_invalid", status_code=500, security_event="internal_error")
+    try:
+        text = encoded.decode("utf-8")
+    except UnicodeDecodeError:
+        raise _fail("response_invalid", status_code=500, security_event="internal_error") from None
+    _enforce_json_depth(text)
+    try:
+        payload = json.loads(
+            text,
+            object_pairs_hook=_object_without_duplicates,
+            parse_constant=_reject_constant,
+            parse_float=_finite_float,
+        )
+    except (json.JSONDecodeError, UnicodeError, ValueError, RecursionError):
+        raise _fail("response_invalid", status_code=500, security_event="internal_error") from None
+    if type(payload) is not dict or frozenset(payload) != {
+        "schema_version",
+        "correlation_id",
+        "reason",
+        "records",
+    }:
+        raise _fail("response_invalid", status_code=500, security_event="internal_error")
+    records_value = payload["records"]
+    if type(records_value) is not list:
+        raise _fail("response_invalid", status_code=500, security_event="internal_error")
+    records: list[ProducerRecordDisposition] = []
+    for value in records_value:
+        if type(value) is not dict or frozenset(value) != {
+            "record_index",
+            "disposition",
+            "reason",
+        }:
+            raise _fail("response_invalid", status_code=500, security_event="internal_error")
+        records.append(
+            ProducerRecordDisposition(
+                record_index=value["record_index"],
+                disposition=value["disposition"],
+                reason=value["reason"],
+            )
+        )
+    return ProducerResponse(
+        schema_version=payload["schema_version"],
+        correlation_id=payload["correlation_id"],
+        reason=payload["reason"],
+        records=tuple(records),
+    )
