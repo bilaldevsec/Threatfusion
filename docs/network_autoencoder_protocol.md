@@ -227,8 +227,9 @@ float64 and divided by 14:
 
 Thus the historical residual was against `q_i`, rather than the original float64 `x_i`. The model
 forward also used the caller's batch shape. Review reproduced bitwise score differences from that
-batching: on one fixed synthetic vector the score was `0.9457795181243431` as a singleton and
-`0.9457795275677049` in a mixed batch. A strict threshold tied to the singleton score therefore changed
+batching. On the original workstation, one fixed synthetic vector scored `0.9457795181243431` as a
+singleton and `0.9457795275677049` in a mixed batch; these absolute values are execution evidence for
+that runtime, rather than cross-platform constants. A strict threshold tied to the lower score changed
 the decision. This correction does not apply a tolerance and does not recalculate any historical score,
 metric, threshold, or artifact.
 

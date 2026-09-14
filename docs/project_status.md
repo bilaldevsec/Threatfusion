@@ -41,8 +41,9 @@ integrated product acceptance are absent.
 - The bounded autoencoder scientific review preserves that run as historical v1 evidence and corrects
   four reusable-boundary defects under TF-016. The historical residual used the float32-converted input,
   rather than the original transformed float64 value stated by the earlier formula. Its caller-batched
-  forward was also score-unstable: one fixed synthetic threshold-tie reproduction changed from
-  `0.9457795181243431` alone to `0.9457795275677049` in a mixed batch and changed the strict decision.
+  forward was also score-unstable: on the original workstation, one fixed synthetic threshold-tie
+  reproduction changed from `0.9457795181243431` alone to `0.9457795275677049` in a mixed batch and
+  changed the strict decision. Those absolute values are runtime-specific execution evidence.
   The versioned v2 scorer performs one shape-(1,14) float32 forward per record and fixed float64 residual
   accumulation; exact regressions cover singleton/mixed calls, caller chunks, positions, repetitions,
   final partial chunks, the reproduced tie, and save/reload. The five historical artifact hashes remain

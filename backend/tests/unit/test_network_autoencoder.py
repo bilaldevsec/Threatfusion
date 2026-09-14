@@ -305,10 +305,12 @@ def test_historical_threshold_tie_reproduces_batch_dependent_decision_and_v2_cor
         model, THRESHOLD_TIED_VECTOR.reshape(1, -1), batch_size=1
     )[0]
     historical_mixed = _historical_score_in_batches_v1(model, mixed, batch_size=len(mixed))[17]
-    assert historical_singleton == 0.9457795181243431
-    assert historical_mixed == 0.9457795275677049
-    assert threshold_scores(np.asarray([historical_singleton]), historical_singleton)[0] == 0
-    assert threshold_scores(np.asarray([historical_mixed]), historical_singleton)[0] == 1
+    historical_lower = min(historical_singleton, historical_mixed)
+    historical_higher = max(historical_singleton, historical_mixed)
+    assert historical_lower < historical_higher
+    assert threshold_scores(
+        np.asarray([historical_lower, historical_higher]), historical_lower
+    ).tolist() == [0, 1]
 
     corrected_singleton = score_records_v2(model, THRESHOLD_TIED_VECTOR.reshape(1, -1))[0]
     corrected_mixed = score_records_v2(model, mixed)[17]
