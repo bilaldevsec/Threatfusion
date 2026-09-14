@@ -8,9 +8,10 @@ reader, strict decoder, timestamp/source admission, replay-evidence record, resp
 durable request replay journal are implemented internally. The fixed v1 process-local rate bucket and
 nonqueueing concurrency gate and the bounded local security-audit repository are also implemented;
 the directly terminating loopback TLS transport component is now implemented as a staged internal
-boundary. This is not a long-running or production service. No final rate/replay/audit/inference/
-persistence orchestration, live-source adapter or AlertCandidate persistence change exists merely
-because these components are present.
+boundary. This is not a long-running or production service. A fixed synchronous one-request
+orchestrator now joins the implemented rate/replay/audit/inference/persistence boundaries internally;
+it does not add a serving loop, live-source adapter, AlertCandidate persistence change, or
+worker-process deadline enforcement.
 
 Protocol v1 supports only registered-offline UNSW replay on the same Linux workstation as the
 ThreatFusion backend. It preserves the existing registered source lookup, trusted 49-column adapter,
@@ -159,7 +160,7 @@ creation. Tests use port zero and inspect the assigned ephemeral port. The compo
 `SO_REUSEPORT`. It has no accept/serve-forever loop. The application queue capacity remains zero, but
 the kernel necessarily maintains a TCP listen backlog. V1 uses the smallest defensible configured
 backlog, one; it is bounded but cannot honestly be called zero. Final rate/concurrency rejection occurs
-after accept and authentication in the future orchestrator.
+after accept, authentication, bounded body read and application admission in the orchestrator.
 
 The wire protocol is a strict single-request subset, not general-purpose or RFC-complete HTTP:
 
@@ -176,14 +177,15 @@ missing controls fail closed. Content length has no sign, whitespace or leading 
 
 The external transport target is intentionally distinct from the existing internal admission tuple's
 `/v1/ingest/unsw-registered`. This milestone does not change `INGEST_TARGET` or admission identity.
-Only the future fixed orchestrator may translate the sole accepted external route to that existing
+Only the fixed orchestrator may translate the sole accepted external route to that existing
 internal route while preserving method, authenticated peer, exact body bytes and content length; no
 caller-selectable routing is permitted.
 
 The connection API rotates an unpredictable bearer capability across exact states:
 `authenticated` -> `head_validated` -> optionally `body_read` -> `closed`. The head reader consumes one
-application byte at a time through CRLFCRLF, so it returns no body byte before the future orchestrator
-can apply rate/concurrency gates. Python/OpenSSL or the kernel may already buffer encrypted/decrypted
+application byte at a time through CRLFCRLF. The fixed orchestrator then reads and fully admits the
+bounded body before applying rate/concurrency gates, so malformed or unauthorized application bodies
+do not consume a rate token or lease. Python/OpenSSL or the kernel may already buffer encrypted/decrypted
 network data internally; this is not represented as application body consumption. A body read requires
 the post-head capability and reads exactly the declared bounded bytes. Already buffered/present excess
 or pipelined bytes are rejected; the mandatory close prevents reuse. A sanitized response is permitted
@@ -200,15 +202,16 @@ and monotonic-clock failures become fixed sanitized reasons and close the accept
 thread is used by the implementation for cancellation; test threads exist only to synchronize real
 client/server sockets and are joined with bounded waits.
 
-Responses carry only a validated existing `producer_ingest_response_v1` body and a fixed status/reason
-mapping. The exact body length, including its final newline, is emitted as `Content-Length`, bounded by
+Responses carry only a validated legacy `producer_ingest_response_v1` body or the orchestrator's strict
+`producer_ingest_response_v2` body and a fixed status/reason mapping. The exact body length, including
+its final newline, is emitted as `Content-Length`, bounded by
 the existing 65,536-byte body ceiling, and `Connection: close` is mandatory. Invalid or oversized
 response input is never truncated; while the TLS channel remains usable, the writer emits a small fixed
 `producer_transport_response_v1` `internal_failure` body, then closes and reports a sanitized failure.
 No response renderer accepts raw evidence, endpoints, certificates, paths, SQL, exceptions or secrets.
 
 Every accepted socket is closed by successful response/explicit close or by any transport failure.
-The future orchestrator must retain the same `finally` discipline after a successful staged accept.
+The orchestrator retains the same `finally` discipline after a successful staged accept.
 Production deployment requires a separately reviewed maintained server/proxy while preserving direct
 authenticated-peer evidence at the trusted boundary; moving TLS termination elsewhere invalidates this
 component's authentication claim.
@@ -253,18 +256,21 @@ member count. Duplicate record references within one request are rejected before
 Admission proceeds in this order:
 
 1. finish the bounded TLS handshake and authenticate/map the client certificate;
-2. check the current enabled credential and producer/source route allowlist before reading a body;
-3. enforce method, target, header and declared-size limits, then charge the authenticated producer's
-   rate bucket;
-4. attempt the global and per-producer concurrency acquisition without waiting or queueing;
-5. read exactly the declared bounded byte count; reject an early EOF or trailing bytes;
-6. decode strict UTF-8 and parse JSON with duplicate-key, non-finite-number, type, exact-key, and depth
+2. check the current enabled credential and producer/source route allowlist;
+3. enforce method, target, header and declared-size limits, then read exactly the declared bounded byte
+   count; reject an early EOF or trailing bytes;
+4. decode strict UTF-8 and parse JSON with duplicate-key, non-finite-number, type, exact-key, and depth
    rejection;
-7. validate the envelope, producer match, source allowlist, timestamp, nonce, request identity, and the
+5. validate the envelope, producer match, source allowlist, timestamp, nonce, request identity, and the
    entire batch of registered references;
-8. atomically claim the request and all stable source-event identities in the durable replay journal;
-9. only then invoke trusted registered UNSW inference and Attack-only persistence; and
-10. durably record the sanitized outcome before returning it.
+6. charge the admitted producer's rate bucket, then attempt global and per-producer concurrency
+   acquisition without waiting or queueing;
+7. atomically claim the request and ordered references in the durable replay journal;
+8. durably audit the admitted request;
+9. only then invoke trusted registered UNSW inference and Attack-only persistence;
+10. durably audit the completion or fixed failure disposition;
+11. atomically complete replay with the exact sanitized response; and
+12. attempt the bounded response write before releasing the execution lease.
 
 Any failure through step 8 causes zero calls to the predictor and zero calls to
 `AlertCandidateRepository.insert`. No partially read or partially validated batch reaches inference.
@@ -273,10 +279,10 @@ caller iterator crosses the admission boundary.
 
 The order deliberately consumes a rate token when an already authenticated attempt finds concurrency
 busy. Otherwise a producer could bypass the six-per-minute control by repeatedly probing a saturated
-worker. Authentication, disabled/revoked credential, or producer/source-route rejection occurs before
-the gate is called and creates no rate or concurrency state. Rate denial occurs before concurrency and
-body reading. Concurrency denial is immediate `server_busy`; queue capacity is exactly zero. The later
-orchestration layer, not the gate itself, will perform the replay claim.
+worker. Authentication, disabled/revoked credential, malformed body, or producer/source-route rejection
+occurs before the gate is called and creates no rate or concurrency state. Rate denial occurs after
+bounded body admission and before concurrency. Concurrency denial is immediate `server_busy`; queue
+capacity is exactly zero. The orchestrator, not the gate itself, performs the replay claim.
 
 ### Internal rate and concurrency algorithm
 
@@ -386,11 +392,15 @@ weak lease are not treated as crash proof. The idempotent transaction changes on
 | Whole request processing | 300 seconds | terminate isolated worker; retain completed work; `processing_timeout` |
 | Admission/alert SQLite busy wait | 500 ms per operation | `503 service_busy`; no retry loop or queue |
 | Processing concurrency | 1 request globally and 1 per producer | `429 server_busy`; no queue |
-| Rate | token bucket: 6 requests/minute, burst 2, per producer | `429 rate_limited`; no body read |
+| Rate | token bucket: 6 requests/minute, burst 2, per producer | `429 rate_limited`; admitted bounded body already read; zero replay/inference/persistence calls |
 | Response body | 65,536 bytes | reject serializer contract violation with bounded `500 internal_error`; never truncate |
 
 The 256-record ceiling equals, and never exceeds, `MAX_INFERENCE_BATCH_SIZE`. Admission validates the
-whole batch before work. Processing is synchronous and stable-order but not transactionally atomic
+whole envelope before work. After the replay claim and mandatory admission audit, the trusted inference
+boundary verifies every registered member identity and ordinal, reads and digest-checks every required
+file, and adapts every row into an immutable boundary-owned prepared record before the first final-model
+call. Prediction consumes only those prepared records without re-reading caller-controlled input.
+Processing is synchronous and stable-order but not transactionally atomic
 across records: candidates already committed before a later timeout remain valid and journaled; no
 unstarted record is predicted or persisted. A worker process, not an uninterruptible application
 thread, must enforce processing deadlines. There is no in-memory backlog, retry loop, unbounded socket
@@ -416,21 +426,21 @@ per-record dispositions only after successful authentication. Unauthenticated re
 member digest, row, or event exists. No response contains submitted values, exception text, stack trace,
 SQL, path, hostname, endpoint, raw feature, model input, label, attack category, or secret.
 
-The frozen response representation is compact ASCII JSON with exact top-level keys
+Both response representations are compact ASCII JSON with exact top-level keys
 `schema_version`, `correlation_id`, `reason`, and `records`. Each record contains only the one-based
-`record_index`, an allowlisted `disposition`, and an allowlisted `reason`; it contains no request or
-event value. Sorted keys and compact separators are used, with one final newline. Using the longest
-frozen disposition/reason values independently for all 256 records produces 25,142 bytes, including
-the newline. Therefore the 65,536-byte response ceiling is consistent with the frozen worst case and
-leaves 40,394 bytes of margin. A regression test must calculate this value from the serializer; the
-implementation must reject an invalid response object rather than truncate it.
+`record_index`, an allowlisted `disposition`, and an allowlisted `reason`. V2 completed records also
+bind the allowlisted predicted class and finite probability, plus the stable candidate ID only for a
+persisted Attack. They contain no submitted request or event value. Sorted keys and compact separators
+are used, with one final newline. The v2 256-record all-Attack representation remains below the 65,536
+byte response ceiling. The implementation rejects an invalid response object rather than truncating it;
+v1 bytes and field restrictions remain backward compatible.
 
 The server correlation UUID identifies one handling attempt. The producer request ID identifies one
 authenticated submission. The stable source-event ID identifies a registered dataset event. The model's
 existing inference correlation UUID identifies one inference attempt. They are distinct and must not be
 used interchangeably.
 
-The immutable `producer_security_audit_event_v1` contract has exactly these fields:
+The immutable `producer_security_audit_event_v2` contract has exactly these fields:
 
 - server-generated canonical UUIDv4 `audit_event_id` and trusted UTC `event_time`;
 - optional server handling `correlation_id` UUID;
@@ -448,7 +458,7 @@ until authentication has internally resolved it. A request-ID digest is used ins
 request text. Contract construction rejects extra fields, arbitrary identifiers, invalid UUIDs/digests,
 non-UTC time, wrong types, and any stage/outcome/reason combination outside the frozen table below.
 
-| v1 event type | fixed stage | fixed outcome | preserved canonical reason mapping |
+| v2 event type | fixed stage | fixed outcome | preserved canonical reason mapping |
 |---|---|---|---|
 | `authentication_rejected` | `authentication` | `rejected` | `authentication_failed`, `credential_disabled`, `credential_revoked`, `credential_not_yet_valid`, `credential_expired` |
 | `producer_admission_rejected` | `admission` | `rejected` | `producer_mismatch`, `source_contract_denied`, `invalid_request`, `request_time_invalid`, `request_too_large`, `body_incomplete` |
@@ -459,14 +469,15 @@ non-UTC time, wrong types, and any stage/outcome/reason combination outside the 
 | `replay_conflict` | `replay` | `rejected` | `request_replay_rejected` |
 | `replay_outcome_unknown` | `replay` | `unknown` | `outcome_unknown` |
 | `request_completed` | `completion` | `completed` | `request_completed` |
+| `startup_recovery` | `recovery` | `completed` | `recovery_completed` |
 | `internal_failure` | `internal`, `processing`, or `audit` as fixed by reason | `failed` | `internal_error`, `registry_invalid`, `clock_unavailable`, `request_timeout`, `processing_timeout`, `audit_unavailable` |
 
 This preserves the policy's existing granular reason names beneath the broader frozen taxonomy instead
 of creating synonymous reason codes. The transport/orchestration milestone must select the mapping; the
 audit repository never accepts a client message or converts an exception to a field.
 
-`producer_security_audit_sqlite_v1` uses a strict validated metadata table, strict event table, and a
-unique `(event_time, audit_event_id)` ordering index with `PRAGMA user_version=1`. Initialization checks
+`producer_security_audit_sqlite_v2` uses a strict validated metadata table, strict event table, and a
+unique `(event_time, audit_event_id)` ordering index with `PRAGMA user_version=2`. Initialization checks
 the exact schema, table SQL, indexes, constraints, metadata, and database integrity. Appends use
 `BEGIN IMMEDIATE`, a 500 ms busy timeout, and one transaction. A first ID returns an immutable sanitized
 `created` result; an identical retry returns `existing`; the same ID with different security content
@@ -493,14 +504,16 @@ signature or encryption claim is made.
 
 For each newly admitted record, the intended code path is exactly:
 
-`mTLS authentication` → `producer/credential allowlist` → `bounded header validation` →
-`integer rate-token decision` → `nonqueueing concurrency lease` → `bounded body read` →
-`strict producer_ingest_request_v1 validation` → `timestamp and durable replay claim` →
+`mTLS authentication and producer/credential allowlist` → `bounded header and body read` →
+`strict producer_ingest_request_v1 validation` → `integer rate-token decision` →
+`nonqueueing concurrency lease` → `durable replay claim` → `durable request-admitted audit` →
 `unsw_registered_event_ref_v1 member/row allowlist` →
 `infer_and_persist_registered_attack` → `UnswNetworkInferenceBoundary.infer_registered` →
 `single-open-file hash/row-count verification` → `shared 49-column mapping` → `adapt_unsw_row` →
 `NetworkFlow` validation → exact `network_behavior_v1` projection → private frozen predictor →
-`build_alert_candidate` only for a completed Attack → `AlertCandidateRepository.insert`.
+`build_alert_candidate` only for a completed Attack → `AlertCandidateRepository.insert` →
+`durable completion audit` → `durable replay completion` → `bounded response write attempt` →
+`execution-lease release`.
 
 Normal, rejected, failed, timed-out-before-decision, unauthenticated, unadmitted, duplicate, and replayed
 requests do not create AlertCandidates. Exact completed duplicate requests do not predict again.
@@ -554,16 +567,17 @@ authentication or admission failure—not merely inspect response codes.
    from AlertCandidate persistence.
 3. Implement fixed process-local integer rate limiting and nonqueueing global/per-producer concurrency
    leases. **Implemented internally 2026-09-12.** Stable source-event orchestration remains required.
-4. Implement the bounded sanitized ten-event security-audit contract and local SQLite sink, including
+4. Implement the bounded sanitized security-audit contract and local SQLite sink, including
    capacity, failure-injection, concurrency, restart, drift/integrity and downstream-zero-call tests.
-   **Implemented internally 2026-09-13.** It is not yet wired to request handling.
+   **Implemented internally 2026-09-13 and extended to v2 for audited startup recovery.**
 5. Add an isolated synchronous loopback TLS transport that directly terminates mTLS, enforces socket
    deadlines and exposes staged authenticated head/body/response handling. **Implemented internally
    2026-09-13.** It does not connect downstream components or run a serving loop.
 6. Add the fixed orchestrator joining transport, admission, gates, audit, replay and the existing trusted
-   inference/persistence workflow, then add bounded integrated failure/restart/resource evidence and
-   integrate correlation,
-   explanation, and dashboard contracts separately.
+   inference/persistence workflow. **Implemented internally 2026-09-13.** Bounded real-transport
+   success/failure/restart evidence is also implemented through the supported one-request entry. Add
+   worker-process deadline enforcement and broader resource/recovery evidence next, and integrate
+   correlation, explanation, and dashboard contracts separately.
 7. Before enabling Azure, approve a live representation and stable event/candidate identity, verify
    feature semantics, provision Azure-held credentials, and repeat admission/replay/resource tests in
    that deployment. Do not map Azure telemetry to registered UNSW identity.
@@ -608,3 +622,43 @@ with 795 tests and the same four TF-005 warnings; repository-wide Ruff and both 
 file Black checks pass. Downstream replay, predictor, AlertCandidate and audit-repository spies remain
 at zero throughout transport tests. This component evidence does not establish final orchestration,
 integrated restart/recovery/resource behavior or a production-grade HTTP service.
+
+The bounded orchestrator-integration milestone also uses only ephemeral OpenSSL credentials, real IPv4
+loopback TLS 1.3 with required client certificates, and temporary SQLite repositories. Eight cases prove
+that authenticated requests reach `ProducerOrchestrator.process_one`; controlled Normal and Attack
+outcomes produce bound responses with Attack-only persistence; an exact retry after reopening all three
+repositories returns identical cached response bytes without another inference or alert insertion;
+authentication/admission rejection and injected pre-inference audit failure have zero predictor and alert
+insertion calls; replay-completion failure sends no success bytes; and a valid first reference followed
+by an invalid ordinal, unknown member, or malformed registered row passes through the actual registered
+reader/adapter while making zero final-predictor and alert-insertion calls. Review regressions additionally
+prove fatal finalization timeout after persistence, explicit recovery to `outcome_unknown`, request-bound
+failure audit after an actual committed-alert ambiguity, connection closure despite lease-release failure,
+and exact sanitized v1/v2 response validation. Every bounded service thread is
+joined, every listener/client/accepted connection is closed, every acquired lease is released, SQLite
+sidecars are absent, and the temporary database and credential directories are removed. One separately
+identified registered `UNSW-NB15_1.csv` record completed the same path through the available frozen
+Random Forest artifacts. That smoke verifies wiring and artifact integrity only; it is not retraining,
+refitting, tuning, dataset evaluation, or accuracy evidence. The focused producer/binding/persistence
+slice passes 422 tests, and the single post-stabilization full suite passes 852 tests with the four
+existing TF-005 warnings and no skips.
+The restricted test sandbox denied loopback bind until the normal socket-test approval was used.
+
+The subsequent bounded closure review identified one remaining failure-audit gap: an ambiguous replay
+claim poisoned the generation without attempting request-bound auditing. Two committed-claim regression
+cases, using real temporary SQLite journals and healthy/failing audit sinks, first failed with zero
+audit attempts. The claim-error path now calls the existing nonrecursive `_raise_ambiguous` helper with
+the validated admission record and authenticated session. It attempts exactly one allowlisted
+`internal_failure` / `internal` / `failed` / `internal_error` event carrying the trusted correlation,
+producer, source-contract and credential identities plus request/body digests. A healthy sink persists
+the event. Audit append failure preserves the original sanitized `replay_claim_ambiguous` error without
+recursion. Both cases retain fatal state and durable `in_progress` replay pending explicit recovery,
+send no response, make zero predictor/alert-insertion calls, and close the connection and release the
+lease. Ordinary replay-conflict and retry handling is unchanged.
+
+Both new cases and the existing claim-error regression pass after correction. The directly related
+orchestrator/replay/audit slice passes 156 tests. One full suite after stabilization passes 854 tests
+with four existing TF-005 warnings and no skips; repository Ruff, all nine individual 30-second-bounded
+Black checks, and whitespace checks pass. Temporary test resources are removed and all nine frozen
+artifact hashes remain unchanged. TF-008/TF-009 remain open for their operational acceptance requirements;
+this correction neither implements worker isolation nor establishes demo or production readiness.

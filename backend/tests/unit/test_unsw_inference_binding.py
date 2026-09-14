@@ -73,7 +73,9 @@ def registered_root(tmp_path, monkeypatch):
     (tmp_path / "NUSW-NB15_features.csv").write_bytes(metadata)
     raw_path = tmp_path / "UNSW-NB15_1.csv"
     with raw_path.open("w", encoding="utf-8", newline="") as handle:
-        csv.writer(handle, lineterminator="\n").writerow(raw_row())
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(raw_row())
+        writer.writerow(raw_row(stime="1421928001"))
     raw_bytes = raw_path.read_bytes()
     manifest = yaml.safe_dump(
         {
@@ -90,7 +92,7 @@ def registered_root(tmp_path, monkeypatch):
                 {
                     "path": "UNSW-NB15_1.csv",
                     "role": "raw",
-                    "rows": 1,
+                    "rows": 2,
                     "sha256": hashlib.sha256(raw_bytes).hexdigest(),
                 },
             ],
@@ -213,6 +215,55 @@ def test_snapshot_is_immutable_and_input_mutation_cannot_replace_predictors(boun
     assert batch.succeeded == 2
     assert [matrix[0, 3] for matrix in spy.calls] == [120, 240]
     assert request.feature_values[3] == 120
+
+
+@pytest.mark.parametrize(
+    "references",
+    [
+        ((None, 1),),
+        (("f" * 64, 1),),
+    ],
+)
+def test_registered_batch_rejects_malformed_identity_before_prediction(boundary, references):
+    public, spy = boundary
+    with pytest.raises(inference.NetworkInferenceError, match="^registered_event_invalid$"):
+        public.infer_registered_batch(references=references)
+    assert spy.calls == []
+
+
+def test_registered_batch_preflights_later_ordinal_before_prediction(boundary):
+    public, spy = boundary
+    member = next(iter(public._registered_source.members_by_sha256))
+    with pytest.raises(inference.NetworkInferenceError, match="^registered_event_invalid$"):
+        public.infer_registered_batch(references=((member, 1), (member, 3)))
+    assert spy.calls == []
+
+
+@pytest.mark.parametrize("failure", ["integrity", "adaptation"])
+def test_registered_batch_preflights_later_source_failure_before_prediction(
+    boundary, monkeypatch, failure
+):
+    public, spy = boundary
+    member = next(iter(public._registered_source.members_by_sha256))
+    original = public._registered_row
+    calls = 0
+
+    def registered_row(selected, row_number):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            if failure == "integrity":
+                raise inference.NetworkInferenceError("registered_event_unavailable")
+            return raw_row(dur="malformed")
+        return original(selected, row_number)
+
+    monkeypatch.setattr(public, "_registered_row", registered_row)
+    with pytest.raises(
+        inference.NetworkInferenceError,
+        match="^registered_event_(?:unavailable|rejected)$",
+    ):
+        public.infer_registered_batch(references=((member, 1), (member, 2)))
+    assert spy.calls == []
 
 
 def test_labels_categories_endpoints_and_raw_derived_fields_are_not_predictors(boundary):

@@ -48,6 +48,7 @@ TAXONOMY = (
     ("replay_conflict", "replay", "rejected", "request_replay_rejected"),
     ("replay_outcome_unknown", "replay", "unknown", "outcome_unknown"),
     ("request_completed", "completion", "completed", "request_completed"),
+    ("startup_recovery", "recovery", "completed", "recovery_completed"),
     ("internal_failure", "internal", "failed", "internal_error"),
 )
 
@@ -377,7 +378,7 @@ def test_reopen_rejects_schema_index_or_constraint_drift(tmp_path, mutation):
     ProducerSecurityAuditRepository(path)
     with sqlite3.connect(path) as connection:
         if mutation == "version":
-            connection.execute("PRAGMA user_version = 2")
+            connection.execute(f"PRAGMA user_version = {AUDIT_REPOSITORY_SCHEMA_VERSION + 1}")
         elif mutation == "table":
             connection.execute("ALTER TABLE audit_events ADD COLUMN message TEXT")
         elif mutation == "index":

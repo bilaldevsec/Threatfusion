@@ -207,6 +207,16 @@ class RegisteredUnswInferenceResult:
     inference: NetworkInferenceResult
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class _PreparedRegisteredUnswInference:
+    """Immutable registered row prepared by, and usable only with, its boundary."""
+
+    boundary_token: object
+    source_event_id: str
+    observed_at: datetime
+    request: _NetworkInferenceRequest
+
+
 @dataclass(frozen=True, slots=True)
 class _FeatureRecord:
     duration_ms: float
@@ -648,6 +658,7 @@ class UnswNetworkInferenceBoundary:
         self._project_root = project_root.resolve()
         self._registered_source = _registered_unsw_source(self._project_root)
         self._raw_feature_names = self._registered_source.feature_names
+        self._registered_preparation_token = object()
         preprocessing, logistic, forest = default_artifact_directories(project_root)
         self._predictor = _FrozenNetworkPredictor(
             preprocessing_directory=preprocessing,
@@ -752,6 +763,88 @@ class UnswNetworkInferenceBoundary:
             raise NetworkInferenceError("registered_event_unavailable")
         return selected
 
+    def _prepare_registered_batch(
+        self, *, references: tuple[tuple[str, int], ...]
+    ) -> tuple[_PreparedRegisteredUnswInference, ...]:
+        """Verify and adapt every registered reference before returning any model input."""
+        if (
+            type(references) is not tuple
+            or not 1 <= len(references) <= MAX_INFERENCE_BATCH_SIZE
+            or any(type(reference) is not tuple or len(reference) != 2 for reference in references)
+        ):
+            raise NetworkInferenceError("registered_event_invalid")
+        resolved: list[tuple[_RegisteredUnswMember, int]] = []
+        seen: set[tuple[str, int]] = set()
+        for source_member_sha256, row_number in references:
+            if (
+                type(source_member_sha256) is not str
+                or len(source_member_sha256) != 64
+                or any(character not in "0123456789abcdef" for character in source_member_sha256)
+                or type(row_number) is not int
+                or row_number <= 0
+            ):
+                raise NetworkInferenceError("registered_event_invalid")
+            member = self._registered_source.members_by_sha256.get(source_member_sha256)
+            identity = (source_member_sha256, row_number)
+            if member is None or row_number > member.rows or identity in seen:
+                raise NetworkInferenceError("registered_event_invalid")
+            seen.add(identity)
+            resolved.append((member, row_number))
+
+        prepared: list[_PreparedRegisteredUnswInference] = []
+        for member, row_number in resolved:
+            adapted = self._adapt_raw(self._registered_row(member, row_number))
+            if adapted is None:
+                raise NetworkInferenceError("registered_event_rejected")
+            request, observed_at = adapted
+            prepared.append(
+                _PreparedRegisteredUnswInference(
+                    self._registered_preparation_token,
+                    derive_source_event_id(
+                        source_representation=UNSW_NB15_ARGUS_RAW_REPRESENTATION_V1,
+                        manifest_sha256=self._registered_source.manifest_sha256,
+                        source_member_sha256=member.sha256,
+                        row_number=row_number,
+                    ),
+                    observed_at,
+                    request,
+                )
+            )
+        return tuple(prepared)
+
+    def _infer_prepared_registered(
+        self,
+        prepared: _PreparedRegisteredUnswInference,
+        *,
+        model: NetworkModelChoice,
+    ) -> RegisteredUnswInferenceResult:
+        """Predict one immutable row prepared by this exact registered boundary."""
+        if (
+            type(prepared) is not _PreparedRegisteredUnswInference
+            or prepared.boundary_token is not self._registered_preparation_token
+            or type(model) is not NetworkModelChoice
+        ):
+            raise NetworkInferenceError("registered_event_invalid")
+        result = self._predictor.infer(prepared.request, model=model)
+        return RegisteredUnswInferenceResult(
+            source_event_id=prepared.source_event_id,
+            observed_at=prepared.observed_at,
+            model_artifact_sha256=APPROVED_MODEL_HASHES[model.value]["model"],
+            inference=result,
+        )
+
+    def infer_registered_batch(
+        self,
+        *,
+        references: tuple[tuple[str, int], ...],
+        model: NetworkModelChoice = NetworkModelChoice.RANDOM_FOREST,
+    ) -> tuple[RegisteredUnswInferenceResult, ...]:
+        """Preflight a complete registered batch, then predict it in stable order."""
+        if type(model) is not NetworkModelChoice:
+            raise NetworkInferenceError("model_not_supported")
+        prepared = self._prepare_registered_batch(references=references)
+        return tuple(self._infer_prepared_registered(item, model=model) for item in prepared)
+
     def infer_registered(
         self,
         *,
@@ -760,36 +853,9 @@ class UnswNetworkInferenceBoundary:
         model: NetworkModelChoice = NetworkModelChoice.RANDOM_FOREST,
     ) -> RegisteredUnswInferenceResult:
         """Verify, adapt and infer one registered offline UNSW source row."""
-        if type(model) is not NetworkModelChoice:
-            raise NetworkInferenceError("model_not_supported")
-        if (
-            type(source_member_sha256) is not str
-            or len(source_member_sha256) != 64
-            or any(character not in "0123456789abcdef" for character in source_member_sha256)
-            or type(row_number) is not int
-            or row_number <= 0
-        ):
-            raise NetworkInferenceError("registered_event_invalid")
-        member = self._registered_source.members_by_sha256.get(source_member_sha256)
-        if member is None or row_number > member.rows:
-            raise NetworkInferenceError("registered_event_invalid")
-        adapted = self._adapt_raw(self._registered_row(member, row_number))
-        if adapted is None:
-            raise NetworkInferenceError("registered_event_rejected")
-        request, observed_at = adapted
-        source_event_id = derive_source_event_id(
-            source_representation=UNSW_NB15_ARGUS_RAW_REPRESENTATION_V1,
-            manifest_sha256=self._registered_source.manifest_sha256,
-            source_member_sha256=member.sha256,
-            row_number=row_number,
-        )
-        result = self._predictor.infer(request, model=model)
-        return RegisteredUnswInferenceResult(
-            source_event_id=source_event_id,
-            observed_at=observed_at,
-            model_artifact_sha256=APPROVED_MODEL_HASHES[model.value]["model"],
-            inference=result,
-        )
+        return self.infer_registered_batch(
+            references=((source_member_sha256, row_number),), model=model
+        )[0]
 
     def infer(
         self,

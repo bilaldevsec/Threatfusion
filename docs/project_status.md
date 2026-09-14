@@ -2,9 +2,9 @@
 
 ## Snapshot
 
-Status date: 2026-09-13. Branch: `main`. The directly terminating loopback TLS transport milestone began from a
-clean tree with nothing staged and verified HEAD and `origin/main` at
-`273d65643308444a92e18829dc7dc2c36b35a31b`. The implementation below remains local and unstaged;
+Status date: 2026-09-14. Branch: `main`. The producer-orchestrator milestone resumed from a dirty,
+unstaged tree with verified HEAD and `origin/main` at
+`42c079cd02c8e5ae8d0808a3fb20240273b930cf`. The implementation below remains local and unstaged;
 HEAD and `origin/main` remain at that checkpoint.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0
@@ -138,22 +138,22 @@ integrated product acceptance are absent.
   passes with 662 tests and the four existing TF-005 warnings; repository-wide Ruff and both individual
   bounded Black checks pass.
 
-- The separate internal `producer_security_audit_event_v1` contract and
-  `producer_security_audit_sqlite_v1` repository implement a fixed ten-event taxonomy over the
-  existing granular admission/replay reason codes. Events contain only trusted UTC time, a generated
-  UUIDv4, optional server correlation UUID, fixed stage/outcome/reason, internally resolved producer
+- The internal `producer_security_audit_event_v2` contract and
+  `producer_security_audit_sqlite_v2` repository extend the fixed taxonomy with an exact
+  `startup_recovery` event while preserving the existing admission/replay reason codes. Events contain
+  only trusted UTC time, a generated UUIDv4, optional server correlation UUID, fixed
+  stage/outcome/reason, internally resolved producer
   and source-contract IDs, and optional already-available credential/request/body SHA-256 digests.
-  The strict SQLite v1 boundary uses atomic `BEGIN IMMEDIATE` appends, exact schema/index/integrity and
+  The strict SQLite v2 boundary uses atomic `BEGIN IMMEDIATE` appends, exact schema/index/integrity and
   row validation, equivalent retry by audit-event ID, conflict rejection, 500 ms busy waits, stable
   bounded listing, restart preservation, and a hard 100,000-event cap. A full sink fails closed without
-  deleting, overwriting, or wrapping history; later orchestration must map unpersistable denial evidence
+  deleting, overwriting, or wrapping history; orchestration maps unpersistable denial evidence
   to generic `audit_unavailable` and must block any request that would otherwise reach prediction or
   persistence. The repository exposes no update/delete API and never calls replay processing, inference,
   or AlertCandidate persistence. SQLite is not tamper-evident and provides no protection from a
   filesystem owner, compromised process, SQLite administrator, or kernel. Export, retention, rotation,
-  backup, and recovery remain production work. All 66 audit tests and 163 directly related admission,
-  gate, replay, and alert-persistence tests pass. The complete suite passes with 728 tests and the four
-  existing TF-005 warnings; repository-wide Ruff and both individual bounded Black checks pass.
+  backup, and recovery remain production work. Current component validation is included in the final
+  focused and full-suite evidence below.
 
 - The internal producer TLS transport directly terminates TLS 1.3 on exactly IPv4 `127.0.0.1`,
   requires a CA-verified client certificate, obtains verified DER and decoded peer metadata, derives
@@ -174,6 +174,53 @@ integrated product acceptance are absent.
   claim if TLS terminates elsewhere. All 67 TLS transport tests and 210 directly related admission,
   gate, replay and audit tests pass. The complete suite passes with 795 tests and the four existing
   TF-005 warnings; repository-wide Ruff and both individual bounded Black checks pass.
+
+- The fixed synchronous producer orchestrator now joins directly terminated TLS identity, full
+  application admission, rate/concurrency, durable replay claim, durable request audit, registered
+  Random Forest inference, Attack-only candidate persistence, completion audit, replay completion,
+  bounded response writing and exact lease release in that order. V2 responses bind each disposition to
+  predicted class/probability and expose a stable candidate ID only for persisted Attacks while
+  preserving legacy v1 bytes. Exact replay retries are byte-identical and make zero predictor or alert
+  calls; `in_progress` and terminal `outcome_unknown` remain non-executing; write failure still permits
+  the same durably completed cached retry. Ambiguous inference/persistence/response-finalization/replay
+  completion and lease-release failures poison the service generation, and explicit abandoned-generation
+  recovery is audited. The adversarial review corrected admission/gate ordering, a slow sanitized
+  inference rejection that bypassed timeout classification, and unhashable v2 fields that escaped fixed
+  response validation. A follow-up invariant review then reproduced and corrected successful response
+  writing before durable replay completion. Bounded integration now drives the supported
+  `ProducerOrchestrator.process_one` entry through a real IPv4-loopback TLS 1.3 connection with mutual
+  certificate authentication and temporary SQLite replay, audit, and alert repositories. Controlled
+  Normal/Attack results prove response binding and Attack-only insertion; an exact retry after repository
+  reopen returns identical cached response bytes with zero new inference or alert insertion. Real
+  authentication/admission rejection and an injected pre-inference audit failure have zero predictor and
+  alert-insertion calls, while injected replay-completion failure sends no success bytes. A correction
+  review then established six further regressions and fixed them without changing the supported scope:
+  all registered identities, ordinals, file digests and adapted immutable rows are now preflighted before
+  the first final-predictor call; prepared rows are bound to the boundary that verified them; finalization
+  timeout and ambiguous persistence/replay/response failures poison the generation and attempt a
+  request-bound failure audit; connection closure survives lease-release failure; and v1/v2 response
+  wire keys, reasons and malformed construction fail closed. Real TLS cases cover invalid later ordinal,
+  unknown member and malformed later registered row through the actual reader/adapter with zero final
+  predictor and alert-insertion calls. Each case joins
+  its bounded thread, closes listener/client/accepted sockets, releases any lease, closes per-operation
+  SQLite connections, and removes temporary databases and credentials. One available registered
+  `UNSW-NB15_1.csv` record also completed the same TLS/orchestrator path through the verified frozen Random
+  Forest artifacts; this is functional evidence only, not accuracy evaluation. Final validation passed
+  422 focused producer/binding/persistence tests, eight real loopback integration cases, and one complete
+  852-test suite with the four existing TF-005 warnings and no skips.
+  A bounded closure review then found that ambiguous replay-claim failure still bypassed failure
+  auditing. Two new regressions first failed with zero audit attempts after a real temporary SQLite
+  claim committed. That path now calls the existing nonrecursive `_raise_ambiguous` helper with the
+  validated admission record and authenticated session. A healthy sink persists one request-bound
+  `internal_failure` event; a failing sink is attempted once without replacing the sanitized
+  `replay_claim_ambiguous` error. Both cases preserve fatal state and durable `in_progress` replay,
+  send no response, make zero predictor/alert-insertion calls, and close the connection and release
+  the lease. Ordinary replay conflicts and retries retain their existing handling. After this scoped
+  correction, all 156 orchestrator/replay/audit tests pass; one full suite passes 854 tests with the
+  same four TF-005 warnings and no skips. Repository Ruff and all nine individual bounded Black
+  checks pass. The other five findings and replay ordering were not reopened for review.
+  Processing deadlines are detected around synchronous calls but cannot terminate a blocked predictor;
+  isolated worker-process enforcement and a serving loop remain absent.
 
 - `network_behavior_v1` is valid as the frozen input order for the historical UNSW models, but its
   cross-source byte mapping is not a validated common measurement contract. Five byte-dependent CIC
@@ -213,8 +260,9 @@ integrated product acceptance are absent.
 
 - A supported end-to-end product path connecting the implemented registered-offline inference and
   AlertCandidate persistence boundary to correlation, explanation and dashboard display.
-- Stable orchestration joining TLS transport, admission, rate/concurrency gates, security audit,
-  replay, registered inference and AlertCandidate persistence.
+- A bounded worker-process/service boundary and serving loop; the synchronous orchestrator alone cannot
+  terminate a blocked predictor call. The bounded one-request real TLS/orchestrator integration harness
+  is test evidence, not a production service loop.
 - Product API/view-model contracts, dashboard behavior, backup/recovery, optional-service degradation,
   and integrated resource/latency evidence.
 - Approval-gated allowlisted containment with audit and rollback. No automatic containment is supported.
@@ -223,13 +271,17 @@ integrated product acceptance are absent.
 
 ## One next implementation task
 
-Implement and unit-test the fixed fail-closed producer orchestrator joining the existing transport,
-admission, rate/concurrency, audit, replay, registered inference and Attack-only persistence boundaries.
+Implement a bounded worker-process execution wrapper around the synchronous orchestrator and prove its
+30-second record and 300-second request termination behavior through real loopback TLS integration tests.
 
-Resume handoff: the durable three-state request replay journal is implemented and tested on top of the
-transport-independent admission record. Process-local rate/concurrency controls are now implemented.
-The bounded audit sink and directly terminating staged loopback TLS transport are implemented
-internally. Stable event orchestration and a service remain unimplemented; TF-008/TF-009 stay
-open. Nothing is staged, committed or pushed. No dataset/artifact access, package download, training,
-fitting, preprocessing, evaluation, listener, AlertCandidate persistence change, dashboard, LLM,
-correlation, SOAR or deep-learning work occurred.
+Resume handoff: the remaining finding 3 replay-claim auditing gap is corrected. Both new committed-claim
+cases failed before the helper call and pass afterward, including one failed audit append without
+recursion. The scoped change touches only `producer_orchestrator.py`, its unit tests, and the three
+related status/issue/protocol documents. All 156 orchestrator/replay/audit tests and one post-stabilization
+854-test full suite pass, with four existing TF-005 warnings and no skips. The full suite used normal
+loopback socket access and removed its temporary resources; Ruff, nine individual bounded Black checks,
+and whitespace checks pass. All nine frozen artifact hashes are unchanged. TF-008/TF-009 stay open for
+a terminating worker/service, broader reliability/resource evidence, and downstream product integration;
+this is not demo or production readiness. The same twelve paths remain unstaged, with an empty index
+and unchanged HEAD/origin. No download, dataset evaluation, training, artifact alteration or worker
+implementation occurred. Next action: review the unstaged milestone for a separately authorized checkpoint.

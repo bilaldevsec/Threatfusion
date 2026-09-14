@@ -91,6 +91,12 @@ _RESPONSE_STATUS = {
     "registered_event_invalid": (400, "Bad Request"),
     "registered_event_unavailable": (503, "Service Unavailable"),
     "registered_event_rejected": (400, "Bad Request"),
+    "rate_limited": (429, "Too Many Requests"),
+    "server_busy": (429, "Too Many Requests"),
+    "audit_unavailable": (503, "Service Unavailable"),
+    "internal_error": (503, "Service Unavailable"),
+    "processing_timeout": (503, "Service Unavailable"),
+    "inference_rejected": (400, "Bad Request"),
 }
 _GENERIC_INTERNAL_BODY = (
     json.dumps(

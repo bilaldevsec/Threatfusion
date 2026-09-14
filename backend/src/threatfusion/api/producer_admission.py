@@ -19,6 +19,7 @@ from typing import BinaryIO
 
 PRODUCER_INGEST_REQUEST_SCHEMA_VERSION = "producer_ingest_request_v1"
 PRODUCER_INGEST_RESPONSE_SCHEMA_VERSION = "producer_ingest_response_v1"
+PRODUCER_ORCHESTRATOR_RESPONSE_SCHEMA_VERSION = "producer_ingest_response_v2"
 REGISTERED_UNSW_PRODUCER_ID = "tf-demo-unsw-replay-01"
 REGISTERED_UNSW_PRODUCER_TYPE = "registered_unsw_replay_v1"
 REGISTERED_UNSW_SOURCE_CONTRACT = "unsw_registered_event_ref_v1"
@@ -58,7 +59,7 @@ _RECORD_KEYS = frozenset({"source_member_sha256", "row_number"})
 RESPONSE_DISPOSITIONS = frozenset(
     {"created", "existing", "not_actionable", "rejected", "duplicate", "outcome_unknown"}
 )
-RESPONSE_REASONS = frozenset(
+LEGACY_RESPONSE_REASONS = frozenset(
     {
         "request_completed",
         "request_rejected",
@@ -72,6 +73,16 @@ RESPONSE_REASONS = frozenset(
         "registered_event_invalid",
         "registered_event_unavailable",
         "registered_event_rejected",
+    }
+)
+RESPONSE_REASONS = LEGACY_RESPONSE_REASONS | frozenset(
+    {
+        "rate_limited",
+        "server_busy",
+        "audit_unavailable",
+        "internal_error",
+        "processing_timeout",
+        "inference_rejected",
     }
 )
 
@@ -628,6 +639,9 @@ class ProducerRecordDisposition:
     record_index: int
     disposition: str
     reason: str
+    predicted_class: str | None = None
+    attack_probability: float | None = None
+    alert_candidate_id: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -637,6 +651,32 @@ class ProducerRecordDisposition:
             or self.disposition not in RESPONSE_DISPOSITIONS
             or type(self.reason) is not str
             or self.reason not in RESPONSE_REASONS
+            or (
+                self.predicted_class is not None
+                and (
+                    type(self.predicted_class) is not str
+                    or self.predicted_class not in {"Normal", "Attack"}
+                )
+            )
+            or (self.predicted_class is None) != (self.attack_probability is None)
+            or (
+                self.attack_probability is not None
+                and (
+                    type(self.attack_probability) is not float
+                    or not math.isfinite(self.attack_probability)
+                    or not 0.0 <= self.attack_probability <= 1.0
+                )
+            )
+            or (
+                self.alert_candidate_id is not None
+                and (
+                    type(self.alert_candidate_id) is not str
+                    or not self.alert_candidate_id.startswith("alert_candidate_v1:")
+                    or not _is_sha256(self.alert_candidate_id.removeprefix("alert_candidate_v1:"))
+                    or self.predicted_class != "Attack"
+                    or self.disposition not in {"created", "existing"}
+                )
+            )
         ):
             raise _fail("response_invalid", status_code=500, security_event="internal_error")
 
@@ -655,7 +695,12 @@ class ProducerResponse:
 
     def __post_init__(self) -> None:
         if (
-            self.schema_version != PRODUCER_INGEST_RESPONSE_SCHEMA_VERSION
+            type(self.schema_version) is not str
+            or self.schema_version
+            not in {
+                PRODUCER_INGEST_RESPONSE_SCHEMA_VERSION,
+                PRODUCER_ORCHESTRATOR_RESPONSE_SCHEMA_VERSION,
+            }
             or not _is_uuid4(self.correlation_id)
             or type(self.reason) is not str
             or self.reason not in RESPONSE_REASONS
@@ -664,6 +709,68 @@ class ProducerResponse:
             or any(type(record) is not ProducerRecordDisposition for record in self.records)
             or tuple(record.record_index for record in self.records)
             != tuple(range(1, len(self.records) + 1))
+        ):
+            raise _fail("response_invalid", status_code=500, security_event="internal_error")
+        v2_top_level_reasons = {
+            "request_completed",
+            "request_rejected",
+            "request_in_progress",
+            "request_replay_rejected",
+            "outcome_unknown",
+            "rate_limited",
+            "server_busy",
+            "audit_unavailable",
+            "internal_error",
+            "processing_timeout",
+        }
+        v2_records_valid = all(
+            (
+                record.disposition in {"created", "existing"}
+                and record.reason
+                == (
+                    "alert_candidate_created"
+                    if record.disposition == "created"
+                    else "alert_candidate_already_exists"
+                )
+                and record.predicted_class == "Attack"
+                and record.attack_probability is not None
+                and record.alert_candidate_id is not None
+            )
+            or (
+                record.disposition == "not_actionable"
+                and record.reason == "inference_not_actionable"
+                and record.predicted_class == "Normal"
+                and record.attack_probability is not None
+                and record.alert_candidate_id is None
+            )
+            or (
+                record.disposition == "rejected"
+                and record.reason == "inference_rejected"
+                and record.predicted_class is None
+                and record.attack_probability is None
+                and record.alert_candidate_id is None
+            )
+            for record in self.records
+        )
+        if (
+            self.schema_version == PRODUCER_INGEST_RESPONSE_SCHEMA_VERSION
+            and (
+                self.reason not in LEGACY_RESPONSE_REASONS
+                or any(record.reason not in LEGACY_RESPONSE_REASONS for record in self.records)
+                or any(
+                    record.predicted_class is not None
+                    or record.attack_probability is not None
+                    or record.alert_candidate_id is not None
+                    for record in self.records
+                )
+            )
+        ) or (
+            self.schema_version == PRODUCER_ORCHESTRATOR_RESPONSE_SCHEMA_VERSION
+            and (
+                self.reason not in v2_top_level_reasons
+                or (self.reason == "request_completed") != bool(self.records)
+                or not v2_records_valid
+            )
         ):
             raise _fail("response_invalid", status_code=500, security_event="internal_error")
 
@@ -685,6 +792,19 @@ def serialize_producer_response(response: ProducerResponse) -> bytes:
                 "disposition": record.disposition,
                 "reason": record.reason,
             }
+            | (
+                {
+                    "predicted_class": record.predicted_class,
+                    "attack_probability": record.attack_probability,
+                }
+                if record.predicted_class is not None
+                else {}
+            )
+            | (
+                {"alert_candidate_id": record.alert_candidate_id}
+                if record.alert_candidate_id is not None
+                else {}
+            )
             for record in response.records
         ],
     }
@@ -727,23 +847,56 @@ def decode_producer_response(encoded: bytes) -> ProducerResponse:
     records_value = payload["records"]
     if type(records_value) is not list:
         raise _fail("response_invalid", status_code=500, security_event="internal_error")
+    schema_version = payload["schema_version"]
+    if type(schema_version) is not str or schema_version not in {
+        PRODUCER_INGEST_RESPONSE_SCHEMA_VERSION,
+        PRODUCER_ORCHESTRATOR_RESPONSE_SCHEMA_VERSION,
+    }:
+        raise _fail("response_invalid", status_code=500, security_event="internal_error")
     records: list[ProducerRecordDisposition] = []
     for value in records_value:
-        if type(value) is not dict or frozenset(value) != {
-            "record_index",
-            "disposition",
-            "reason",
-        }:
-            raise _fail("response_invalid", status_code=500, security_event="internal_error")
-        records.append(
-            ProducerRecordDisposition(
-                record_index=value["record_index"],
-                disposition=value["disposition"],
-                reason=value["reason"],
-            )
+        allowed_keys = (
+            {"record_index", "disposition", "reason"}
+            if schema_version == PRODUCER_INGEST_RESPONSE_SCHEMA_VERSION
+            else {
+                "record_index",
+                "disposition",
+                "reason",
+                "predicted_class",
+                "attack_probability",
+                "alert_candidate_id",
+            }
         )
+        if (
+            type(value) is not dict
+            or not {
+                "record_index",
+                "disposition",
+                "reason",
+            }.issubset(value)
+            or not frozenset(value).issubset(allowed_keys)
+        ):
+            raise _fail("response_invalid", status_code=500, security_event="internal_error")
+        if ("predicted_class" in value) != ("attack_probability" in value):
+            raise _fail("response_invalid", status_code=500, security_event="internal_error")
+        record = ProducerRecordDisposition(
+            record_index=value["record_index"],
+            disposition=value["disposition"],
+            reason=value["reason"],
+            predicted_class=value.get("predicted_class"),
+            attack_probability=value.get("attack_probability"),
+            alert_candidate_id=value.get("alert_candidate_id"),
+        )
+        expected_keys = {"record_index", "disposition", "reason"}
+        if record.predicted_class is not None:
+            expected_keys.update({"predicted_class", "attack_probability"})
+        if record.alert_candidate_id is not None:
+            expected_keys.add("alert_candidate_id")
+        if frozenset(value) != expected_keys:
+            raise _fail("response_invalid", status_code=500, security_event="internal_error")
+        records.append(record)
     return ProducerResponse(
-        schema_version=payload["schema_version"],
+        schema_version=schema_version,
         correlation_id=payload["correlation_id"],
         reason=payload["reason"],
         records=tuple(records),

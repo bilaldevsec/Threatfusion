@@ -20,9 +20,9 @@ from threatfusion.api.producer_admission import (
 )
 from threatfusion.db.alert_repository import SQLITE_BUSY_TIMEOUT_MS
 
-AUDIT_EVENT_SCHEMA_VERSION = "producer_security_audit_event_v1"
-AUDIT_REPOSITORY_SCHEMA_VERSION = 1
-AUDIT_REPOSITORY_SCHEMA_IDENTITY = "producer_security_audit_sqlite_v1"
+AUDIT_EVENT_SCHEMA_VERSION = "producer_security_audit_event_v2"
+AUDIT_REPOSITORY_SCHEMA_VERSION = 2
+AUDIT_REPOSITORY_SCHEMA_IDENTITY = "producer_security_audit_sqlite_v2"
 MAX_AUDIT_EVENTS = 100_000
 MAX_AUDIT_LIST_LIMIT = 100
 
@@ -37,6 +37,7 @@ EVENT_TYPES = frozenset(
         "replay_conflict",
         "replay_outcome_unknown",
         "request_completed",
+        "startup_recovery",
         "internal_failure",
     }
 )
@@ -86,6 +87,7 @@ _EVENT_DISPOSITIONS = frozenset(
         ("replay_conflict", "replay", "rejected", "request_replay_rejected"),
         ("replay_outcome_unknown", "replay", "unknown", "outcome_unknown"),
         ("request_completed", "completion", "completed", "request_completed"),
+        ("startup_recovery", "recovery", "completed", "recovery_completed"),
         ("internal_failure", "internal", "failed", "internal_error"),
         ("internal_failure", "internal", "failed", "registry_invalid"),
         ("internal_failure", "internal", "failed", "clock_unavailable"),
