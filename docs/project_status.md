@@ -2,10 +2,11 @@
 
 ## Snapshot
 
-Status date: 2026-09-14. Branch: `main`. The producer-orchestrator milestone resumed from a dirty,
-unstaged tree with verified HEAD and `origin/main` at
-`42c079cd02c8e5ae8d0808a3fb20240273b930cf`. The implementation below remains local and unstaged;
-HEAD and `origin/main` remain at that checkpoint.
+Status date: 2026-09-15. Branch: `main`. The autoencoder milestone started with HEAD and `origin/main`
+both at `255c34286c9f98b995d18dce396be8c106b91f18` and only the three authorized preflight-document
+changes present. The implementation, dependency lock, tests, and documentation below remain local and
+unstaged; the generated autoencoder run is ignored. Existing split, preprocessing, and classical-model
+artifacts remain unchanged.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0
 readiness report still says split assignments are missing, but the later completed full assignment and
@@ -26,6 +27,49 @@ integrated product acceptance are absent.
 - Frozen logistic-regression and Random Forest baselines were trained on the full TRAIN matrix and
   evaluated on the same VALIDATION matrix. Their saved artifacts, model/preprocessor binding, metric
   definitions, resource controls, and reload behavior are documented and tested.
+- The frozen benign-only UNSW autoencoder milestone completed once without retry or tuning. Exact
+  `torch==2.10.0+cpu` is locked to the explicit official CPU index; TF-015's prerequisite smoke passes.
+  The 14-8-3-8-14 model fitted 30 epochs on exactly 847,837 benign TRAIN rows, while the unchanged
+  preprocessor retains statistics from all 865,480 TRAIN rows. The threshold is
+  `0.11813611984640647`, calibrated by the frozen higher 99th percentile of 212,210 benign January
+  VALIDATION scores with strict `score > threshold`. January post-calibration F1 is 0.498621 with
+  FPR 0.007672. Previously inspected February F1 is 0.866667 with FPR 0.022477; this is not independent
+  evaluation. Against RF, AE-only detections add 96 attacks/1,574 benign false positives in January and
+  2,802 attacks/22,056 benign false positives in February. Fusion remains disabled. The state is 4,931
+  bytes, fit time is 176.985 seconds, total runner time is 188.000 seconds, and measured peak RSS is
+  944,115,712 bytes. Aggregate artifacts are ignored; CIC and Mordor were not accessed.
+- The bounded autoencoder scientific review preserves that run as historical v1 evidence and corrects
+  four reusable-boundary defects under TF-016. The historical residual used the float32-converted input,
+  rather than the original transformed float64 value stated by the earlier formula. Its caller-batched
+  forward was also score-unstable: one fixed synthetic threshold-tie reproduction changed from
+  `0.9457795181243431` alone to `0.9457795275677049` in a mixed batch and changed the strict decision.
+  The versioned v2 scorer performs one shape-(1,14) float32 forward per record and fixed float64 residual
+  accumulation; exact regressions cover singleton/mixed calls, caller chunks, positions, repetitions,
+  final partial chunks, the reproduced tie, and save/reload. The five historical artifact hashes remain
+  the historical identities; none was modified or rescored.
+- Reusable autoencoder loading now requires a code-owned approved artifact identity and verifies all
+  bundle bytes before state deserialization. It binds the scoring contract, architecture, feature order,
+  weight identity, configuration, threshold, preprocessing, Python, PyTorch, platform, CPU/dtype/thread
+  runtime, report, and future source-snapshot provenance. A self-asserted bundle identity is rejected.
+  The historical identity fails threshold loading with the sanitized reason
+  `historical_threshold_incompatible_with_scoring_contract_v2`; no v2 identity is approved because no
+  v2 calibration has been authorized or run.
+- The historical bundle did not preserve the exact protocol or uncommitted model/runner source bytes used
+  for execution. Current files are not substituted for those missing bytes. Before any future fit, the
+  v2 runner writes exact protocol/model/runner snapshots and a canonical digest manifest, then binds it
+  into the pre-fit configuration and completed artifact manifest. Missing, mismatched, and altered
+  provenance regressions fail closed.
+- TF-016 final validation passes 41 focused autoencoder tests, 96 other related artifact/loading tests,
+  and one 895-test complete backend suite. The full suite has no failures or skips and the four existing
+  TF-005 Mordor date-parsing warnings. Repository Ruff, three individually bounded Black checks,
+  `uv lock --check`, and tracked/untracked whitespace and final-newline checks pass. All five historical
+  autoencoder and all nine frozen preprocessing/logistic/Random Forest hashes match their recorded
+  values. No dataset or generated artifact was modified or created.
+- Post-stabilization validation passes all 862 backend tests with no skips or failures and four existing
+  Mordor date-parsing warnings. Repository Ruff, the three individual bounded Black checks, lock
+  consistency, documentation whitespace/final-newline checks, and verification of all nine existing
+  frozen artifact hashes pass. The canceled permission attempt left no pytest process; only the later
+  authorized loopback-capable rerun completed.
 - Both saved models were evaluated without refitting on February UNSW and the two registered CIC
   exports. The targeted CIC audit verified the inspected prediction path, hashes, feature order,
   probability mapping, single scaling, rejection alignment, bounded replay, and confusion arithmetic.
@@ -251,8 +295,6 @@ integrated product acceptance are absent.
 
 - Host-model training and host scientific claims are blocked by missing representative benign-host data.
 - Global training readiness remains false even though the authorized network baselines completed.
-- Deep-learning work remains paused. Validation of the classical UNSW inference boundary does not
-  itself authorize or establish requirements for deep-learning work.
 - New claims of independent February/CIC evaluation are blocked because those outcomes are known.
 - Cross-source compatibility approval is blocked by TF-012 and TF-003.
 
@@ -265,23 +307,21 @@ integrated product acceptance are absent.
   is test evidence, not a production service loop.
 - Product API/view-model contracts, dashboard behavior, backup/recovery, optional-service degradation,
   and integrated resource/latency evidence.
+- A calibrated and approved v2 autoencoder detector plus versioned result/persistence contract. The
+  invariant scorer and bundle verifier exist, but the historical v1 threshold is incompatible and no v2
+  threshold has been calibrated. The completed research runner does not change the frozen Random Forest
+  application path and does not authorize fusion.
 - Approval-gated allowlisted containment with audit and rollback. No automatic containment is supported.
 - A verified jury requirements reference, confirmed target-user/environment decision, operational
   acceptance targets, manual-workflow baseline, or representative-user usefulness study.
 
-## One next implementation task
+## One next scientific task
 
-Implement a bounded worker-process execution wrapper around the synchronous orchestrator and prove its
-30-second record and 300-second request termination behavior through real loopback TLS integration tests.
+After separate explicit authorization, freeze and run one fresh v2 calibration/evaluation experiment;
+approve its artifact identity only after all compatibility and provenance gates pass.
 
-Resume handoff: the remaining finding 3 replay-claim auditing gap is corrected. Both new committed-claim
-cases failed before the helper call and pass afterward, including one failed audit append without
-recursion. The scoped change touches only `producer_orchestrator.py`, its unit tests, and the three
-related status/issue/protocol documents. All 156 orchestrator/replay/audit tests and one post-stabilization
-854-test full suite pass, with four existing TF-005 warnings and no skips. The full suite used normal
-loopback socket access and removed its temporary resources; Ruff, nine individual bounded Black checks,
-and whitespace checks pass. All nine frozen artifact hashes are unchanged. TF-008/TF-009 stay open for
-a terminating worker/service, broader reliability/resource evidence, and downstream product integration;
-this is not demo or production readiness. The same twelve paths remain unstaged, with an empty index
-and unchanged HEAD/origin. No download, dataset evaluation, training, artifact alteration or worker
-implementation occurred. Next action: review the unstaged milestone for a separately authorized checkpoint.
+Resume handoff: the historical fit, calibration, outcomes, and five artifacts remain preserved. TF-016
+corrects scoring and reusable-bundle behavior without any dataset scoring or model work. The historical
+threshold cannot be used by v2, and no v2 detector is approved. Fusion remains disabled; TF-006/TF-007
+and TF-008/TF-009 remain open. Next action: obtain separate authorization for the fresh v2 experiment
+stated above.
