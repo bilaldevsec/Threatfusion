@@ -49,3 +49,27 @@ TF-005 warnings, no skips. Repository Ruff, nine individual bounded Black checks
 pass; all nine frozen hashes are unchanged and temporary test resources are removed. TF-008 and TF-009
 remain **open** for their existing operational and product acceptance requirements. No limitation is
 accepted or charter requirement waived by this correction.
+
+### TF-008 / TF-009 bounded FYP demonstration, 2026-09-19
+
+The local evaluator runner reuses the synchronous one-request orchestrator and real IPv4-loopback TLS
+1.3/mTLS transport with ephemeral credentials and isolated SQLite repositories. Two deliberately
+selected registered UNSW records exercise the real frozen Random Forest, one Normal disposition and one
+Attack-only candidate insertion. An exact completed retry returns byte-identical cached response bytes
+with unchanged inference, insertion and alert counts. A separate authenticated invalid request is
+rejected before prediction and persistence. A research-only section verifies and scores the same two
+compatible records with the corrected v2 autoencoder while keeping it outside the product registry,
+producer workflow and fusion. The runner saves an ignored sanitized report and cleans its listener,
+threads, leases, credentials and databases. See [`fyp_progress_demo.md`](fyp_progress_demo.md).
+
+This is repeatable recorded-data demonstration evidence, not live ingestion, accuracy evidence, a
+long-running service, worker isolation, dashboard acceptance, backup/recovery, or operational readiness.
+TF-008 and TF-009 therefore remain **open** with their existing closure tests unchanged.
+
+Two final complete rehearsals passed with byte-identical sanitized evidence; the timed run took 31.50
+seconds. Six focused demo contract/cleanup tests, repository Ruff, bounded Black,
+whitespace/final-newline and all 23 relevant immutable-artifact hash checks pass. The full backend suite
+was not repeated because the implementation is isolated to a new script, new focused tests and
+documentation; no production Python or existing shared component changed. The checkpoint review also
+verified nonzero sanitized CLI failure and corrected service/listener cleanup for setup and client-side
+exchange failures.

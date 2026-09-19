@@ -2,10 +2,11 @@
 
 ## Snapshot
 
-Status date: 2026-09-15. Branch: `main`. The corrected v2 experiment started with a clean worktree and
-index and HEAD/origin at `2a51c94b2b3c6cd96b00ff516fee34e262afb96b`. Its source, tests, and
-documentation remain local and unstaged; both autoencoder runs are ignored. Existing split,
-preprocessing, historical autoencoder, and classical-model artifacts remain unchanged.
+Status date: 2026-09-19. Branch: `main`. The corrected v2 experiment is checkpointed and pushed at
+`8aa26ba250e4a63f95d90960ec87e224325b6d2f`; Backend quality run `35438412921` passed. The FYP-II
+recorded-data demonstration implementation and documentation are local, unstaged review work. Both
+autoencoder runs and generated demonstration evidence are ignored. Existing split, preprocessing,
+historical autoencoder, and classical-model artifacts remain unchanged.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0
 readiness report still says split assignments are missing, but the later completed full assignment and
@@ -281,6 +282,30 @@ integrated product acceptance are absent.
   checks pass. The other five findings and replay ordering were not reopened for review.
   Processing deadlines are detected around synchronous calls but cannot terminate a blocked predictor;
   isolated worker-process enforcement and a serving loop remain absent.
+
+- A bounded evaluator-facing FYP-II runner now composes the existing supported components without a
+  new service or inference path. It uses one-use credentials and temporary SQLite databases, submits
+  frozen registered UNSW rows 1 and 21 over real loopback TLS 1.3/mTLS, displays their known labels
+  separately from actual frozen Random Forest predictions, persists only the Attack candidate, proves
+  exact completed replay with unchanged inference/insertion/alert counts, and rejects one authenticated
+  invalid request before prediction or persistence. The deliberately illustrative rows are not an
+  unbiased sample or accuracy evidence. A separate research-only section verifies all nine corrected
+  v2 autoencoder files against independently pinned demo hashes and the complete existing bundle loader,
+  then reports per-record reconstruction score, calibrated threshold and strict decision. The v2
+  identity remains outside the product registry; producer integration and fusion remain disabled. The
+  ignored sanitized report is written beneath `artifacts/reports/fyp_progress_demo/latest/`; temporary
+  credentials, listener, request threads, leases and databases are cleaned on exit. See
+  [`fyp_progress_demo.md`](fyp_progress_demo.md).
+- Two final complete real-loopback rehearsals passed with identical predictions, scores, decisions,
+  zero-additional-effect replay/rejection counts and byte-identical sanitized evidence; the timed run
+  completed in 31.50 seconds. All six
+  focused demo contract/cleanup tests pass with no warnings. Repository Ruff, bounded Black checks for
+  both changed Python files, whitespace/final-newline checks, and independent hashes for all five
+  historical AE files, all nine corrected v2 AE files, and all nine frozen preprocessing/LR/RF files
+  pass. The full backend suite was not repeated because Milestone B changes only an isolated script,
+  its new focused tests, and documentation; no production Python or shared component changed. Review
+  additionally verified nonzero sanitized CLI failure and corrected service/listener cleanup when setup
+  or client exchange fails before ordinary request completion.
 
 - `network_behavior_v1` is valid as the frozen input order for the historical UNSW models, but its
   cross-source byte mapping is not a validated common measurement contract. Five byte-dependent CIC
