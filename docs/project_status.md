@@ -4,9 +4,10 @@
 
 Status date: 2026-09-19. Branch: `main`. The corrected v2 experiment is checkpointed and pushed at
 `8aa26ba250e4a63f95d90960ec87e224325b6d2f`; Backend quality run `35438412921` passed. The FYP-II
-recorded-data demonstration implementation and documentation are local, unstaged review work. Both
-autoencoder runs and generated demonstration evidence are ignored. Existing split, preprocessing,
-historical autoencoder, and classical-model artifacts remain unchanged.
+recorded-data demonstration is checkpointed and pushed at
+`f71a5e74186a8975b4ca090b9d1a987384a55da4`. Both autoencoder runs and generated demonstration
+evidence are ignored. Existing split, preprocessing, historical autoencoder, and classical-model
+artifacts remain unchanged.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0
 readiness report still says split assignments are missing, but the later completed full assignment and
@@ -76,6 +77,27 @@ integrated product acceptance are absent.
   loopback restriction and then passed through the loopback-capable path. Ruff, both bounded Black
   checks, lock consistency, whitespace, and final-newline checks pass. All 14 historical/frozen artifact
   hashes remain unchanged.
+- The preregistered January-only v2 residual-contribution audit is complete. The first attempt reached
+  publication but lost its in-memory aggregates because of a publication field-name defect; no result
+  from that attempt is retained or reported. After explicit authorization, exactly one additional
+  January scoring pass completed and retained verified aggregate JSON, long-form CSV, an SVG chart, and
+  an aggregate-only ignored recovery file. It reproduced all frozen January confusion/overlap counts
+  and exact score/residual arithmetic. AE-only attacks were dominated by rate-feature residuals
+  (93.78%); AE-only benign false positives were split mainly between rates (38.75%) and byte counts
+  (38.44%). This remains calibration-informed descriptive evidence, not causal attribution,
+  independent evaluation, fusion evidence, or product approval. The pass recorded 27.30 seconds,
+  505,634,816 bytes peak RSS, and no TRAIN, February, or CIC access. The completion review confirmed
+  positional label/AE/RF alignment and exact v2 residual arithmetic. It corrected recovery integrity by
+  binding and revalidating the exact aggregate payload before retry; a valid retry precedes and bypasses
+  all scoring-input access. Ten focused publication, recovery, CLI-failure, alignment, and aggregation
+  tests and audit-file Ruff pass. The bounded local Black check reported both files unchanged but
+  required timeout termination after emitting that result.
+  All reported feature/group percentages are pooled-error fractions, not fractions of records. Feature
+  medians support only a limited qualitative common-rate-residual observation for the 96 AE-only attacks;
+  the other flagged cohorts are strongly skewed, including forward-byte mean/median squared residuals
+  of 141.72/0.00077 for attacks detected by both models. The aggregates cannot quantify per-feature
+  outlier concentration, characterize a typical record with group percentages, define a decision rule,
+  or justify a specific model experiment.
 - TF-016 final validation passes 41 focused autoencoder tests, 96 other related artifact/loading tests,
   and one 895-test complete backend suite. The full suite has no failures or skips and the four existing
   TF-005 Mordor date-parsing warnings. Repository Ruff, three individually bounded Black checks,
@@ -355,12 +377,16 @@ integrated product acceptance are absent.
 - A verified jury requirements reference, confirmed target-user/environment decision, operational
   acceptance targets, manual-workflow baseline, or representative-user usefulness study.
 
-## One next scientific task
+## Latest scientific task
 
-Preregister a January-only residual-contribution audit of AE-only true and false positives before any
-architecture, loss, threshold, approval, or integration decision. Do not use February for selection.
+The January-only residual-contribution audit is complete under its frozen protocol. Its aggregate
+findings are recorded in [`network_autoencoder_residual_audit.md`](network_autoencoder_residual_audit.md).
+No further scoring, architecture/loss/threshold decision, fusion work, or product approval follows from
+this descriptive audit.
 
-Resume handoff: the historical fit, outcomes, and five artifacts remain preserved. The single corrected
-v2 baseline completed and verified under its distinct scoring and threshold bindings, but is not approved
-for product use. Fusion remains disabled; TF-006/TF-007 and TF-008/TF-009 remain open. Next action:
-authorize the preregistered January-only residual-contribution audit stated above.
+Resume handoff: the second and explicitly authorized scoring attempt retained verified aggregates,
+CSV, and chart plus an ignored aggregate-only recovery file; the first attempt's lost aggregates are
+not reported. The historical fit, outcomes, and five artifacts remain preserved. The corrected v2
+baseline remains experimental and outside product approval. TF-006/TF-007 and TF-008/TF-009 remain
+open. Next action: design a separately reviewed, January-only diagnostic for per-record contribution
+distributions and outlier concentration before selecting any model experiment.

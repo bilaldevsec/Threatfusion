@@ -73,3 +73,25 @@ was not repeated because the implementation is isolated to a new script, new foc
 documentation; no production Python or existing shared component changed. The checkpoint review also
 verified nonzero sanitized CLI failure and corrected service/listener cleanup for setup and client-side
 exchange failures.
+
+### TF-016 January residual-contribution follow-up, 2026-09-19
+
+The preregistered January-only audit is complete without changing TF-016's resolved disposition. The
+first attempt completed scoring/aggregation and reached publication, but the publication field-name
+defect lost the in-memory aggregates; no result from that attempt is retained. After explicit owner
+authorization, exactly one additional January pass retained verified aggregate JSON, CSV, an SVG chart,
+and an ignored aggregate-only recovery file. The report reproduces all frozen January confusion and
+overlap counts and reconciles every residual sum to the v2 score exactly. Its cohort attribution is
+descriptive, calibration-informed development evidence only. No TRAIN, February, CIC, training,
+fitting, calibration, threshold/model, fusion, dependency, or demo work occurred. TF-006 and TF-007
+remain open and no limitation or product approval is inferred from this audit.
+
+The bounded completion review confirmed row-order alignment and exact v2 residual arithmetic and found
+one recovery-integrity defect: structural checks alone did not bind recovered numeric aggregates to the
+verified in-memory result. Recovery now includes a canonical aggregate SHA-256 and revalidates the
+frozen contract and reconciliation evidence before publication; valid recovery is selected before any
+scoring inputs can be opened. CLI failure regressions verify nonzero sanitized failure. The percentages
+are explicitly pooled squared-residual fractions, not record fractions. Large mean/median gaps show
+strong skew in the flagged cohorts, but the retained aggregates cannot quantify which or how many rows
+dominate each feature, describe typical per-record group shares, create a decision rule, or select a
+specific model experiment. This does not change TF-016's resolved status or close TF-006/TF-007.
