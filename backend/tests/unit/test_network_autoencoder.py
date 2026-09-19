@@ -57,10 +57,12 @@ from threatfusion.models.network_autoencoder import (
     reconstruction_errors,
     save_state_dict,
     score_records_v2,
+    threshold_counts,
     threshold_scores,
     validate_feature_order,
     validate_matrix,
     verify_reload_equivalence,
+    verify_v2_reload_scoring,
 )
 from threatfusion.preprocessing.network_behavior_v1 import TRANSFORMED_FEATURE_NAMES
 from threatfusion.utils.checksum import sha256_file
@@ -360,6 +362,11 @@ def test_higher_quantile_and_strict_threshold_preserve_ties() -> None:
     assert threshold == 99.0
     decisions = threshold_scores(np.asarray([98.0, 99.0, 99.0, 100.0]), threshold)
     assert decisions.tolist() == [0, 0, 0, 1]
+    assert threshold_counts(np.asarray([98.0, 99.0, 99.0, 100.0]), threshold) == {
+        "below": 1,
+        "equal": 2,
+        "above": 1,
+    }
 
 
 def test_state_artifact_integrity_and_exact_reload_equivalence(tmp_path: Path) -> None:
@@ -380,6 +387,10 @@ def test_state_artifact_integrity_and_exact_reload_equivalence(tmp_path: Path) -
         score_records_v2(model, score_sample, caller_chunk_size=4),
         score_records_v2(loaded, score_sample, caller_chunk_size=9),
     )
+    scoring_evidence = verify_v2_reload_scoring(model, loaded, matrix, 1.0)
+    assert scoring_evidence["caller_chunk_sizes"] == [1, 64, 256]
+    assert scoring_evidence["scores_exact"] is True
+    assert scoring_evidence["decisions_exact"] is True
     damaged = bytearray(path.read_bytes())
     damaged[-1] ^= 1
     path.write_bytes(damaged)

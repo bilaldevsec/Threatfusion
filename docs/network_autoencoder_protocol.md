@@ -2,10 +2,13 @@
 
 ## Status, scope, and purpose
 
-This is the frozen pre-implementation protocol for one bounded UNSW-NB15 autoencoder experiment. It
+This began as the frozen pre-implementation protocol for one bounded UNSW-NB15 autoencoder experiment. It
 defines the inputs, model, calibration rule, evaluation, artifacts, resource controls, and failure
 behavior before any score is calculated. It does not authorize or perform dependency installation,
-model fitting, tuning, dataset evaluation, artifact replacement, or product integration.
+did not itself authorize model fitting, tuning, dataset evaluation, artifact replacement, or product
+integration. Separate authorization for exactly one corrected v2 baseline was received on 2026-09-15;
+the architecture, fit population, hyperparameters, preprocessing, scoring contract, calibration rule,
+and resource limits below remain frozen.
 
 The proposed model is a complementary reconstruction-anomaly detector. It is not a replacement for
 the frozen logistic-regression or Random Forest classifiers. Reconstruction error is neither an attack
@@ -478,5 +481,93 @@ logistic-regression, and Random Forest hashes matched their recorded values.
 
 ## Next scientific task
 
-Under separate explicit authorization, freeze and run one new v2 calibration/evaluation experiment in a
-fresh artifact directory, then add its independently trusted artifact identity only if every gate passes.
+Separate explicit authorization has now been received to freeze and run one new v2
+calibration/evaluation experiment in a fresh artifact directory, then add its independently trusted
+artifact identity only if every gate passes.
+
+## Corrected v2 execution preflight, 2026-09-15
+
+The authorized run ID is `full-benign-autoencoder-2a51c94-v2`. No calibrated v2 directory existed at
+preflight. `HEAD` and `origin/main` were both
+`2a51c94b2b3c6cd96b00ff516fee34e262afb96b`; the worktree and index were clean. The five historical AE
+and nine frozen preprocessing/logistic/Random Forest artifacts were retained.
+
+CI run `34900883087` skipped six tests because ignored evidence is unavailable on GitHub-hosted runners:
+three frozen-model artifact loading/reload tests use `ignored frozen model artifacts are unavailable`;
+the registered-schema test uses `ignored registered metadata unavailable`; the public raw inference test
+uses `ignored frozen bundles or metadata unavailable`; and the real TLS orchestrator smoke uses
+`configured frozen artifacts or registered UNSW inputs are unavailable`. All prerequisites exist on the
+workstation. The first five passed locally. The TLS smoke reached its listener but the restricted sandbox
+blocked loopback binding; the established loopback-capable rerun passed. No test was weakened.
+
+Input verification reconciled TRAIN as 865,480 rows (847,837 benign and 17,643 Attack), January
+VALIDATION as 216,568 rows (212,210 benign and 4,358 Attack), and February TEST as 1,452,844 rows
+(1,153,776 benign and 299,068 Attack). The Random Forest hash and all February bindings matched their
+frozen expected values. The supported runtime was CPython 3.11.16, PyTorch 2.10.0+cpu, Linux x86_64
+with glibc 2.39, deterministic algorithms enabled, four intra-op threads, and one inter-op thread.
+
+A fixed-seed, 50,000-row synthetic canonical-scoring benchmark took 3.6275389800002813 seconds, or
+13,783.449406240736 records/second. At that measured rate the 1,669,412 planned January and February
+scores require an estimated 121.11714207360458 seconds. The probe observed 10,612,293,632 bytes of
+available memory, 70,867,173,376 bytes of free artifact-filesystem space, and 737,697,792 bytes peak RSS.
+These observations fit the frozen 2 GiB peak-RSS limit, 2 GiB memory and disk reserves, 256 MiB artifact
+budget, and 3,600-second deadline. The completed report must retain below/equal/above threshold counts
+and exact saved/reloaded v2 score and decision comparisons across caller chunk sizes 1, 64, and 256.
+
+## Corrected v2 execution evidence, 2026-09-15
+
+The single authorized attempt completed without retry, tuning, or configuration change. Each of 30
+epochs processed all 847,837 benign TRAIN rows, excluded all 17,643 TRAIN attacks, and retained the
+989-row final batch. The epoch losses and fitted state exactly match the historical run because fitting
+was unchanged; only scoring and its bound threshold use v2. The v2 threshold is
+`0.1181361214680695`, calibrated from all 212,210 benign January scores by `method="higher"`, with
+strict `>` and equality within threshold. It was persisted before February scoring.
+
+| Evidence | TP | FP | TN | FN | Precision | Recall | F1 | FPR | AP | ROC-AUC |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| January VALIDATION, calibration-informed development | 1,988 | 1,628 | 210,582 | 2,370 | 0.549779 | 0.456173 | 0.498621 | 0.007672 | 0.348040 | 0.917107 |
+| February TEST, previously inspected benchmark | 248,531 | 25,934 | 1,127,842 | 50,537 | 0.905511 | 0.831018 | 0.866667 | 0.022477 | 0.828553 | 0.950891 |
+
+January had 212,454 scores below, 498 equal to, and 3,616 above threshold. February had 1,177,028
+below, 1,351 equal to, and 274,465 above. On identical January rows, AE-only recovered 96 attacks missed
+by RF and added 1,574 false positives; on February it recovered 2,802 and added 22,056. These results do
+not authorize fusion. February did not affect fitting, scoring definition, or threshold selection.
+
+The fit took 149.8261376269993 seconds; January calibration/evaluation and RF comparison took
+16.269357055 seconds; February verification/evaluation and RF comparison took 108.4592168449999
+seconds; total runner time was 275.92863129500074 seconds. Peak RSS was 901,115,904 bytes. The nine
+ignored run files occupy 138,129 filesystem bytes (`du -sb`):
+
+| Artifact | SHA-256 |
+|---|---|
+| `autoencoder_config.json` | `51d4d664b5e017c5b039a08dc897d63e81a0b1e140eb1bb16457997ffa0727c2` |
+| `autoencoder_state.pt` | `c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23` |
+| `threshold.json` | `79bc7f3def3a4ed745fbc85d9cbf36a04f4fb4384de4db065569f81f60c78e3e` |
+| `artifact_manifest.json` | `c142d3352b406a689b6317f48ae513540076b02ffb2e0fdef9cd3e6a83da1866` |
+| `evaluation_report.json` | `0ec77eda4a58e40e1b75087bbc5131f39cad54d553771e174ea303bc506c3bef` |
+| `source_provenance_manifest.json` | `d412f390f0d081170917a2e784046239f3e5b14d9a604e1196d2e3cbd3c527a9` |
+| `network_autoencoder_protocol.snapshot.md` | `7ebd76b094f48303e45b40c6ff42bbfdbae1256e24c41a265bed6187466be78e` |
+| `network_autoencoder.snapshot.py` | `bcd2f8077de6cd9edeb3902aea5cb9a64f089111d7233aa6f94ee0257a1542c9` |
+| `train_network_autoencoder.snapshot.py` | `1e85861ced0f341598f697387c2826ffdc31ad41d0516755ddff77850a6f6a54` |
+
+The domain-separated artifact identity is
+`bdb7fc33d5b092566995018b5f83aa66bdb8ce95841d6b8b9021111c9a392a9a`. Independently calculated
+expected hashes passed the existing complete bundle/runtime/threshold/preprocessing/provenance loader.
+The report also records exact saved/reloaded v2 scores and decisions for 257 January rows across caller
+chunks 1, 64, and 256, including partial final chunks. A separate 17-row synthetic verified-load check
+was bitwise identical across chunks. The identity remains experimental and is not in the product-approved
+registry; no integration or fusion path changed.
+
+Post-run validation passed all 41 focused autoencoder tests and the one-time 895-test backend suite.
+The full suite had no failures or skips and emitted the four existing TF-005 Mordor date-parsing
+warnings. Of the six CI availability skips, five passed together locally; the real TLS smoke first
+failed with `listener_unavailable` in the restricted sandbox, then passed through the established
+loopback-capable path. Repository Ruff, individual Black checks for both changed Python files,
+`uv lock --check`, `git diff --check`, and final-newline checks passed. All five historical AE and all
+nine frozen preprocessing/logistic/Random Forest hashes matched their repository-recorded identities.
+
+The January result supplies weak complementarity evidence: 96 additional detections cost 1,574 added
+false positives. The next development experiment should therefore be a preregistered January-only
+residual-contribution audit that measures which fixed feature blocks drive AE-only true and false
+positives before authorizing any architecture, loss, or threshold change. It must not use February for
+selection and is not launched here.

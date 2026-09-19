@@ -2,11 +2,10 @@
 
 ## Snapshot
 
-Status date: 2026-09-15. Branch: `main`. The autoencoder milestone started with HEAD and `origin/main`
-both at `255c34286c9f98b995d18dce396be8c106b91f18` and only the three authorized preflight-document
-changes present. The implementation, dependency lock, tests, and documentation below remain local and
-unstaged; the generated autoencoder run is ignored. Existing split, preprocessing, and classical-model
-artifacts remain unchanged.
+Status date: 2026-09-15. Branch: `main`. The corrected v2 experiment started with a clean worktree and
+index and HEAD/origin at `2a51c94b2b3c6cd96b00ff516fee34e262afb96b`. Its source, tests, and
+documentation remain local and unstaged; both autoencoder runs are ignored. Existing split,
+preprocessing, historical autoencoder, and classical-model artifacts remain unchanged.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0
 readiness report still says split assignments are missing, but the later completed full assignment and
@@ -53,13 +52,29 @@ integrated product acceptance are absent.
   weight identity, configuration, threshold, preprocessing, Python, PyTorch, platform, CPU/dtype/thread
   runtime, report, and future source-snapshot provenance. A self-asserted bundle identity is rejected.
   The historical identity fails threshold loading with the sanitized reason
-  `historical_threshold_incompatible_with_scoring_contract_v2`; no v2 identity is approved because no
-  v2 calibration has been authorized or run.
+  `historical_threshold_incompatible_with_scoring_contract_v2`. The new v2 experiment is calibrated and
+  verified but remains outside the product-approved registry.
 - The historical bundle did not preserve the exact protocol or uncommitted model/runner source bytes used
   for execution. Current files are not substituted for those missing bytes. Before any future fit, the
   v2 runner writes exact protocol/model/runner snapshots and a canonical digest manifest, then binds it
   into the pre-fit configuration and completed artifact manifest. Missing, mismatched, and altered
   provenance regressions fail closed.
+- One corrected v2 baseline completed in ignored run
+  `full-benign-autoencoder-2a51c94-v2`. It retained the same fixed fit and state, calibrated the v2
+  threshold `0.1181361214680695` on 212,210 benign January rows, and evaluated January and the previously
+  inspected February benchmark once. Confusion counts match historical v1: January TP/FP/TN/FN are
+  1,988/1,628/210,582/2,370 and February counts are 248,531/25,934/1,127,842/50,537. January AP/ROC-AUC
+  are 0.348040/0.917107; February AP/ROC-AUC are 0.828553/0.950891. January AE-only detections add 96
+  attacks and 1,574 false positives versus RF. Total runner time was 275.929 seconds and peak RSS was
+  901,115,904 bytes. Independently calculated hashes passed the complete experimental bundle verifier;
+  saved/reloaded v2 scores and decisions were exact across caller chunks. The identity remains
+  experimental, and fusion/integration remain disabled.
+- Corrected v2 validation passes all 41 focused autoencoder tests and the one-time 895-test backend
+  suite with no final failures or skips and four existing TF-005 warnings. Five of the six CI
+  availability-gated tests passed together locally; the real TLS smoke first encountered the sandbox's
+  loopback restriction and then passed through the loopback-capable path. Ruff, both bounded Black
+  checks, lock consistency, whitespace, and final-newline checks pass. All 14 historical/frozen artifact
+  hashes remain unchanged.
 - TF-016 final validation passes 41 focused autoencoder tests, 96 other related artifact/loading tests,
   and one 895-test complete backend suite. The full suite has no failures or skips and the four existing
   TF-005 Mordor date-parsing warnings. Repository Ruff, three individually bounded Black checks,
@@ -308,21 +323,19 @@ integrated product acceptance are absent.
   is test evidence, not a production service loop.
 - Product API/view-model contracts, dashboard behavior, backup/recovery, optional-service degradation,
   and integrated resource/latency evidence.
-- A calibrated and approved v2 autoencoder detector plus versioned result/persistence contract. The
-  invariant scorer and bundle verifier exist, but the historical v1 threshold is incompatible and no v2
-  threshold has been calibrated. The completed research runner does not change the frozen Random Forest
-  application path and does not authorize fusion.
+- An approved v2 autoencoder detector plus versioned result/persistence contract. The experimental v2
+  threshold is calibrated and its bundle verifies, but its identity is not product-approved. The research
+  runner does not change the frozen Random Forest application path and does not authorize fusion.
 - Approval-gated allowlisted containment with audit and rollback. No automatic containment is supported.
 - A verified jury requirements reference, confirmed target-user/environment decision, operational
   acceptance targets, manual-workflow baseline, or representative-user usefulness study.
 
 ## One next scientific task
 
-After separate explicit authorization, freeze and run one fresh v2 calibration/evaluation experiment;
-approve its artifact identity only after all compatibility and provenance gates pass.
+Preregister a January-only residual-contribution audit of AE-only true and false positives before any
+architecture, loss, threshold, approval, or integration decision. Do not use February for selection.
 
-Resume handoff: the historical fit, calibration, outcomes, and five artifacts remain preserved. TF-016
-corrects scoring and reusable-bundle behavior without any dataset scoring or model work. The historical
-threshold cannot be used by v2, and no v2 detector is approved. Fusion remains disabled; TF-006/TF-007
-and TF-008/TF-009 remain open. Next action: obtain separate authorization for the fresh v2 experiment
-stated above.
+Resume handoff: the historical fit, outcomes, and five artifacts remain preserved. The single corrected
+v2 baseline completed and verified under its distinct scoring and threshold bindings, but is not approved
+for product use. Fusion remains disabled; TF-006/TF-007 and TF-008/TF-009 remain open. Next action:
+authorize the preregistered January-only residual-contribution audit stated above.

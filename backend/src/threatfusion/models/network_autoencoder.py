@@ -624,6 +624,20 @@ def threshold_scores(scores: np.ndarray, threshold: float) -> np.ndarray:
     return (scores > threshold).astype(np.uint8)
 
 
+def threshold_counts(scores: np.ndarray, threshold: float) -> dict[str, int]:
+    """Reconcile every finite score below, equal to, or above the strict threshold."""
+    decisions = threshold_scores(scores, threshold)
+    values = np.asarray(scores, dtype=np.float64)
+    counts = {
+        "below": int(np.count_nonzero(values < threshold)),
+        "equal": int(np.count_nonzero(values == threshold)),
+        "above": int(np.count_nonzero(decisions)),
+    }
+    if sum(counts.values()) != values.size:
+        raise NetworkAutoencoderError("threshold_count_mismatch")
+    return counts
+
+
 def calculate_metrics(labels: np.ndarray, scores: np.ndarray, threshold: float) -> dict[str, Any]:
     labels = np.asarray(labels)
     scores = np.asarray(scores, dtype=np.float64)
@@ -664,9 +678,41 @@ def calculate_metrics(labels: np.ndarray, scores: np.ndarray, threshold: float) 
         "roc_auc": float(roc_auc_score(labels, scores)) if positives and negatives else None,
         "predicted_anomaly_count": predicted,
         "predicted_anomaly_percentage": 100.0 * predicted / labels.size if labels.size else 0.0,
+        "threshold_counts": threshold_counts(scores, threshold),
         "reconstruction_threshold": threshold,
         "threshold_operator": ">",
         "score_identity": SCORE_IDENTITY,
+    }
+
+
+def verify_v2_reload_scoring(
+    before: NetworkAutoencoder,
+    after: NetworkAutoencoder,
+    matrix: np.ndarray,
+    threshold: float,
+) -> dict[str, Any]:
+    """Verify exact saved/reloaded scores and decisions across caller chunk arrangements."""
+    sample = np.asarray(matrix[:257])
+    scores_before = score_records_v2(before, sample, caller_chunk_size=1)
+    scores_after_64 = score_records_v2(after, sample, caller_chunk_size=64)
+    scores_after_256 = score_records_v2(after, sample, caller_chunk_size=256)
+    decisions_before = threshold_scores(scores_before, threshold)
+    if (
+        not np.array_equal(scores_before, scores_after_64)
+        or not np.array_equal(scores_before, scores_after_256)
+        or not np.array_equal(decisions_before, threshold_scores(scores_after_64, threshold))
+        or not np.array_equal(decisions_before, threshold_scores(scores_after_256, threshold))
+    ):
+        raise NetworkAutoencoderError("v2_reload_scoring_mismatch")
+    return {
+        "sample_count": int(sample.shape[0]),
+        "sample_values_sha256": hashlib.sha256(
+            sample.astype("<f8", copy=False).tobytes()
+        ).hexdigest(),
+        "caller_chunk_sizes": [1, 64, 256],
+        "scores_exact": True,
+        "decisions_exact": True,
+        "partial_final_chunks_exercised": True,
     }
 
 
@@ -1455,6 +1501,9 @@ def run_full_autoencoder(
         threshold_path = run_directory / THRESHOLD_FILENAME
         _write_json(threshold_path, threshold_payload)
         threshold_sha256 = sha256_file(threshold_path)
+        v2_reload_scoring = verify_v2_reload_scoring(
+            model, reloaded, inputs.X_validation, threshold
+        )
 
         with threadpool_limits(limits=1):
             validation_forest_scores = batched_attack_probabilities(
@@ -1553,6 +1602,7 @@ def run_full_autoencoder(
                 "provenance": february_provenance,
             },
             "reload_verification": reload_evidence,
+            "v2_reload_scoring_verification": v2_reload_scoring,
             "checks": {
                 "configuration_frozen_before_training_or_scoring": True,
                 "only_benign_train_rows_fit_weights": True,
