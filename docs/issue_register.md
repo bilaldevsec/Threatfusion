@@ -66,6 +66,14 @@ This is repeatable recorded-data demonstration evidence, not live ingestion, acc
 long-running service, worker isolation, dashboard acceptance, backup/recovery, or operational readiness.
 TF-008 and TF-009 therefore remain **open** with their existing closure tests unchanged.
 
+### Offline evidence-viewer follow-up, 2026-09-20
+
+The ignored self-contained FYP evidence viewer presents retained sanitized demonstration and aggregate
+research evidence offline; it does not add a dashboard API/view model, serving worker, live source,
+correlation, explanation, backup/recovery, or operational measurement. It therefore does not change
+the **open** dispositions or closure criteria for TF-008/TF-009. Its required-evidence verification is
+presentation integrity only, not product acceptance evidence.
+
 Two final complete rehearsals passed with byte-identical sanitized evidence; the timed run took 31.50
 seconds. Six focused demo contract/cleanup tests, repository Ruff, bounded Black,
 whitespace/final-newline and all 23 relevant immutable-artifact hash checks pass. The full backend suite

@@ -454,3 +454,16 @@ Resume handoff: existing candidate artifacts and exact execution snapshots are p
 the corrected completion manifest; no process is running. The concrete blocker is the already-consumed
 one attempt's February-accessing preparation plus nonconforming hard-limit enforcement. Next action:
 retain the blocked result and continue the pre-existing product roadmap without retrying this experiment.
+
+### Offline FYP evidence viewer, 2026-09-20
+
+A read-only generator renders retained sanitized FYP demonstration, frozen RF and corrected v2 AE
+reports, January residual aggregate/recovery binding, and protocol-invalid rate-log1p evidence into one
+ignored self-contained HTML file. It does not run models or open data. Required evidence missing,
+malformed, incomplete, v2-binding-mismatched, or recovery-binding-mismatched fails publication with a
+sanitized nonzero error. The page distinguishes saved replay from live processing, known labels from
+predictions, January from previously inspected February, RF estimates from guaranteed confidence,
+disabled fusion, pooled residual fractions from per-record statistics, and the candidate's **BLOCKED —
+preserve baseline** disposition. See [`fyp_evidence_viewer.md`](fyp_evidence_viewer.md). This does not
+close TF-006, TF-007, TF-008, TF-009, TF-010, TF-011, or TF-012 and does not establish dashboard/product
+acceptance.
