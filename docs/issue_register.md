@@ -95,3 +95,40 @@ are explicitly pooled squared-residual fractions, not record fractions. Large me
 strong skew in the flagged cohorts, but the retained aggregates cannot quantify which or how many rows
 dominate each feature, describe typical per-record group shares, create a decision rule, or select a
 specific model experiment. This does not change TF-016's resolved status or close TF-006/TF-007.
+
+### TF-016 final record-concentration diagnostic, 2026-09-19
+
+One frozen January-only follow-up pass completed without retry and retained aggregate-only per-record
+group-share quantiles, explicit dominance/tie/zero counts, score and group-error quantiles, and
+ceiling-rounded top-1%/5%/10% concentrations for all four cohorts. It preserves exact v2 scoring,
+RF/AE row alignment, frozen overlap counts, trusted loaders, and recovery-before-publication. Rates are
+widespread among AE-only attacks (unique dominant in 85/96; median share 94.26%) but concentrated in a
+minority of AE-only benign false positives (dominant in 274/1,574; median share 0.42%; top 10% supply
+95.68% of rate error). This supports Decision A only as a development hypothesis: one future fixed
+`log1p` transform of the two raw rate features before TRAIN-only z-scoring, with the baseline and all
+other controls preserved. No experiment was executed. TF-016 remains resolved; TF-006 and TF-007 remain
+open, and no causal, independent-validation, fusion, product, or operational claim is added.
+
+### TF-016 two-rate log1p experiment disposition, 2026-09-19
+
+The one authorized January-only experiment tested the single preregistered `log1p` intervention on the
+two raw-derived rate features. A Landlock allowlist denied raw UNSW, February matrix/label, and CIC paths
+to the experiment process. Preprocessing statistics used all 865,480 TRAIN rows, weights used only
+847,837 benign TRAIN rows, and all baseline architecture, optimizer, seed, epoch, scoring, calibration,
+and RF controls were preserved. Candidate TP/FP/TN/FN were 945/2,122/210,088/3,413; AE-only A/B were
+59/2,080. All four preregistered gates failed, including ratio 0.0283654, and both overall recall and
+both-detected attacks deteriorated materially. The candidate is retained as ignored development
+evidence with disposition **FAIL — preserve baseline**. This does not reopen or close TF-016 and does
+not change the open TF-006/TF-007 limitations.
+
+#### Completion-review correction, 2026-09-20
+
+The numerical rate-log1p result is preserved but is not protocol-valid. Its preparation path adapted all
+registered rows and recorded 1,452,844 TEST rows seen before discarding their outputs; Landlock covered
+only the later fit process. Required preparation deadline/RSS and pre-fit artifact-budget enforcement
+were also absent, execution RSS was checked only afterward, and generic CLI failure codes were not
+strictly allowlisted. The superseding disposition is **BLOCKED — preserve baseline**. No retry is
+authorized. February access does not by itself prove TEST rows entered optimizer batches; retained fit
+accounting still reports only the 847,837 benign TRAIN rows per epoch. The historical CLI rejects new
+preparation and execution, while original snapshots and reports remain immutable. TF-016 remains
+resolved for its earlier scorer correction, and TF-006/TF-007 remain open.

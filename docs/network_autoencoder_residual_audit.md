@@ -1,5 +1,41 @@
 # January v2 autoencoder residual-contribution audit
 
+## Frozen record-concentration follow-up protocol, 2026-09-19
+
+This final bounded diagnostic extends the existing audit without changing its model, thresholds,
+population, feature order, loading boundary, or four cohorts. It was frozen before reopening January
+data. For record `i` and transformed feature `j`, contribution remains
+`c_ij = (float64(float32(x_ij)) - float64(r_ij))^2` and score remains the fixed-order float64 value
+`sum_j(c_ij) / 14`, using one shape-`(1, 14)` CPU float32 forward. The existing groups remain duration,
+packet counts, byte counts, rates, mean packet lengths, destination port, and protocol indicators.
+The cohorts remain `ae_only_attack`, `ae_only_benign_false_positive`, `both_detected_attack`, and
+`neither_rejected_benign`, with required counts 96, 1,574, 1,892, and 210,435.
+
+For each record, a group's share is its group contribution divided by that record's total contribution.
+The report gives linear-interpolated 10th, 25th, 50th, 75th, 90th, and 99th percentiles over records
+with positive total error. Zero-total records have null shares, are counted separately, and are excluded
+from share percentiles and dominance. A group is dominant when its contribution exactly equals the
+largest group contribution. The report gives both unique-dominant counts and dominant counts including
+ties; it also gives the number of tied-dominance records, so inclusive group counts need not sum to the
+cohort size.
+
+Score and per-group error distributions use the same six quantiles, plus minimum, mean, population
+standard deviation, and maximum. Concentration is the fraction of total cohort error contributed by
+the largest `ceil(p * n)` records for `p` equal to 1%, 5%, and 10%, with at least one record when the
+cohort is nonempty. The same ordering-and-ceiling rule is applied separately to each group's per-record
+error. A zero denominator yields null. The two AE-only cohorts are compared descriptively using their
+score quantiles, means, medians, maxima, and concentration values; no significance test, cutoff search,
+or causal claim is permitted.
+
+The existing limits remain one January-only AE pass and one RF pass, 216,568 per-record forwards,
+RF batches no larger than 25,000, memory-mapped inputs, less than 2 GiB peak RSS, 2 GiB preflight memory
+and disk reserves, less than 32 MiB output, and less than 600 seconds. TRAIN, February, CIC, fitting,
+calibration, tuning, dependency/model/threshold changes, fusion, product/demo work, and raw or per-record
+outputs remain prohibited. Aggregate recovery must be saved and cryptographically bound before final
+JSON/CSV/SVG publication. These calibration-informed January descriptions can support at most one
+fixed candidate intervention as a hypothesis; they cannot establish causality, independent validation,
+statistical significance, operational value, or guaranteed improvement. TF-006 and TF-007 remain open.
+
 ## Frozen audit protocol
 
 This is one bounded diagnostic of the already-frozen experimental v2 autoencoder against the frozen
@@ -182,3 +218,73 @@ status 1 with only the sanitized `audit_failed` code. Ten focused tests, audit-f
 source/document whitespace checks pass. The bounded local Black check reported both files unchanged
 but required timeout termination after emitting that result. Generated JSON/CSV/SVG/recovery files
 remain ignored, and the existing FYP demonstration files are unchanged.
+
+## Record-concentration follow-up findings and decision, 2026-09-19
+
+The single authorized follow-up pass completed without retry. It retained aggregate-only
+[`JSON`](../artifacts/reports/network_autoencoder_residual_audit/january-v2-record-concentration-b5e6e5d/aggregate.json),
+feature
+[`CSV`](../artifacts/reports/network_autoencoder_residual_audit/january-v2-record-concentration-b5e6e5d/feature_contributions.csv),
+record-diagnostic
+[`CSV`](../artifacts/reports/network_autoencoder_residual_audit/january-v2-record-concentration-b5e6e5d/record_diagnostics.csv),
+and the existing readable
+[`SVG`](../artifacts/reports/network_autoencoder_residual_audit/january-v2-record-concentration-b5e6e5d/feature_contributions.svg).
+It again reconciled all four cohort counts and exact v2 score arithmetic. Every record had positive
+total error; no dominance ties occurred. Complete six-quantile group shares, group-error distributions,
+dominance counts, and ceiling-rounded group concentration values are in the aggregate JSON and
+record-diagnostic CSV.
+
+The largest ceiling-rounded 1%, 5%, and 10% of record scores contributed respectively 5.92%, 23.10%,
+and 40.97% of AE-only-attack error; 35.54%, 62.87%, and 69.94% of AE-only-benign-false-positive error;
+91.43%, 95.77%, and 97.53% of both-detected-attack error; and 10.99%, 33.88%, and 50.95% of
+neither-rejected-benign error. The both-detected pooled result is therefore extremely outlier-dominated,
+while AE-only attacks are not dominated by a similarly tiny set.
+
+Rate dominance is widespread in AE-only attacks: rates are the unique dominant group for 85 of 96
+records, and their per-record shares have p10/p25/median/p75/p90/p99 values of
+17.43%/76.18%/94.26%/96.36%/97.59%/98.02%. The largest 1%/5%/10% of rate errors contribute only
+6.23%/23.53%/41.61% of the cohort's rate error. In the 1,574 AE-only benign false positives, rates are
+dominant for 274 records and their share quantiles are 0.13%/0.28%/0.42%/1.03%/80.47%/96.99%.
+The largest 1%/5%/10% of benign-false-positive rate errors contribute 47.16%/86.80%/95.68% of that
+group error. Byte counts instead dominate 783 benign false positives, with a 48.93% median share;
+packet counts dominate 334. Thus the earlier 38.75% pooled benign rate fraction describes a concentrated
+tail, whereas the 93.78% pooled attack rate fraction describes most individual AE-only attacks.
+
+AE-only attacks have score p10/median/p90/p99 of 0.1686/1.1938/12.3645/18.0174; AE-only benign false
+positives have 0.1315/0.3846/1.8102/33.3416. Attack scores have the higher median and p90, but benign
+false positives have the higher p99 and maximum. This overlap and tail reversal do not define a safe
+record cutoff and were not used to search for one.
+
+**Decision A: one specific candidate intervention is supported as a hypothesis.** A future separately
+authorized experiment may apply `log1p` only to the two nonnegative raw rate predictors
+(`packets_per_second` and `bytes_per_second`) before the existing TRAIN-only z-score fit, then train the
+same 14-8-3-8-14 autoencoder. This fixed rate-tail compression follows from widespread rate dominance
+among AE-only attacks but highly concentrated rate error among AE-only benign false positives. It does
+not assert that extreme rates cause either label, and a larger network is not proposed.
+
+All other controls must remain unchanged: same verified split assignments, 847,837 benign TRAIN rows,
+feature order and other feature formulas, architecture, initialization seed, optimizer, batch size,
+30 epochs, CPU runtime, per-record v2 MSE scoring, strict threshold rule, Random Forest comparator,
+resource/failure gates, and artifact/provenance checks. Calibration must use the same 212,210 January
+benign rows and frozen higher-99th-percentile rule. The full January partition is the
+calibration-informed development comparison. If used, February must be a frozen secondary
+`later_period_development_informed` comparison because its outcomes are already known. Confirmatory
+evaluation must use a preregistered, compatible, genuinely uninspected source; none is currently
+available under TF-007.
+
+The primary development metric is the ratio of AE-only attacks recovered versus Random Forest to
+AE-only benign false positives added, with the two counts always reported separately. Before execution,
+acceptance is fixed as: at least 96 AE-only January attacks, no more than 1,574 AE-only January benign
+false positives, ratio at least 0.075 (baseline 96/1,574 = 0.0610), and no worsening of total January
+AE false-positive rate above 0.007672. Failure of any condition preserves the v2 baseline. Passing is
+only sufficient to retain the candidate for later independent evaluation; it cannot establish an
+improvement because January informed calibration and intervention choice, February has already been
+inspected, and TF-006 provenance/near-duplicate risk remains open. No experiment is executed here.
+
+The audit recorded 24.61 seconds internal runtime (29.5 seconds observed command wall time),
+585,666,560 bytes peak RSS, 25,000 maximum RF batch size, and 110,380 published bytes. It explicitly
+records no TRAIN, February, or CIC access. Twelve focused tests, relevant Ruff, recovery-integrity load,
+JSON contract checks, and whitespace checks pass. Black reported both Python files unchanged before its
+known delayed shutdown required timeout termination. The report directory and 84,397-byte recovery
+file are ignored; the five source/document changes are left unstaged. The full backend suite was not
+repeated because no shared production component changed.

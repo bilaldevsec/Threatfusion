@@ -379,14 +379,78 @@ integrated product acceptance are absent.
 
 ## Latest scientific task
 
-The January-only residual-contribution audit is complete under its frozen protocol. Its aggregate
-findings are recorded in [`network_autoencoder_residual_audit.md`](network_autoencoder_residual_audit.md).
-No further scoring, architecture/loss/threshold decision, fusion work, or product approval follows from
-this descriptive audit.
+The final January-only record-concentration diagnostic is complete under its frozen protocol. One
+authorized pass completed without retry and retained aggregate JSON, two CSVs, one SVG, and bound
+aggregate-only recovery evidence. All cohort, score, residual, loading, row-alignment, and access gates
+reconciled. Rates are the unique dominant group in 85/96 AE-only attacks with a 94.26% median record
+share; their top 10% contribute 41.61% of attack rate error. For 1,574 AE-only benign false positives,
+the rate median is only 0.42%, rates dominate 274 records, and the top 10% contribute 95.68% of benign
+rate error. Full results and limitations are in
+[`network_autoencoder_residual_audit.md`](network_autoencoder_residual_audit.md).
 
-Resume handoff: the second and explicitly authorized scoring attempt retained verified aggregates,
-CSV, and chart plus an ignored aggregate-only recovery file; the first attempt's lost aggregates are
-not reported. The historical fit, outcomes, and five artifacts remain preserved. The corrected v2
-baseline remains experimental and outside product approval. TF-006/TF-007 and TF-008/TF-009 remain
-open. Next action: design a separately reviewed, January-only diagnostic for per-record contribution
-distributions and outlier concentration before selecting any model experiment.
+Decision A supports, but does not execute, one fixed hypothesis: apply `log1p` only to the two raw rate
+features before the existing TRAIN-only z-score fit, with architecture and all other controls unchanged.
+The preregistered acceptance criteria and population roles are recorded in the audit document. January
+informed calibration and this intervention; February has already been inspected; TF-006 and TF-007
+remain open. The corrected v2 baseline, all classical models, and the working demonstration remain
+preserved and unchanged.
+
+Resume handoff: outcome is Decision A; evidence is the ignored aggregate report and diagnostics; changed
+files are the existing audit runner, its focused tests, this status, the audit document, and the issue
+register. No training, fitting, calibration, February/CIC/TRAIN access, model/dependency/threshold,
+fusion, worker, or demo change occurred. Next action: seek explicit authorization only if the owner
+wants to execute the single frozen rate-tail-compression experiment.
+
+## Two-rate log1p experiment outcome, 2026-09-19
+
+The separately authorized single experiment is complete under the frozen
+[`protocol`](network_rate_log1p_autoencoder_protocol.md). Exact raw-derived rate pairs were admitted for
+865,480 TRAIN and 216,568 January rows; no February feature or label was retained. The experiment ran
+under a Landlock ABI 8 allowlist that denied real UNSW raw, February matrix/label, and CIC paths before
+fitting. Candidate preprocessing used all TRAIN rows; AE weights used only 847,837 benign TRAIN rows for
+exactly 30 epochs. Baseline inputs and the frozen RF remained separate and unchanged.
+
+The candidate threshold is `0.08645885557604867`. January TP/FP/TN/FN are
+945/2,122/210,088/3,413; precision/recall/F1 are 0.308119/0.216843/0.254545. It recovered 59 attacks
+missed by RF and added 2,080 benign false positives. All four frozen gates failed, overall recall fell
+by 0.239330, and attacks detected by both models fell by 1,006. Disposition: **FAIL — preserve the
+corrected v2 baseline**. Total experiment time was 559.896 seconds, peak RSS 872,030,208 bytes, and
+bound candidate evidence was below the 256 MiB limit. The ignored candidate identity is
+`910d2977c93285f54c33408268bb316c5a8f9093042927a77de5ba6fe5fb36f4`; it is not product-approved or
+registered. No February/CIC evaluation, fusion, dependency change, demo change, or issue closure
+occurred. TF-006 and TF-007 remain open.
+
+Resume handoff: the experiment and completion envelope are preserved, all gates failed, and the
+baseline remains authoritative. Changed tracked files add the frozen protocol, isolated experiment and
+finalization runners, candidate implementation, focused tests, and these status records while preserving
+the five prior diagnostic modifications. Next action: retain the failed candidate as development
+evidence and return to the existing project roadmap without another experiment or diagnostic audit.
+
+### Rate-log1p completion-review correction, 2026-09-20
+
+The numerical candidate report and its failed gates remain preserved, but the experiment is not a
+protocol-valid completed result. The preparation process adapted all globally assigned rows and its own
+report records 1,452,844 TEST rows seen before TEST outputs were discarded. Landlock protected only the
+later fit process. Preparation deadline/RSS and pre-fit total-artifact limits were not hard enforced;
+execution peak RSS was checked after computation; and the CLI generic-error fallback was not strictly
+allowlisted. Although observed use stayed within every numerical bound, these defects violate the
+frozen isolation and enforcement requirements.
+
+February access during preparation does not prove that February rows entered optimizer batches. The
+retained accounting reports exactly 847,837 benign TRAIN rows in each epoch. The access-boundary breach
+alone is sufficient to block the result.
+
+The superseding disposition is **BLOCKED — preserve the corrected v2 baseline**. The 945/2,122/210,088/
+3,413 candidate confusion counts and four failed gates are retained only as protocol-invalid development
+evidence. No new fit, preparation pass, scoring pass, or audit is authorized. TF-006 and TF-007 remain
+open and no issue disposition changes.
+
+The tracked historical CLI now rejects `prepare` and `run` with the sanitized code
+`experiment_closed_blocked_no_reuse`; report-only rendering remains available. The runner is unsuitable
+for reuse until the documented preparation-access and resource-enforcement defects are corrected under
+new authorization. This closure guard does not modify the original ignored runner snapshot or report.
+
+Resume handoff: existing candidate artifacts and exact execution snapshots are preserved and bound by
+the corrected completion manifest; no process is running. The concrete blocker is the already-consumed
+one attempt's February-accessing preparation plus nonconforming hard-limit enforcement. Next action:
+retain the blocked result and continue the pre-existing product roadmap without retrying this experiment.

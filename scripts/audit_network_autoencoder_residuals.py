@@ -60,8 +60,8 @@ from threatfusion.preprocessing.network_behavior_v1 import (  # noqa: E402
 )
 from threatfusion.utils.checksum import sha256_file  # noqa: E402
 
-SCHEMA_VERSION = "unsw_january_v2_residual_contribution_audit_v1"
-RECOVERY_SCHEMA_VERSION = "unsw_january_v2_residual_contribution_recovery_v1"
+SCHEMA_VERSION = "unsw_january_v2_record_concentration_audit_v2"
+RECOVERY_SCHEMA_VERSION = "unsw_january_v2_record_concentration_recovery_v2"
 ARTIFACT_IDENTITY = "bdb7fc33d5b092566995018b5f83aa66bdb8ce95841d6b8b9021111c9a392a9a"
 THRESHOLD = 0.1181361214680695
 EXPECTED_ROWS = 216_568
@@ -146,6 +146,19 @@ COHORT_NAMES = (
     "ae_only_benign_false_positive",
     "both_detected_attack",
     "neither_rejected_benign",
+)
+QUANTILES = (
+    ("p10", 0.10),
+    ("p25", 0.25),
+    ("median", 0.50),
+    ("p75", 0.75),
+    ("p90", 0.90),
+    ("p99", 0.99),
+)
+CONCENTRATION_FRACTIONS = (
+    ("top_1_percent", 0.01),
+    ("top_5_percent", 0.05),
+    ("top_10_percent", 0.10),
 )
 EXPECTED_COHORT_COUNTS = {
     "ae_only_attack": 96,
@@ -351,6 +364,7 @@ def _distribution(values: np.ndarray) -> dict[str, float | int | None]:
                 "minimum",
                 "mean",
                 "standard_deviation",
+                "p10",
                 "p25",
                 "median",
                 "p75",
@@ -360,19 +374,49 @@ def _distribution(values: np.ndarray) -> dict[str, float | int | None]:
                 "maximum",
             )
         }
-    quantiles = np.quantile(values, [0.25, 0.5, 0.75, 0.9, 0.95, 0.99])
+    quantiles = np.quantile(values, [0.10, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99])
     return {
         "minimum": float(np.min(values)),
         "mean": float(np.mean(values, dtype=np.float64)),
         "standard_deviation": float(np.std(values, dtype=np.float64)),
-        "p25": float(quantiles[0]),
-        "median": float(quantiles[1]),
-        "p75": float(quantiles[2]),
-        "p90": float(quantiles[3]),
-        "p95": float(quantiles[4]),
-        "p99": float(quantiles[5]),
+        "p10": float(quantiles[0]),
+        "p25": float(quantiles[1]),
+        "median": float(quantiles[2]),
+        "p75": float(quantiles[3]),
+        "p90": float(quantiles[4]),
+        "p95": float(quantiles[5]),
+        "p99": float(quantiles[6]),
         "maximum": float(np.max(values)),
     }
+
+
+def _share_percentiles(values: np.ndarray) -> dict[str, float | None]:
+    if values.size == 0:
+        return {name: None for name, _ in QUANTILES}
+    quantiles = np.quantile(values, [probability for _, probability in QUANTILES])
+    return {name: float(quantiles[index]) for index, (name, _) in enumerate(QUANTILES)}
+
+
+def _concentration(values: np.ndarray) -> dict[str, dict[str, float | int | None]]:
+    values = np.asarray(values, dtype=np.float64)
+    if values.ndim != 1 or not np.isfinite(values).all() or np.any(values < 0.0):
+        raise ResidualAuditError("concentration_values_invalid")
+    count = int(values.size)
+    total = float(np.sum(values, dtype=np.float64))
+    ordered = np.sort(values)[::-1]
+    result = {}
+    for name, fraction in CONCENTRATION_FRACTIONS:
+        selected = min(count, max(1, int(np.ceil(fraction * count)))) if count else 0
+        result[name] = {
+            "record_count": selected,
+            "rounding": "ceiling",
+            "fraction_of_total_error": (
+                float(np.sum(ordered[:selected], dtype=np.float64) / total)
+                if selected and total > 0.0
+                else None
+            ),
+        }
+    return result
 
 
 def aggregate_cohort(mask: np.ndarray, scores: np.ndarray, squared: np.ndarray) -> dict[str, Any]:
@@ -380,13 +424,13 @@ def aggregate_cohort(mask: np.ndarray, scores: np.ndarray, squared: np.ndarray) 
     if mask.shape != scores.shape or squared.shape != (scores.size, len(TRANSFORMED_FEATURE_NAMES)):
         raise ResidualAuditError("residual_aggregation_alignment_mismatch")
     count = int(np.count_nonzero(mask))
-    feature_sums = np.asarray(
-        [np.sum(squared[mask, index], dtype=np.float64) for index in range(squared.shape[1])]
-    )
+    selected_squared = squared[mask]
+    selected_scores = scores[mask]
+    feature_sums = np.sum(selected_squared, axis=0, dtype=np.float64)
     total = float(np.sum(feature_sums, dtype=np.float64))
     features = []
     for index, name in enumerate(TRANSFORMED_FEATURE_NAMES):
-        values = squared[mask, index]
+        values = selected_squared[:, index]
         features.append(
             {
                 "index": index + 1,
@@ -401,9 +445,31 @@ def aggregate_cohort(mask: np.ndarray, scores: np.ndarray, squared: np.ndarray) 
                 ),
             }
         )
+    group_names = list(FEATURE_GROUPS)
+    group_errors = (
+        np.column_stack(
+            [
+                np.sum(selected_squared[:, indices], axis=1, dtype=np.float64)
+                for indices in FEATURE_GROUPS.values()
+            ]
+        )
+        if count
+        else np.empty((0, len(FEATURE_GROUPS)), dtype=np.float64)
+    )
+    record_totals = np.sum(group_errors, axis=1, dtype=np.float64)
+    positive = record_totals > 0.0
+    shares = np.full_like(group_errors, np.nan)
+    if np.any(positive):
+        shares[positive] = group_errors[positive] / record_totals[positive, None]
+    dominant = np.zeros_like(group_errors, dtype=bool)
+    if np.any(positive):
+        maxima = np.max(group_errors[positive], axis=1)
+        dominant[positive] = group_errors[positive] == maxima[:, None]
+    dominance_multiplicity = np.sum(dominant, axis=1)
     groups = []
-    for name, indices in FEATURE_GROUPS.items():
-        group_sum = float(np.sum(feature_sums[list(indices)], dtype=np.float64))
+    for group_index, (name, indices) in enumerate(FEATURE_GROUPS.items()):
+        values = group_errors[:, group_index]
+        group_sum = float(np.sum(values, dtype=np.float64))
         groups.append(
             {
                 "name": name,
@@ -412,15 +478,65 @@ def aggregate_cohort(mask: np.ndarray, scores: np.ndarray, squared: np.ndarray) 
                 "fraction_of_total_reconstruction_error": (
                     group_sum / total if total > 0.0 else None
                 ),
+                "error_distribution": _distribution(values),
+                "per_record_share_percentiles": _share_percentiles(shares[positive, group_index]),
+                "dominant_count_including_ties": int(np.count_nonzero(dominant[:, group_index])),
+                "unique_dominant_count": int(
+                    np.count_nonzero(dominant[:, group_index] & (dominance_multiplicity == 1))
+                ),
+                "record_error_concentration": _concentration(values),
             }
         )
     return {
         "record_count": count,
         "empty": count == 0,
-        "score_distribution": _distribution(scores[mask]),
+        "score_distribution": _distribution(selected_scores),
+        "record_score_concentration": _concentration(selected_scores),
+        "per_record_group_share_population": {
+            "positive_total_error_records": int(np.count_nonzero(positive)),
+            "zero_total_error_records": int(np.count_nonzero(~positive)),
+            "zero_total_share_value": None,
+            "quantile_method": "numpy_linear",
+        },
+        "dominance": {
+            "ties_excluded_from_unique_counts": True,
+            "tied_dominance_records": int(np.count_nonzero(dominance_multiplicity > 1)),
+            "zero_total_error_records": int(np.count_nonzero(~positive)),
+            "group_order": group_names,
+        },
         "total_squared_residual": total,
         "features": features,
         "groups": groups,
+    }
+
+
+def compare_ae_only_scores(cohorts: Mapping[str, dict[str, Any]]) -> dict[str, Any]:
+    attack = cohorts["ae_only_attack"]
+    benign = cohorts["ae_only_benign_false_positive"]
+    attack_distribution = attack["score_distribution"]
+    benign_distribution = benign["score_distribution"]
+
+    def ratio(numerator: float | None, denominator: float | None) -> float | None:
+        if numerator is None or denominator is None or denominator == 0.0:
+            return None
+        return float(numerator / denominator)
+
+    return {
+        "scope": "descriptive_calibration_informed_no_significance_test",
+        "attack_record_count": attack["record_count"],
+        "benign_false_positive_record_count": benign["record_count"],
+        "attack_to_benign_score_ratios": {
+            key: ratio(attack_distribution[key], benign_distribution[key])
+            for key in ("mean", "median", "p90", "p99", "maximum")
+        },
+        "score_distributions": {
+            "ae_only_attack": attack_distribution,
+            "ae_only_benign_false_positive": benign_distribution,
+        },
+        "record_score_concentration": {
+            "ae_only_attack": attack["record_score_concentration"],
+            "ae_only_benign_false_positive": benign["record_score_concentration"],
+        },
     }
 
 
@@ -463,6 +579,70 @@ def _write_csv(path: Path, cohorts: Mapping[str, dict[str, Any]]) -> None:
                         "fraction_of_total_reconstruction_error": feature[
                             "fraction_of_total_reconstruction_error"
                         ],
+                    }
+                )
+
+
+def _write_record_diagnostics_csv(path: Path, cohorts: Mapping[str, dict[str, Any]]) -> None:
+    fieldnames = (
+        "cohort",
+        "group",
+        "record_count",
+        "zero_total_error_records",
+        "tied_dominance_records",
+        "dominant_count_including_ties",
+        "unique_dominant_count",
+        "share_p10",
+        "share_p25",
+        "share_median",
+        "share_p75",
+        "share_p90",
+        "share_p99",
+        "error_p10",
+        "error_p25",
+        "error_median",
+        "error_p75",
+        "error_p90",
+        "error_p99",
+        "top_1_percent_record_count",
+        "top_1_percent_error_fraction",
+        "top_5_percent_record_count",
+        "top_5_percent_error_fraction",
+        "top_10_percent_record_count",
+        "top_10_percent_error_fraction",
+    )
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for cohort_name, cohort in cohorts.items():
+            for group in cohort["groups"]:
+                shares = group["per_record_share_percentiles"]
+                errors = group["error_distribution"]
+                concentration = group["record_error_concentration"]
+                writer.writerow(
+                    {
+                        "cohort": cohort_name,
+                        "group": group["name"],
+                        "record_count": cohort["record_count"],
+                        "zero_total_error_records": cohort["per_record_group_share_population"][
+                            "zero_total_error_records"
+                        ],
+                        "tied_dominance_records": cohort["dominance"]["tied_dominance_records"],
+                        "dominant_count_including_ties": group["dominant_count_including_ties"],
+                        "unique_dominant_count": group["unique_dominant_count"],
+                        **{f"share_{key}": value for key, value in shares.items()},
+                        **{
+                            f"error_{key}": errors[key]
+                            for key in ("p10", "p25", "median", "p75", "p90", "p99")
+                        },
+                        **{
+                            f"{key}_record_count": value["record_count"]
+                            for key, value in concentration.items()
+                        },
+                        **{
+                            f"{key}_error_fraction": value["fraction_of_total_error"]
+                            for key, value in concentration.items()
+                        },
                     }
                 )
 
@@ -576,6 +756,8 @@ def _load_recovery(path: Path) -> dict[str, Any]:
         != {"autoencoder": EXPECTED_AE_CONFUSION, "random_forest": EXPECTED_RF_CONFUSION}
         or report.get("overlap") != EXPECTED_OVERLAP
         or list(report.get("cohorts", {})) != list(COHORT_NAMES)
+        or report.get("concentration_rounding") != "ceiling"
+        or report.get("share_quantile_method") != "numpy_linear"
         or report.get("resources", {}).get("ae_forward_rows") != EXPECTED_ROWS
         or report.get("resources", {}).get("ae_forward_shape") != [1, 14]
         or report.get("resources", {}).get("rf_prediction_batch_size") != PREDICTION_BATCH_SIZE
@@ -591,6 +773,9 @@ def _load_recovery(path: Path) -> dict[str, Any]:
             or cohort.get("record_count") != EXPECTED_COHORT_COUNTS[name]
             or cohort.get("empty") is not False
             or len(cohort.get("features", ())) != len(TRANSFORMED_FEATURE_NAMES)
+            or len(cohort.get("groups", ())) != len(FEATURE_GROUPS)
+            or "record_score_concentration" not in cohort
+            or "dominance" not in cohort
         ):
             raise ResidualAuditError("recovery_contract_mismatch")
         for index, feature in enumerate(cohort["features"]):
@@ -620,6 +805,9 @@ def publish_aggregates(
         temporary = Path(temp)
         aggregate_path = temporary / "aggregate.json"
         _write_csv(temporary / "feature_contributions.csv", published_report["cohorts"])
+        _write_record_diagnostics_csv(
+            temporary / "record_diagnostics.csv", published_report["cohorts"]
+        )
         _write_chart(temporary / "feature_contributions.svg", published_report["cohorts"])
         output_bytes = -1
         for _ in range(10):
@@ -725,10 +913,13 @@ def run_audit(
         "feature_groups": {
             name: [index + 1 for index in indices] for name, indices in FEATURE_GROUPS.items()
         },
+        "share_quantile_method": "numpy_linear",
+        "concentration_rounding": "ceiling",
         "score_residual_reconciliation": reconciliation,
         "confusion": {"autoencoder": ae_confusion, "random_forest": rf_confusion},
         "overlap": overlap,
         "cohorts": cohorts,
+        "ae_only_score_comparison": compare_ae_only_scores(cohorts),
         "resources": {
             "preflight_available_memory_bytes": available_memory,
             "preflight_free_disk_bytes": free_disk,
@@ -758,7 +949,7 @@ def _parser() -> argparse.ArgumentParser:
         "--output-directory",
         type=Path,
         default=root
-        / "artifacts/reports/network_autoencoder_residual_audit/january-v2-vs-rf-f71a5e7",
+        / "artifacts/reports/network_autoencoder_residual_audit/january-v2-record-concentration-b5e6e5d",
     )
     return parser
 

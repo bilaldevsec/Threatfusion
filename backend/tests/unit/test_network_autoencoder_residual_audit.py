@@ -32,6 +32,8 @@ def _valid_recovery_report() -> dict:
         "feature_groups": {
             name: [index + 1 for index in indices] for name, indices in audit.FEATURE_GROUPS.items()
         },
+        "share_quantile_method": "numpy_linear",
+        "concentration_rounding": "ceiling",
         "score_residual_reconciliation": {
             "exact": True,
             "absolute_tolerance": 0.0,
@@ -111,6 +113,49 @@ def test_residual_aggregation_reports_exact_feature_fractions_and_medians() -> N
     assert sum(item["fraction_of_total_reconstruction_error"] for item in result["groups"]) == 1.0
 
 
+def test_per_record_shares_dominance_and_ties_are_explicit() -> None:
+    squared = np.zeros((3, 14), dtype=np.float64)
+    squared[0, 5:7] = [3.0, 1.0]
+    squared[0, 3:5] = [1.0, 1.0]
+    squared[1, 1] = 2.0
+    squared[1, 3] = 2.0
+    scores = np.sum(squared, axis=1, dtype=np.float64) / 14.0
+
+    result = aggregate_cohort(np.ones(3, dtype=bool), scores, squared)
+    groups = {group["name"]: group for group in result["groups"]}
+
+    assert result["per_record_group_share_population"] == {
+        "positive_total_error_records": 2,
+        "zero_total_error_records": 1,
+        "zero_total_share_value": None,
+        "quantile_method": "numpy_linear",
+    }
+    assert groups["rates"]["per_record_share_percentiles"]["median"] == pytest.approx(1 / 3)
+    assert groups["rates"]["unique_dominant_count"] == 1
+    assert groups["packet_counts"]["dominant_count_including_ties"] == 1
+    assert groups["byte_counts"]["dominant_count_including_ties"] == 1
+    assert result["dominance"]["tied_dominance_records"] == 1
+    assert result["dominance"]["zero_total_error_records"] == 1
+
+
+def test_concentration_uses_ceiling_and_zero_total_is_null() -> None:
+    values = np.arange(1.0, 102.0, dtype=np.float64)
+    concentration = audit._concentration(values)
+
+    assert concentration["top_1_percent"]["record_count"] == 2
+    assert concentration["top_5_percent"]["record_count"] == 6
+    assert concentration["top_10_percent"]["record_count"] == 11
+    assert concentration["top_1_percent"]["fraction_of_total_error"] == pytest.approx(
+        (101.0 + 100.0) / np.sum(values)
+    )
+    zero = audit._concentration(np.zeros(2, dtype=np.float64))
+    assert zero["top_1_percent"] == {
+        "record_count": 1,
+        "rounding": "ceiling",
+        "fraction_of_total_error": None,
+    }
+
+
 def test_empty_cohort_is_explicit_and_uses_null_statistics() -> None:
     result = aggregate_cohort(
         np.asarray([False, False]),
@@ -152,6 +197,7 @@ def test_actual_json_csv_and_chart_publication_uses_corrected_feature_fields(tmp
     csv_text = (output / "feature_contributions.csv").read_text(encoding="utf-8")
     assert "feature_index,feature_name" in csv_text
     assert "duration_ms__zscore" in csv_text
+    assert "share_p10" in (output / "record_diagnostics.csv").read_text(encoding="utf-8")
     assert (output / "feature_contributions.svg").read_text(encoding="utf-8").startswith("<svg")
     assert recovery.is_file()
 
@@ -188,6 +234,7 @@ def test_publication_failure_retains_aggregate_only_recovery_for_retry(
     aggregate_path = publish_aggregates(output, recovered_report, recovery_path=recovery)
     assert aggregate_path.is_file()
     assert (output / "feature_contributions.csv").is_file()
+    assert (output / "record_diagnostics.csv").is_file()
     assert (output / "feature_contributions.svg").is_file()
 
 
@@ -206,6 +253,7 @@ def test_run_retries_verified_recovery_without_reopening_scoring_inputs(tmp_path
 
     assert aggregate_path.is_file()
     assert (output / "feature_contributions.csv").is_file()
+    assert (output / "record_diagnostics.csv").is_file()
     assert (output / "feature_contributions.svg").is_file()
 
 
