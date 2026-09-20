@@ -147,6 +147,9 @@ def load_evidence(paths: Mapping[str, Path] = EVIDENCE) -> dict[str, Any]:
         or overlap.get("normal", {}).get("autoencoder_only_added_false_positive") != 1574
     ):
         raise EvidenceError("residual_values_mismatch")
+    data["_source_fingerprints"] = {
+        key: _sha256(paths[key]) for key in ("demo", "rf", "ae", "audit", "blocked")
+    }
     return data
 
 
@@ -219,8 +222,9 @@ def render(data: Mapping[str, Any]) -> str:
     )
     whole_score_top10 = audit_benign["record_score_concentration"]["top_10_percent"]
     rate_error_top10 = pooled_benign_rates["record_error_concentration"]["top_10_percent"]
+    source_fingerprints = data["_source_fingerprints"]
     source_rows = "".join(
-        f"<tr><td>{_e(name)}</td><td><code>{_e(_sha256(EVIDENCE[key]))}</code></td><td>{_e(label)}</td></tr>"
+        f"<tr><td>{_e(name)}</td><td><code>{_e(source_fingerprints[key])}</code></td><td>{_e(label)}</td></tr>"
         for key, name, label in (
             (
                 "demo",
