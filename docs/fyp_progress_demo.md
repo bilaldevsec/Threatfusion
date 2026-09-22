@@ -5,8 +5,8 @@
 This is a repeatable 5–7 minute demonstration of the implemented ThreatFusion registered-offline
 producer path. It replays two deliberately selected records from the registered UNSW-NB15 snapshot
 through a real IPv4 loopback TLS 1.3 mutual-TLS connection, the existing admission/rate/concurrency
-gates, replay journal, security audit, frozen Random Forest inference boundary, and Attack-only alert
-repository.
+gates, replay journal, security audit, terminating spawned-worker Random Forest inference boundary, and
+parent-owned Attack-only alert repository.
 
 It is **recorded UNSW replay**, not live traffic, an accuracy test, production serving, or proof of
 operational usefulness. Rows 1 and 21 of registered member
@@ -57,8 +57,8 @@ credentials, private keys, raw records, endpoints, or runtime databases into the
    `0.1181361214680695`, each reconstruction score, the strict `score > threshold` result, and known
    label. The current scores are `0.000353499239` (row 1, not anomalous) and `0.546426254102` (row 21,
    anomalous).
-6. Confirmation that request threads joined, the listener closed, leases were released, SQLite
-   sidecars were absent, and the temporary credential/database directory was removed.
+6. Confirmation that inference workers and request threads joined, the listener closed, leases were
+   released, SQLite sidecars were absent, and the temporary credential/database directory was removed.
 
 ## Suggested 5–7 minute speaking sequence
 
@@ -92,10 +92,10 @@ credentials, private keys, raw records, endpoints, or runtime databases into the
 
 ## Limitations
 
-The synchronous one-request orchestrator has no serving loop or terminating worker-process isolation;
-a blocked predictor cannot be forcibly terminated. This demo does not add dashboard, correlation,
-explanation, analyst workflow, backup/recovery, audit export/rotation, live-source identity, Azure,
-cross-source compatibility, LLM, SOAR, or containment. Its chosen records cannot measure accuracy,
-false-positive rate, throughput, user value, generalization, or readiness. February/CIC outcomes remain
-development-known, TF-006/TF-007 remain scientific limitations, and TF-008/TF-009 remain open for their
-broader product and reliability acceptance requirements.
+The synchronous one-request orchestrator now uses one terminating worker per newly claimed request, but
+still has no serving loop or long-running service/resource evidence. This demo does not add dashboard,
+correlation, explanation, analyst workflow, backup/recovery, audit export/rotation, live-source identity,
+Azure, cross-source compatibility, LLM, SOAR, or containment. Its chosen records cannot measure
+accuracy, false-positive rate, throughput, user value, generalization, or readiness. February/CIC
+outcomes remain development-known, TF-006/TF-007 remain scientific limitations, and TF-008/TF-009
+remain open for their broader product and reliability acceptance requirements.

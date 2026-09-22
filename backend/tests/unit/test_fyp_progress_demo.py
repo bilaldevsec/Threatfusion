@@ -114,6 +114,7 @@ def test_evidence_write_is_complete_json(tmp_path: Path) -> None:
 def test_setup_failure_closes_service_and_exits_nonzero(monkeypatch, capsys) -> None:
     class Service:
         alerts = object()
+        orchestrator = object()
         closed = 0
 
         def close(self) -> None:

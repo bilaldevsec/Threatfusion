@@ -18,7 +18,6 @@ from pathlib import Path
 from queue import Empty, Queue
 from tempfile import TemporaryDirectory
 from threading import Thread
-from types import MethodType
 from uuid import uuid4
 
 import numpy as np
@@ -434,22 +433,19 @@ def _decode_wire(wire: bytes) -> tuple[int, bytes, object]:
 
 
 def _instrument_actual_calls(
-    boundary: UnswNetworkInferenceBoundary,
+    orchestrator: ProducerOrchestrator,
     alerts: AlertCandidateRepository,
 ) -> dict[str, int]:
-    counters = {"inference_calls": 0, "alert_insert_calls": 0}
-    original_infer = boundary._infer_prepared_registered
+    counters = {
+        "inference_calls": orchestrator.worker_completed_record_count,
+        "alert_insert_calls": 0,
+    }
     original_insert = alerts.insert
-
-    def counted_infer(self, prepared, *, model):  # noqa: ANN001, ANN202
-        counters["inference_calls"] += 1
-        return original_infer(prepared, model=model)
 
     def counted_insert(candidate):  # noqa: ANN001, ANN202
         counters["alert_insert_calls"] += 1
         return original_insert(candidate)
 
-    boundary._infer_prepared_registered = MethodType(counted_infer, boundary)
     alerts.insert = counted_insert
     return counters
 
@@ -586,17 +582,20 @@ def _producer_evidence(
     if first_status != 200 or first_result.response_bytes != first_body:
         raise DemoError("initial_request_failed")
     alerts_after_first = service.alerts.list()
+    counters["inference_calls"] = service.orchestrator.worker_completed_record_count
     counters_after_first = dict(counters)
 
     retry_wire, retry_result, retry_tls = _exchange(service, credentials, body)
     retry_status, retry_body, retry_response = _decode_wire(retry_wire)
     alerts_after_retry = service.alerts.list()
+    counters["inference_calls"] = service.orchestrator.worker_completed_record_count
     counters_after_retry = dict(counters)
 
     invalid_body = _request_body(references, producer_id="wrong-producer")
     invalid_wire, invalid_result, invalid_tls = _exchange(service, credentials, invalid_body)
     invalid_status, invalid_response_body, invalid_response = _decode_wire(invalid_wire)
     alerts_after_invalid = service.alerts.list()
+    counters["inference_calls"] = service.orchestrator.worker_completed_record_count
     counters_after_invalid = dict(counters)
 
     records = []
@@ -763,7 +762,10 @@ def _print_report(report: dict[str, object], output: Path) -> None:
             f"threshold={record['threshold']:.12f} "
             f"score>threshold={record['anomaly']}"
         )
-    print("Cleanup: request threads joined, listener closed, leases released, runtime removed")
+    print(
+        "Cleanup: inference workers and request threads joined, listener closed, "
+        "leases released, runtime removed"
+    )
     print(f"Evidence: {output.relative_to(PROJECT_ROOT)}")
 
 
@@ -776,7 +778,7 @@ def run_demo() -> dict[str, object]:
         credentials = _create_credentials(runtime)
         service = _create_service(runtime, credentials, boundary)
         try:
-            counters = _instrument_actual_calls(boundary, service.alerts)
+            counters = _instrument_actual_calls(service.orchestrator, service.alerts)
             producer = _producer_evidence(service, credentials, counters)
         finally:
             service.close()

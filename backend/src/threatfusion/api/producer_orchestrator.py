@@ -1,4 +1,4 @@
-"""Fixed synchronous orchestration for one registered-UNSW producer request."""
+"""Synchronous parent orchestration with terminating registered-inference workers."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import math
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Callable
 
 from threatfusion.alerts.network_alerts import build_alert_candidate
@@ -29,6 +30,13 @@ from threatfusion.api.producer_execution_gates import (
     GATE_RATE_LIMITED,
     ProducerExecutionGateError,
     ProducerExecutionGates,
+)
+from threatfusion.api.producer_inference_worker import (
+    PROCESSING_RECORD_SECONDS,
+    PROCESSING_REQUEST_SECONDS,
+    ProducerInferenceWorkerError,
+    ProducerInferenceWorkerLimits,
+    TerminatingProducerInferenceWorker,
 )
 from threatfusion.api.producer_tls_transport import (
     AuthenticatedTlsSession,
@@ -63,8 +71,6 @@ from threatfusion.models.network_inference import (
 from threatfusion.schemas.alert_candidate import AlertCandidateError
 
 ORCHESTRATOR_SCHEMA_VERSION = "producer_orchestrator_v1"
-PROCESSING_RECORD_SECONDS = 30.0
-PROCESSING_REQUEST_SECONDS = 300.0
 
 
 class ProducerOrchestratorError(RuntimeError):
@@ -236,6 +242,8 @@ class ProducerOrchestrator:
         alert_repository: AlertCandidateRepository,
         trusted_now: Callable[[], datetime] = lambda: datetime.now(UTC),
         monotonic: Callable[[], float] = time.monotonic,
+        worker_limits: ProducerInferenceWorkerLimits | None = None,
+        _test_inference_mode: str | None = None,
     ) -> None:
         if (
             type(transport) is not ProducerTlsListener
@@ -247,6 +255,13 @@ class ProducerOrchestrator:
             or type(alert_repository) is not AlertCandidateRepository
             or not callable(trusted_now)
             or not callable(monotonic)
+            or (
+                _test_inference_mode is not None
+                and (
+                    type(_test_inference_mode) is not str
+                    or _test_inference_mode != "inline_registered_inference"
+                )
+            )
         ):
             raise ProducerOrchestratorError("orchestrator_configuration_invalid")
         provenance = inference_boundary.audit_provenance
@@ -270,6 +285,26 @@ class ProducerOrchestrator:
         self._alerts = alert_repository
         self._trusted_now = trusted_now
         self._monotonic = monotonic
+        self._worker = None
+        if _test_inference_mode is None:
+            project_root = getattr(inference_boundary, "_project_root", None)
+            registered_source = getattr(inference_boundary, "_registered_source", None)
+            manifest_sha256 = getattr(registered_source, "manifest_sha256", None)
+            if not isinstance(project_root, Path) or type(manifest_sha256) is not str:
+                raise ProducerOrchestratorError("orchestrator_configuration_invalid")
+            try:
+                self._worker = TerminatingProducerInferenceWorker(
+                    project_root=project_root,
+                    manifest_sha256=manifest_sha256,
+                    limits=worker_limits,
+                )
+            except ProducerInferenceWorkerError:
+                raise ProducerOrchestratorError("orchestrator_configuration_invalid") from None
+            self._inline_inference_for_tests = False
+        else:
+            if worker_limits is not None:
+                raise ProducerOrchestratorError("orchestrator_configuration_invalid")
+            self._inline_inference_for_tests = True
         self._fatal = False
 
     def __repr__(self) -> str:
@@ -278,6 +313,11 @@ class ProducerOrchestrator:
     @property
     def fatal(self) -> bool:
         return self._fatal
+
+    @property
+    def worker_completed_record_count(self) -> int:
+        """Count validated records returned by fully cleaned production workers."""
+        return 0 if self._worker is None else self._worker.completed_record_count
 
     def open(self) -> None:
         """Open the already validated injected transport; no recovery is implicit."""
@@ -557,44 +597,50 @@ class ProducerOrchestrator:
         if audit_failure is not None:
             return audit_failure
         processing_started = self._monotonic_now()
+        references = tuple(
+            (reference.source_member_sha256, reference.row_number) for reference in record.records
+        )
         record_started: float | None = None
-        inferred: list[RegisteredUnswInferenceResult] = []
         try:
-            prepared = self._inference._prepare_registered_batch(
-                references=tuple(
-                    (reference.source_member_sha256, reference.row_number)
-                    for reference in record.records
-                )
-            )
-            if type(prepared) is not tuple or len(prepared) != len(record.records):
+            if not self._inline_inference_for_tests:
+                if self._worker is None:
+                    raise ProducerOrchestratorError("orchestrator_configuration_invalid")
+                inferred = self._worker.execute(references)
+            else:
+                prepared = self._inference._prepare_registered_batch(references=references)
+                inline_results = []
+                for item in prepared:
+                    record_started = self._monotonic_now()
+                    inline_results.append(
+                        self._inference._infer_prepared_registered(
+                            item, model=NetworkModelChoice.RANDOM_FOREST
+                        )
+                    )
+                    self._check_processing(processing_started, record_started)
+                inferred = tuple(inline_results)
+            if (
+                type(inferred) is not tuple
+                or len(inferred) != len(record.records)
+                or any(type(item) is not RegisteredUnswInferenceResult for item in inferred)
+            ):
                 raise ProducerOrchestratorError("inference_result_invalid")
             self._check_processing(processing_started)
-            for item in prepared:
-                record_started = self._monotonic_now()
-                self._check_processing(processing_started, record_started)
-                result = self._inference._infer_prepared_registered(
-                    item,
-                    model=NetworkModelChoice.RANDOM_FOREST,
-                )
-                if type(result) is not RegisteredUnswInferenceResult:
-                    raise ProducerOrchestratorError("inference_result_invalid")
-                self._check_processing(processing_started, record_started)
-                inferred.append(result)
         except NetworkInferenceError:
-            try:
-                self._check_processing(processing_started, record_started)
-            except ProducerOrchestratorError:
-                response = self._response(record.correlation_id, "processing_timeout")
-                return self._complete_failure_and_write(
-                    failure_reason="processing_timeout",
-                    session=session,
-                    capability=capability,
-                    record=record,
-                    claim=claim,
-                    response=response,
-                    processing_started=processing_started,
-                    enforce_budget=False,
-                )
+            if self._worker is None:
+                try:
+                    self._check_processing(processing_started, record_started)
+                except ProducerOrchestratorError:
+                    response = self._response(record.correlation_id, "processing_timeout")
+                    return self._complete_failure_and_write(
+                        failure_reason="processing_timeout",
+                        session=session,
+                        capability=capability,
+                        record=record,
+                        claim=claim,
+                        response=response,
+                        processing_started=processing_started,
+                        enforce_budget=False,
+                    )
             # Registered-reference rejection proves there was no AlertCandidate persistence.
             response = self._response(
                 record.correlation_id,
@@ -611,6 +657,20 @@ class ProducerOrchestrator:
                 claim=claim,
                 response=response,
                 processing_started=processing_started,
+            )
+        except ProducerInferenceWorkerError as error:
+            timed_out = error.code in {"worker_record_timeout", "worker_request_timeout"}
+            reason = "processing_timeout" if timed_out else "internal_error"
+            response = self._response(record.correlation_id, reason)
+            return self._complete_failure_and_write(
+                failure_reason=reason,
+                session=session,
+                capability=capability,
+                record=record,
+                claim=claim,
+                response=response,
+                processing_started=processing_started,
+                enforce_budget=not timed_out,
             )
         except ProducerOrchestratorError as error:
             if error.code == "processing_timeout":
@@ -930,7 +990,7 @@ class ProducerOrchestrator:
                 raise ProducerOrchestratorError("lease_release_failed") from None
 
     def process_one(self) -> ProducerOrchestratorResult:
-        """Accept and fully close one connection; no background loop or worker is created."""
+        """Accept one connection and synchronously join any spawned inference worker."""
         if self._fatal:
             raise ProducerOrchestratorError("service_fatal")
         try:

@@ -2,7 +2,7 @@
 
 ## Snapshot
 
-Status date: 2026-09-19. Branch: `main`. The corrected v2 experiment is checkpointed and pushed at
+Status date: 2026-09-22. Branch: `main`. The corrected v2 experiment is checkpointed and pushed at
 `8aa26ba250e4a63f95d90960ec87e224325b6d2f`; Backend quality run `35438412921` passed. The FYP-II
 recorded-data demonstration is checkpointed and pushed at
 `f71a5e74186a8975b4ca090b9d1a987384a55da4`. Both autoencoder runs and generated demonstration
@@ -302,8 +302,28 @@ integrated product acceptance are absent.
   correction, all 156 orchestrator/replay/audit tests pass; one full suite passes 854 tests with the
   same four TF-005 warnings and no skips. Repository Ruff and all nine individual bounded Black
   checks pass. The other five findings and replay ordering were not reopened for review.
-  Processing deadlines are detected around synchronous calls but cannot terminate a blocked predictor;
-  isolated worker-process enforcement and a serving loop remain absent.
+  Registered preparation and frozen Random Forest prediction now run in a fresh spawned worker process
+  for each newly claimed request. The parent enforces exact 30-second per-record and 300-second
+  whole-request production limits, with shorter limits allowed only by test configuration. A bounded
+  one-way protocol carries preparation, record-start, result and completion messages; strict parent
+  validation binds stable order, registered source-event identity, frozen RF identity/artifact,
+  timestamps, scores and dispositions. No AlertCandidate is constructed or persisted until the complete
+  batch is valid and the exact worker/process group and pipe are cleaned. Crash, hang, silent exit,
+  malformed/missing response, child exception and cleanup failure therefore create no partial alert.
+  Timeout maps to `processing_timeout`; every other worker failure maps to `internal_error`, without
+  exception/path/credential/model-location disclosure. Completed replay remains byte-identical and
+  starts no worker. A later fresh request remains usable after a cleaned worker failure. The wrapper
+  creates no queue, thread, listener, database connection or temporary file. A serving loop and broader
+  operational resource evidence remain absent.
+  Final validation passed 16 focused worker tests, 491 related producer/admission/inference/persistence/
+  replay/TLS tests, 13 focused FYP demo/viewer tests, and the real IPv4-loopback frozen-RF worker smoke.
+  The one permitted complete backend run passed 944 tests with zero failures or skips and the four
+  existing TF-005 warnings. Terminal-message review then tightened rejection of output after a valid
+  completion; the final focused matrix and real worker smoke passed after that correction, and the full
+  suite was not repeated under the exactly-once validation constraint. The recorded demo passed once
+  with unchanged predictions, exact replay counts, one invalid request with unchanged effect counts, and
+  complete cleanup. Independent verification passed for all 23 immutable preprocessing, RF/logistic and
+  historical/corrected autoencoder files.
 
 - A bounded evaluator-facing FYP-II runner now composes the existing supported components without a
   new service or inference path. It uses one-use credentials and temporary SQLite databases, submits
@@ -365,9 +385,8 @@ integrated product acceptance are absent.
 
 - A supported end-to-end product path connecting the implemented registered-offline inference and
   AlertCandidate persistence boundary to correlation, explanation and dashboard display.
-- A bounded worker-process/service boundary and serving loop; the synchronous orchestrator alone cannot
-  terminate a blocked predictor call. The bounded one-request real TLS/orchestrator integration harness
-  is test evidence, not a production service loop.
+- A long-running serving loop and service-manager lifecycle. The bounded one-request real
+  TLS/orchestrator/worker integration harness is test evidence, not a production service loop.
 - Product API/view-model contracts, dashboard behavior, backup/recovery, optional-service degradation,
   and integrated resource/latency evidence.
 - An approved v2 autoencoder detector plus versioned result/persistence contract. The experimental v2

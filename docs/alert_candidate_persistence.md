@@ -99,6 +99,15 @@ claim. The replay journal stores only request/evidence digests and a sanitized c
 not store an AlertCandidate, raw evidence or model result internals. The AlertCandidate primary key
 remains the final idempotency boundary for later recovery reconciliation or a race after inference.
 
+The producer orchestrator's terminating-worker milestone does not move this SQLite repository into the
+child. Registered preparation and Random Forest prediction run in the spawned worker; the request
+process validates a complete ordered result and fully joins/closes the worker before constructing any
+candidate. Consequently a worker timeout, crash, silent exit, malformed/missing response, child failure,
+or cleanup failure inserts no candidate, including when an earlier child message described an Attack.
+Parent-side persistence retains this repository's existing one-candidate-per-transaction behavior after
+a complete valid worker batch. Persistence or replay-finalization ambiguity remains governed by the
+existing fatal-generation rules rather than being relabeled as a worker failure.
+
 ## Trust and future boundaries
 
 This is application-path enforcement, not cryptographic authentication. Trusted application code,

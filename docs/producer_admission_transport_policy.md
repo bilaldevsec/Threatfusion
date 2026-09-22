@@ -10,8 +10,9 @@ nonqueueing concurrency gate and the bounded local security-audit repository are
 the directly terminating loopback TLS transport component is now implemented as a staged internal
 boundary. This is not a long-running or production service. A fixed synchronous one-request
 orchestrator now joins the implemented rate/replay/audit/inference/persistence boundaries internally;
-it does not add a serving loop, live-source adapter, AlertCandidate persistence change, or
-worker-process deadline enforcement.
+the registered preparation and Random Forest inference portion now executes in one terminating spawned
+worker process per newly claimed request. It does not add a serving loop, live-source adapter, or
+AlertCandidate schema/repository change.
 
 Protocol v1 supports only registered-offline UNSW replay on the same Linux workstation as the
 ThreatFusion backend. It preserves the existing registered source lookup, trusted 49-column adapter,
@@ -389,7 +390,7 @@ weak lease are not treated as crash proof. The idempotent transaction changes on
 | Timestamp | exactly 20 bytes; `YYYY-MM-DDTHH:MM:SSZ` | `400 request_time_invalid` |
 | Member digest | exactly 64 lowercase hex characters | `400 record_invalid` |
 | Per-record processing | 30 seconds | terminate isolated worker; `processing_timeout` |
-| Whole request processing | 300 seconds | terminate isolated worker; retain completed work; `processing_timeout` |
+| Whole request processing | 300 seconds | terminate isolated worker; persist no worker result; `processing_timeout` |
 | Admission/alert SQLite busy wait | 500 ms per operation | `503 service_busy`; no retry loop or queue |
 | Processing concurrency | 1 request globally and 1 per producer | `429 server_busy`; no queue |
 | Rate | token bucket: 6 requests/minute, burst 2, per producer | `429 rate_limited`; admitted bounded body already read; zero replay/inference/persistence calls |
@@ -400,11 +401,24 @@ whole envelope before work. After the replay claim and mandatory admission audit
 boundary verifies every registered member identity and ordinal, reads and digest-checks every required
 file, and adapts every row into an immutable boundary-owned prepared record before the first final-model
 call. Prediction consumes only those prepared records without re-reading caller-controlled input.
-Processing is synchronous and stable-order but not transactionally atomic
-across records: candidates already committed before a later timeout remain valid and journaled; no
-unstarted record is predicted or persisted. A worker process, not an uninterruptible application
-thread, must enforce processing deadlines. There is no in-memory backlog, retry loop, unbounded socket
-read, unbounded iterator, or implicit request queue.
+Processing remains synchronous and stable-order from the request process's perspective. A spawned child
+loads the already-approved frozen boundary, preflights the entire registered batch, and emits a bounded
+strict internal protocol with a preparation marker, per-record start/result messages, and a terminal
+completion marker. The parent accepts only exact ordered, identity-bound Random Forest results. It does
+not construct or persist any AlertCandidate until the complete child result has been received, validated,
+the child has exited, and its process object and one-way pipe have been joined/closed. Therefore timeout,
+crash, silent exit, malformed/missing output, child exception, or cleanup failure creates no partial
+alert insertion. There is no in-memory backlog, retry loop, unbounded socket read, unbounded iterator,
+worker thread, listener in the child, temporary worker file, or implicit request queue.
+
+The parent starts the whole-request deadline before process launch and starts each per-record deadline on
+the child's ordered `record_started` marker. Production limits remain exactly 300 and 30 seconds. Tests
+may inject only shorter positive limits. Failure cleanup targets the exact spawned PID and its isolated
+process group, requests termination, escalates to kill when necessary, joins within the bounded cleanup
+interval, and closes both pipe endpoints. A worker that does not fully exit makes the request fail closed;
+no result becomes eligible for persistence. Worker failures map only to `processing_timeout` or
+`internal_error`; child exception text, paths, credentials, artifact locations, tracebacks and protocol
+contents never enter the producer response or audit event.
 
 Malformed UTF-8, invalid JSON, duplicate keys, non-finite numbers, unsupported encodings, early EOF,
 extra bytes, disconnect, and iterator/worker failure discard the bounded input and fail closed. A
@@ -546,7 +560,7 @@ datasets or generated model artifacts. Predictor and repository spies are mandat
 | Partial body, early EOF, extra bytes, or disconnect before claim | reject and close | 0 | 0 |
 | Admission iterator/decoder failure | invalid request | 0 | 0 |
 | Trusted inference iterator/worker failure before any decision | bounded failure | 0 | 0 |
-| Per-record or request processing timeout | worker terminated; partial state visible | only completed records | only completed Attacks |
+| Per-record or request processing timeout | worker terminated and joined; no result committed | 0 parent-accepted results | 0 |
 | Admission or alert database busy beyond 500 ms | service busy | 0 before claim; otherwise journaled | 0 before claim; otherwise bounded |
 | Restart with completed journal entry | cached response | 0 | 0 |
 | Restart with `in_progress` journal entry | outcome unknown after explicit recovery; no automatic retry | 0 | 0 |
@@ -575,9 +589,10 @@ authentication or admission failure—not merely inspect response codes.
    2026-09-13.** It does not connect downstream components or run a serving loop.
 6. Add the fixed orchestrator joining transport, admission, gates, audit, replay and the existing trusted
    inference/persistence workflow. **Implemented internally 2026-09-13.** Bounded real-transport
-   success/failure/restart evidence is also implemented through the supported one-request entry. Add
-   worker-process deadline enforcement and broader resource/recovery evidence next, and integrate
-   correlation, explanation, and dashboard contracts separately.
+   success/failure/restart evidence is also implemented through the supported one-request entry.
+   Terminating spawned-worker deadline enforcement is implemented through 2026-09-22; broader
+   resource/recovery evidence and a serving loop remain next, with correlation, explanation, and
+   dashboard contracts separate.
 7. Before enabling Azure, approve a live representation and stable event/candidate identity, verify
    feature semantics, provision Azure-held credentials, and repeat admission/replay/resource tests in
    that deployment. Do not map Azure telemetry to registered UNSW identity.
@@ -588,6 +603,17 @@ services are unavailable. TF-009 remains open until implemented end-to-end tests
 cover malformed/partial input, mismatch, restart/replay, idempotency, interruption, timeouts,
 concurrency/rate/body/queue bounds, database recovery/backup, and resource usage. Azure enablement is not
 a prerequisite for the single-node offline demo, but it cannot be claimed supported before milestone 7.
+
+The 2026-09-22 worker milestone passed its final 16-test process/protocol matrix, a 491-test related
+producer/admission/inference/persistence/replay/TLS slice, a 13-test FYP demo/viewer slice, and one real
+IPv4-loopback frozen-RF worker smoke. The complete backend suite was run once after stabilization: 944
+passed, zero failed or skipped, with the four existing TF-005 warnings. A subsequent review tightened
+terminal-message rejection without changing production inference; the final focused matrix and the real
+worker smoke passed after that correction. The full suite was not repeated because the validation plan
+required exactly one complete run. Repository Ruff, individual changed-file Black checks, lock,
+whitespace/final-newline checks, and all 23 immutable preprocessing/model artifact hashes pass. These
+results establish the bounded one-request worker behavior only, not a serving loop or broader operational
+acceptance.
 
 Internal-milestone validation used synthetic requests and temporary SQLite databases with no
 dataset/model artifacts. All 44 replay-journal tests and 195 focused replay/admission/inference-binding/

@@ -8,6 +8,7 @@ import shutil
 import socket
 import ssl
 import csv
+import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -320,6 +321,7 @@ def _make_service(
     boundary: UnswNetworkInferenceBoundary,
     *,
     generation: str = GENERATION_ONE,
+    worker: bool = False,
 ) -> _Service:
     listener = ProducerTlsListener(
         ProducerTlsConfiguration(
@@ -341,6 +343,7 @@ def _make_service(
         inference_boundary=boundary,
         alert_repository=alerts,
         trusted_now=lambda: NOW,
+        _test_inference_mode=None if worker else "inline_registered_inference",
     )
     orchestrator.open()
     return _Service(orchestrator, listener, replay, audit, alerts, gates)
@@ -627,7 +630,7 @@ def test_frozen_registered_unsw_smoke_uses_real_tls_orchestrator_path(tmp_path, 
     assert boundary.audit_provenance["preprocessing_hashes"] == APPROVED_PREPROCESSING_HASHES
     assert boundary.audit_provenance["model_hashes"] == APPROVED_MODEL_HASHES
     with _runtime(tmp_path) as root:
-        service = _make_service(root, certificates, boundary)
+        service = _make_service(root, certificates, boundary, worker=True)
         try:
             wire, result = _exchange(service, certificates, _body(member=MEMBER))
             status, body, response = _response(wire)
@@ -639,5 +642,10 @@ def test_frozen_registered_unsw_smoke_uses_real_tls_orchestrator_path(tmp_path, 
             assert record.predicted_class in {"Normal", "Attack"}
             assert (record.alert_candidate_id is not None) == (record.predicted_class == "Attack")
             assert len(service.alerts.list()) == (1 if record.predicted_class == "Attack" else 0)
+            assert service.orchestrator.worker_completed_record_count == 1
+            worker_pid = service.orchestrator._worker.last_worker_pid
+            assert worker_pid is not None
+            with pytest.raises(ProcessLookupError):
+                os.kill(worker_pid, 0)
         finally:
             service.close()

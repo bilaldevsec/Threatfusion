@@ -23,7 +23,8 @@ digests are fingerprints, not proof of authenticity, where no pre-existing trust
 ## Presentation sequence (5–7 minutes)
 
 1. State the scope: retained recorded UNSW replay, not live traffic or an operational dashboard.
-2. Show completed producer modules and name absent dashboard/worker/correlation capabilities.
+2. Show completed producer modules, including terminating inference workers, and name the absent
+   serving-loop/dashboard/correlation capabilities.
 3. Show the two deliberately selected records: known labels beside—not merged with—RF predictions.
 4. Show exact replay and invalid-request rejection counts. The viewer itself never runs a demo.
 5. Compare January evidence, then identify February as previously inspected and development-informed.
@@ -44,6 +45,6 @@ SHA-256 values in expandable details. No optional evidence is substituted or fab
 records, datasets, models, keys, endpoints, and host paths.
 
 TF-006 through TF-012 remain applicable as documented: development exposure, unresolved
-provenance/comparability, missing host evidence, no dashboard/worker acceptance, no authoritative jury
-list, and no user-value validation. The candidate is protocol-invalid and authorizes neither retry,
-fusion, approval, nor a baseline change.
+provenance/comparability, missing host evidence, no dashboard or long-running service acceptance, no
+authoritative jury list, and no user-value validation. The candidate is protocol-invalid and authorizes
+neither retry, fusion, approval, nor a baseline change.

@@ -294,6 +294,7 @@ def make_orchestrator(
         alert_repository=alerts,
         trusted_now=lambda: NOW,
         monotonic=clock,
+        _test_inference_mode="inline_registered_inference",
     )
     return orchestrator, replay, audit, alerts, gates, inference_calls, clock
 
