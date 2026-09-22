@@ -119,5 +119,8 @@ remain deployment responsibilities.
 
 The registered identity applies only to pinned offline UNSW files. Future live telemetry needs a
 producer-assigned authenticated event identity, admission policy, bounded transport/body/time controls,
-and replay rules. Correlation, analyst state, explanation, retention and external APIs remain separate
-future contracts. TF-012 remains open and CIC remains rejected.
+and replay rules. The separate bounded
+[`analyst_state_v1`](alert_correlation_analyst_state.md) workflow can annotate a candidate without
+changing this evidence. Distinct-alert correlation remains blocked because this contract retains no
+reviewed relationship key; explanation, retention and external APIs also remain future contracts.
+TF-012 remains open and CIC remains rejected.

@@ -346,6 +346,28 @@ integrated product acceptance are absent.
   affected recorded-data demo pass. The demo retained its exact RF predictions/replay/effect counts
   and independently verified all 23 immutable artifacts. TF-008/TF-009 remain open.
 
+- The bounded correlation review found no defensible relationship key in retained
+  `alert_candidate_v1` evidence: endpoints, hosts, accounts, sessions and flow identity are absent;
+  observation time alone cannot establish a relationship; and `correlation_id` is only an inference
+  attempt. The frozen rule therefore performs no distinct-alert grouping, has no time window and emits
+  no incident identity. Equal candidate IDs remain alert-persistence retries, not correlated incidents.
+  A separate `analyst_state_sqlite_v1` repository now supplies the independently useful per-alert
+  workflow `new → in_review → {closed | escalated}`. Registry-bound process-local capabilities allow
+  configured viewers to read and configured analysts to transition; the registry relies on upstream
+  authentication and is not a public credential boundary. Optimistic versions and UUIDv4 operation IDs
+  make exact retry idempotent and reject conflicts, stale/reordered commands and concurrent losers.
+  Required bounded rationale events are append-only and separate from immutable detection evidence.
+  Bounded candidate-ordered list and detail reads validate current state against the complete two-event
+  maximum history. SQLite transactions prevent partial state/history writes, and schema-checked reopen
+  preserves committed workflow state. Twelve focused tests cover duplicate replay before and after a
+  later transition, ordering, competing and identical concurrency, invalid/terminal transitions,
+  authorization, missing candidates, rollback and restart. The complete backend suite passes all 968
+  tests with the four existing TF-005 warnings; the 14 real-loopback producer integrations and existing
+  recorded-data demo also pass unchanged. See
+  [`alert_correlation_analyst_state.md`](alert_correlation_analyst_state.md). TF-008/TF-009 remain open:
+  there is no correlation, authenticated external analyst API, dashboard, backup/recovery or endurance
+  evidence.
+
 - A bounded evaluator-facing FYP-II runner now composes the existing supported components without a
   new service or inference path. It uses one-use credentials and temporary SQLite databases, submits
   frozen registered UNSW rows 1 and 21 over real loopback TLS 1.3/mTLS, displays their known labels
@@ -404,8 +426,9 @@ integrated product acceptance are absent.
 
 ## Not yet implemented
 
-- A supported end-to-end product path connecting the implemented registered-offline inference and
-  AlertCandidate persistence boundary to correlation, explanation and dashboard display.
+- A supported end-to-end product path connecting registered-offline inference and AlertCandidate
+  persistence to an authenticated analyst API, explanation and dashboard display. Distinct-alert
+  correlation additionally remains blocked pending a reviewed retained relationship key and window.
 - A daemon/CLI, signal handling, service-manager integration, endurance evidence and frozen operational
   resource/capacity targets around the terminating in-process serving lifecycle.
 - Product API/view-model contracts, dashboard behavior, backup/recovery, optional-service degradation,
