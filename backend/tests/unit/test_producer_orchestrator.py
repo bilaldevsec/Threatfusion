@@ -423,6 +423,20 @@ def test_complete_fail_closed_order_is_exact(tmp_path, monkeypatch):
     ]
 
 
+def test_idle_listener_timeout_has_no_security_audit(tmp_path):
+    orchestrator, _, audit, _, _, _, _ = make_orchestrator(tmp_path)
+
+    def timeout(self, registry, *, trusted_now):
+        raise ProducerTlsTransportError(
+            "listener_accept_timeout", status_code=503, reason="internal_failure"
+        )
+
+    orchestrator._transport.accept_authenticated = MethodType(timeout, orchestrator._transport)
+    with pytest.raises(ProducerOrchestratorError, match="^accept_timeout$"):
+        orchestrator.process_one()
+    assert audit.list() == ()
+
+
 def test_attack_and_existing_candidate_are_stable_and_idempotent(tmp_path):
     orchestrator, _, _, alerts, _, calls, _ = make_orchestrator(
         tmp_path, plan={1: registered(1, "Attack")}

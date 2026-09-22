@@ -628,6 +628,7 @@ class ProducerTlsListener:
         configuration: ProducerTlsConfiguration,
         *,
         monotonic: Callable[[], float] = time.monotonic,
+        _accept_seconds: float = ACCEPT_TIMEOUT_SECONDS,
         _handshake_seconds: float = TLS_HANDSHAKE_TOTAL_SECONDS,
         _read_total_seconds: float = REQUEST_READ_TOTAL_SECONDS,
         _read_idle_seconds: float = REQUEST_READ_IDLE_SECONDS,
@@ -635,7 +636,9 @@ class ProducerTlsListener:
         if type(configuration) is not ProducerTlsConfiguration or not callable(monotonic):
             raise _failure("transport_configuration_invalid", 500, "internal_failure")
         if (
-            type(_handshake_seconds) not in {int, float}
+            type(_accept_seconds) not in {int, float}
+            or not 0 < _accept_seconds <= ACCEPT_TIMEOUT_SECONDS
+            or type(_handshake_seconds) not in {int, float}
             or not 0 < _handshake_seconds <= TLS_HANDSHAKE_TOTAL_SECONDS
             or type(_read_total_seconds) not in {int, float}
             or not 0 < _read_total_seconds <= REQUEST_READ_TOTAL_SECONDS
@@ -646,6 +649,7 @@ class ProducerTlsListener:
         self._configuration = configuration
         self._context = _server_context(configuration)
         self._monotonic = monotonic
+        self._accept_seconds = float(_accept_seconds)
         self._handshake_seconds = float(_handshake_seconds)
         self._read_total_seconds = float(_read_total_seconds)
         self._read_idle_seconds = float(_read_idle_seconds)
@@ -669,7 +673,7 @@ class ProducerTlsListener:
             listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             listener.bind((self._configuration.bind_host, self._configuration.bind_port))
             listener.listen(self._configuration.listen_backlog)
-            listener.settimeout(ACCEPT_TIMEOUT_SECONDS)
+            listener.settimeout(self._accept_seconds)
             self._listener = listener
         except OSError:
             if listener is not None:
@@ -686,7 +690,12 @@ class ProducerTlsListener:
             raise _failure("listener_not_open", 500, "internal_failure")
         accepted: socket.socket | ssl.SSLSocket | None = None
         try:
-            accepted, address = self._listener.accept()
+            try:
+                accepted, address = self._listener.accept()
+            except socket.timeout:
+                raise _failure("listener_accept_timeout", 503, "internal_failure") from None
+            except OSError:
+                raise _failure("listener_unavailable", 503, "internal_failure") from None
             if address[0] != LOOPBACK_BIND_HOST:
                 raise _failure("peer_not_loopback", 401, "authentication_failed")
             tls_socket = self._context.wrap_socket(

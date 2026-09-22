@@ -11,8 +11,11 @@ the directly terminating loopback TLS transport component is now implemented as 
 boundary. This is not a long-running or production service. A fixed synchronous one-request
 orchestrator now joins the implemented rate/replay/audit/inference/persistence boundaries internally;
 the registered preparation and Random Forest inference portion now executes in one terminating spawned
-worker process per newly claimed request. It does not add a serving loop, live-source adapter, or
-AlertCandidate schema/repository change.
+worker process per newly claimed request. A terminating in-process lifecycle now owns the listener and
+exactly two fixed request-handler threads so successive connections are accepted and one authenticated
+overlap can reach the existing one-request execution gate. It adds no application queue and does not
+add a live-source adapter or AlertCandidate schema/repository change. This is bounded single-node
+serving behavior, not production-service or endurance evidence.
 
 Protocol v1 supports only registered-offline UNSW replay on the same Linux workstation as the
 ThreatFusion backend. It preserves the existing registered source lookup, trusted 49-column adapter,
@@ -514,6 +517,30 @@ serialized application writes; it is not tamper-evident and offers no malicious-
 a filesystem owner, compromised process, SQLite administrator, or kernel. No hash chain, HMAC log,
 signature or encryption claim is made.
 
+## Terminating serving lifecycle
+
+`ProducerServingLifecycle` provides explicit `start`, readiness snapshots, and `shutdown`. Startup
+opens the existing directly terminating listener before starting exactly two non-daemon handler
+threads. The application has no request queue: the established shared `ProducerExecutionGates`
+instance remains authoritative and permits exactly one active request, while the second handler lets
+an authenticated overlap consume its rate token and receive the existing immediate `server_busy`
+response. The kernel listener backlog remains exactly one. Idle three-second listener acceptance
+expiry is an internal poll event and creates no authentication audit; handshake timeout remains a
+distinct authenticated-transport failure.
+
+Shutdown first stops new admission by closing the listener, then joins both handlers within a
+310-second production ceiling derived to cover the preserved 300-second whole-request deadline and
+worker/transport cleanup. An already accepted request drains through the unchanged orchestrator order.
+The worker retains its exact 30-second per-record and 300-second per-request limits. A clean stopped
+instance can reopen safely; fatal orchestrator generations close admission, drain on shutdown, and
+cannot restart. The lifecycle stores only bounded counters and state, and neither caches responses nor
+constructs/persists alerts itself.
+
+This lifecycle does not provide signal handling, a daemon/CLI or service-manager unit, multi-process
+coordination, durable rate state, backup/recovery, load shedding before the kernel backlog, or a
+production HTTP server. A shutdown timeout is a fatal visible failure rather than a claim that Python
+can forcibly kill an arbitrary stuck thread.
+
 ## End-to-end enforcement sequence
 
 For each newly admitted record, the intended code path is exactly:
@@ -590,10 +617,14 @@ authentication or admission failure—not merely inspect response codes.
 6. Add the fixed orchestrator joining transport, admission, gates, audit, replay and the existing trusted
    inference/persistence workflow. **Implemented internally 2026-09-13.** Bounded real-transport
    success/failure/restart evidence is also implemented through the supported one-request entry.
-   Terminating spawned-worker deadline enforcement is implemented through 2026-09-22; broader
-   resource/recovery evidence and a serving loop remain next, with correlation, explanation, and
-   dashboard contracts separate.
-7. Before enabling Azure, approve a live representation and stable event/candidate identity, verify
+   Terminating spawned-worker deadline enforcement is implemented through 2026-09-22. At that
+   checkpoint a serving loop remained next; milestone 7 now supplies it, while broader operational
+   resource/recovery evidence and correlation, explanation, and dashboard contracts remain separate.
+7. Add a terminating lifecycle around the synchronous orchestrator with explicit startup/readiness,
+   two fixed no-queue handlers, gate-enforced one-request execution, graceful shutdown and clean
+   restart. **Implemented internally 2026-09-23.** This is not endurance or production-readiness
+   evidence.
+8. Before enabling Azure, approve a live representation and stable event/candidate identity, verify
    feature semantics, provision Azure-held credentials, and repeat admission/replay/resource tests in
    that deployment. Do not map Azure telemetry to registered UNSW identity.
 
@@ -614,6 +645,22 @@ required exactly one complete run. Repository Ruff, individual changed-file Blac
 whitespace/final-newline checks, and all 23 immutable preprocessing/model artifact hashes pass. These
 results establish the bounded one-request worker behavior only, not a serving loop or broader operational
 acceptance.
+
+The 2026-09-23 lifecycle milestone uses real IPv4 loopback TLS 1.3/mTLS and temporary SQLite
+repositories to prove successive requests, immediate authenticated overlap rejection at the existing
+one-request gate, graceful drain, exact cached replay after a clean restart, worker malformed-result
+failure, shortened worker timeout, and listener/thread/lease/worker/process-group/SQLite-sidecar
+cleanup. A separate short two-request local measurement sampled the pytest process every two
+milliseconds: 0.360245 seconds elapsed (5.551781 requests/second), 187,817,984-byte process high-water
+RSS, 6 baseline/12 maximum/6 post-shutdown open descriptors, 1 baseline/4 maximum including the
+sampler and two handlers/1 post-shutdown threads, zero child processes, and 81,920 maximum SQLite
+bytes. This includes pytest, Python, TLS credentials and test harness overhead; it used inline
+controlled inference and is neither a frozen-RF latency measurement nor long-running acceptance.
+All 12 new lifecycle/idle-accept cases, the 519-test related slice, the existing recorded-data demo,
+repository Ruff, seven individual Black checks and whitespace checks pass. The one post-stabilization
+complete backend run passes all 956 collected tests with no failures or skips. The demo independently
+reverified all 23 immutable preprocessing/model artifacts and preserved its prior predictions and
+effect counts.
 
 Internal-milestone validation used synthetic requests and temporary SQLite databases with no
 dataset/model artifacts. All 44 replay-journal tests and 195 focused replay/admission/inference-binding/

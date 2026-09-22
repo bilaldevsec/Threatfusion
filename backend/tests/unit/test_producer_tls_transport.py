@@ -741,6 +741,16 @@ def test_handshake_timeout_is_bounded_synchronized_and_closes_socket(certificate
     client.close()
 
 
+def test_idle_accept_timeout_is_distinct_and_listener_remains_open(certificates):
+    listener = ProducerTlsListener(_configuration(certificates), _accept_seconds=0.02)
+    listener.open()
+    with pytest.raises(ProducerTlsTransportError, match="^listener_accept_timeout$") as caught:
+        listener.accept_authenticated(_registry(certificates), trusted_now=datetime.now(UTC))
+    assert caught.value.reason == "internal_failure"
+    assert listener.address[0] == "127.0.0.1"
+    listener.close()
+
+
 def test_handshake_clock_failure_is_sanitized_and_closes_socket(certificates):
     def failing_clock():
         raise RuntimeError("secret clock detail")

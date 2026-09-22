@@ -8,13 +8,17 @@ import shutil
 import socket
 import ssl
 import csv
+import multiprocessing
 import os
+import resource
+import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from queue import Queue
-from threading import Thread
+from threading import Event, Thread
 from types import MethodType, SimpleNamespace
 from uuid import uuid4
 
@@ -39,6 +43,11 @@ from threatfusion.api.producer_orchestrator import (
     ProducerOrchestrator,
     ProducerOrchestratorError,
 )
+from threatfusion.api.producer_inference_worker import (
+    ProducerInferenceWorkerLimits,
+    TerminatingProducerInferenceWorker,
+)
+from threatfusion.api.producer_service import STATE_READY, STATE_STOPPED, ProducerServingLifecycle
 from threatfusion.api.producer_tls_transport import (
     TRANSPORT_HOST,
     TRANSPORT_HTTP_VERSION,
@@ -406,6 +415,85 @@ def _response(wire: bytes):
     return status, body, decode_producer_response(body)
 
 
+@dataclass
+class _LifecycleService:
+    lifecycle: ProducerServingLifecycle
+    orchestrator: ProducerOrchestrator
+    listener: ProducerTlsListener
+    audit: ProducerSecurityAuditRepository
+    alerts: AlertCandidateRepository
+    gates: ProducerExecutionGates
+
+    def close(self) -> None:
+        self.lifecycle.shutdown()
+        assert self.listener._listener is None
+        assert self.lifecycle.snapshot().live_handler_count == 0
+        snapshot = self.gates.snapshot()
+        assert snapshot.global_active_count == snapshot.producer_active_count == 0
+
+
+def _make_lifecycle_service(
+    root: Path,
+    certificates,
+    boundary: UnswNetworkInferenceBoundary,
+) -> _LifecycleService:
+    listener = ProducerTlsListener(
+        ProducerTlsConfiguration(
+            server_certificate_path=certificates["server"][0],
+            server_private_key_path=certificates["server"][1],
+            client_ca_path=certificates["ca"],
+        ),
+        _accept_seconds=0.05,
+    )
+    replay = ProducerReplayJournal(root / "replay.sqlite3", service_generation_id=GENERATION_ONE)
+    audit = ProducerSecurityAuditRepository(root / "audit.sqlite3")
+    alerts = AlertCandidateRepository(root / "alerts.sqlite3")
+    gates = ProducerExecutionGates()
+    orchestrator = ProducerOrchestrator(
+        transport=listener,
+        certificate_registry=_registry(certificates),
+        execution_gates=gates,
+        replay_journal=replay,
+        security_audit=audit,
+        inference_boundary=boundary,
+        alert_repository=alerts,
+        trusted_now=lambda: NOW,
+        _test_inference_mode="inline_registered_inference",
+    )
+    lifecycle = ProducerServingLifecycle(orchestrator, _shutdown_seconds=5.0)
+    lifecycle.start()
+    assert lifecycle.snapshot().state == STATE_READY
+    return _LifecycleService(lifecycle, orchestrator, listener, audit, alerts, gates)
+
+
+def _lifecycle_exchange(service: _LifecycleService, certificates, body: bytes) -> bytes:
+    chunks: list[bytes] = []
+    raw = socket.create_connection(service.listener.address, timeout=2)
+    with _client_context(certificates, "good").wrap_socket(
+        raw, server_hostname="localhost"
+    ) as connection:
+        connection.settimeout(10)
+        connection.sendall(_request_wire(body))
+        while True:
+            try:
+                chunk = connection.recv(65_536)
+            except ssl.SSLError:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _wait_for(predicate, seconds: float = 3.0) -> None:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.005)
+    raise AssertionError("condition_not_reached")
+
+
 def test_authenticated_mixed_outcomes_use_real_tls_and_attack_only_sqlite(
     tmp_path, certificates, monkeypatch
 ):
@@ -649,3 +737,209 @@ def test_frozen_registered_unsw_smoke_uses_real_tls_orchestrator_path(tmp_path, 
                 os.kill(worker_pid, 0)
         finally:
             service.close()
+
+
+def test_serving_lifecycle_handles_successive_requests_and_cleans_resources(tmp_path, certificates):
+    calls: list[tuple[str, int, object]] = []
+    with _runtime(tmp_path) as root:
+        service = _make_lifecycle_service(
+            root, certificates, _controlled_boundary({1: "Normal", 2: "Attack"}, calls)
+        )
+        try:
+            first = _response(_lifecycle_exchange(service, certificates, _body(rows=(1,))))
+            second = _response(
+                _lifecycle_exchange(
+                    service,
+                    certificates,
+                    _body(
+                        rows=(2,),
+                        nonce="AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+                    ),
+                )
+            )
+            assert first[0] == second[0] == 200
+            assert [first[2].records[0].predicted_class, second[2].records[0].predicted_class] == [
+                "Normal",
+                "Attack",
+            ]
+            assert len(calls) == 2 and len(service.alerts.list()) == 1
+            _wait_for(lambda: service.lifecycle.snapshot().completed_attempt_count == 2)
+        finally:
+            service.close()
+        assert service.lifecycle.snapshot().state == STATE_STOPPED
+        assert not tuple(root.glob("*.sqlite3-wal"))
+        assert not tuple(root.glob("*.sqlite3-shm"))
+
+
+def test_serving_lifecycle_overlap_is_immediately_busy_at_execution_limit(tmp_path, certificates):
+    entered = Event()
+    release = Event()
+    calls: list[tuple[str, int, object]] = []
+    boundary = _controlled_boundary({1: "Normal"}, calls)
+    original = boundary.infer_registered
+
+    def blocking_infer(self, **kwargs):
+        entered.set()
+        assert release.wait(3)
+        return original(**kwargs)
+
+    boundary.infer_registered = MethodType(blocking_infer, boundary)
+    with _runtime(tmp_path) as root:
+        service = _make_lifecycle_service(root, certificates, boundary)
+        first_wire: Queue[bytes] = Queue(maxsize=1)
+        first = Thread(
+            target=lambda: first_wire.put(
+                _lifecycle_exchange(service, certificates, _body(request_id=str(uuid4())))
+            )
+        )
+        first.start()
+        assert entered.wait(3)
+        try:
+            busy = _response(
+                _lifecycle_exchange(
+                    service,
+                    certificates,
+                    _body(
+                        request_id=str(uuid4()),
+                        nonce="AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+                    ),
+                )
+            )
+            assert busy[0] == 429 and busy[2].reason == "server_busy"
+            snapshot = service.gates.snapshot()
+            assert snapshot.global_active_count == 1 and snapshot.server_busy_count == 1
+        finally:
+            release.set()
+            first.join(5)
+            service.close()
+        assert not first.is_alive()
+        assert _response(first_wire.get_nowait())[0] == 200
+        assert service.gates.snapshot().global_active_count == 0
+
+
+def test_serving_lifecycle_clean_restart_returns_exact_cached_replay(tmp_path, certificates):
+    calls: list[tuple[str, int, object]] = []
+    request = _body(request_id=str(uuid4()))
+    with _runtime(tmp_path) as root:
+        service = _make_lifecycle_service(
+            root, certificates, _controlled_boundary({1: "Attack"}, calls)
+        )
+        first = _lifecycle_exchange(service, certificates, request)
+        service.lifecycle.shutdown()
+        assert service.lifecycle.snapshot().live_handler_count == 0
+        service.lifecycle.start()
+        assert service.lifecycle.snapshot().start_count == 2
+        retry = _lifecycle_exchange(service, certificates, request)
+        service.close()
+        assert _response(first)[0] == 200
+        assert retry == first
+        assert len(calls) == 1 and len(service.alerts.list()) == 1
+
+
+@pytest.mark.parametrize(
+    ("mode", "rows", "expected_reason"),
+    [
+        ("malformed_after_attack", (1, 2), "internal_error"),
+        ("record_hang", (1,), "processing_timeout"),
+    ],
+)
+def test_serving_lifecycle_worker_failure_timeout_and_cleanup(
+    tmp_path, certificates, mode, rows, expected_reason
+):
+    with _runtime(tmp_path) as root:
+        service = _make_lifecycle_service(
+            root, certificates, _controlled_boundary({1: "Normal", 2: "Attack"}, [])
+        )
+        executor = TerminatingProducerInferenceWorker(
+            project_root=tmp_path.resolve(),
+            manifest_sha256="c" * 64,
+            limits=ProducerInferenceWorkerLimits(
+                record_seconds=0.2,
+                request_seconds=3.0,
+                cleanup_seconds=1.0,
+            ),
+            _test_mode=mode,
+        )
+        service.orchestrator._worker = executor
+        service.orchestrator._inline_inference_for_tests = False
+        wire = _lifecycle_exchange(service, certificates, _body(rows=rows))
+        status, _, response = _response(wire)
+        service.close()
+        assert status == 503 and response.reason == expected_reason
+        assert service.alerts.list() == ()
+        assert executor.last_worker_pid is not None
+        with pytest.raises(ProcessLookupError):
+            os.kill(executor.last_worker_pid, 0)
+        if executor.last_worker_process_group_id is not None:
+            with pytest.raises(ProcessLookupError):
+                os.killpg(executor.last_worker_process_group_id, 0)
+
+
+def test_serving_lifecycle_bounded_resource_measurement(tmp_path, certificates):
+    """Measure one short local workload without treating it as endurance evidence."""
+    calls: list[tuple[str, int, object]] = []
+    baseline_fds = len(os.listdir("/proc/self/fd"))
+    baseline_threads = len(threading.enumerate())
+    peaks = {"fds": baseline_fds, "threads": baseline_threads, "children": 0, "db_bytes": 0}
+    stop_sampling = Event()
+    root = tmp_path / "resource-runtime"
+    root.mkdir()
+
+    def sample() -> None:
+        while not stop_sampling.is_set():
+            peaks["fds"] = max(peaks["fds"], len(os.listdir("/proc/self/fd")))
+            peaks["threads"] = max(peaks["threads"], len(threading.enumerate()))
+            peaks["children"] = max(peaks["children"], len(multiprocessing.active_children()))
+            peaks["db_bytes"] = max(
+                peaks["db_bytes"],
+                sum(path.stat().st_size for path in root.glob("*.sqlite3") if path.is_file()),
+            )
+            time.sleep(0.002)
+
+    sampler = Thread(target=sample, name="producer-service-resource-sampler")
+    sampler.start()
+    started = time.monotonic()
+    service = _make_lifecycle_service(
+        root, certificates, _controlled_boundary({1: "Normal", 2: "Attack"}, calls)
+    )
+    try:
+        first = _response(_lifecycle_exchange(service, certificates, _body(rows=(1,))))
+        second = _response(
+            _lifecycle_exchange(
+                service,
+                certificates,
+                _body(rows=(2,), nonce="AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"),
+            )
+        )
+        assert first[0] == second[0] == 200
+    finally:
+        service.close()
+        elapsed = time.monotonic() - started
+        stop_sampling.set()
+        sampler.join(1)
+    post_fds = len(os.listdir("/proc/self/fd"))
+    post_threads = len(threading.enumerate())
+    post_children = len(multiprocessing.active_children())
+    measurement = {
+        "authenticated_requests": 2,
+        "elapsed_seconds": round(elapsed, 6),
+        "throughput_requests_per_second": round(2 / elapsed, 6),
+        "test_process_peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
+        "baseline_open_fds": baseline_fds,
+        "max_sampled_open_fds": peaks["fds"],
+        "post_shutdown_open_fds": post_fds,
+        "baseline_threads": baseline_threads,
+        "max_sampled_threads_including_sampler": peaks["threads"],
+        "post_shutdown_threads": post_threads,
+        "max_sampled_active_children": peaks["children"],
+        "post_shutdown_active_children": post_children,
+        "max_sampled_sqlite_bytes": peaks["db_bytes"],
+    }
+    print("PRODUCER_SERVICE_RESOURCE_MEASUREMENT=" + json.dumps(measurement, sort_keys=True))
+    assert len(calls) == 2 and len(service.alerts.list()) == 1
+    assert post_fds == baseline_fds
+    assert post_threads == baseline_threads
+    assert post_children == 0
+    assert service.lifecycle.snapshot().live_handler_count == 0
+    assert not tuple(root.glob("*.sqlite3-wal"))
+    assert not tuple(root.glob("*.sqlite3-shm"))

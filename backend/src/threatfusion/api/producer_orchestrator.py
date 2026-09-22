@@ -999,6 +999,10 @@ class ProducerOrchestrator:
                 trusted_now=self._now(),
             )
         except ProducerTlsTransportError as error:
+            if error.code == "listener_accept_timeout":
+                raise ProducerOrchestratorError("accept_timeout") from None
+            if error.code in {"listener_not_open", "listener_unavailable"}:
+                raise ProducerOrchestratorError("listener_unavailable") from None
             reason = self._transport_reason(error, authenticated=False)
             try:
                 self._append_audit(reason)

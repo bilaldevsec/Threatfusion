@@ -325,6 +325,27 @@ integrated product acceptance are absent.
   complete cleanup. Independent verification passed for all 23 immutable preprocessing, RF/logistic and
   historical/corrected autoencoder files.
 
+- A terminating producer serving lifecycle now wraps the unchanged one-request orchestrator. Explicit
+  startup opens one directly terminating loopback listener and reports readiness only with exactly two
+  fixed non-daemon handlers alive. There is no application queue: the existing shared gate still
+  permits one active execution, and the second handler lets an authenticated overlap receive immediate
+  `server_busy`. Idle accept polling is distinct from handshake timeout and creates no false
+  authentication audit. Shutdown closes admission and joins both handlers under a 310-second ceiling;
+  accepted work retains the exact 30-second record and 300-second request deadlines. Clean stopped
+  instances reopen and exact completed replay remains byte-identical; fatal generations cannot restart.
+  Real mTLS tests cover successive requests, overlap, restart, worker malformed-result failure and
+  shortened record timeout, with no remaining listener, handler, lease, worker/process group, partial
+  alert or SQLite sidecar. A two-request controlled-inference measurement took 0.360245 seconds
+  (5.551781 requests/second): pytest-process high-water RSS was 187,817,984 bytes; sampled descriptors
+  were 6 baseline/12 maximum/6 after shutdown; threads were 1 baseline/4 maximum including sampler/1
+  after shutdown; active children were zero; and sampled SQLite bytes peaked at 81,920. This short
+  harness measurement includes pytest/TLS overhead and is not frozen-RF latency, endurance, an
+  operational limit, or production readiness. All 12 new lifecycle/idle-accept cases and the 519-test
+  related slice pass. The single post-stabilization full backend run passes all 956 collected tests
+  with no failures or skips; repository Ruff, seven individual Black checks, whitespace checks and the
+  affected recorded-data demo pass. The demo retained its exact RF predictions/replay/effect counts
+  and independently verified all 23 immutable artifacts. TF-008/TF-009 remain open.
+
 - A bounded evaluator-facing FYP-II runner now composes the existing supported components without a
   new service or inference path. It uses one-use credentials and temporary SQLite databases, submits
   frozen registered UNSW rows 1 and 21 over real loopback TLS 1.3/mTLS, displays their known labels
@@ -385,10 +406,10 @@ integrated product acceptance are absent.
 
 - A supported end-to-end product path connecting the implemented registered-offline inference and
   AlertCandidate persistence boundary to correlation, explanation and dashboard display.
-- A long-running serving loop and service-manager lifecycle. The bounded one-request real
-  TLS/orchestrator/worker integration harness is test evidence, not a production service loop.
+- A daemon/CLI, signal handling, service-manager integration, endurance evidence and frozen operational
+  resource/capacity targets around the terminating in-process serving lifecycle.
 - Product API/view-model contracts, dashboard behavior, backup/recovery, optional-service degradation,
-  and integrated resource/latency evidence.
+  and representative frozen-RF/operational resource and latency evidence.
 - An approved v2 autoencoder detector plus versioned result/persistence contract. The experimental v2
   threshold is calibrated and its bundle verifies, but its identity is not product-approved. The research
   runner does not change the frozen Random Forest application path and does not authorize fusion.
