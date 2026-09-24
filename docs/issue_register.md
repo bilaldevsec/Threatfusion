@@ -31,6 +31,18 @@ by default.
 | TF-011 | P1 / high | **User-value evidence gap.** Target operator, baseline workflow, task success criteria, and operational false-positive/detection targets are not validated. See [charter user-value evidence](product_charter.md#f-user-value-evidence). | Product usefulness, demo narrative, acceptance targets | Confirm the target operator and design a separately authorized reviewer/user study plus product-owner target-setting decision. Do not contact participants under this issue alone. | Dated decisions define operator/environment and operational targets; approved study evidence compares the same tasks with/without ThreatFusion and reports limitations. | open |
 | TF-015 | P1 / high | **Resolved 2026-09-14: autoencoder implementation prerequisite.** The project declares and locks `torch==2.10.0+cpu` to the explicit official PyTorch CPU index. The CPython 3.11 manylinux x86_64 wheel hash and exact runtime are recorded in [`network_autoencoder_protocol.md`](network_autoencoder_protocol.md). | Benign-only UNSW autoencoder implementation, serialization and reproducibility | Preserve the package-specific explicit CPU index, exact lock, CPU-only execution, dependency identity checks, and safe state-dictionary load. Any upgrade or accelerator change requires a new compatibility/reproducibility review. | Project `.venv` import reports `2.10.0+cpu`, CUDA build/availability are absent, CPU tensor and finite forward/backward checks pass, deterministic algorithms are enabled, and state-dictionary `weights_only` CPU reload is verified. NumPy/scikit-learn/pandas/Pydantic remain at their frozen versions; torchvision/torchaudio are absent. | resolved |
 
+### TF-008 / TF-009 analyst boundary disposition, 2026-09-24
+
+Both issues remain **open**. The internal `analyst_alert_view_v1` formatter prepares bounded,
+candidate-ordered list/detail and state-transition responses with capability checks and sanitized
+errors. Inspection found no trustworthy network path from a user credential to a server-owned analyst
+identity: the existing mTLS registry admits producer replay only, and the analyst registry's
+`issue_for_trusted_actor` method assumes authentication was already completed. A producer certificate,
+request header, body actor ID or claimed role cannot grant viewer/analyst access. The network endpoint
+and real analyst transport test are blocked until an independent user-authentication and identity
+mapping contract is implemented and verified. No dashboard, correlation, recovery/endurance or
+end-to-end acceptance criterion was completed.
+
 ### TF-008 / TF-009 scoped closure follow-up, 2026-09-14
 
 The bounded closure review qualified the six-findings-closed statement above: finding 3 still lacked

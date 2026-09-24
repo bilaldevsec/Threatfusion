@@ -57,6 +57,14 @@ viewer transition attempts fail closed. This registry is authorization enforceme
 authentication and not a public API. A future network/dashboard boundary must authenticate a user,
 map that identity to this allowlist and never trust a client-supplied actor ID by itself.
 
+As reviewed on 2026-09-24, no such user-authentication boundary exists. The only TLS listener
+authenticates a producer certificate against a producer-only registry and accepts a fixed ingestion
+route. Its admitted producer identity, certificate label, or request bytes cannot be promoted into an
+analyst actor or capability. There is no accepted client role/user ID/header/JSON field. Therefore no
+network analyst endpoint is enabled. A later adapter requires a separately reviewed user credential
+and server-owned mapping from that authenticated identity to an enabled registry entry; it must never
+reuse producer credentials for analyst operations.
+
 ## State machine and idempotency
 
 Every persisted `AlertCandidate` begins in an implicit `new` state at version 0. The only transitions
@@ -100,6 +108,19 @@ repository contract. This milestone adds no external HTTP endpoint, state filter
 count, notification, assignment, severity, retention policy or dashboard. It supplies a deterministic
 internal list/detail contract for a later authenticated API and UI without claiming that dashboard
 acceptance exists.
+
+The internal `analyst_alert_view_v1` formatter now presents that contract as JSON-safe dictionaries.
+List responses contain schema version, requested limit/offset and ordered items; detail responses
+contain one item and ordered `analyst_history`; transition responses contain disposition, candidate ID,
+current state and the applied or replayed event. Each item separates `detection_evidence` from
+`analyst_state`. Evidence includes only candidate/source IDs, observation and creation time, source
+representation, feature contract, model identity/version/artifact digest, uncalibrated score, threshold,
+decision policy and decision. History contains the analyst-authored rationale, actor, sequence, state
+change and trusted transition time. Rationale is never copied into detection evidence. The formatter
+accepts only an internal registry-bound capability and delegates authorization and all state semantics
+to the repository. Known validation/conflict errors become fixed codes; storage and unexpected errors
+become `analyst_view_unavailable`, without database paths or raw exceptions. This is internal view-model
+preparation only; its capability argument is not an external authentication mechanism.
 
 ## Failure and restart behavior
 

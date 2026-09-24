@@ -2,7 +2,7 @@
 
 ## Snapshot
 
-Status date: 2026-09-22. Branch: `main`. The corrected v2 experiment is checkpointed and pushed at
+Status date: 2026-09-24. Branch: `main`. The corrected v2 experiment is checkpointed and pushed at
 `8aa26ba250e4a63f95d90960ec87e224325b6d2f`; Backend quality run `35438412921` passed. The FYP-II
 recorded-data demonstration is checkpointed and pushed at
 `f71a5e74186a8975b4ca090b9d1a987384a55da4`. Both autoencoder runs and generated demonstration
@@ -16,6 +16,19 @@ rewritten. Global training/product readiness still does not pass because host tr
 integrated product acceptance are absent.
 
 ## Implemented and verified
+
+- On 2026-09-24, inspection found no authenticated analyst identity path: the direct TLS listener and
+  certificate registry admit only registered producer replay to the fixed ingestion route; the local
+  analyst registry assumes an identity was already authenticated upstream. No analyst network endpoint
+  was exposed. Internal `analyst_alert_view_v1` formatting now provides bounded ordered list, single
+  detail and transition results with explicit immutable detection evidence versus analyst state and
+  rationale history. It uses the existing capability-checked repository, frozen transition/UUIDv4
+  rules and fixed sanitized errors. Focused tests cover unauthorized and wrong-capability calls,
+  viewer reads, analyst transitions, replay/stale/concurrent commands, ordering/bounds, restart and
+  response sanitization. All 16 focused analyst tests and the one full backend suite pass (four existing
+  TF-005 date-parsing warnings); repository Ruff, both changed-file Black checks and `git diff --check`
+  pass. TF-008/TF-009 remain open; real analyst transport integration is blocked by the missing user
+  authentication and server-owned identity-to-capability mapping.
 
 - Manifest-backed readers, strict adapters, bounded validation/profiling, sanitized reports, checksum
   verification, and ignore rules exist for the registered UNSW, CIC, Mordor, and `synthetic_lab` roles.
