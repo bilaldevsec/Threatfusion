@@ -57,13 +57,18 @@ viewer transition attempts fail closed. This registry is authorization enforceme
 authentication and not a public API. A future network/dashboard boundary must authenticate a user,
 map that identity to this allowlist and never trust a client-supplied actor ID by itself.
 
-As reviewed on 2026-09-24, no such user-authentication boundary exists. The only TLS listener
-authenticates a producer certificate against a producer-only registry and accepts a fixed ingestion
-route. Its admitted producer identity, certificate label, or request bytes cannot be promoted into an
+At the 2026-09-24 internal view-model checkpoint, no such user-authentication boundary existed. The
+only TLS listener authenticated a producer certificate against a producer-only registry and accepted
+a fixed ingestion route. Its admitted producer identity, certificate label, or request bytes cannot be promoted into an
 analyst actor or capability. There is no accepted client role/user ID/header/JSON field. Therefore no
-network analyst endpoint is enabled. A later adapter requires a separately reviewed user credential
-and server-owned mapping from that authenticated identity to an enabled registry entry; it must never
+network analyst endpoint was enabled then. The subsequent adapter requires a separately reviewed user
+credential and server-owned mapping from that authenticated identity to an enabled registry entry; it must never
 reuse producer credentials for analyst operations.
+
+The subsequent human mTLS demonstration boundary implements that separate adapter; its certificate
+verification, allowlist, routes, revocation and browser limits are documented in
+[`analyst_authentication_transport.md`](analyst_authentication_transport.md). The internal registry
+still does not authenticate a caller by itself.
 
 ## State machine and idempotency
 
@@ -104,8 +109,8 @@ The internal read boundary requires a valid `viewer` or `analyst` capability and
   transition history, or no result when the candidate does not exist.
 
 The state graph bounds history to two events per alert. Limit and offset remain bounded by the alert
-repository contract. This milestone adds no external HTTP endpoint, state filter, search, aggregate
-count, notification, assignment, severity, retention policy or dashboard. It supplies a deterministic
+repository contract. The original state milestone added no external HTTP endpoint, state filter,
+search, aggregate count, notification, assignment, severity, retention policy or dashboard. It supplies a deterministic
 internal list/detail contract for a later authenticated API and UI without claiming that dashboard
 acceptance exists.
 
@@ -121,6 +126,8 @@ accepts only an internal registry-bound capability and delegates authorization a
 to the repository. Known validation/conflict errors become fixed codes; storage and unexpected errors
 become `analyst_view_unavailable`, without database paths or raw exceptions. This is internal view-model
 preparation only; its capability argument is not an external authentication mechanism.
+The later loopback mTLS adapter supplies that external authentication boundary for a bounded local
+demonstration without changing the view schema or frozen state rules.
 
 ## Failure and restart behavior
 

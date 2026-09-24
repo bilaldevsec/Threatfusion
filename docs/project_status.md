@@ -17,6 +17,34 @@ integrated product acceptance are absent.
 
 ## Implemented and verified
 
+- The independent human-authentication review reproduced and corrected two defects: an accepted peer
+  could dispatch a transition after listener close, and a fragmented body could hide present trailing
+  bytes. The listener now synchronizes close with dispatch, interrupts undispatched connections,
+  rejects concurrent handlers and excess body bytes, and rechecks credential validity before each
+  repository operation. All 128 affected analyst/producer transport and repository tests run during
+  this review pass, including 26 analyst boundary cases. The previous implementation's full-suite
+  and recorded-demo results below are prior evidence, not reruns in this review. These isolated
+  listener corrections did not change shared repositories, producer behavior or model code, so no
+  additional local full-suite/demo run was required. See the findings and exact revocation semantics
+  in [`analyst_authentication_transport.md`](analyst_authentication_transport.md). TF-008/TF-009 remain
+  open for operational provisioning, browser/session safety, security auditing and endurance.
+
+- A separate human mTLS loopback listener now verifies the actual client TLS certificate with a
+  dedicated human CA and exact DER fingerprint/SAN allowlist, then maps the server-owned actor ID to
+  the existing viewer/analyst capability registry. It exposes bounded alert list/detail reads and
+  analyst transitions through the existing `analyst_alert_view_v1` contract. Producer credentials and
+  routes remain separate. Real-loopback tests cover distinct human identities, missing/producer-only,
+  revoked, unknown and wrong-SAN credentials, viewer write denial, forged/malformed requests, exact
+  and cross-identity replay, rotation/revocation after restart, and sanitized storage failure. The
+  exact trust path and limitations are in
+  [`analyst_authentication_transport.md`](analyst_authentication_transport.md). This is a terminating
+  local demonstration listener, not a browser-ready dashboard, daemon or operational authentication
+  deployment. The focused analyst/producer transport slice and one complete backend suite pass, with
+  the four existing TF-005 date-parsing warnings; repository Ruff, changed-file Black checks and
+  `git diff --check` pass. The existing recorded-data demo also passes with its unchanged RF decisions,
+  replay counts, alert count and cleanup evidence; its selected examples remain illustrative, not
+  independent evaluation. TF-008/TF-009 remain open.
+
 - On 2026-09-24, inspection found no authenticated analyst identity path: the direct TLS listener and
   certificate registry admit only registered producer replay to the fixed ingestion route; the local
   analyst registry assumes an identity was already authenticated upstream. No analyst network endpoint
@@ -440,11 +468,11 @@ integrated product acceptance are absent.
 ## Not yet implemented
 
 - A supported end-to-end product path connecting registered-offline inference and AlertCandidate
-  persistence to an authenticated analyst API, explanation and dashboard display. Distinct-alert
+  persistence through the new separate analyst listener to explanation and dashboard display. Distinct-alert
   correlation additionally remains blocked pending a reviewed retained relationship key and window.
 - A daemon/CLI, signal handling, service-manager integration, endurance evidence and frozen operational
   resource/capacity targets around the terminating in-process serving lifecycle.
-- Product API/view-model contracts, dashboard behavior, backup/recovery, optional-service degradation,
+- Browser/session integration, dashboard behavior, backup/recovery, optional-service degradation,
   and representative frozen-RF/operational resource and latency evidence.
 - An approved v2 autoencoder detector plus versioned result/persistence contract. The experimental v2
   threshold is calibrated and its bundle verifies, but its identity is not product-approved. The research
