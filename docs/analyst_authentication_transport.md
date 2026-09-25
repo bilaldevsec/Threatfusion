@@ -80,7 +80,8 @@ Responses use the existing `analyst_alert_view_v1` list/detail/transition schema
 forbidden writes, missing alerts, conflicts and unavailable storage use fixed generic error codes;
 authentication failure may close the TLS connection or return only `authentication_failed`. No
 credential, path, raw exception, model input or submitted body is logged or reflected in errors.
-There is no audit/retention facility in this milestone.
+Security audit events are captured in a separate bounded local audit table (`analyst_security_audit_sqlite_v1`),
+distinct from alert detection and analyst state databases.
 
 ## Browser and claim boundary
 
@@ -112,6 +113,27 @@ connections:
 
 The tests do not establish secure real-world credential issuance, workstation account isolation,
 browser safety, long-running concurrency, audit completeness, backup/recovery or operational capacity.
+
+## Security Audit Events
+
+Bounded local security audit events are persisted through the TLS listener using the `AnalystSecurityAuditRepository` (`analyst_security_audit_sqlite_v1`). State mutations (`states.sqlite3`) and security audit records (`audit.sqlite3`) reside in two independent SQLite databases with distinct transaction boundaries; there is no distributed transaction or two-phase commit across them.
+
+- **Authentication Failures:** When an authenticated peer fails the internal application registry check (e.g. revoked cert, wrong SAN, disabled actor), an `authentication_rejected` event is logged detailing `reason_code` `authentication_failed`. Audit append for authentication failures is best-effort: if appending to the audit repository fails, the listener swallows the audit error and returns 401 `authentication_failed` (or closes the connection) to preserve the authentication contract without leaking internal audit storage status or 503 errors to unauthenticated peers.
+- **Authorization Failures:** When an admitted actor attempts an unauthorized action (e.g., a viewer attempting an analyst transition), an `authorization_rejected` event is logged with `reason_code` `forbidden`. An audit failure at this boundary returns 503 `unavailable`.
+- **Success & Lifecycle:** A `request_admitted` event is recorded before repository dispatch or mutation, and a `request_completed` event is written after dispatch terminates.
+- **Route Normalization:** Audit records persist only fixed recognized route templates (`/v1/analyst/alerts`, `/v1/analyst/alerts/<alert_candidate_id>`, `/v1/analyst/alerts/<alert_candidate_id>/transitions`) or omit the route (`None`) for unrecognized paths, preventing raw unvalidated URL paths and query strings from entering audit storage.
+- **Idle Connections & Handshake Drops:** Unauthenticated peers failing TLS handshake, as well as valid TLS connections that close (empty disconnect) or time out before sending any HTTP request bytes, do not generate false authentication or request-rejection audit events. Malformed framed HTTP requests continue to be rejected and audited as `request_rejected`.
+- **Audit Failures, Replay, and Audit Gap:** An audit write failure before state mutation (`request_admitted`) blocks the request with a 503 `unavailable` response. If an audit write fails after a state transition has committed to `states.sqlite3`, the listener returns 503 `unavailable` rather than falsely claiming success. When the client retries the transition with the same canonical UUIDv4 `transition_id`, the state repository detects the idempotent replay, returns `existing` disposition, and avoids duplicating state history; the retry attempt records its own `request_admitted` and `request_completed` events. However, because the state commit and audit append have independent transaction boundaries, the original failed completion write is not retroactively inserted into `audit.sqlite3`, leaving an audit gap for the initial request's completion event.
+
+## Read-Only Analyst Dashboard Slice
+
+The authenticated read-only analyst dashboard slice (`threatfusion.api.analyst_dashboard`) connects a human analyst to the `AnalystTlsListener` over mutual TLS 1.3 loopback transport, retrieving real persisted alerts and detail without violating transport constraints:
+
+- **Client Authentication:** Uses `create_dashboard_ssl_context` with verified human mTLS credentials (human CA plus client cert and private key) matching the `HumanCredentialRegistry` allowlist and URI SAN (`urn:threatfusion:human:<actor_id>`).
+- **Data Flow & Presentation:** The `AnalystDashboardClient` issues authenticated `GET /v1/analyst/alerts` and `GET /v1/analyst/alerts/<alert_candidate_id>` requests conforming to the strict wire contract (`Host: threatfusion-analyst-loopback`, `Connection: close`). Results are structured into `DashboardAlertQueue`, `DashboardAlertDetail`, and `DashboardSnapshot` models, with an escaped HTML view rendered via `render_dashboard_html`.
+- **State Invariance:** Dashboard queries are strictly read-only; viewing queue and detail views produces zero state mutations or transition events in `states.sqlite3`.
+- **Failure & Empty States:** An empty triage queue is explicitly distinguished from an unavailable backend; backend errors (e.g., connection refused, 503 storage failure) and authentication failures raise sanitized typed exceptions (`AnalystDashboardUnavailableError`, `AnalystDashboardAuthenticationError`) without leaking database paths or internal secrets.
+- **Browser Boundary Limitation:** Direct browser access remains unaddressed. A web browser requires client-certificate trust-store integration, browser HTTP request headers (which the strict loopback transport rejects by design), origin binding, session security, and CSRF protection. The dashboard client slice provides the testable authenticated backend prerequisite while preserving transport integrity. TF-008 and TF-009 remain open for full browser session and operational provisioning requirements.
 
 ## Independent security review, 2026-09-24
 

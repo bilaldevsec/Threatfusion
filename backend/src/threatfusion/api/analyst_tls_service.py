@@ -10,12 +10,19 @@ import socket
 import ssl
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from threatfusion.api.analyst_view_model import AnalystAlertViewModel, AnalystViewError
+from threatfusion.db.analyst_security_audit import (
+    AnalystSecurityAuditRepository,
+    AnalystSecurityAuditError,
+    create_analyst_security_audit_event,
+)
+
 from threatfusion.schemas.analyst_state import (
     AnalystAuthorizationRegistry,
     AnalystStateError,
@@ -150,10 +157,19 @@ def _read_request(connection: ssl.SSLSocket) -> tuple[str, str, bytes]:
             raise AnalystTlsError("request_invalid")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            if not buffer:
+                raise AnalystTlsError("connection_idle")
             raise AnalystTlsError("request_invalid")
         connection.settimeout(remaining)
-        chunk = connection.recv(min(4096, MAX_HEAD_BYTES + 4 - len(buffer)))
+        try:
+            chunk = connection.recv(min(4096, MAX_HEAD_BYTES + 4 - len(buffer)))
+        except (TimeoutError, ssl.SSLError):
+            if not buffer:
+                raise AnalystTlsError("connection_idle")
+            raise AnalystTlsError("request_invalid")
         if not chunk:
+            if not buffer:
+                raise AnalystTlsError("connection_idle")
             raise AnalystTlsError("request_invalid")
         buffer.extend(chunk)
     raw_head, body = bytes(buffer).split(b"\r\n\r\n", 1)
@@ -208,7 +224,10 @@ def _read_request(connection: ssl.SSLSocket) -> tuple[str, str, bytes]:
         if remaining <= 0:
             raise AnalystTlsError("request_invalid")
         connection.settimeout(remaining)
-        chunk = connection.recv(min(4096, size - len(body) + 1))
+        try:
+            chunk = connection.recv(min(4096, size - len(body) + 1))
+        except (TimeoutError, ssl.SSLError):
+            raise AnalystTlsError("request_invalid")
         if not chunk:
             raise AnalystTlsError("request_invalid")
         body += chunk
@@ -263,6 +282,18 @@ def _command(body: bytes) -> dict[str, object]:
         raise AnalystTlsError("request_invalid") from None
 
 
+def _route_template(method: str, target: str) -> str | None:
+    if method == "GET":
+        if target == "/v1/analyst/alerts" or target.startswith("/v1/analyst/alerts?"):
+            return "/v1/analyst/alerts"
+        if _ALERT_PATH.fullmatch(target):
+            return "/v1/analyst/alerts/<alert_candidate_id>"
+    elif method == "POST":
+        if _TRANSITION_PATH.fullmatch(target):
+            return "/v1/analyst/alerts/<alert_candidate_id>/transitions"
+    return None
+
+
 def _response(status: int, payload: dict[str, object]) -> bytes:
     body = (
         json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
@@ -294,6 +325,7 @@ class AnalystTlsListener:
         credentials: HumanCredentialRegistry,
         authorization: AnalystAuthorizationRegistry,
         view: AnalystAlertViewModel,
+        audit: AnalystSecurityAuditRepository,
     ) -> None:
         if (
             type(configuration) is not AnalystTlsConfiguration
@@ -301,8 +333,10 @@ class AnalystTlsListener:
             or type(authorization) is not AnalystAuthorizationRegistry
             or type(view) is not AnalystAlertViewModel
             or view._repository._authorization is not authorization
+            or type(audit) is not AnalystSecurityAuditRepository
         ):
             raise AnalystTlsError("configuration_invalid")
+        self._audit = audit
         self._configuration = configuration
         self._credentials = credentials
         self._authorization = authorization
@@ -397,31 +431,147 @@ class AnalystTlsListener:
                     return
                 der = connection.getpeercert(binary_form=True)
                 decoded = connection.getpeercert()
+
+                correlation_id = str(uuid.uuid4())
+                credential_sha256 = hashlib.sha256(der).hexdigest()
+                actor_id = None
+
+                def audit_log(
+                    event_type,
+                    processing_stage,
+                    outcome,
+                    reason_code,
+                    request_route=None,
+                    body_sha256=None,
+                ):
+                    try:
+                        self._audit.append(
+                            create_analyst_security_audit_event(
+                                event_type=event_type,
+                                processing_stage=processing_stage,
+                                outcome=outcome,
+                                reason_code=reason_code,
+                                correlation_id=correlation_id,
+                                actor_id=actor_id,
+                                credential_sha256=credential_sha256,
+                                request_route=request_route,
+                                body_sha256=body_sha256,
+                            )
+                        )
+                    except AnalystSecurityAuditError:
+                        raise AnalystTlsError("audit_unavailable")
+
                 try:
                     actor_id = self._credentials._actor_for_verified_peer(
                         der, decoded, datetime.now(UTC)
                     )
-                    capability = self._authorization.issue_for_trusted_actor(actor_id)
-                except (AnalystTlsError, AnalystStateError):
+                except AnalystTlsError:
+                    try:
+                        audit_log(
+                            "authentication_rejected",
+                            "authentication",
+                            "rejected",
+                            "authentication_failed",
+                        )
+                    except AnalystTlsError:
+                        pass
                     connection.sendall(_response(401, {"error": "authentication_failed"}))
                     return
+
+                try:
+                    capability = self._authorization.issue_for_trusted_actor(actor_id)
+                except AnalystStateError:
+                    try:
+                        audit_log(
+                            "authorization_rejected", "authorization", "rejected", "forbidden"
+                        )
+                    except AnalystTlsError:
+                        pass
+                    connection.sendall(_response(401, {"error": "authentication_failed"}))
+                    return
+
                 try:
                     method, target, body = _read_request(connection)
-                    with self._state_lock:
-                        if self._listener is not listener:
-                            return
-                        # Close waits for an already-dispatched repository operation. No
-                        # accepted peer can start another operation after close returns.
+                except AnalystTlsError as error:
+                    if error.code == "connection_idle":
+                        return
+                    try:
+                        audit_log("request_rejected", "admission", "rejected", "request_invalid")
+                    except AnalystTlsError:
+                        pass
+                    connection.sendall(_response(400, {"error": "request_invalid"}))
+                    return
+
+                route = _route_template(method, target)
+                body_sha256 = hashlib.sha256(body).hexdigest() if body else None
+
+                try:
+                    audit_log(
+                        "request_admitted",
+                        "admission",
+                        "admitted",
+                        "request_admitted",
+                        request_route=route,
+                        body_sha256=body_sha256,
+                    )
+                except AnalystTlsError:
+                    connection.sendall(_response(503, {"error": "unavailable"}))
+                    return
+
+                with self._state_lock:
+                    if self._listener is not listener:
+                        return
+
+                    try:
                         actor_id = self._credentials._actor_for_verified_peer(
                             der, decoded, datetime.now(UTC)
                         )
                         capability = self._authorization.issue_for_trusted_actor(actor_id)
+                    except (AnalystTlsError, AnalystStateError):
+                        try:
+                            audit_log(
+                                "authentication_rejected",
+                                "authentication",
+                                "rejected",
+                                "authentication_failed",
+                            )
+                        except AnalystTlsError:
+                            pass
+                        connection.sendall(_response(401, {"error": "authentication_failed"}))
+                        return
+
+                    try:
                         status, result = self._dispatch(capability, method, target, body)
-                    connection.sendall(_response(status, result))
-                except (AnalystTlsError, AnalystViewError) as error:
-                    if isinstance(error, AnalystViewError):
+                        try:
+                            audit_log(
+                                "request_completed",
+                                "completion",
+                                "completed",
+                                "request_completed",
+                                request_route=route,
+                                body_sha256=body_sha256,
+                            )
+                        except AnalystTlsError:
+                            connection.sendall(_response(503, {"error": "unavailable"}))
+                            return
+                        connection.sendall(_response(status, result))
+                    except AnalystViewError as error:
                         if error.code == "analyst_not_authorized":
                             status, code = 403, "forbidden"
+                            try:
+                                audit_log(
+                                    "authorization_rejected",
+                                    "authorization",
+                                    "rejected",
+                                    "forbidden",
+                                    request_route=route,
+                                    body_sha256=body_sha256,
+                                )
+                            except AnalystTlsError:
+                                connection.sendall(_response(503, {"error": "unavailable"}))
+                                return
+                            connection.sendall(_response(status, {"error": code}))
+                            return
                         elif error.code == "alert_candidate_not_found":
                             status, code = 404, "not_found"
                         elif error.code in {
@@ -431,15 +581,88 @@ class AnalystTlsListener:
                             status, code = 409, "conflict"
                         elif error.code == "analyst_view_unavailable":
                             status, code = 503, "unavailable"
+                            try:
+                                audit_log(
+                                    "internal_failure",
+                                    "internal",
+                                    "failed",
+                                    "internal_error",
+                                    request_route=route,
+                                    body_sha256=body_sha256,
+                                )
+                            except AnalystTlsError:
+                                pass
+                            connection.sendall(_response(status, {"error": code}))
+                            return
                         else:
                             status, code = 400, "request_invalid"
-                    elif error.code == "authentication_failed":
-                        status, code = 401, "authentication_failed"
-                    else:
-                        status, code = 400, "request_invalid"
-                    connection.sendall(_response(status, {"error": code}))
-                except Exception:
-                    connection.sendall(_response(503, {"error": "unavailable"}))
+                            try:
+                                audit_log(
+                                    "request_rejected",
+                                    "admission",
+                                    "rejected",
+                                    "request_invalid",
+                                    request_route=route,
+                                    body_sha256=body_sha256,
+                                )
+                            except AnalystTlsError:
+                                pass
+                            connection.sendall(_response(status, {"error": code}))
+                            return
+
+                        try:
+                            audit_log(
+                                "request_completed",
+                                "completion",
+                                "completed",
+                                "request_completed",
+                                request_route=route,
+                                body_sha256=body_sha256,
+                            )
+                        except AnalystTlsError:
+                            connection.sendall(_response(503, {"error": "unavailable"}))
+                            return
+                        connection.sendall(_response(status, {"error": code}))
+                    except AnalystTlsError as error:
+                        if error.code == "request_invalid":
+                            try:
+                                audit_log(
+                                    "request_rejected",
+                                    "admission",
+                                    "rejected",
+                                    "request_invalid",
+                                    request_route=route,
+                                    body_sha256=body_sha256,
+                                )
+                            except AnalystTlsError:
+                                pass
+                            connection.sendall(_response(400, {"error": "request_invalid"}))
+                        else:
+                            try:
+                                audit_log(
+                                    "internal_failure",
+                                    "internal",
+                                    "failed",
+                                    "internal_error",
+                                    request_route=route,
+                                    body_sha256=body_sha256,
+                                )
+                            except AnalystTlsError:
+                                pass
+                            connection.sendall(_response(503, {"error": "unavailable"}))
+                    except Exception:
+                        try:
+                            audit_log(
+                                "internal_failure",
+                                "internal",
+                                "failed",
+                                "internal_error",
+                                request_route=route,
+                                body_sha256=body_sha256,
+                            )
+                        except AnalystTlsError:
+                            pass
+                        connection.sendall(_response(503, {"error": "unavailable"}))
         except (OSError, ssl.SSLError, TimeoutError):
             pass
         except Exception:

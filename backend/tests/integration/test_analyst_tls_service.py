@@ -8,7 +8,7 @@ import shutil
 import socket
 import ssl
 import subprocess
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event, Thread
@@ -18,6 +18,10 @@ import pytest
 
 import threatfusion.api.analyst_tls_service as analyst_transport
 
+from threatfusion.db.analyst_security_audit import (
+    AnalystSecurityAuditError,
+    AnalystSecurityAuditRepository,
+)
 from threatfusion.api.analyst_tls_service import (
     ANALYST_HOST,
     AnalystTlsConfiguration,
@@ -117,9 +121,9 @@ def certificates(tmp_path_factory):
     )
     for name, actor in (
         ("viewer", "queue.viewer"),
-        ("analyst_a", "analyst.a"),
+        ("analyst_a", "analyst_a"),
         ("analyst_b", "analyst.b"),
-        ("analyst_a_new", "analyst.a"),
+        ("analyst_a_new", "analyst_a"),
         ("revoked", "revoked.analyst"),
         ("unknown", "unknown.analyst"),
     ):
@@ -149,7 +153,7 @@ def certificates(tmp_path_factory):
         "wrong-eku",
         human_ca,
         purpose="serverAuth",
-        san="URI:urn:threatfusion:human:analyst.a",
+        san="URI:urn:threatfusion:human:analyst_a",
     )
     result["no_eku"] = _certificate(
         directory,
@@ -174,11 +178,11 @@ def _registry(certs, *, include_new=False, revoked=()) -> HumanCredentialRegistr
     entries = []
     for name, actor in (
         ("viewer", "queue.viewer"),
-        ("analyst_a", "analyst.a"),
+        ("analyst_a", "analyst_a"),
         ("analyst_b", "analyst.b"),
         ("revoked", "revoked.analyst"),
-        ("wrong_san", "analyst.a"),
-        ("wrong_eku", "analyst.a"),
+        ("wrong_san", "analyst_a"),
+        ("wrong_eku", "analyst_a"),
     ):
         entries.append(
             HumanCredential(
@@ -193,7 +197,7 @@ def _registry(certs, *, include_new=False, revoked=()) -> HumanCredentialRegistr
     if include_new:
         entries.append(
             HumanCredential(
-                "analyst.a",
+                "analyst_a",
                 _fingerprint(certs["analyst_a_new"][0]),
                 True,
                 False,
@@ -211,7 +215,7 @@ def _listener(tmp_path, certs, credentials=None, *, disabled_actor=False):
     authorization = AnalystAuthorizationRegistry(
         (
             AnalystRegistryEntry("queue.viewer", "viewer"),
-            AnalystRegistryEntry("analyst.a", "analyst", enabled=not disabled_actor),
+            AnalystRegistryEntry("analyst_a", "analyst", enabled=not disabled_actor),
             AnalystRegistryEntry("analyst.b", "analyst"),
             AnalystRegistryEntry("revoked.analyst", "analyst"),
         )
@@ -220,10 +224,15 @@ def _listener(tmp_path, certs, credentials=None, *, disabled_actor=False):
     configuration = AnalystTlsConfiguration(
         certs["server"][0], certs["server"][1], certs["human_ca"]
     )
+    audit = AnalystSecurityAuditRepository(tmp_path / "audit.sqlite3")
     listener = AnalystTlsListener(
-        configuration, credentials or _registry(certs), authorization, AnalystAlertViewModel(states)
+        configuration,
+        credentials or _registry(certs),
+        authorization,
+        AnalystAlertViewModel(states),
+        audit,
     )
-    return listener, candidate, alerts, states
+    return listener, candidate, alerts, states, audit
 
 
 def _context(certs, identity):
@@ -302,7 +311,7 @@ def _transition(candidate, transition_id, *, rationale="Reviewed"):
 
 
 def test_real_tls_viewer_read_analyst_write_and_identity_bound_replay(tmp_path, certificates):
-    listener, candidate, alerts, states = _listener(tmp_path, certificates)
+    listener, candidate, alerts, states, audit = _listener(tmp_path, certificates)
     with listener:
         status, page = _exchange(
             listener, certificates, "viewer", _request("GET", "/v1/analyst/alerts?limit=1&offset=0")
@@ -329,7 +338,7 @@ def test_real_tls_viewer_read_analyst_write_and_identity_bound_replay(tmp_path, 
             listener, certificates, "analyst_a", _transition(candidate, operation)
         )
         assert status == 200 and created["disposition"] == "created"
-        assert created["analyst_transition"]["actor_id"] == "analyst.a"
+        assert created["analyst_transition"]["actor_id"] == "analyst_a"
         status, replay = _exchange(
             listener, certificates, "analyst_a", _transition(candidate, operation)
         )
@@ -353,7 +362,7 @@ def test_real_tls_viewer_read_analyst_write_and_identity_bound_replay(tmp_path, 
 
 
 def test_real_tls_rejects_missing_revoked_producer_unknown_and_malformed(tmp_path, certificates):
-    listener, candidate, _, states = _listener(tmp_path, certificates)
+    listener, candidate, _, states, audit = _listener(tmp_path, certificates)
     read = _request("GET", "/v1/analyst/alerts")
     with listener:
         assert _exchange(listener, certificates, None, read)[0] is None
@@ -393,7 +402,7 @@ def test_real_tls_rejects_missing_revoked_producer_unknown_and_malformed(tmp_pat
                 "to_state": "in_review",
                 "transition_id": str(uuid4()),
                 "rationale": "Reviewed",
-                "actor_id": "analyst.a",
+                "actor_id": "analyst_a",
                 "role": "analyst",
             },
         )
@@ -413,7 +422,7 @@ def test_real_tls_rejects_missing_revoked_producer_unknown_and_malformed(tmp_pat
 def test_registry_rejects_disabled_expired_and_reused_fingerprint(certificates):
     now = datetime.now(UTC)
     certificate = HumanCredential(
-        "analyst.a",
+        "analyst_a",
         _fingerprint(certificates["analyst_a"][0]),
         False,
         False,
@@ -421,7 +430,7 @@ def test_registry_rejects_disabled_expired_and_reused_fingerprint(certificates):
         now + timedelta(hours=1),
     )
     der = ssl.PEM_cert_to_DER_cert(certificates["analyst_a"][0].read_text(encoding="ascii"))
-    decoded = {"subjectAltName": (("URI", "urn:threatfusion:human:analyst.a"),)}
+    decoded = {"subjectAltName": (("URI", "urn:threatfusion:human:analyst_a"),)}
     with pytest.raises(AnalystTlsError, match="^authentication_failed$"):
         HumanCredentialRegistry((certificate,))._actor_for_verified_peer(der, decoded, now)
     for changed in (
@@ -437,11 +446,13 @@ def test_registry_rejects_disabled_expired_and_reused_fingerprint(certificates):
 
 def test_rotation_overlap_then_restart_revokes_old_certificate(tmp_path, certificates):
     old = _request("GET", "/v1/analyst/alerts?limit=1")
-    listener, _, _, _ = _listener(tmp_path, certificates, _registry(certificates, include_new=True))
+    listener, _, _, _, audit = _listener(
+        tmp_path, certificates, _registry(certificates, include_new=True)
+    )
     with listener:
         assert _exchange(listener, certificates, "analyst_a", old)[0] == 200
         assert _exchange(listener, certificates, "analyst_a_new", old)[0] == 200
-    listener, _, _, _ = _listener(
+    listener, _, _, _, audit = _listener(
         tmp_path, certificates, _registry(certificates, include_new=True, revoked=("analyst_a",))
     )
     with listener:
@@ -450,7 +461,7 @@ def test_rotation_overlap_then_restart_revokes_old_certificate(tmp_path, certifi
 
 
 def test_transport_does_not_reflect_storage_exception(tmp_path, certificates, monkeypatch):
-    listener, _, _, states = _listener(tmp_path, certificates)
+    listener, _, _, states, audit = _listener(tmp_path, certificates)
 
     def broken(*args, **kwargs):
         raise RuntimeError("secret /tmp/alerts.sqlite3 password=example")
@@ -492,7 +503,7 @@ def test_fragmented_body_rejects_present_trailing_bytes():
 def test_close_prevents_accepted_peer_from_authorizing_after_shutdown(
     tmp_path, certificates, monkeypatch
 ):
-    listener, candidate, _, states = _listener(tmp_path, certificates)
+    listener, candidate, _, states, audit = _listener(tmp_path, certificates)
     reached_wrap, resume_wrap = Event(), Event()
     wrap_socket = listener._context.wrap_socket
 
@@ -523,7 +534,7 @@ def test_close_prevents_accepted_peer_from_authorizing_after_shutdown(
 
 
 def test_fragmented_tls_transition_with_trailing_bytes_has_zero_effects(tmp_path, certificates):
-    listener, candidate, _, states = _listener(tmp_path, certificates)
+    listener, candidate, _, states, audit = _listener(tmp_path, certificates)
     head, body = _transition(candidate, str(uuid4())).split(b"\r\n\r\n", 1)
     with listener:
         status, result = _exchange(
@@ -540,7 +551,7 @@ def test_fragmented_tls_transition_with_trailing_bytes_has_zero_effects(tmp_path
 def test_denied_credentials_cannot_reach_alert_storage_on_any_route(
     tmp_path, certificates, monkeypatch, identity
 ):
-    listener, candidate, alerts, _ = _listener(tmp_path, certificates)
+    listener, candidate, alerts, _, audit = _listener(tmp_path, certificates)
     calls = []
 
     def forbidden(*args, **kwargs):
@@ -561,7 +572,7 @@ def test_denied_credentials_cannot_reach_alert_storage_on_any_route(
 
 
 def test_tls12_is_denied_before_storage(tmp_path, certificates, monkeypatch):
-    listener, _, alerts, _ = _listener(tmp_path, certificates)
+    listener, _, alerts, _, audit = _listener(tmp_path, certificates)
     calls = []
     monkeypatch.setattr(alerts, "list", lambda **kwargs: calls.append("storage"))
     context = _context(certificates, "viewer")
@@ -592,7 +603,7 @@ def test_exact_registry_validity_boundaries_and_ambiguous_sans(certificates):
     for timestamp in (record.not_before - timedelta(microseconds=1), record.not_after):
         with pytest.raises(AnalystTlsError, match="^authentication_failed$"):
             registry._actor_for_verified_peer(der, {"subjectAltName": names}, timestamp)
-    for sans in ((), names * 2, names + (("URI", "urn:threatfusion:human:analyst.a"),)):
+    for sans in ((), names * 2, names + (("URI", "urn:threatfusion:human:analyst_a"),)):
         with pytest.raises(AnalystTlsError, match="^authentication_failed$"):
             registry._actor_for_verified_peer(der, {"subjectAltName": sans}, record.not_before)
 
@@ -600,7 +611,7 @@ def test_exact_registry_validity_boundaries_and_ambiguous_sans(certificates):
 def test_close_interrupts_partial_request_and_reopen_cannot_reuse_old_connection(
     tmp_path, certificates, monkeypatch
 ):
-    listener, candidate, _, states = _listener(tmp_path, certificates)
+    listener, candidate, _, states, audit = _listener(tmp_path, certificates)
     reading = Event()
     original_read = analyst_transport._read_request
 
@@ -638,7 +649,7 @@ def test_close_interrupts_partial_request_and_reopen_cannot_reuse_old_connection
 
 
 def test_shutdown_waits_for_already_dispatched_transaction(tmp_path, certificates, monkeypatch):
-    listener, candidate, _, states = _listener(tmp_path, certificates)
+    listener, candidate, _, states, audit = _listener(tmp_path, certificates)
     dispatched, finish, closed = Event(), Event(), Event()
     transition = states.transition
 
@@ -673,7 +684,7 @@ def test_shutdown_waits_for_already_dispatched_transaction(tmp_path, certificate
 
 @pytest.mark.parametrize("stage", ["handshake", "request"])
 def test_stalled_connection_terminates_without_storage(tmp_path, certificates, monkeypatch, stage):
-    listener, _, alerts, _ = _listener(tmp_path, certificates)
+    listener, _, alerts, _, audit = _listener(tmp_path, certificates)
     monkeypatch.setattr(analyst_transport, "HANDSHAKE_SECONDS", 0.1)
     monkeypatch.setattr(analyst_transport, "REQUEST_SECONDS", 0.1)
     calls = []
@@ -705,7 +716,7 @@ def test_credential_expiring_during_read_is_rechecked_before_dispatch(
         return original(der, decoded, now)
 
     monkeypatch.setattr(registry, "_actor_for_verified_peer", verify)
-    listener, candidate, _, states = _listener(tmp_path, certificates, registry)
+    listener, candidate, _, states, audit = _listener(tmp_path, certificates, registry)
     with listener:
         assert _exchange(
             listener, certificates, "analyst_a", _transition(candidate, str(uuid4()))
@@ -718,14 +729,14 @@ def test_credential_expiring_during_read_is_rechecked_before_dispatch(
 def test_openssl_purpose_is_not_an_explicit_eku_extension_policy(tmp_path, certificates):
     """A certificate without EKU still needs explicit operator fingerprint admission."""
     registry = _registry(certificates)
-    listener, _, _, _ = _listener(tmp_path, certificates, registry)
+    listener, _, _, _, audit = _listener(tmp_path, certificates, registry)
     request = _request("GET", "/v1/analyst/alerts")
     with listener:
         assert _exchange(listener, certificates, "no_eku", request)[0] in (None, 401)
     record = replace(
         registry._records[0], certificate_sha256=_fingerprint(certificates["no_eku"][0])
     )
-    listener, _, _, _ = _listener(tmp_path, certificates, HumanCredentialRegistry((record,)))
+    listener, _, _, _, audit = _listener(tmp_path, certificates, HumanCredentialRegistry((record,)))
     with listener:
         assert _exchange(listener, certificates, "no_eku", request)[0] == 200
 
@@ -737,7 +748,7 @@ def test_server_owned_identity_denial_on_all_routes(tmp_path, certificates, monk
     if denial == "disabled_credential":
         registry = HumanCredentialRegistry(
             tuple(
-                replace(record, enabled=False) if record.actor_id == "analyst.a" else record
+                replace(record, enabled=False) if record.actor_id == "analyst_a" else record
                 for record in registry._records
             )
         )
@@ -752,7 +763,7 @@ def test_server_owned_identity_denial_on_all_routes(tmp_path, certificates, monk
                 ),
             )
         )
-    listener, candidate, alerts, _ = _listener(
+    listener, candidate, alerts, _, audit = _listener(
         tmp_path, certificates, registry, disabled_actor=denial == "disabled_actor"
     )
     calls = []
@@ -771,7 +782,7 @@ def test_server_owned_identity_denial_on_all_routes(tmp_path, certificates, monk
 def test_wire_bounds_and_malformed_commands_have_zero_storage_calls(
     tmp_path, certificates, monkeypatch
 ):
-    listener, candidate, alerts, _ = _listener(tmp_path, certificates)
+    listener, candidate, alerts, _, audit = _listener(tmp_path, certificates)
     calls = []
     monkeypatch.setattr(alerts, "list", lambda **kwargs: calls.append("list"))
     monkeypatch.setattr(alerts, "get", lambda *args: calls.append("get"))
@@ -786,7 +797,272 @@ def test_wire_bounds_and_malformed_commands_have_zero_storage_calls(
             _request("POST", path, raw_body=b"{}", extra_headers=("Content-Length: 2",)),
             _request("POST", path, raw_body=b"{}", extra_headers=("Transfer-Encoding: chunked",)),
             _request("GET", "/v1/analyst/alerts?limit=1&limit=2"),
-            _request("GET", "/v1/analyst/alerts/analyst.a"),
+            _request("GET", "/v1/analyst/alerts/analyst_a"),
         ):
             assert _exchange(listener, certificates, "analyst_a", request)[0] in (None, 400)
     assert calls == []
+
+
+def test_valid_request_produces_admitted_and_completed_events(tmp_path, certificates):
+    listener, candidate, alerts, states, audit = _listener(tmp_path, certificates)
+    request_bytes = _request("GET", "/v1/analyst/alerts?limit=50")
+
+    with listener:
+        status, payload = _exchange(listener, certificates, "analyst_a", request_bytes)
+
+    assert status == 200
+    events = audit.list()
+    assert len(events) == 2
+    assert events[0].event_type == "request_admitted"
+    assert events[0].actor_id == "analyst_a"
+    assert events[0].request_route == "/v1/analyst/alerts"
+    assert events[0].credential_sha256 is not None
+
+    assert events[1].event_type == "request_completed"
+    assert events[1].actor_id == "analyst_a"
+    assert events[1].request_route == "/v1/analyst/alerts"
+
+
+def test_authentication_rejection_logs_actor(tmp_path, certificates):
+    listener, candidate, alerts, states, audit = _listener(tmp_path, certificates)
+    request_bytes = _request("GET", "/v1/analyst/alerts?limit=50")
+
+    with listener:
+        status, payload = _exchange(listener, certificates, "revoked", request_bytes)
+
+    assert status in (401, None)
+    events = audit.list()
+    assert len(events) == 1
+    assert events[0].event_type == "authentication_rejected"
+    assert events[0].outcome == "rejected"
+    assert events[0].reason_code == "authentication_failed"
+
+
+def test_unverified_peers_receive_no_identity_and_idle_polling_is_ignored(tmp_path, certificates):
+    listener, candidate, alerts, states, audit = _listener(tmp_path, certificates)
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_3
+    context.load_verify_locations(cafile=certificates["human_ca"])
+
+    request_bytes = _request("GET", "/v1/analyst/alerts?limit=50")
+
+    with listener:
+        try:
+            _exchange(listener, certificates, None, request_bytes, context=context)
+        except Exception:
+            pass
+
+    events = audit.list()
+    assert len(events) == 0
+
+
+def test_denied_authorization_logs_authorization_rejected(tmp_path, certificates):
+    listener, candidate, alerts, states, audit = _listener(tmp_path, certificates)
+    operation = str(uuid4())
+    request_bytes = _transition(candidate, operation)
+
+    with listener:
+        status, payload = _exchange(listener, certificates, "viewer", request_bytes)
+
+    assert (status, payload) == (403, {"error": "forbidden"})
+    events = audit.list()
+    assert len(events) == 2
+    assert events[0].event_type == "request_admitted"
+    assert events[0].actor_id == "queue.viewer"
+    assert events[1].event_type == "authorization_rejected"
+    assert events[1].processing_stage == "authorization"
+    assert events[1].outcome == "rejected"
+    assert events[1].reason_code == "forbidden"
+    assert events[1].actor_id == "queue.viewer"
+
+    viewer = states._authorization.issue_for_trusted_actor("queue.viewer")
+    assert states.get_alert(viewer, candidate.alert_candidate_id).transitions == ()
+
+
+def test_audit_failure_before_transition_blocks_mutation(tmp_path, certificates, monkeypatch):
+    listener, candidate, alerts, states, audit = _listener(tmp_path, certificates)
+
+    original_append = audit.append
+
+    def failing_append(event):
+        if event.event_type == "request_admitted":
+            raise AnalystSecurityAuditError("audit_write_failed")
+        return original_append(event)
+
+    monkeypatch.setattr(audit, "append", failing_append)
+
+    request_bytes = _transition(candidate, str(uuid4()))
+
+    with listener:
+        status, payload = _exchange(listener, certificates, "analyst_a", request_bytes)
+
+    assert (status, payload) == (503, {"error": "unavailable"})
+
+    viewer = states._authorization.issue_for_trusted_actor("queue.viewer")
+    assert states.get_alert(viewer, candidate.alert_candidate_id).transitions == ()
+
+
+def test_audit_failure_after_transition_preserves_commit_and_retry(
+    tmp_path, certificates, monkeypatch
+):
+    listener, candidate, alerts, states, audit = _listener(tmp_path, certificates)
+
+    original_append = audit.append
+
+    def failing_append(event):
+        if event.event_type == "request_completed":
+            raise AnalystSecurityAuditError("audit_write_failed")
+        return original_append(event)
+
+    monkeypatch.setattr(audit, "append", failing_append)
+
+    transition_id = str(uuid4())
+    request_bytes = _transition(candidate, transition_id)
+
+    with listener:
+        status, payload = _exchange(listener, certificates, "analyst_a", request_bytes)
+
+    assert (status, payload) == (503, {"error": "unavailable"})
+
+    viewer = states._authorization.issue_for_trusted_actor("queue.viewer")
+    detail = states.get_alert(viewer, candidate.alert_candidate_id)
+    assert detail.analyst_state.state == "in_review"
+    assert len(detail.transitions) == 1
+    assert detail.transitions[0].transition_id == transition_id
+
+    monkeypatch.undo()
+
+    with listener:
+        status2, payload2 = _exchange(listener, certificates, "analyst_a", request_bytes)
+
+    assert status2 == 200
+    assert payload2["disposition"] == "existing"
+
+    detail_after = states.get_alert(viewer, candidate.alert_candidate_id)
+    assert len(detail_after.transitions) == 1
+    assert detail_after.transitions[0].transition_id == transition_id
+
+    events = audit.list()
+    assert any(
+        event.event_type == "request_completed" and event.actor_id == "analyst_a"
+        for event in events
+    )
+
+
+def test_listener_rejects_non_audit_repository(tmp_path, certificates):
+    candidate = _candidate(1)
+    alerts = AlertCandidateRepository(tmp_path / "alerts.sqlite3")
+    alerts.insert(candidate)
+    authorization = AnalystAuthorizationRegistry((AnalystRegistryEntry("queue.viewer", "viewer"),))
+    states = AnalystStateRepository(tmp_path / "states.sqlite3", alerts, authorization)
+    configuration = AnalystTlsConfiguration(
+        certificates["server"][0], certificates["server"][1], certificates["human_ca"]
+    )
+    with pytest.raises(AnalystTlsError, match="^configuration_invalid$"):
+        AnalystTlsListener(
+            configuration,
+            _registry(certificates),
+            authorization,
+            AnalystAlertViewModel(states),
+            None,  # type: ignore[arg-type]
+        )
+    with pytest.raises(AnalystTlsError, match="^configuration_invalid$"):
+        AnalystTlsListener(
+            configuration,
+            _registry(certificates),
+            authorization,
+            AnalystAlertViewModel(states),
+            object(),  # type: ignore[arg-type]
+        )
+
+
+def test_valid_analyst_empty_disconnect_produces_no_audit_events(tmp_path, certificates):
+    listener, candidate, alerts, states, audit = _listener(tmp_path, certificates)
+    with listener:
+        worker = Thread(target=listener.process_one)
+        worker.start()
+        with socket.create_connection(listener.address, timeout=3) as raw:
+            with _context(certificates, "analyst_a").wrap_socket(
+                raw, server_hostname="localhost"
+            ) as client:
+                client.shutdown(socket.SHUT_RDWR)
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+
+    assert audit.list() == ()
+
+
+def test_valid_analyst_idle_timeout_produces_no_audit_events(tmp_path, certificates, monkeypatch):
+    listener, candidate, alerts, states, audit = _listener(tmp_path, certificates)
+    monkeypatch.setattr(analyst_transport, "REQUEST_SECONDS", 0.1)
+    with listener:
+        worker = Thread(target=listener.process_one)
+        worker.start()
+        with socket.create_connection(listener.address, timeout=3) as raw:
+            with _context(certificates, "analyst_a").wrap_socket(raw, server_hostname="localhost"):
+                worker.join(timeout=2)
+        assert not worker.is_alive()
+
+    assert audit.list() == ()
+
+
+def test_invalid_path_with_secret_marker_omits_route_and_preserves_valid_templates(
+    tmp_path, certificates
+):
+    listener, candidate, alerts, states, audit = _listener(tmp_path, certificates)
+    secret_marker = "SUPER_SECRET_MARKER_TOKEN_98765"
+    invalid_path = f"/v1/analyst/alerts/{secret_marker}"
+
+    with listener:
+        status, payload = _exchange(
+            listener, certificates, "analyst_a", _request("GET", invalid_path)
+        )
+
+    assert (status, payload) == (400, {"error": "request_invalid"})
+    events = audit.list()
+    assert len(events) == 2
+    assert events[0].event_type == "request_admitted"
+    assert events[0].request_route is None
+    assert events[1].event_type == "request_rejected"
+    assert events[1].request_route is None
+
+    for event in events:
+        for field in fields(event):
+            assert secret_marker not in str(getattr(event, field.name))
+
+    with listener:
+        status_get, _ = _exchange(
+            listener,
+            certificates,
+            "viewer",
+            _request("GET", f"/v1/analyst/alerts/{candidate.alert_candidate_id}"),
+        )
+    assert status_get == 200
+    events_after = audit.list()
+    assert events_after[-1].event_type == "request_completed"
+    assert events_after[-1].request_route == "/v1/analyst/alerts/<alert_candidate_id>"
+
+
+def test_audit_failure_during_authentication_rejection_returns_401(
+    tmp_path, certificates, monkeypatch
+):
+    listener, candidate, alerts, states, audit = _listener(tmp_path, certificates)
+
+    original_append = audit.append
+
+    def failing_append(event):
+        if event.event_type == "authentication_rejected":
+            raise AnalystSecurityAuditError("audit_write_failed")
+        return original_append(event)
+
+    monkeypatch.setattr(audit, "append", failing_append)
+
+    with listener:
+        status, payload = _exchange(
+            listener, certificates, "revoked", _request("GET", "/v1/analyst/alerts?limit=50")
+        )
+
+    assert status in (401, None)
+    if payload is not None:
+        assert payload == {"error": "authentication_failed"}

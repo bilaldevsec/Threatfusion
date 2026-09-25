@@ -175,3 +175,20 @@ authorized. February access does not by itself prove TEST rows entered optimizer
 accounting still reports only the 847,837 benign TRAIN rows per epoch. The historical CLI rejects new
 preparation and execution, while original snapshots and reports remain immutable. TF-016 remains
 resolved for its earlier scorer correction, and TF-006/TF-007 remain open.
+
+### TF-008 / TF-009 structured analyst security audit milestone, 2026-09-25
+
+The structured analyst security audit (`analyst_security_audit_sqlite_v1`) was implemented and integrated into the `AnalystTlsListener`. State mutations (`states.sqlite3`) and security audit records (`audit.sqlite3`) operate under two independent SQLite transaction boundaries without distributed transactions. Authenticated request admissions, authorization failures, and transitions are recorded with pre-commit safety: an audit write failure before state mutation aborts the request with 503. A post-commit audit write failure returns 503 unavailable; a subsequent same-UUIDv4 retry prevents state duplication via idempotent replay (`existing`), but the initial request's missing completion audit event is not retroactively created, leaving an audit gap for the initial failed write. Authentication-rejection audit logging is best-effort and returns 401 without leaking internal storage failures. Valid TLS connections that close or time out before sending HTTP request bytes do not emit false audit events. Audit routes record fixed recognized templates or omit the route, preventing unvalidated URL paths from entering audit storage.
+
+Both TF-008 and TF-009 remain **open** pending remaining operational and product requirements (browser/dashboard path, explanation, operational credential provisioning, backup/recovery, service lifecycle, and endurance proofs).
+
+### TF-008 read-only analyst dashboard slice milestone, 2026-09-26
+
+The authenticated read-only analyst dashboard slice (`threatfusion.api.analyst_dashboard`) was implemented and validated with integration tests (`test_analyst_dashboard.py`). A human analyst with verified mTLS credentials can query the real persisted triage queue and individual alert detail without state mutation. Tests prove:
+- Authenticated viewer read-only access to alert list and detail with complete detection evidence (model score, threshold, decision).
+- Invariance of analyst state during dashboard viewing (zero state version increments or transitions).
+- Rejection of unauthenticated, revoked, or unknown credentials without data leakage.
+- Clean distinction between empty triage queue and unavailable backend states.
+- Reconciled identity and model decision attributes across extraction, persistence, and dashboard representation.
+
+Direct browser-to-listener access remains absent; a safe browser path requires client-cert keystore selection, browser-compatible HTTP headers, origin isolation, and session CSRF management. Both TF-008 and TF-009 remain **open** pending browser session integration, operational credential provisioning, explanation, and endurance validation.
