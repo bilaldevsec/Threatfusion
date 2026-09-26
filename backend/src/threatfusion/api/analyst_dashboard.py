@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 import json
 import math
+import re
 import socket
 import ssl
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from threatfusion.api.analyst_tls_service import ANALYST_HOST
 
 MAX_DASHBOARD_RESPONSE_BYTES = 131072
 MAX_HEADER_BYTES = 4096
+_BROWSER_ALERT_ID = re.compile(r"alert_candidate_v1:[0-9a-f]{64}\Z")
 
 
 class AnalystDashboardError(Exception):
@@ -456,13 +458,20 @@ class AnalystDashboardClient:
         return DashboardSnapshot(queue=queue, selected=selected, status=status)
 
 
-def render_dashboard_html(snapshot: DashboardSnapshot) -> str:
+def render_dashboard_html(snapshot: DashboardSnapshot, *, browser_links: bool = False) -> str:
     """Render a clean, sanitized HTML presentation of the authenticated dashboard snapshot."""
     queue_rows = []
     for item in snapshot.queue.items:
+        candidate_id = item.alert_candidate_id
+        label = f"<code>{html.escape(candidate_id[:16])}...</code>"
+        if browser_links and _BROWSER_ALERT_ID.fullmatch(candidate_id):
+            label = (
+                f'<a href="/v1/analyst/alerts/{html.escape(candidate_id, quote=True)}">'
+                f"{label}</a>"
+            )
         queue_rows.append(
             f"<tr>"
-            f"<td><code>{html.escape(item.alert_candidate_id[:16])}...</code></td>"
+            f"<td>{label}</td>"
             f"<td>{html.escape(item.observed_at)}</td>"
             f"<td><code>{html.escape(item.model_identity)}</code></td>"
             f"<td>{item.uncalibrated_model_score:.4f}</td>"

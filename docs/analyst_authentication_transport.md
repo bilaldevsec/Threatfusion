@@ -85,13 +85,11 @@ distinct from alert detection and analyst state databases.
 
 ## Browser and claim boundary
 
-Browsers can sometimes select a client certificate for mTLS, but certificate selection, trust-store
-installation, private-key protection, local origin/Host routing, CSRF, CORS, same-origin UI delivery
-and accessibility have not been designed or tested. The current strict header contract intentionally
-does not support arbitrary browser requests. A dashboard requires a separately reviewed browser
-session/origin design; do not weaken this boundary by accepting browser-supplied role headers or
-placing an unverified reverse proxy in front of it. The listener is a local demonstration component,
-not an internet-facing or production-ready service.
+The strict `AnalystTlsListener` header contract does not accept browser requests. The separate
+`AnalystBrowserTlsListener` now serves a bounded, read-only HTML queue and alert detail over local
+mTLS, with Host, Origin and Fetch-Site checks. Browser certificate selection, trust-store installation,
+private-key protection, accessibility and future write authentication/CSRF protection remain to be
+designed and tested operationally. Neither listener is an internet-facing or production-ready service.
 
 Real-loopback tests establish these properties for temporary test certificates and one-request
 connections:
@@ -133,7 +131,7 @@ The authenticated read-only analyst dashboard slice (`threatfusion.api.analyst_d
 - **Data Flow & Presentation:** The `AnalystDashboardClient` issues authenticated `GET /v1/analyst/alerts` and `GET /v1/analyst/alerts/<alert_candidate_id>` requests conforming to the strict wire contract (`Host: threatfusion-analyst-loopback`, `Connection: close`). Results are structured into `DashboardAlertQueue`, `DashboardAlertDetail`, and `DashboardSnapshot` models, with an escaped HTML view rendered via `render_dashboard_html`.
 - **State Invariance:** Dashboard queries are strictly read-only; viewing queue and detail views produces zero state mutations or transition events in `states.sqlite3`.
 - **Failure & Empty States:** An empty triage queue is explicitly distinguished from an unavailable backend; backend errors (e.g., connection refused, 503 storage failure) and authentication failures raise sanitized typed exceptions (`AnalystDashboardUnavailableError`, `AnalystDashboardAuthenticationError`) without leaking database paths or internal secrets.
-- **Browser Boundary Limitation:** Direct browser access remains unaddressed. A web browser requires client-certificate trust-store integration, browser HTTP request headers (which the strict loopback transport rejects by design), origin binding, session security, and CSRF protection. The dashboard client slice provides the testable authenticated backend prerequisite while preserving transport integrity. TF-008 and TF-009 remain open for full browser session and operational provisioning requirements.
+- **Browser Read-Only Boundary:** The system now supports a read-only local browser listener (`AnalystBrowserTlsListener`) over loopback TLS 1.3. Identity is derived from the verified client certificate SAN and SHA-256 fingerprint; headers are used strictly for admission control (Host, Origin, Sec-Fetch-Site), not identity. Queue rows link to full alert IDs, and UTF-8 HTML response bodies are limited to 131,072 bytes. Oversized rendering returns a sanitized 503. Future write authentication and CSRF protection need an explicit design. TF-008 and TF-009 remain open for operational provisioning and reliability evidence.
 
 ## Independent security review, 2026-09-24
 

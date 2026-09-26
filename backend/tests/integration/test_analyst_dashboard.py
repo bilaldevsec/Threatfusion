@@ -97,6 +97,7 @@ def test_authenticated_viewer_can_read_alert_list_and_detail(tmp_path, analyst_c
 
         html_view = render_dashboard_html(snapshot)
         assert "ThreatFusion Analyst Dashboard" in html_view
+        assert 'href="/v1/analyst/alerts/' not in html_view
         assert "mTLS Authenticated" in html_view
         assert candidate.alert_candidate_id[:16] in html_view
         assert "Attack" in html_view
