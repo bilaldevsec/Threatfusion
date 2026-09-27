@@ -22,7 +22,7 @@ Forest result.
 ## Prerequisites
 
 - Linux with IPv4 loopback binding permitted and no external/public listener requirement.
-- Repository checkout with the project Python 3.11 `.venv` already synchronized from the lock file.
+- Repository checkout with the project Python 3.11 `threatfusion-venv` already synchronized from the lock file.
 - `openssl` available on `PATH`; it issues one-use credentials inside a mode-`0700` temporary directory.
 - Registered UNSW manifest, feature metadata, and `UNSW-NB15_1.csv` at their configured ignored paths.
 - The unchanged frozen preprocessing, logistic-regression, Random Forest, historical autoencoder, and
@@ -33,7 +33,7 @@ Forest result.
 ## Single launch command
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/run_fyp_progress_demo.py
+PYTHONDONTWRITEBYTECODE=1 threatfusion-venv/bin/python scripts/run_fyp_progress_demo.py
 ```
 
 The runner exits zero only after all demonstration assertions and cleanup checks pass. It replaces the
@@ -84,7 +84,7 @@ credentials, private keys, raw records, endpoints, or runtime databases into the
    sanitized one-line failure reason.
 2. Confirm no runner remains and no unexpected listener is active, then verify that local policy permits
    an ephemeral bind to IPv4 `127.0.0.1`. Do not use a wildcard, external address, proxy, or weakened TLS.
-3. Confirm `.venv`, `openssl`, registered UNSW files, and ignored frozen artifacts are available, then
+3. Confirm `threatfusion-venv`, `openssl`, registered UNSW files, and ignored frozen artifacts are available, then
    rerun the same command once. Do not reset gates, edit evidence, or bypass validation.
 4. If the rerun cannot be completed, present the saved ignored evidence only as prior rehearsal evidence,
    including its revision and `status`. Explicitly state that it is a fallback transcript and not a live
@@ -93,8 +93,9 @@ credentials, private keys, raw records, endpoints, or runtime databases into the
 ## Limitations
 
 The synchronous one-request orchestrator now uses one terminating worker per newly claimed request, but
-still has no serving loop or long-running service/resource evidence. This demo does not add dashboard,
-correlation, explanation, analyst workflow, backup/recovery, audit export/rotation, live-source identity,
+still has no serving loop or long-running service/resource evidence. This historical two-row demo did
+not add a dashboard; the later [one-row browser path](registered_browser_path.md) is separate. It does
+not add correlation, explanation, analyst workflow, backup/recovery, audit export/rotation, live-source identity,
 Azure, cross-source compatibility, LLM, SOAR, or containment. Its chosen records cannot measure
 accuracy, false-positive rate, throughput, user value, generalization, or readiness. February/CIC
 outcomes remain development-known, TF-006/TF-007 remain scientific limitations, and TF-008/TF-009
