@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
-from typing import Sequence
+from typing import Callable, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -171,10 +171,22 @@ def _create_browser(root: Path, alerts: AlertCandidateRepository) -> tuple[
     return browser, view, authorization, {"ca": ca, "client": viewer}, audit
 
 
-def run_registered_browser_path() -> dict[str, object]:
+def run_registered_browser_path(
+    inspect: (
+        Callable[[Path, AnalystBrowserTlsListener, dict[str, object], dict[str, object]], None]
+        | None
+    ) = None,
+    *,
+    runtime_parent: Path | None = None,
+) -> dict[str, object]:
     """Run one registered RF inference and reconcile its authenticated browser display."""
     boundary = UnswNetworkInferenceBoundary(project_root=PROJECT_ROOT)
-    with replay_demo._temporary_runtime() as root:
+    runtime = (
+        replay_demo._temporary_runtime()
+        if runtime_parent is None
+        else replay_demo._temporary_runtime(directory=runtime_parent)
+    )
+    with runtime as root:
         producer_root = root / "producer"
         producer_root.mkdir(mode=0o700)
         producer_credentials = replay_demo._create_credentials(producer_root)
@@ -312,6 +324,14 @@ def run_registered_browser_path() -> dict[str, object]:
                 == ["request_admitted", "request_completed"],
                 "producer_audit_invalid",
             )
+            if inspect is not None:
+                _require(
+                    detail["explanation"]["status"] == "available"
+                    and "alert_explanation_v1" in detail_html
+                    and "Status: available" in detail_html,
+                    "browser_explanation_mismatch",
+                )
+                inspect(root, browser, human_credentials, detail)
             return {
                 "status": "completed",
                 "scope": "one_registered_unsw_replay_automated_tls_not_manual_browser",

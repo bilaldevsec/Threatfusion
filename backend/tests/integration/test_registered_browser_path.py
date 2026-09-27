@@ -36,7 +36,19 @@ def test_one_registered_attack_reaches_authenticated_browser_and_degrades_cleanl
 
     monkeypatch.setattr(replay_demo, "_temporary_runtime", capture_runtime)
 
+    original_run = browser_path.run_registered_browser_path
+    inspections = []
+
+    def inspect(root, browser, credentials, detail):
+        assert root.exists()
+        assert browser.address[0] == "127.0.0.1"
+        assert detail["explanation"]["status"] == "available"
+        assert detail["explanation"]["schema_version"] == "alert_explanation_v1"
+        inspections.append(detail["explanation"]["summary"])
+
+    monkeypatch.setattr(browser_path, "run_registered_browser_path", lambda: original_run(inspect))
     assert browser_path.main([]) == 0
+    assert len(inspections) == 1
     evidence = json.loads(capsys.readouterr().out)
     expected_source_id = derive_source_event_id(
         source_representation=UNSW_NB15_ARGUS_RAW_REPRESENTATION_V1,

@@ -25,7 +25,7 @@ by default.
 | TF-005 | P2 / medium | **Scoped warning, not yet a proven defect.** Existing pandas date-parsing warnings arise on fixture/Mordor ISO timestamps through the generic `dayfirst=True` path; UNSW epoch parsing is separate. See “Bounded exploratory check” in [`network_training_split_design.md`](network_training_split_design.md). | Generic timestamp parsing, Mordor/fixture diagnostics | Trace the exact warning path with focused fixtures and decide whether explicit format parsing or a documented warning policy is warranted. | Focused tests establish unchanged expected timestamps and either eliminate the warning through evidence-based parsing or document why it is harmless and bounded. | open |
 | TF-006 | P1 / high | **Known limitation/evidence gap.** Exact feature collisions and conflicting labels exist; near-duplicate leakage and capture/session provenance remain unresolved. See the [split design](network_training_split_design.md) and [February protocol](network_classical_evaluation_protocol.md). | UNSW validation/test interpretation and all model generalization claims | Specify bounded, label-independent provenance and near-duplicate diagnostics before further model comparison; do not tune a threshold using known test outcomes. | Predeclared diagnostics quantify cross-split capture/group and near-duplicate risk, demonstrate no prohibited leakage under a reviewed rule, or retain an explicit unresolved limitation. | open |
 | TF-007 | P1 / high | **Evaluation exposure.** February UNSW and CIC outcomes are known and can influence future decisions. See [`network_classical_evaluation_protocol.md`](network_classical_evaluation_protocol.md). | Future features, models, thresholds, claims of independent evaluation | Record exposure in every future experiment and reserve a genuinely uninspected, independently verified evaluation source before development informed by these outcomes. | Future experiment protocol is frozen before access and proves source/label integrity, semantic compatibility, non-overlap, and no prior outcome inspection. | open |
-| TF-008 | P0 / critical | **Demo/acceptance gap; one registered UNSW input now reaches a persisted RF Attack alert and the read-only browser queue/detail through automated real TLS.** The [one-input path](registered_browser_path.md) reuses the bounded [producer protocol](producer_admission_transport_policy.md), [analyst-state contract](alert_correlation_analyst_state.md), and separate [human browser boundary](analyst_authentication_transport.md); candidate ID, decision, and `new` state reconcile across them. An injected view failure displays sanitized 503. Retained alerts have no defensible distinct-alert relationship key. A bounded factual explanation now displays retained frozen-RF decision evidence with unavailable attribution/causality/source details. A manual browser session, operational browser credential provisioning, and full charter acceptance remain absent; Azure remains disabled. | Core product, demo readiness, usefulness claims | Perform a manual authenticated browser queue/detail demonstration of the registered-input path and factual explanation; retain the separate relationship-key requirement before proposing correlation. | One authenticated supported input reaches the dashboard with reconciled identity/status; authentication/admission failures have zero predictor/repository calls; failures are visible; optional services can be off; replay/duplicates are idempotent; bounded resource evidence is recorded. | open |
+| TF-008 | P0 / critical | **Demo/acceptance gap; one registered UNSW input now reaches a persisted RF Attack alert and the read-only browser queue/detail through automated real TLS.** The [one-input path](registered_browser_path.md) reuses the bounded [producer protocol](producer_admission_transport_policy.md), [analyst-state contract](alert_correlation_analyst_state.md), and separate [human browser boundary](analyst_authentication_transport.md); candidate ID, decision, and `new` state reconcile across them. An injected view failure displays sanitized 503. Retained alerts have no defensible distinct-alert relationship key. A bounded factual explanation now displays retained frozen-RF decision evidence with unavailable attribution/causality/source details. A user-reported Firefox session verified mTLS queue, linked detail and factual explanation; the earlier failed 390×844 scaling check remains historical, and newer owner screenshots show readable desktop and 390×844 layouts, usable queue link and horizontal access to score/decision/state, and legible detail IDs and explanation without overlap. Operational browser credential provisioning and full charter acceptance remain absent; Azure remains disabled. | Core product, demo readiness, usefulness claims | Define operational browser credential provisioning and capture cleanup evidence for a bounded run; retain the separate relationship-key requirement before proposing correlation. | One authenticated supported input reaches the dashboard with reconciled identity/status; authentication/admission failures have zero predictor/repository calls; failures are visible; optional services can be off; replay/duplicates are idempotent; bounded resource evidence is recorded. | open |
 | TF-009 | P1 / high | **Reliability evidence gap; bounded serving cleanup/restart and analyst-state transaction/reopen behavior implemented through 2026-09-23.** Serving regressions cover startup/readiness, graceful drain, overlap, replay, worker failure/timeout and resource cleanup. Analyst-state regressions cover atomic state/history writes, exact replay, concurrent version conflicts, rollback and schema-checked restart persistence. The short serving workload remains the only measured resource sample. This does not establish endurance, frozen operational limits, service-manager/signal behavior, cross-database snapshot/backup/recovery, audit export/retention/rotation, or optional-service outages. | Core workflow, demo reliability, deployment claims | Preserve terminating isolation and atomic state history; add the remaining operational resource, service-entry, backup/recovery and degradation evidence under separately bounded milestones. | The charter's malformed/partial-input, mismatch, offline-service, restart/replay, idempotency, interruption, timeout, concurrency/rate/body/queue, database backup/recovery and measured-resource cases pass end to end. | open |
 | TF-010 | P1 / high | **Requirements traceability gap.** No repository source enumerates the exact jury-approved dataset and base-model families. Existing logistic regression and Random Forest must be preserved, but completeness/jury approval is unverified. | Scope control, jury compliance, roadmap | Add or reference the dated authoritative jury brief/rubric and reconcile it with the charter without rewriting history. | A reviewed repository reference lists exact required datasets/families; UNSW and all listed families have dispositions and no silent substitutions. | open |
 | TF-011 | P1 / high | **User-value evidence gap.** Target operator, baseline workflow, task success criteria, and operational false-positive/detection targets are not validated. See [charter user-value evidence](product_charter.md#f-user-value-evidence). | Product usefulness, demo narrative, acceptance targets | Confirm the target operator and design a separately authorized reviewer/user study plus product-owner target-setting decision. Do not contact participants under this issue alone. | Dated decisions define operator/environment and operational targets; approved study evidence compares the same tasks with/without ThreatFusion and reports limitations. | open |
@@ -216,3 +216,72 @@ changing the alert or analyst state. The standalone invocation completed; 198 fo
 with affected-file Ruff, Black, and `git diff HEAD --check` passing. The browser was exercised by an
 automated TLS client; no human browser demonstration was performed. TF-008 and TF-009 remain **open**
 for explanation, operational credential provisioning, full product acceptance and reliability gates.
+
+
+### TF-008 / TF-009 bounded manual-browser launcher, 2026-09-27
+
+The [manual runbook](registered_browser_path.md#bounded-manual-inspection-launcher-2026-09-27)
+now provides a controlled inspection window on the existing registered-row producer,
+frozen RF, persistence, factual explanation and read-only human-mTLS browser path.
+A disposable Firefox profile and separate temporary human credentials keep trust local
+to that profile. Expiry, SIGINT/SIGTERM and launch failure unwind listener/process/runtime
+cleanup. Automated tests use real TLS with an inert browser-process substitute; a real
+Firefox/Snap profile/import/navigation/shutdown observation is still required. This is
+not operational credential provisioning or daemon/endurance evidence. TF-008 and TF-009
+remain **open**; no manual browser pass or accepted limitation is recorded.
+
+### TF-008 / TF-009 failed manual trial and bounded handshake repair, 2026-09-27
+
+The user reported correct profile/CA/viewer setup followed by Firefox timeout at
+localhost:46087 during a 1800-second demo. Manual acceptance remains **failed/pending**.
+A delayed real-TLS certificate-flight test reproduced closure at the inherited
+3-second handshake deadline; an immediate control with identical browser-style
+headers passed. The original trial has no retained timing/trace, so that historical
+cause is not asserted as proven. The browser-only handshake budget is now fixed at
+60 seconds, with expiry/no-dispatch and close interruption regressions. HTTP and
+analyst API deadlines and mTLS verification are unchanged. TF-008 and TF-009 remain
+**open**. Review this repair before another manual trial; see the runbook evidence.
+
+### TF-008 / TF-009 user-observed Firefox path and detail-layout follow-up, 2026-09-27
+
+The user reported that the next real Firefox run on localhost:33991 succeeded:
+viewer mTLS showed one Attack alert in `new`, its queue link opened the full
+candidate detail, and factual explanation was available with stated limitations.
+Ctrl+C produced `{"status":"stopped","manual_result":"pending_user_observations"}`;
+that fixed message describes launcher shutdown and does not override the user's
+observations. Read-only checks found no listener on 33991 and no reported temporary
+Firefox profile. A screenshot also showed Candidate ID, Source Event ID and Created At
+text overlapping in the detail panel. The renderer now wraps long field values and
+allows its grid to shrink below 300px; a focused HTML/CSS contract test protects
+full IDs and the queue link. At that checkpoint, the corrected layout still needed
+a visual desktop and narrow-width recheck. This session does not establish full
+charter acceptance, operational provisioning, distinct-alert correlation or endurance. TF-008 and
+TF-009 remain **open**.
+
+### TF-008 / TF-009 failed mobile viewport check, 2026-09-27
+
+User-observed desktop Firefox evidence confirms the long-ID overlap is fixed and
+queue/detail navigation still works. A reloaded 390×844 Responsive Design view
+then scaled the seven-column desktop page down until queue/detail text was
+unreadably small. Mobile acceptance was **failed at this checkpoint**, pending a
+new screenshot; the later owner observation below supersedes that status. The
+rendered HTML lacked a viewport meta declaration, and both data tables could
+force a wide intrinsic page. The focused repair adds the device viewport and
+scrollable, labeled, keyboard-focusable table regions; all columns, full IDs,
+queue link and detail evidence remain in the document. Automated markup, TLS
+and quality checks do not prove the final Firefox pixels. TF-008 and TF-009
+remain **open**; product acceptance and operational reliability are unchanged.
+
+### TF-008 / TF-009 superseding Firefox visual observation, 2026-09-27
+
+The owner reports new Firefox screenshots showing readable desktop and 390×844
+Responsive Design layouts after the viewport/table repair. The queue alert link
+is visible and usable; horizontal scroll exposes score, decision and state;
+full detail IDs and factual explanation are readable without overlap. The earlier
+failed mobile scaling check remains historical evidence. Screenshots establish
+only these visual observations, not accessibility, endurance or full product
+acceptance. No final launcher output or latest runtime path was supplied, so
+cleanup for this run remains unverified; the previous 33991 cleanup check does
+not establish cleanup here. Operational browser credential provisioning and the
+defensible distinct-alert correlation key remain unresolved. TF-008 and TF-009
+remain **open**.

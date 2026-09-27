@@ -532,12 +532,14 @@ def render_dashboard_html(snapshot: DashboardSnapshot, *, browser_links: bool = 
             <p>{html.escape(str((sel.explanation or {}).get("summary", "Explanation unavailable.")))}</p>
             <p>{html.escape(LIMITATIONS)}</p>
             <h3>Transition History</h3>
+            <div class="table-scroll" role="region" aria-label="Analyst transition history" tabindex="0">
             <table class="data-table">
                 <thead>
                     <tr><th>Seq</th><th>State Change</th><th>Actor</th><th>Rationale</th><th>Time</th></tr>
                 </thead>
                 <tbody>{history_tbody}</tbody>
             </table>
+            </div>
         </section>
         """
 
@@ -545,6 +547,7 @@ def render_dashboard_html(snapshot: DashboardSnapshot, *, browser_links: bool = 
 <html lang="en">
 <head>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ThreatFusion Analyst Dashboard</title>
     <style>
         body {{ font-family: sans-serif; margin: 1.5rem; background: #0f141c; color: #e6edf3; }}
@@ -560,7 +563,15 @@ def render_dashboard_html(snapshot: DashboardSnapshot, *, browser_links: bool = 
         table.data-table th {{ background: #21262d; color: #8b949e; }}
         code {{ font-family: monospace; background: #21262d; padding: 0.15rem 0.3rem; border-radius: 3px; font-size: 0.85rem; }}
         .empty-queue, .empty-history {{ text-align: center; color: #8b949e; font-style: italic; padding: 1rem; }}
-        .evidence-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0.5rem; margin-bottom: 1rem; }}
+        .table-scroll {{ max-width: 100%; overflow-x: auto; }}
+        .table-scroll > table {{ min-width: 640px; }}
+        .table-scroll:focus-visible {{ outline: 2px solid #58a6ff; }}
+        @media (max-width: 600px) {{
+            .queue-table a {{ display: inline-block; padding: 0.5rem 0; }}
+            .queue-table a code {{ font-size: 1rem; }}
+        }}
+        .evidence-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 0.5rem; margin-bottom: 1rem; }}
+        .evidence-grid > div {{ min-width: 0; overflow-wrap: anywhere; }}
     </style>
 </head>
 <body>
@@ -572,7 +583,8 @@ def render_dashboard_html(snapshot: DashboardSnapshot, *, browser_links: bool = 
     </header>
     <section class="card">
         <h2>Alert Triage Queue</h2>
-        <table class="data-table">
+        <div class="table-scroll" role="region" aria-label="Alert triage queue" tabindex="0">
+        <table class="data-table queue-table">
             <thead>
                 <tr>
                     <th>Alert ID</th>
@@ -586,6 +598,7 @@ def render_dashboard_html(snapshot: DashboardSnapshot, *, browser_links: bool = 
             </thead>
             <tbody>{queue_tbody}</tbody>
         </table>
+        </div>
     </section>
     {detail_section}
 </body>

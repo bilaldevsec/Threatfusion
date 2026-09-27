@@ -612,3 +612,154 @@ Repository Ruff: `All checks passed!`. Black on the five changed Python files:
 No staging, commit or push. Recommended next action: perform and record a manual
 authenticated browser queue/detail demonstration of the registered-input path and
 factual explanation.
+
+### 2026-09-27 — Bounded manual browser demonstration preparation
+
+Started on clean `gemini/product-20260924` at
+`6b3f2c1347e5e1b861aa37d7eea862c04e790fb5`, Gemini copy only; push URL remains
+`no-push://requires-explicit-review`. `scripts/launch_browser_demo.py` adds a
+30–1800 second inspection window (default 900) to the existing registered one-row
+producer/RF/persistence/browser runner. It requires available factual explanation
+before inspection, exports one disposable viewer PKCS#12 bundle, and launches an
+isolated Firefox profile. Installed Snap Firefox is invoked directly to avoid the
+Ubuntu migration wrapper; its private runtime lives under ignored reports rather
+than Snap-inaccessible `/tmp`. No system trust or normal profile is modified.
+
+Acceptance evidence: launcher tests use real human-mTLS detail requests and an inert
+browser substitute, cover expiry, interrupt, browser launch failure, process reaping,
+profile/runtime deletion, private bundle permissions, SIGTERM handler restoration,
+and invalid lifetime bounds. The registered-input integration test exercises the new
+inspection hook after real producer/RF/persistence/browser checks and asserts factual
+explanation availability. Initial focused result: `7 passed in 19.05s`. Final command:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src:. threatfusion-venv/bin/pytest -o addopts= -q --tb=short backend/tests/integration/test_browser_demo_launcher.py backend/tests/integration/test_registered_browser_path.py backend/tests/integration/test_analyst_browser_tls_service.py backend/tests/integration/test_analyst_dashboard.py backend/tests/unit/test_alert_explanation.py backend/tests/unit/test_analyst_security_audit.py
+```
+
+Raw final result: `159 passed in 37.41s`. Ruff: `All checks passed!`. Black on the
+five affected Python files: `5 files would be left unchanged.` `git diff HEAD --check`:
+exit 0, no output. The tests performed only the existing bounded registered-row RF
+inference; no training, dataset/artifact changes, AE scoring, packages or deployments.
+
+Exact setup/navigation/shutdown and expected candidate/explanation are in
+`registered_browser_path.md`. No GUI browser was launched by this development session;
+Firefox/Snap trust import, client-certificate selection, navigation and actual browser
+shutdown remain pending human observations. SIGKILL/power-loss cleanup and escaped
+browser descendants are not guaranteed. TF-008/TF-009 remain open. Changes are unstaged
+and uncommitted. Recommended next action: run the documented launcher and supply the
+manual certificate, queue/detail, explanation and shutdown observations.
+
+### 2026-09-27 — Failed Firefox trial: bounded handshake repair
+
+Resumed existing uncommitted launcher work at unchanged HEAD
+`6b3f2c1347e5e1b861aa37d7eea862c04e790fb5` on `gemini/product-20260924`.
+User reported correct temporary profile, CA/viewer import and viewer selection at
+localhost:46087, then Firefox timeout during a 1800-second run. This is a failed/pending
+manual demonstration. At diagnosis the port had no listener and no demo runtime
+SQLite files remained. Exact historical chooser timing and request bytes are unknown.
+
+Before production edits, a real TLS 1.3 test withheld the client certificate/Finished
+flight for 3.3 seconds and received no HTTP response under the inherited 3-second
+handshake timeout: `1 failed, 21 deselected in 11.06s` (expected 200, received empty
+bytes). An immediate-certificate control using the same representative Firefox-style
+headers passed: `1 passed, 22 deselected in 6.99s`. This isolates a reproducible
+handshake-budget defect; it does not prove the exact unrecorded Firefox exchange.
+No evidence demonstrated malformed framing or premature launcher shutdown in that trial.
+
+Small repair: only the browser listener uses `BROWSER_HANDSHAKE_SECONDS = 60.0`.
+The analyst API keeps 3 seconds; browser HTTP reads keep 5 seconds. The handshake
+budget remains finite and independent of the launcher lifetime. Tests verify delayed
+certificate success, accelerated expiry without view dispatch/audit completion, and
+close interrupting a pending handshake under the full 60-second setting. Existing
+launcher expiry/signal/cleanup and browser authentication/framing tests also pass.
+
+Validation (no inference, training, GUI or manual retry):
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src:. threatfusion-venv/bin/pytest -o addopts= -q --tb=short backend/tests/integration/test_analyst_browser_tls_service.py backend/tests/integration/test_browser_demo_launcher.py backend/tests/integration/test_analyst_tls_service.py backend/tests/integration/test_analyst_dashboard.py backend/tests/unit/test_analyst_security_audit.py backend/tests/unit/test_alert_explanation.py
+```
+
+Raw result: `199 passed in 39.30s`. Repository Ruff: `All checks passed!`. Black
+checks including preserved uncommitted launcher files: `7 files would be left unchanged.`
+`git diff HEAD --check`: exit 0, no output. This repair changes browser listener,
+browser TLS tests, runbook, status and issue register; preceding launcher work is
+preserved unstaged/uncommitted. TF-008 and TF-009 remain open. A stalled unauthenticated
+connection can occupy the serial listener for up to 60 seconds; no concurrency or
+endurance claim is made. Recommended next action: review this repair and evidence
+before authorizing another manual Firefox attempt.
+
+### 2026-09-27 — User-observed Firefox path; detail wrapping repair
+
+The user reported a successful manual Firefox run on localhost:33991: the correct
+viewer mTLS identity opened a queue containing one `Attack` alert in `new`; the
+selectable link opened the full candidate detail URL; factual explanation appeared
+as available with its stated limits. Ctrl+C printed
+`{"status":"stopped","manual_result":"pending_user_observations"}`. That fixed
+launcher string records shutdown, while the user's report records the browser result.
+Read-only checks showed no listener on port 33991 and no profile at
+`artifacts/reports/browser-manual-demo/threatfusion-fyp-demo-_4va309l/firefox-profile`.
+No deletion was needed.
+
+The user-provided screenshot showed Candidate ID, Source Event ID and Created At
+text overlapping. The detail renderer's 300px minimum grid track and unbroken IDs
+allowed content to overflow adjacent cells. A two-rule CSS repair allows tracks to
+shrink with the panel and wraps long values inside their own cells, preserving full
+escaped IDs and the queue link. A focused renderer regression asserts the responsive
+CSS contract, the full ID fields and selectable full-ID link. Dashboard and browser
+listener tests: `88 passed in 21.00s`. At that checkpoint, the corrected layout
+still awaited a Firefox recheck at desktop and narrow widths. This user-observed
+browser path does not by itself establish full product acceptance, operational
+credential provisioning, endurance, or distinct-alert correlation. TF-008 and
+TF-009 remain open. Changes remain unstaged and uncommitted.
+
+Repository Ruff: `All checks passed!`. Black on the two changed Python files:
+`2 files would be left unchanged.` `git diff HEAD --check`: exit 0, no output.
+Recommended next action: visually verify the corrected detail panel at desktop
+and narrow widths in an isolated authenticated Firefox session.
+
+### 2026-09-27 — Failed 390×844 Firefox check; responsive queue repair
+
+The user confirmed that the authenticated desktop queue/detail still works and
+long candidate/source IDs no longer overlap. In a reloaded 390×844 Firefox
+Responsive Design viewport, the entire desktop page was scaled down and queue
+and detail text became unreadably small. **Mobile visual acceptance failed at
+this checkpoint**; no repaired-layout screenshot was available then. The later
+owner observation below supersedes this status without erasing the failure.
+
+The renderer had no device viewport declaration, and its seven-column queue and
+five-column history could impose wide intrinsic page widths. It now declares
+`width=device-width, initial-scale=1`, keeps both tables inside labeled,
+keyboard-focusable horizontal scroll regions, and enlarges the queue link text
+and tap area at widths up to 600px. The alert link is in the first queue column;
+remaining columns stay available by scrolling inside the region. Full candidate
+and source IDs, all evidence, escaping, read-only behavior and desktop table
+layout remain intact. The existing detail wrapping fix is preserved.
+
+A focused renderer regression checks the viewport declaration, bounded table
+regions, mobile link rule, full IDs, decision/state and selectable queue link.
+Automated tests cannot certify Firefox's final mobile pixels. TF-008 and TF-009
+remain open. No new manual browser run or screenshot was performed in this turn.
+Focused dashboard/browser tests: `88 passed in 29.77s`. Repository Ruff:
+`All checks passed!`. Black on the two affected Python files:
+`2 files would be left unchanged.` `git diff HEAD --check`: exit 0, no output.
+All work remained unstaged and uncommitted. At this checkpoint, the next action
+was to capture a new 390×844 Firefox screenshot; the later owner observation
+below records that visual result.
+
+### 2026-09-27 — Owner screenshots supersede failed mobile visual check
+
+The owner reports that the latest Firefox screenshots show the repaired desktop
+layout and a readable 390×844 Responsive Design view. The queue link is visible;
+horizontal scrolling exposes score, decision and state; full detail IDs and the
+factual explanation are readable without overlap. This supersedes the earlier
+failed mobile scaling observation, which remains recorded above. These are
+owner-reported visual observations, not an accessibility audit, endurance result,
+or proof of full product acceptance.
+
+The latest screenshot report supplies no final launcher output or runtime path,
+so cleanup for that run remains **unverified**. The earlier read-only port/profile
+check applies only to the prior localhost:33991 run. Frozen RF and separate AE
+constraints, the missing defensible distinct-alert correlation key, operational
+browser credential provisioning, and broader TF-009 reliability work remain
+open. TF-008 and TF-009 stay open. This documentation update changed no code,
+tests, model or artifacts and ran no tests.

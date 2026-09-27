@@ -15,7 +15,6 @@ from threatfusion.api.analyst_tls_service import (
     AnalystTlsConfiguration,
     AnalystTlsError,
     HumanCredentialRegistry,
-    HANDSHAKE_SECONDS,
     REQUEST_SECONDS,
 )
 from threatfusion.api.analyst_view_model import AnalystAlertViewModel, AnalystViewError
@@ -34,6 +33,9 @@ from threatfusion.api.analyst_dashboard import (
     _parse_detail,
 )
 
+# Human client-certificate selection occurs within the TLS handshake.
+# This fixed total timeout bounds even unauthenticated connections.
+BROWSER_HANDSHAKE_SECONDS = 60.0
 MAX_BROWSER_HEAD_BYTES = 8192
 MAX_BROWSER_RESPONSE_BYTES = 131072
 _ALERT_PATH = re.compile(r"^/v1/analyst/alerts/(alert_candidate_v1:[0-9a-f]{64})(?:\?.*)?$")
@@ -294,7 +296,7 @@ class AnalystBrowserTlsListener:
                 if self._listener is not listener:
                     return
                 self._active = accepted
-            accepted.settimeout(HANDSHAKE_SECONDS)
+            accepted.settimeout(BROWSER_HANDSHAKE_SECONDS)
             accepted = self._context.wrap_socket(
                 accepted, server_side=True, do_handshake_on_connect=False
             )

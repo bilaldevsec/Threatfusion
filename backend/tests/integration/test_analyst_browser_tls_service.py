@@ -704,3 +704,124 @@ def test_browser_factual_explanation_and_failure_isolation(tmp_path, certificate
         assert view._repository._alerts.get(candidate_id) == candidate
     finally:
         srv.close()
+
+
+def _delayed_certificate_exchange(srv, certificates, delay):
+    """Hold the TLS 1.3 client certificate/Finished flight, like a human chooser."""
+    incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+    client = _context(certificates, "viewer").wrap_bio(
+        incoming, outgoing, server_side=False, server_hostname="localhost"
+    )
+    with socket.create_connection(srv.address, timeout=2) as raw:
+        raw.settimeout(2)
+        while True:
+            try:
+                client.do_handshake()
+                break
+            except ssl.SSLWantReadError:
+                if outgoing.pending:
+                    raw.sendall(outgoing.read())
+                chunk = raw.recv(65536)
+                assert chunk, "server closed before certificate selection"
+                incoming.write(chunk)
+        assert client.version() == "TLSv1.3"
+        assert outgoing.pending, "client certificate flight must still be withheld"
+        time.sleep(delay)
+        try:
+            raw.sendall(outgoing.read())
+            client.write(
+                _req(
+                    srv.address[1],
+                    extra=(
+                        "User-Agent: Mozilla/5.0 Firefox/148.0\r\n"
+                        "Accept: text/html,application/xhtml+xml\r\n"
+                        "Accept-Encoding: gzip, deflate, br, zstd\r\n"
+                        "Connection: keep-alive\r\nSec-Fetch-Site: none\r\n"
+                        "Sec-Fetch-Mode: navigate\r\nSec-Fetch-Dest: document\r\n"
+                        "Upgrade-Insecure-Requests: 1\r\n"
+                    ),
+                )
+            )
+            raw.sendall(outgoing.read())
+            plaintext = b""
+            while True:
+                try:
+                    plaintext += client.read(65536)
+                except ssl.SSLWantReadError:
+                    chunk = raw.recv(65536)
+                    if not chunk:
+                        return plaintext
+                    incoming.write(chunk)
+                except ssl.SSLZeroReturnError:
+                    return plaintext
+        except (OSError, ssl.SSLError):
+            return b""
+
+
+@pytest.mark.parametrize("delay", [0.0, 3.3])
+def test_browser_certificate_selection_delay(tmp_path, certificates, delay):
+    srv, audit, _, candidate_id = _listener(tmp_path, certificates)
+    srv.open()
+    worker = Thread(target=srv.process_one)
+    worker.start()
+    try:
+        response = _delayed_certificate_exchange(srv, certificates, delay)
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        assert response.startswith(b"HTTP/1.1 200 OK\r\n")
+        assert candidate_id.encode() in response
+        assert [event.event_type for event in audit.list()] == [
+            "request_admitted",
+            "request_completed",
+        ]
+    finally:
+        srv.close()
+        worker.join(timeout=2)
+
+
+@pytest.mark.parametrize("close_early", [False, True])
+def test_browser_pending_handshake_is_bounded(tmp_path, certificates, monkeypatch, close_early):
+    from threading import Event
+
+    srv, audit, view, _ = _listener(tmp_path, certificates)
+    # Only accelerate the expiry case; close must interrupt the real 60-second budget.
+    if not close_early:
+        monkeypatch.setattr(browser_service, "BROWSER_HANDSHAKE_SECONDS", 0.25)
+    calls = []
+    monkeypatch.setattr(view, "list_alerts", lambda *args, **kwargs: calls.append(True))
+    entered = Event()
+    original_handshake = ssl.SSLSocket.do_handshake
+
+    def handshake(connection, *args, **kwargs):
+        entered.set()
+        return original_handshake(connection, *args, **kwargs)
+
+    monkeypatch.setattr(ssl.SSLSocket, "do_handshake", handshake)
+    srv.open()
+    worker = Thread(target=srv.process_one)
+    worker.start()
+    try:
+        with socket.create_connection(srv.address, timeout=2) as raw:
+            # Send a real ClientHello but never send the certificate/Finished flight.
+            incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+            client = _context(certificates, "viewer").wrap_bio(
+                incoming, outgoing, server_side=False, server_hostname="localhost"
+            )
+            with pytest.raises(ssl.SSLWantReadError):
+                client.do_handshake()
+            start = time.monotonic()
+            raw.sendall(outgoing.read())
+            assert entered.wait(timeout=1)
+            if close_early:
+                srv.close()
+            worker.join(timeout=1.5)
+            elapsed = time.monotonic() - start
+            assert not worker.is_alive()
+            assert elapsed < 1.5
+            if not close_early:
+                assert elapsed >= 0.20
+        assert calls == []
+        assert list(audit.list()) == []
+    finally:
+        srv.close()
+        worker.join(timeout=2)

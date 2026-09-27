@@ -274,10 +274,10 @@ def _fingerprint(certificate: Path) -> str:
 
 
 @contextmanager
-def _temporary_runtime() -> Iterator[Path]:
+def _temporary_runtime(*, directory: Path | None = None) -> Iterator[Path]:
     retained: Path | None = None
-    with TemporaryDirectory(prefix="threatfusion-fyp-demo-") as directory:
-        retained = Path(directory)
+    with TemporaryDirectory(prefix="threatfusion-fyp-demo-", dir=directory) as runtime:
+        retained = Path(runtime)
         retained.chmod(0o700)
         yield retained
     if retained is None or retained.exists():

@@ -14,6 +14,8 @@ from threatfusion.api.analyst_dashboard import (
     AnalystDashboardUnavailableError,
     DashboardAlertQueue,
     DashboardSnapshot,
+    _parse_detail,
+    _parse_summary,
     create_dashboard_ssl_context,
     render_dashboard_html,
 )
@@ -620,3 +622,46 @@ def test_detail_preserves_none_without_stringification(monkeypatch):
     assert detail2.updated_at == "2026-09-24T12:00:00Z"
     assert detail2.updated_by == "analyst.1"
     assert detail2.last_transition_id == "uuid-1234"
+
+
+def test_responsive_queue_and_detail_keep_full_evidence_and_selectable_link():
+    candidate_id = "alert_candidate_v1:" + "a" * 64
+    source_id = "unsw_registered_source_event_v1:" + "b" * 64
+    detail_payload = _valid_detail_payload()
+    detail_payload["detection_evidence"]["alert_candidate_id"] = candidate_id
+    detail_payload["detection_evidence"]["source_event_id"] = source_id
+    queue_payload = _valid_list_payload()
+    queue_payload["items"][0]["detection_evidence"].update(
+        alert_candidate_id=candidate_id, source_event_id=source_id
+    )
+    snapshot = DashboardSnapshot(
+        queue=DashboardAlertQueue(
+            items=(_parse_summary(queue_payload["items"][0]),),
+            total_loaded=1,
+            limit=50,
+            offset=0,
+        ),
+        selected=_parse_detail(detail_payload),
+        status="active",
+    )
+
+    page = render_dashboard_html(snapshot, browser_links=True)
+    assert '<meta name="viewport" content="width=device-width, initial-scale=1">' in page
+    assert page.count('class="table-scroll" role="region"') == 2
+    assert 'aria-label="Alert triage queue" tabindex="0"' in page
+    assert 'aria-label="Analyst transition history" tabindex="0"' in page
+    assert ".table-scroll { max-width: 100%; overflow-x: auto; }" in page
+    assert ".table-scroll > table { min-width: 640px; }" in page
+    assert '<table class="data-table queue-table">' in page
+    assert "@media (max-width: 600px)" in page
+    assert ".queue-table a { display: inline-block; padding: 0.5rem 0; }" in page
+    assert ".queue-table a code { font-size: 1rem; }" in page
+    assert "grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr))" in page
+    assert ".evidence-grid > div { min-width: 0; overflow-wrap: anywhere; }" in page
+    assert f'<a href="/v1/analyst/alerts/{candidate_id}">' in page
+    assert "<th>Decision</th>" in page and "<th>State</th>" in page
+    assert "<span class='badge badge-decision'>Attack</span>" in page
+    assert "<span class='badge badge-state'>new</span>" in page
+    assert f"Candidate ID:</b> <code>{candidate_id}</code>" in page
+    assert f"Source Event ID:</b> <code>{source_id}</code>" in page
+    assert "Created At:</b> 2026-09-24T12:00:01Z" in page
