@@ -789,3 +789,28 @@ The detailed chain, counterexamples and future acceptance gate are in
 [`alert_correlation_analyst_state.md`](alert_correlation_analyst_state.md).
 TF-008 remains open; TF-009's operational evidence gaps are unchanged. Frozen RF,
 experimental unfused AE, blocked rate-log1p candidate and artifacts are untouched.
+
+### 2026-09-27 — Registered UNSW identity provenance check
+
+At clean `gemini/product-20260924` HEAD
+`9b1c4783b4c1ed9cc954303577addfecb65e5372`, the manifest, official source
+description, feature metadata, raw reader, adapter, registered inference reader,
+producer and alert contracts were checked for an observed-entity identity. The
+manifest verifies file bytes and row counts, not capture/sensor or asset scope.
+The raw files have no native ID: the reader's `flow_id` is a filename/ordinal
+bookkeeping value. `srcip`/`dstip` are row endpoint fields; neither the official
+page nor registered contract verifies address ownership, reuse/NAT/alias lifetime
+or initiator role. The adapter constructs end time from numeric `stime` plus
+`dur` without validating `ltime`; UTC parsing does not verify capture-clock
+timezone, synchronization, precision or error bound. Addresses, flow ID and end
+time are not retained by the alert. See the source-provenance check in
+[`alert_correlation_analyst_state.md`](alert_correlation_analyst_state.md).
+
+No stable observed entity within a defined capture namespace is proven, so no
+entity field, correlation rule or window was added. The missing evidence is a
+reviewed capture/sensor namespace, authenticated address-to-asset mapping or
+source-issued stable asset ID with role and validity interval, a privacy/retention
+policy, and capture-clock quality. TF-008 and TF-009 remain open. An independent
+next product milestone is bounded operational browser credential provisioning
+and revocation evidence; it does not depend on alert correlation. No model,
+dataset or artifact path changed.

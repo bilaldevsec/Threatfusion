@@ -305,3 +305,17 @@ duration is chosen. Raw offline UNSW addresses do not establish an authenticated
 asset namespace. The [correlation contract](alert_correlation_analyst_state.md)
 records counterexamples and future acceptance criteria. No grouping code or
 tests changed; TF-008 remains **open**, and TF-009's disposition is unchanged.
+
+### TF-008 registered-source identity provenance check, 2026-09-27
+
+The manifest's raw-member digest and row ordinal, and the reader-injected
+`flow_id`, identify a reproducible CSV row, not a host or capture-scoped asset.
+The official source describes UNSW lab traffic, packet capture and Argus/Bro
+feature creation, but no verified address-assignment domain, NAT/alias/reuse
+lifetime, sensor/capture-segment identity, privacy/retention treatment or
+capture-clock quality accompanies these rows. Record source/destination fields
+do not establish initiator or attacker roles. The adapter derives end time from
+`stime + dur` and does not compare `ltime`; only start time reaches the alert.
+No observed-entity field or time window is justified. TF-008 remains **open**;
+TF-009 is unchanged. Operational browser credential provisioning/revocation is
+the next independent bounded product milestone, without a correlation claim.

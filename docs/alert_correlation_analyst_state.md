@@ -102,6 +102,40 @@ evidence, enforce window boundaries and replay idempotency, and avoid asserting
 shared campaign, attacker or incident without separate evidence. Until then,
 different candidate IDs remain independent alerts.
 
+### Registered UNSW source-provenance check, 2026-09-27
+
+The pinned manifest records four official raw CSV member paths, byte hashes and
+row counts, plus the official UNSW dataset page; it does not define a capture
+segment, sensor, address-assignment domain or asset namespace. The official page
+attributes packet generation to IXIA PerfectStorm in the UNSW Canberra Cyber
+Range Lab, capture to tcpdump, and 49-feature production to Argus, Bro and other
+algorithms. Its feature metadata names `srcip`/`dstip` as record endpoint
+addresses, `stime` as record start and `ltime` as record last time. Those are
+field descriptions, not proof of host identity, source initiator, attack actor,
+clock calibration or a stable address assignment.
+
+The headerless raw CSV has no native ID column. `UnswRawReader` creates
+`flow_id=<filename stem>:<one-based row>` solely for row bookkeeping. The
+registered inference reader independently uses a verified member hash and row
+ordinal, and its adapter checks endpoint address syntax and record source/
+destination ports. The adapter computes `timestamp_end` from parsed numeric
+epoch `stime` plus `dur`; it does not validate or retain the source `ltime`.
+UTC parsing is a code convention, not evidence of the original capture clock's
+timezone, synchronization, precision or error bound. The private feature
+projection and worker result discard addresses, row `flow_id` and end time;
+the alert retains only the row identity and start observation time.
+
+The registered snapshot therefore supports deterministic *row* identity, not
+a stable observed entity within a defined capture namespace. Its documentation
+does not establish address allocation/translation, reuse or alias lifetime;
+the historical Argus version, direction and flow-boundary configuration are
+also unbound. Keeping raw addresses would expose endpoint data without filling
+those provenance gaps. A reviewed capture/sensor namespace and authenticated
+address-to-asset mapping or source-issued stable asset ID, with role, validity
+interval, privacy/retention policy and clock-quality evidence, are required
+before adding an entity field. No identity contract or correlation window is
+introduced by this check.
+
 ## Analyst identity and authorization
 
 The local boundary has two fixed roles:
