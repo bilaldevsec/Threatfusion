@@ -207,9 +207,16 @@ def _registry(certs, *, include_new=False, revoked=()) -> HumanCredentialRegistr
 
 
 def _listener(
-    tmp_path, certs, credentials=None, *, disabled_actor=False, empty_queue=False, two_alerts=False
+    tmp_path,
+    certs,
+    credentials=None,
+    *,
+    disabled_actor=False,
+    empty_queue=False,
+    two_alerts=False,
+    candidate=None,
 ):
-    candidate = _candidate(1)
+    candidate = candidate or _candidate(1)
     alerts = AlertCandidateRepository(tmp_path / "alerts.sqlite3")
     if not empty_queue:
         alerts.insert(candidate)
@@ -650,3 +657,50 @@ def test_browser_tls_close_interrupts_incomplete_request(tmp_path, certificates)
     assert not worker.is_alive()
     assert failures == []
     assert list(audit.list()) == []
+
+
+def test_browser_factual_explanation_and_failure_isolation(tmp_path, certificates, monkeypatch):
+    from backend.tests.unit.test_alert_explanation import approved_candidate
+    from threatfusion.api import alert_explanation
+
+    candidate = approved_candidate()
+    srv, _, view, candidate_id = _listener(tmp_path, certificates, candidate=candidate)
+    viewer = view._repository._authorization.issue_for_trusted_actor("queue.viewer")
+    analyst = view._repository._authorization.issue_for_trusted_actor("analyst_a")
+    view.transition(
+        analyst,
+        alert_candidate_id=candidate_id,
+        expected_version=0,
+        to_state="in_review",
+        transition_id="eb636ef4-7a01-4b90-a62b-176a667e62a1",
+        rationale="Existing analyst annotation",
+    )
+    before = view.get_alert(viewer, candidate_id)
+    assert before["analyst_state"]["state"] == "in_review"
+    assert len(before["analyst_history"]) == 1
+    srv.open()
+    try:
+        target = f"/v1/analyst/alerts/{candidate_id}"
+        code, _, body = _exchange(srv, certificates, "viewer", _req(srv.address[1], target))
+        assert code == 200
+        assert b"Status: available" in body
+        assert b"alert_explanation_v1" in body
+        assert b"Stored frozen-RF score 0.75" in body
+        assert b"Feature attribution: unavailable" in body
+        assert candidate_id.encode() in body
+
+        def fail(_):
+            raise RuntimeError("private-explanation-secret")
+
+        monkeypatch.setattr(alert_explanation, "generate_explanation", fail)
+        code, _, body = _exchange(srv, certificates, "viewer", _req(srv.address[1], target))
+        assert code == 200
+        assert b"Status: unavailable" in body
+        assert b"private-explanation-secret" not in body
+        after = view.get_alert(viewer, candidate_id)
+        for key in ("detection_evidence", "analyst_state", "analyst_history"):
+            assert before[key] == after[key]
+        assert after["explanation"]["status"] == "unavailable"
+        assert view._repository._alerts.get(candidate_id) == candidate
+    finally:
+        srv.close()

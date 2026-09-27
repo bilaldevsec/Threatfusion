@@ -137,3 +137,29 @@ partial state/event commit. The separate analyst database is reopened and schema
 committed state and history survive. Loss of this database loses analyst annotations but does not alter
 the immutable alert database. Backup/recovery, cross-database snapshot consistency, audit export,
 multi-process endurance and long-running operational behavior remain unverified.
+
+### Factual explanation v1 (2026-09-27)
+
+Authorized detail results add `explanation`, with `schema_version=alert_explanation_v1`,
+`alert_candidate_id`, `evidence_sha256`, `status`, `summary`, and `limitations`.
+The digest is SHA-256 of the displayed detection-evidence object serialized as
+sorted, compact JSON (UTF-8, no NaN). It binds score/threshold and timestamps as
+well as identity; it is not a signature or a distinct-alert relationship key.
+Analyst state/history are separate and are not explanation inputs. Results are
+computed on read, not stored as new detection evidence.
+
+Available means only a factual stored-rule summary: the retained RF identity and
+artifact hash match the code-owned approved registry, the candidate ID recomputes,
+the feature/source/policy identities match, and the stored Attack score meets the
+inclusive frozen 0.5 threshold. This does not reload/hash artifact bytes, verify
+original measurement provenance, or perform inference. Existing ingestion verified
+the frozen model bundle; this display checks its retained identity. The score is
+uncalibrated, not severity or a calibrated attack probability.
+
+Feature values/attributions, causal evidence and source endpoints are not retained;
+the page explicitly marks these unavailable. No LLM or MITRE claim is generated.
+Unsupported evidence or a generator exception yields a fixed unavailable result.
+Missing, modified, wrong-version or differently bound results are unavailable at
+the dashboard parser. Neither failure changes the model decision, immutable alert,
+analyst state or history; the authenticated detail page remains readable. Existing
+backend failures still follow the browser's unavailable/503 contract.

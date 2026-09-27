@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from threatfusion.api.alert_explanation import explanation_for
 from threatfusion.db.analyst_state_repository import AnalystStateRepository
 from threatfusion.schemas.alert_candidate import AlertCandidate
 from threatfusion.schemas.analyst_state import (
@@ -127,6 +128,7 @@ class AnalystAlertViewModel:
                 "schema_version": VIEW_SCHEMA_VERSION,
                 **_item(detail),
                 "analyst_history": [_event(event) for event in detail.transitions],
+                "explanation": explanation_for(_evidence(detail.candidate)),
             }
         except AnalystStateError as error:
             raise AnalystViewError(error.code) from None

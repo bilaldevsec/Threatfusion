@@ -16,6 +16,11 @@ import ssl
 from dataclasses import dataclass
 from pathlib import Path
 
+from threatfusion.api.alert_explanation import (
+    EXPLANATION_VERSION,
+    LIMITATIONS,
+    validate_explanation,
+)
 from threatfusion.api.analyst_tls_service import ANALYST_HOST
 
 MAX_DASHBOARD_RESPONSE_BYTES = 131072
@@ -94,6 +99,7 @@ class DashboardAlertDetail:
     updated_by: str | None
     last_transition_id: str | None
     history: tuple[DashboardTransitionRecord, ...]
+    explanation: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,6 +281,7 @@ def _parse_detail(payload: dict[str, object]) -> DashboardAlertDetail:
             str(state["last_transition_id"]) if state["last_transition_id"] is not None else None
         ),
         history=history,
+        explanation=validate_explanation(payload.get("explanation"), evidence),
     )
 
 
@@ -520,6 +527,10 @@ def render_dashboard_html(snapshot: DashboardSnapshot, *, browser_links: bool = 
                 <div><b>Decision:</b> <span class="badge badge-decision">{html.escape(sel.decision)}</span></div>
                 <div><b>Triage State:</b> <span class="badge badge-state">{html.escape(sel.state)}</span> (v{sel.version})</div>
             </div>
+            <h3>Factual explanation ({EXPLANATION_VERSION})</h3>
+            <p>Status: {html.escape(str((sel.explanation or {}).get("status", "unavailable")))}</p>
+            <p>{html.escape(str((sel.explanation or {}).get("summary", "Explanation unavailable.")))}</p>
+            <p>{html.escape(LIMITATIONS)}</p>
             <h3>Transition History</h3>
             <table class="data-table">
                 <thead>

@@ -50,7 +50,7 @@ log1p experiment is BLOCKED_preserve_baseline: preparation accessed February and
 all numerical gates failed. No retraining, rescoring, revived candidate,
 threshold adjustment or invented accuracy claims. Do not treat the registered
 replay demonstration as live Azure telemetry. Correlation requires a defensible
-retained relationship key; a browser-safe dashboard is still pending. LLM and
+retained relationship key; a bounded read-only human-mTLS browser listener exists; manual browser acceptance and operational credential provisioning remain pending. LLM and
 MITRE annotations are proposed stages and do not authorize containment actions.
 Keep open issues open until their documented acceptance gates are met.
 

@@ -577,3 +577,38 @@ acceptance.
 - The authenticated read-only analyst dashboard slice (`threatfusion.api.analyst_dashboard`) connects a human analyst with verified mTLS credentials to `AnalystTlsListener` over mutual TLS 1.3 loopback transport, retrieving real persisted alerts and detail without state mutation. Empty queue and unavailable backend states are cleanly distinguished without data leakage, and a sanitized HTML presentation is rendered via `render_dashboard_html`. (Added 2026-09-26; TF-008 and TF-009 remain open pending browser session/origin integration, operational provisioning, and endurance proofs).
 - A distinct browser-facing read-only analyst boundary (`AnalystBrowserTlsListener`) exposes the triage queue and selectable alert detail view directly to browsers as HTML. It verifies the per-human identity from the mTLS certificate SAN, reusing the existing `HumanCredentialRegistry` and `AnalystSecurityAuditRepository` without trusting HTTP headers. The bounded listener interrupts incomplete requests on close, reports backend failures truthfully in audit, and limits UTF-8 HTML bodies to 131,072 bytes with a sanitized 503 on overflow. The final focused browser, analyst-listener, dashboard, and audit run passed 179 tests; affected-file Ruff, Black, and `git diff HEAD --check` passed. (Repaired 2026-09-26; TF-008 and TF-009 remain open pending an explicit write authentication/CSRF design, credential provisioning, and endurance proofs).
 - The one-input registered browser path (`scripts/run_registered_browser_path.py`) reuses the existing UNSW producer orchestrator, frozen RF worker, Attack-only SQLite repository, analyst state/view model, and separate human mTLS browser listener. Registered member `7d851bbe…b55eb511` row 21 produced one HTTP 200 `created` Attack alert. A reopened repository, analyst view, and automated real-TLS browser queue/detail all reconciled candidate `alert_candidate_v1:4c785c6418ff70c92a635785f5954355b6222f324d1314565b624affe771a8f7`, model decision `Attack`, and implicit state `new` version 0. Queue and detail returned 200; an injected view-model failure visibly returned sanitized 503 with an `internal_failure` audit event and no state change. The standalone command completed, the focused producer/persistence/analyst/browser/demo suite passed 198 tests, affected-file Ruff and Black passed, and `git diff HEAD --check` passed. This is an automated real-TLS client test, not a human browser session, live telemetry, independent accuracy evidence, explanation, or full charter acceptance. See [`registered_browser_path.md`](registered_browser_path.md). (Added 2026-09-26; TF-008 and TF-009 remain open).
+
+### 2026-09-27 — TF-008 factual retained-evidence explanation
+
+Starting checkpoint: `6d44a42ffc494932c079698e342991b33a6fbd85`, branch
+`gemini/product-20260924`, initially clean Gemini working copy. Added
+`alert_explanation_v1` to authorized detail results and the read-only HTML page.
+The contract is documented in `alert_correlation_analyst_state.md`: candidate and
+canonical displayed-evidence digest binding, registry-matched frozen RF identity,
+and a deterministic stored-score/threshold summary. No artifact is loaded or
+rescored. Attribution, causality and source endpoints explicitly remain unavailable.
+This checks retained identity, not original measurement provenance or fresh artifact
+integrity. Optional generation failures and mismatched results preserve readable
+model evidence, analyst state and history.
+
+Acceptance: available summary for consistent approved RF evidence; unavailable for
+unsupported identity/policy/score, wrong version, changed evidence or modified text;
+authenticated real-TLS detail remains HTTP 200 after injected generation failure,
+with the persisted candidate and existing `in_review` state/history unchanged.
+Tests use synthetic persisted evidence fixtures and temporary human TLS certificates.
+This is automated browser-listener evidence, not a manual browser demonstration or
+another producer/model inference run. Frozen RF and separate experimental AE,
+artifacts and datasets were untouched. TF-008 and TF-009 remain open.
+
+Validation command (no inference or dataset tests):
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src:. threatfusion-venv/bin/pytest -o addopts= -q --tb=short backend/tests/unit/test_alert_explanation.py backend/tests/unit/test_analyst_view_model.py backend/tests/unit/test_analyst_state.py backend/tests/unit/test_analyst_security_audit.py backend/tests/integration/test_analyst_browser_tls_service.py backend/tests/integration/test_analyst_dashboard.py backend/tests/integration/test_analyst_tls_service.py
+```
+
+Initial focused result: `205 passed in 29.71s`. After strengthening existing-state/history isolation, final result: `205 passed in 31.94s`.
+Repository Ruff: `All checks passed!`. Black on the five changed Python files:
+`5 files would be left unchanged.` `git diff HEAD --check`: exit 0, no output.
+No staging, commit or push. Recommended next action: perform and record a manual
+authenticated browser queue/detail demonstration of the registered-input path and
+factual explanation.
