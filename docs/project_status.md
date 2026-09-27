@@ -763,3 +763,29 @@ constraints, the missing defensible distinct-alert correlation key, operational
 browser credential provisioning, and broader TF-009 reliability work remain
 open. TF-008 and TF-009 stay open. This documentation update changed no code,
 tests, model or artifacts and ran no tests.
+
+### 2026-09-27 — Distinct-alert relationship evidence gate
+
+At clean `gemini/product-20260924` HEAD
+`81906f4059bab85717bf84a75ffaad8b0c7cb9a1`, a source-to-view audit
+reconfirmed that registered member digest plus row ordinal becomes one opaque
+`source_event_id`, while the row's numeric UTC start time becomes `observed_at`.
+The transient adapted flow contains endpoints, ports, flow ID and end time, but
+these are not retained in the Attack-only candidate or analyst view. The alert
+repository preserves candidate/source identities, observation and local creation
+times, model evidence and an inference-attempt UUID; the view omits that UUID.
+Producer request/replay IDs and times remain in their own boundary. Equal
+candidate IDs with compatible evidence are one alert's retry, not correlation.
+No retained value identifies a shared entity across different source rows.
+
+No distinct-alert grouping or time window is justified, so no code or tests were
+changed and no model/data path was run. The exact missing evidence is a validated,
+scoped observed-entity identifier with source-appropriate issuance and mapping provenance,
+role, lifetime and missing/conflict rules, bound immutably to each source event and
+alert. Any bounded window also needs reviewed observation-clock quality and an
+explicit duration. The current offline UNSW replay has no such asset namespace;
+raw addresses cannot be silently promoted into a stable host or incident key.
+The detailed chain, counterexamples and future acceptance gate are in
+[`alert_correlation_analyst_state.md`](alert_correlation_analyst_state.md).
+TF-008 remains open; TF-009's operational evidence gaps are unchanged. Frozen RF,
+experimental unfused AE, blocked rate-log1p candidate and artifacts are untouched.

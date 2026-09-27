@@ -44,6 +44,64 @@ provenance, privacy, missing-value, conflict, clock-quality and window semantics
 `host_event_v1` type is not enough: host events do not currently enter this supported alert repository
 and its grouping/window rules remain unresolved.
 
+### Retained relationship-evidence audit, 2026-09-27
+
+The supported producer accepts a registered raw-member SHA-256 and one-based row ordinal.
+Its request ID, producer ID, `produced_at`, nonce and admission `received_at` bind the
+request/replay journal, not a host or event relationship in `AlertCandidate`.
+The verified reader maps the row to a temporary `NetworkFlow`, including source and
+destination addresses/ports, protocol, flow ID and start/end times. The private
+feature projection uses destination port and protocol but does not retain that
+vector in the candidate. Only the row's numeric `stime`, parsed as UTC
+`observed_at`, crosses with the opaque `source_event_id`; the end time and
+endpoint/flow fields do not. The source-event digest binds the representation,
+manifest digest, member digest and ordinal, so equal values mean the **same
+registered row**, not the same host across rows. The digest itself does not
+carry endpoint or session evidence; recovering row values requires the verified
+source material, which is not retained in the alert.
+
+The parent builds an Attack-only candidate with that source-event ID and
+`observed_at`, an `alert_candidate_id` additionally bound to detector, model,
+artifact and policy identities, a local `created_at`, and an inference-attempt
+`correlation_id`. SQLite stores these fields; exact candidate retry returns the
+first row and retains its original creation time and attempt UUID. The analyst
+view presents candidate/source IDs, observation/creation times and model evidence,
+but omits the attempt UUID. Its workflow state and rationale are separate analyst
+annotations. Neither the replay journal nor analyst annotation adds a relationship
+between distinct observations.
+
+The only supported equality rule remains **same candidate ID plus compatible
+stable evidence = one alert's idempotent retry**; conflicting same-ID content
+is rejected, with no correlation window. Equal source-event IDs under
+different model/artifact/policy identities would refer to different decisions on
+one registered row, not two related events; the current product path uses the
+frozen RF. Different rows can share `observed_at`, model, score, source
+representation, producer or destination service without sharing a host or
+incident. `created_at` is processing time; the UUID is an inference attempt.
+Those are counterexamples to time-only, model-only, request-only and UUID-based
+grouping. No distinct-alert rule, window or incident identity is supported.
+
+Before proposing one, a future supported source must supply an immutable,
+validated **scoped observed-entity identifier** (for example, an authenticated
+sensor's stable asset ID plus its namespace and source/destination role) bound to
+each observation and retained with the alert. The identity must have documented
+issuance/mapping provenance, lifetime, privacy treatment, missing/conflict
+behavior, and evidence that aliases, address reuse or NAT do not falsely merge
+entities. Raw UNSW IP strings alone would not establish that provenance, and
+the registered offline replay currently has no authenticated asset namespace.
+The observation clock's origin, precision and error bound must also be retained
+or verified before choosing a bounded time window. No duration can be justified
+from the current fields alone.
+
+Acceptance for a future relationship rule requires a reviewed source contract
+and immutable persistence/view binding for those fields; a predeclared rule and
+window; and tests that relate independently observed events only when scoped
+identity and time evidence agree. Tests must keep different entities apart when
+timestamps/model scores match, reject absent or conflicting identity/clock
+evidence, enforce window boundaries and replay idempotency, and avoid asserting
+shared campaign, attacker or incident without separate evidence. Until then,
+different candidate IDs remain independent alerts.
+
 ## Analyst identity and authorization
 
 The local boundary has two fixed roles:

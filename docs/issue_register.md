@@ -285,3 +285,23 @@ cleanup for this run remains unverified; the previous 33991 cleanup check does
 not establish cleanup here. Operational browser credential provisioning and the
 defensible distinct-alert correlation key remain unresolved. TF-008 and TF-009
 remain **open**.
+
+### TF-008 distinct-alert relationship evidence gate, 2026-09-27
+
+The registered producer's member digest and row ordinal identify one verified
+source row. `source_event_id` binds that row; `alert_candidate_id` adds detector,
+model, artifact and policy identities. A compatible same-candidate replay is
+idempotency, not a relationship between different alerts. The row's UTC start
+time reaches `observed_at`, but its transient endpoint, port, flow ID and end
+time do not reach the persisted candidate or analyst view. Request/replay IDs,
+inference-attempt UUID, creation time, model and score cannot establish a shared
+host, session or incident. No distinct-alert rule or bounded window is justified.
+
+The missing field is a validated, scoped observed-entity identifier with
+source/issuer and mapping provenance, role, lifetime and missing/conflict
+semantics, immutably bound to source observation and alert. A future window also
+requires verified observation-clock origin, precision and error bound before its
+duration is chosen. Raw offline UNSW addresses do not establish an authenticated
+asset namespace. The [correlation contract](alert_correlation_analyst_state.md)
+records counterexamples and future acceptance criteria. No grouping code or
+tests changed; TF-008 remains **open**, and TF-009's disposition is unchanged.
