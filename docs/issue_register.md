@@ -474,3 +474,41 @@ and `threatfusion.operations.human_credentials`:
 
 CA issuance, secure Firefox credential delivery, long-term endurance, and the defensible
 distinct-alert correlation key remain open under TF-008 and TF-009.
+
+### TF-008 local offline human CA initialization, encrypted client bundle delivery, and enrollment coordination, 2026-10-14
+
+Both TF-008 and TF-009 remain **open**. Local offline Root CA issuance, encrypted client bundle
+packaging, and enrollment coordination are now implemented in `threatfusion.operations.human_ca_issuance`:
+
+1. **Local Offline Root CA Initialization:** `init_human_ca(ca_dir)` initializes an offline Root CA
+   in an exclusive mode-0700 private directory under strict ancestor ownership (`0` or `os.geteuid()`),
+   symlink rejection (`os.O_NOFOLLOW`), and non-blocking filesystem lock (`fcntl.flock`). It generates
+   an RSA 2048-bit Root CA private key (`ca_key.pem`, mode 0600) and self-signed X.509v3 certificate
+   (`ca_cert.pem`, mode 0600) with `basicConstraints = critical, CA:TRUE, pathlen:0` and
+   `keyUsage = critical, keyCertSign, cRLSign`. It initializes a metadata manifest (`ca_manifest.json`,
+   mode 0600, schema `operator_human_ca_v1`) and an append-only issuance journal (`issuance_journal.jsonl`,
+   mode 0600, schema `operator_human_ca_issuance_journal_v1`). Re-initialization over existing CA files
+   fails closed (`ca_already_exists`).
+2. **Encrypted PKCS#12 Client Bundle Delivery:** `issue_human_client_bundle(ca_dir, delivery_dir, ...)`
+   signs client certificates under the Root CA with critical `basicConstraints = CA:FALSE`, critical
+   `keyUsage = digitalSignature`, `extendedKeyUsage = clientAuth`, and `subjectAltName = URI:urn:threatfusion:human:<actor_id>`.
+   It packages the certificate, Root CA certificate, and private key into an encrypted PKCS#12 bundle
+   (`client_bundle.p12`, mode 0600) and companion manifest (`bundle_manifest.json`, mode 0600, schema
+   `operator_human_client_bundle_v1`), updates `ca_manifest.json` (`next_serial`, `issued_count`),
+   and appends an entry to `issuance_journal.jsonl`.
+3. **Passphrase and Key Hygiene:** Passphrases require minimum 12 characters and forbid newlines/control
+   characters (`invalid_passphrase`). Passphrases are passed to OpenSSL strictly via `stdin` (`-passout stdin`),
+   never logged, stored, or written to disk, and accepted via CLI through `--passphrase-env` or `--passphrase-stdin`
+   (preventing process listing / `/proc` leakage). Unencrypted client private keys are generated in temporary
+   scratch directories and unlinked immediately following PKCS#12 encryption; delivery directories are verified
+   to contain zero unencrypted private keys.
+4. **Policy Enrollment Coordination:** `issue_and_enroll_human_credential` combines bundle delivery and
+   atomic enrollment into operator policy (`human-credentials.json` and append-only `journal.jsonl`),
+   returning both bundle metadata and the enrolled complete-DER SHA-256 fingerprint.
+5. **Loopback mTLS 1.3 End-to-End Verification:** Real loopback tests prove end-to-end mTLS 1.3
+   authentication where `HumanListenerLifecycle` is configured with the issued Root CA as `client_ca`
+   and client certificates extracted from `client_bundle.p12` authenticate successfully (HTTP 200)
+   against `AnalystBrowserTlsListener` and `AnalystTlsListener`.
+
+Automated browser-profile provisioning, long-term endurance, and the defensible distinct-alert
+correlation key remain open under TF-008 and TF-009.

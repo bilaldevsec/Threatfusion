@@ -42,9 +42,10 @@ provisioned outside the checkout with access limited to their designated account
 credential is tracked here; tests generate disposable certificates under pytest temporary paths.
 The issuer and provisioning process are deployment responsibilities, not implemented by this module.
 
-The [local operator runbook](human_credential_operator_runbook.md) implements public-certificate
-enrollment and exact-fingerprint disable/revoke into versioned, private metadata, with a strict
-loader and construction adapter for both listeners. CA issuance and secure delivery remain external.
+The [local operator runbook](human_credential_operator_runbook.md) implements offline Root CA
+management, encrypted PKCS#12 client bundle issuance, public-certificate enrollment, and
+exact-fingerprint disable/revoke into versioned private metadata, with a strict loader and
+construction adapter for both listeners. Automated Firefox profile injection and endurance remain external.
 
 To rotate, issue a new certificate and add its fingerprint as another record for the same actor while
 retaining the old record for a bounded operational overlap. To revoke or disable, replace the
@@ -213,7 +214,7 @@ resuming old credentials. Generation counters are process-local, not policy hash
 The lifecycle context/finally boundary cleans up on KeyboardInterrupt. It does not
 claim bounded shutdown against stalled trusted storage or service-manager/SIGKILL
 handling. Same-actor exact UUIDv4 retries keep their existing idempotency semantics;
-security audit history/classification and independent transaction gaps are unchanged.
-CA issuance, secure Firefox delivery, backup/recovery, endurance and
-service-manager deployment remain open under TF-008/TF-009. Operator-action
-journaling is implemented via `journal.jsonl`.
+Automated Firefox profile provisioning, endurance and the distinct-alert correlation key
+remain open under TF-008/TF-009. Offline Root CA issuance, encrypted PKCS#12 bundle delivery,
+operator-action journaling (`journal.jsonl`), multi-database snapshot/restore, and
+service-manager deployment are implemented and verified.

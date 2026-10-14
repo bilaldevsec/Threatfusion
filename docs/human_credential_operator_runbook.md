@@ -1,9 +1,9 @@
 # Local human credential enrollment and restriction
 
-This Linux procedure manages only public fingerprint metadata for the existing
-human mTLS listeners. Use the same trusted local account for policy administration
-and listener construction. CA issuance, secure delivery/private-key protection,
-recovery, live reload and endurance are outside this phase. No daemon is added.
+This Linux procedure manages credentials and public fingerprint metadata for the existing
+human mTLS listeners. Use the same trusted local account for CA management, policy administration
+and listener construction. Automated browser provisioning, endurance and the distinct-alert
+correlation key remain open. No external daemon is added.
 Do not run the disposable browser demo launcher as an operational service: it
 constructs its own temporary credentials and does not consume this policy.
 
@@ -285,8 +285,91 @@ WantedBy=multi-user.target
 Reloading credentials under systemd is performed via `systemctl reload threatfusion-analyst`, which
 issues `SIGHUP` to trigger generation replacement without dropping the service supervisor process.
 
-CA issuance, secure certificate/private-key delivery to Firefox, backup/recovery,
-endurance, and the defensible distinct-alert correlation key remain open.
-Operator-action journaling is implemented via `journal.jsonl`.
-The existing 64-record bound includes tombstones. Restore access by enrolling a
+## Local offline Human Root CA and encrypted PKCS#12 bundle delivery
+
+For local operational deployment, `threatfusion.operations.human_ca_issuance` provides
+offline Root CA generation, client certificate signing with required ThreatFusion extensions,
+password-encrypted PKCS#12 bundle packaging, and coordinated policy enrollment.
+
+The CLI enforces the repository's strict filesystem invariants: mode 0700 private directories,
+mode 0600 files, descriptor-relative traversal, symlink rejection (`O_NOFOLLOW`), ancestor
+ownership verification (`0` or current EUID), and non-blocking directory locks (`flock`).
+Temporary client private keys are generated in locked scratch directories and destroyed
+immediately after PKCS#12 export, guaranteeing zero unencrypted client private keys in
+delivery storage. Passphrases must be at least 12 characters, are never logged or stored,
+and are ingested exclusively via environment variables (`--passphrase-env`) or stdin
+(`--passphrase-stdin`) to prevent process listing (`ps`/`/proc`) leaks.
+
+### 1. Initialize local offline Root CA
+
+```sh
+install -d -m 700 /home/operator/threatfusion-ca
+PYTHONPATH=backend/src threatfusion-venv/bin/python -m threatfusion.operations.human_ca_issuance \
+  init-ca --ca-dir /home/operator/threatfusion-ca --common-name "ThreatFusion Local Human Root CA"
+```
+
+Creates `ca_key.pem` (mode 0600), self-signed Root CA cert `ca_cert.pem` (mode 0600,
+critical `basicConstraints=CA:TRUE,pathlen:0`, critical `keyUsage=keyCertSign,cRLSign`),
+`ca_manifest.json` (mode 0600, schema `operator_human_ca_v1`), and empty `issuance_journal.jsonl`.
+
+### 2. Issue encrypted PKCS#12 client bundle and enroll into policy
+
+```sh
+install -d -m 700 /home/operator/threatfusion-delivery/analyst_a
+export ANALYST_P12_PASS="SecureOperatorPassphrase123!"
+
+PYTHONPATH=backend/src threatfusion-venv/bin/python -m threatfusion.operations.human_ca_issuance \
+  issue-and-enroll \
+  --ca-dir /home/operator/threatfusion-ca \
+  --policy-dir /home/operator/threatfusion-human-policy \
+  --delivery-dir /home/operator/threatfusion-delivery/analyst_a \
+  --actor-id analyst_a \
+  --validity-days 30 \
+  --passphrase-env ANALYST_P12_PASS
+```
+
+For the initial policy credential, pass `--create-policy` to initialize `human-credentials.json`.
+Subsequent issuances omit `--create-policy` to append to the active policy and journal.
+
+The command outputs the bundle manifest and enrolled DER fingerprint:
+- `client_cert.pem`: Public X.509v3 certificate (critical `basicConstraints=CA:FALSE`,
+  critical `keyUsage=digitalSignature`, `extendedKeyUsage=clientAuth`, and
+  `subjectAltName=URI:urn:threatfusion:human:<actor_id>`).
+- `client_bundle.p12`: Encrypted PKCS#12 bundle containing client certificate, Root CA certificate,
+  and private key, protected by the passphrase.
+- `bundle_manifest.json`: Metadata manifest (`operator_human_client_bundle_v1`) recording
+  serial, DER SHA-256 fingerprint, CA cert digest, and issuance timestamp.
+
+### 3. Verify Root CA and client delivery bundle
+
+```sh
+# Verify CA integrity and issuance journal
+PYTHONPATH=backend/src threatfusion-venv/bin/python -m threatfusion.operations.human_ca_issuance \
+  verify-ca --ca-dir /home/operator/threatfusion-ca
+
+# Verify delivery bundle permissions, manifest match, and absence of raw private keys
+PYTHONPATH=backend/src threatfusion-venv/bin/python -m threatfusion.operations.human_ca_issuance \
+  verify-bundle \
+  --delivery-dir /home/operator/threatfusion-delivery/analyst_a \
+  --ca-cert /home/operator/threatfusion-ca/ca_cert.pem
+```
+
+### 4. Firefox browser certificate installation
+
+To authenticate to the ThreatFusion human browser listener (`AnalystBrowserTlsListener`)
+via Firefox:
+1. Open Firefox Settings -> Privacy & Security -> Security -> Certificates -> **View Certificates**.
+2. **Authorities tab**: Click **Import...**, select `/home/operator/threatfusion-ca/ca_cert.pem`,
+   and check *"Trust this CA to identify websites"*.
+3. **Your Certificates tab**: Click **Import...**, select
+   `/home/operator/threatfusion-delivery/analyst_a/client_bundle.p12`, and enter the passphrase
+   when prompted.
+4. Navigate to `https://localhost:<browser_port>/`. When prompted by Firefox, select the
+   imported certificate `ThreatFusion human analyst_a` to complete loopback mTLS 1.3
+   handshake and view the authenticated queue.
+
+Automated browser-profile provisioning, long-term endurance, and the defensible distinct-alert
+correlation key remain open. Local offline Root CA management, encrypted PKCS#12 client bundle
+delivery, policy enrollment coordination, and operator-action journaling are implemented and
+verified. The existing 64-record bound includes tombstones. Restore access by enrolling a
 replacement certificate, not by reverting revoked metadata. TF-008 and TF-009 remain open.
