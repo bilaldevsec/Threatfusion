@@ -542,3 +542,40 @@ TF-005 is **resolved**. Both TF-008 and TF-009 remain **open**.
 
 Automated browser-profile provisioning, long-term endurance, and the defensible distinct-alert
 correlation key remain open under TF-008 and TF-009.
+
+### TF-008 operator Firefox NSS profile provisioning from encrypted PKCS#12 bundles, 2026-10-14
+
+Both TF-008 and TF-009 remain **open**.
+
+1. **Fail-Closed Firefox NSS Profile Provisioning (`threatfusion.operations.human_browser_provisioning`):**
+   `provision_firefox_profile` provisions isolated Firefox NSS SQLite databases (`cert9.db`, `key4.db`,
+   `pkcs11.txt`) directly from verified Root CA (`ca_dir`) and client PKCS#12 bundle delivery directories
+   (`delivery_dir`). Enforces mode-0700 private directories, mode-0600 files, `O_NOFOLLOW` symlink rejection,
+   and exclusive `fcntl.flock` locks across all participating directories.
+2. **Ephemeral Passphrase Handling & NSS Command Execution:** Passphrases are validated for length (>= 12)
+   and byte hygiene (no control characters). During `pk12util -i` import, the passphrase is written to a
+   temporary mode-0600 file outside the profile directory and zeroed and unlinked in a `finally` block,
+   preventing `/proc/<pid>/cmdline` process listing or disk persistence. Non-interactive NSS database
+   initialization uses `certutil -N --empty-password`, and the Root CA is imported as trusted for server
+   verification (`certutil -A -t "C,,"`). Mode 0600 is explicitly enforced on all generated database files.
+3. **Hardened Loopback Configuration & Tamper-Evident Manifest:** A mode-0600 `user.js` configures
+   `security.default_personal_cert="Select Automatically"` for seamless loopback mTLS authentication while
+   disabling background telemetry, telemetry archiving, captive portal checks, Normandy studies, and
+   enterprise roots. A mode-0600 manifest (`profile_manifest.json`, schema `operator_human_firefox_profile_v1`)
+   records `actor_id`, `client_cert_sha256`, `ca_cert_sha256`, `serial_number`, `provisioned_at_utc`, and
+   individual SHA-256 digests (`cert9_db_sha256`, `key4_db_sha256`, `pkcs11_txt_sha256`, `user_js_sha256`)
+   with zero secrets.
+4. **Cryptographic & Structural Verification:** `verify_firefox_profile` checks directory and file modes,
+   rejects symlinks and unexpected files, verifies all file SHA-256 digests against `profile_manifest.json`,
+   executes `certutil -L` to confirm presence of both the CA (`C,,`) and client certificate (`u,u,u`), and
+   cross-checks certificate fingerprints against `delivery_dir` and `ca_dir`.
+5. **End-to-End Integration Tests (`test_human_browser_provisioning.py`):** Integration tests verify the
+   complete chain: `init_human_ca()` -> `init_policy_directory()` -> `issue_and_enroll_human_credential()` ->
+   `provision_firefox_profile()` -> `verify_firefox_profile()` -> `certutil -L` verification, mode 0600 file
+   checks, zero raw passphrases in text files, and real loopback mTLS `GET /analyst/alerts` (`HTTP 200`) on
+   `AnalystBrowserTlsListener` through `HumanListenerLifecycle`. Fail-closed tests verify typed rejection
+   (`HumanBrowserProvisioningError`) on wrong passphrases, tampered database/user.js digests, symlinks,
+   insecure permissions (`0755`), non-empty profile directories, and CA/bundle mismatch.
+
+Automated operator Firefox profile provisioning is implemented and verified. Browser write authentication/CSRF
+protection, long-term endurance, and the defensible distinct-alert correlation key remain open under TF-008 and TF-009.

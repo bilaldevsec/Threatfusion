@@ -354,10 +354,10 @@ PYTHONPATH=backend/src threatfusion-venv/bin/python -m threatfusion.operations.h
   --ca-cert /home/operator/threatfusion-ca/ca_cert.pem
 ```
 
-### 4. Firefox browser certificate installation
+### 4. Firefox browser certificate installation (Manual)
 
 To authenticate to the ThreatFusion human browser listener (`AnalystBrowserTlsListener`)
-via Firefox:
+via manual Firefox certificate import:
 1. Open Firefox Settings -> Privacy & Security -> Security -> Certificates -> **View Certificates**.
 2. **Authorities tab**: Click **Import...**, select `/home/operator/threatfusion-ca/ca_cert.pem`,
    and check *"Trust this CA to identify websites"*.
@@ -368,8 +368,47 @@ via Firefox:
    imported certificate `ThreatFusion human analyst_a` to complete loopback mTLS 1.3
    handshake and view the authenticated queue.
 
-Automated browser-profile provisioning, long-term endurance, and the defensible distinct-alert
-correlation key remain open. Local offline Root CA management, encrypted PKCS#12 client bundle
-delivery, policy enrollment coordination, and operator-action journaling are implemented and
-verified. The existing 64-record bound includes tombstones. Restore access by enrolling a
-replacement certificate, not by reverting revoked metadata. TF-008 and TF-009 remain open.
+### 5. Automated Operator Firefox NSS Profile Provisioning (TF-008)
+
+For non-interactive, automated workstation provisioning, the operator module
+`threatfusion.operations.human_browser_provisioning` provisions and verifies isolated Firefox
+NSS SQLite databases directly from verified Root CA and client bundle delivery directories:
+
+```sh
+install -d -m 700 /home/operator/firefox-profiles/analyst_a
+export ANALYST_P12_PASS="SecureOperatorPassphrase123!"
+
+# Provision Firefox profile
+threatfusion-venv/bin/python -m threatfusion.operations.human_browser_provisioning \
+  provision-profile \
+  --ca-dir /home/operator/threatfusion-ca \
+  --delivery-dir /home/operator/threatfusion-delivery/analyst_a \
+  --profile-dir /home/operator/firefox-profiles/analyst_a \
+  --passphrase-env ANALYST_P12_PASS
+
+# Verify profile integrity, file digests, and NSS certificate store
+threatfusion-venv/bin/python -m threatfusion.operations.human_browser_provisioning \
+  verify-profile \
+  --profile-dir /home/operator/firefox-profiles/analyst_a \
+  --delivery-dir /home/operator/threatfusion-delivery/analyst_a \
+  --ca-dir /home/operator/threatfusion-ca
+```
+
+**Security and filesystem guarantees:**
+- **Strict Permissions:** Requires `profile_dir` to have mode `0700` with root/operator ancestor ownership. Symlink directory components are rejected (`O_NOFOLLOW`).
+- **Clean Inode Discipline:** Fails closed (`profile_dir_not_empty`) if `profile_dir` contains pre-existing files or databases.
+- **Passphrase Hygiene:** Supplies `pkcs12_passphrase` to `pk12util` exclusively via an ephemeral mode-`0600` scratch file that is zeroed and unlinked in a `finally` block, preventing `/proc/<pid>/cmdline` process listing or disk persistence.
+- **NSS SQLite Store Initialization:** Executes `certutil -N --empty-password`, imports the Root CA as trusted (`certutil -A -t "C,,"`), imports the PKCS#12 bundle (`pk12util -i`), and enforces mode `0600` on generated database files (`cert9.db`, `key4.db`, `pkcs11.txt`).
+- **Hardened Loopback Configuration (`user.js`):** Generates a mode-`0600` `user.js` configuring `security.default_personal_cert="Select Automatically"` for seamless mTLS authentication and disabling background telemetry, telemetry archiving, captive portal probes, Normandy studies, and enterprise roots.
+- **Tamper-Evident Manifest (`profile_manifest.json`):** Writes a mode-`0600` manifest (`operator_human_firefox_profile_v1`) containing SHA-256 digests of all generated files (`cert9.db`, `key4.db`, `pkcs11.txt`, `user.js`) and certificate fingerprints with zero secret material.
+- **Cryptographic Verification:** `verify_firefox_profile` checks directory/file modes, rejects symlinks and unexpected files, verifies all file SHA-256 digests against `profile_manifest.json`, and invokes `certutil -L` to confirm both the Root CA and client certificate remain present in the NSS store.
+
+Launch Firefox with the provisioned profile:
+```sh
+firefox --no-remote --profile /home/operator/firefox-profiles/analyst_a https://localhost:<browser_port>/analyst/alerts
+```
+
+Automated operator Firefox profile provisioning is implemented and verified. Long-term endurance,
+browser write authentication/CSRF protection, and the defensible distinct-alert correlation key
+remain open under TF-008 and TF-009. Restore access by enrolling a replacement certificate, not by
+reverting revoked metadata. TF-008 and TF-009 remain open.

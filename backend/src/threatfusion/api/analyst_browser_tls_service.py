@@ -235,7 +235,8 @@ class AnalystBrowserTlsListener:
         return method, target
 
     def _dispatch(self, capability, target: str) -> tuple[int, bytes]:
-        if target == "/" or target.startswith("/?"):
+        path_only = target.split("?", 1)[0]
+        if path_only in ("/", "/analyst/alerts", "/v1/analyst/alerts"):
             try:
                 result = self._view.list_alerts(capability, limit=50, offset=0)
             except AnalystViewError:
@@ -389,8 +390,11 @@ class AnalystBrowserTlsListener:
                     return
 
                 # Normalization for audit log
-                if target == "/" or target.startswith("/?"):
+                path_only = target.split("?", 1)[0]
+                if path_only == "/":
                     route = "/"
+                elif path_only in ("/analyst/alerts", "/v1/analyst/alerts"):
+                    route = path_only
                 elif _ALERT_PATH.fullmatch(target):
                     route = "/v1/analyst/alerts/<alert_candidate_id>"
                 else:

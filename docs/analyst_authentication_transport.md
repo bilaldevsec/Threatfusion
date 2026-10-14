@@ -43,9 +43,10 @@ credential is tracked here; tests generate disposable certificates under pytest 
 The issuer and provisioning process are deployment responsibilities, not implemented by this module.
 
 The [local operator runbook](human_credential_operator_runbook.md) implements offline Root CA
-management, encrypted PKCS#12 client bundle issuance, public-certificate enrollment, and
-exact-fingerprint disable/revoke into versioned private metadata, with a strict loader and
-construction adapter for both listeners. Automated Firefox profile injection and endurance remain external.
+management, encrypted PKCS#12 client bundle issuance, public-certificate enrollment,
+exact-fingerprint disable/revoke into versioned private metadata, and automated fail-closed Firefox
+NSS SQLite profile provisioning (`threatfusion.operations.human_browser_provisioning`). Browser
+write authentication/CSRF protection, long-term endurance, and live production telemetry remain open.
 
 To rotate, issue a new certificate and add its fingerprint as another record for the same actor while
 retaining the old record for a bounded operational overlap. To revoke or disable, replace the
@@ -214,7 +215,8 @@ resuming old credentials. Generation counters are process-local, not policy hash
 The lifecycle context/finally boundary cleans up on KeyboardInterrupt. It does not
 claim bounded shutdown against stalled trusted storage or service-manager/SIGKILL
 handling. Same-actor exact UUIDv4 retries keep their existing idempotency semantics;
-Automated Firefox profile provisioning, endurance and the distinct-alert correlation key
-remain open under TF-008/TF-009. Offline Root CA issuance, encrypted PKCS#12 bundle delivery,
-operator-action journaling (`journal.jsonl`), multi-database snapshot/restore, and
-service-manager deployment are implemented and verified.
+Automated operator Firefox profile provisioning (`threatfusion.operations.human_browser_provisioning`),
+offline Root CA issuance, encrypted PKCS#12 bundle delivery, operator-action journaling (`journal.jsonl`),
+multi-database snapshot/restore, and service-manager deployment are implemented and verified. Long-term
+endurance, browser write authentication/CSRF protection, and the defensible distinct-alert correlation
+key remain open under TF-008 and TF-009.

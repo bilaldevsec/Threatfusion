@@ -743,9 +743,14 @@ def verify_human_ca(ca_dir: Path | str) -> dict[str, object]:
 def verify_client_bundle(
     delivery_dir: Path | str,
     ca_cert_path: Path | str | None = None,
+    *,
+    ca_dir: Path | str | None = None,
 ) -> dict[str, object]:
     """Verify delivery directory permissions, manifest integrity, and absence of private keys."""
     delivery_dir_path = Path(delivery_dir) if not isinstance(delivery_dir, Path) else delivery_dir
+    if ca_dir is not None and ca_cert_path is None:
+        ca_dir_path = Path(ca_dir) if not isinstance(ca_dir, Path) else ca_dir
+        ca_cert_path = ca_dir_path / CA_CERT_FILENAME
     with _directory_context(delivery_dir_path, write=False) as del_fd:
         manifest_raw = _read_file(del_fd, BUNDLE_MANIFEST_FILENAME)
         manifest = json.loads(manifest_raw.decode("utf-8"), object_pairs_hook=_unique_pairs)
@@ -757,6 +762,14 @@ def verify_client_bundle(
         computed_sha = hashlib.sha256(client_der).hexdigest()
         if computed_sha != manifest.get("certificate_sha256"):
             raise HumanCaIssuanceError("bundle_invalid")
+
+        if ca_dir is not None:
+            ca_dir_path = Path(ca_dir) if not isinstance(ca_dir, Path) else ca_dir
+            ca_cert_raw = (ca_dir_path / CA_CERT_FILENAME).read_bytes()
+            ca_der_val = ssl.PEM_cert_to_DER_cert(ca_cert_raw.decode("ascii"))
+            ca_sha_val = hashlib.sha256(ca_der_val).hexdigest()
+            if manifest.get("ca_cert_sha256") != ca_sha_val:
+                raise HumanCaIssuanceError("ca_bundle_mismatch")
 
         _check_file_stat(del_fd, CLIENT_BUNDLE_FILENAME)
 
