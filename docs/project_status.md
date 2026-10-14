@@ -1005,3 +1005,49 @@ Individual Black checks: all 5 touched files unchanged, exit 0.
 CA issuance, secure certificate/private-key delivery to Firefox, backup/recovery,
 endurance, service-manager deployment, and the defensible distinct-alert correlation key
 remain open. TF-008 and TF-009 remain open. All changes remain unstaged/uncommitted for review.
+
+### 2026-10-14 — Coordinated multi-database online backup, snapshot verification, and atomic restore
+
+Workspace verified as `/home/muhammad-bilal/projects/threatfusion-gemini`, branch
+`gemini/product-20260924`, HEAD `5223784`, push URL `no-push://requires-explicit-review`.
+
+Acceptance criteria addressed:
+1. **Coordinated Multi-Database Online Snapshot:** The new `threatfusion.operations.storage_backup`
+   module implements fail-closed online backup across `alerts.sqlite3` (`alert_candidate_sqlite_v1`),
+   `states.sqlite3` (`analyst_state_sqlite_v1`), and `audit.sqlite3` (`analyst_security_audit_sqlite_v1`)
+   into a locked private snapshot directory (mode `0700`, owner `os.geteuid()`, verified ancestors).
+   Uses Python's `sqlite3.Connection.backup()` API over read-only connections (`mode=ro`), setting
+   destination files to mode `0600` with fsync.
+2. **Cryptographic & Relational Verification:** Every snapshot generates and validates `manifest.json`
+   (mode `0600`, schema `storage_snapshot_manifest_v1`, capped at 64 KiB), verifying SHA-256 digests,
+   sizes, row counts, `PRAGMA integrity_check`, and schema metadata (`schema_identity` and `user_version`).
+   Cross-database referential consistency is strictly enforced: every `alert_candidate_id` present in
+   `analyst_states` or `analyst_transition_events` must exist in `alert_candidates` of `alerts.sqlite3`.
+   Mismatches, corruption, symlinks, unsafe modes, extra files, or orphan records fail closed with
+   `StorageBackupError`.
+3. **Atomic Offline Restore:** Requires the target directory to be locked with listeners stopped.
+   Stages restored files via mode-0600 temporary files and replaces them atomically (`os.replace`),
+   removes stale `-wal` or `-shm` sidecars, and fsyncs the directory.
+4. **Sequential Online Backup Notice:** Sequential online backups are executed across the three
+   databases rather than a distributed two-phase commit. Taking snapshots while listeners are stopped
+   or quiescent is recommended for exact cross-database point-in-time synchronization. See
+   `docs/storage_backup_recovery_runbook.md`.
+
+Exact validation commands and results:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src:. threatfusion-venv/bin/pytest -o addopts= -q --tb=short backend/tests/integration/test_storage_backup.py backend/tests/integration/test_operator_human_credentials.py backend/tests/integration/test_human_listener_lifecycle.py backend/tests/unit/test_analyst_security_audit.py backend/tests/unit/test_analyst_state.py
+threatfusion-venv/bin/ruff check .
+threatfusion-venv/bin/black --check backend/src/threatfusion/operations/storage_backup.py
+threatfusion-venv/bin/black --check backend/tests/integration/test_storage_backup.py
+git diff HEAD --check
+```
+
+Combined suite: **148 passed in 29.24s, exit 0**.
+Ruff: `All checks passed!`, exit 0.
+Individual Black checks: all touched files unchanged, exit 0.
+`git diff HEAD --check`: clean (0 errors), exit 0.
+
+CA issuance, secure certificate/private-key delivery to Firefox, service-manager deployment,
+long-term endurance, and the defensible distinct-alert correlation key remain open.
+TF-008 and TF-009 remain open. All changes remain unstaged/uncommitted for review.
