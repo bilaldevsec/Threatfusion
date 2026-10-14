@@ -97,6 +97,7 @@ class AnalystBrowserTlsListener:
         self._active: socket.socket | None = None
         self._state_lock = threading.Lock()
         self._process_lock = threading.Lock()
+        self._admission_stopped = threading.Event()
         try:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             context.minimum_version = ssl.TLSVersion.TLSv1_3
@@ -128,12 +129,18 @@ class AnalystBrowserTlsListener:
                 listener.listen(1)
                 listener.settimeout(3.0)
                 self._listener = listener
+                self._admission_stopped.clear()
             except OSError:
                 if "listener" in locals():
                     listener.close()
                 raise AnalystTlsError("listener_unavailable") from None
 
+    def stop_admission(self) -> None:
+        """Prevent new dispatch before waiting for an already dispatched operation."""
+        self._admission_stopped.set()
+
     def close(self) -> None:
+        self.stop_admission()
         with self._state_lock:
             listener, self._listener = self._listener, None
             active = self._active
@@ -293,7 +300,7 @@ class AnalystBrowserTlsListener:
             if address[0] != "127.0.0.1":
                 return
             with self._state_lock:
-                if self._listener is not listener:
+                if self._listener is not listener or self._admission_stopped.is_set():
                     return
                 self._active = accepted
             accepted.settimeout(BROWSER_HANDSHAKE_SECONDS)
@@ -303,7 +310,7 @@ class AnalystBrowserTlsListener:
             with accepted as connection:
                 accepted = None
                 with self._state_lock:
-                    if self._listener is not listener:
+                    if self._listener is not listener or self._admission_stopped.is_set():
                         return
                     self._active = connection
                 connection.do_handshake()
@@ -402,7 +409,7 @@ class AnalystBrowserTlsListener:
                     return
 
                 with self._state_lock:
-                    if self._listener is not listener:
+                    if self._listener is not listener or self._admission_stopped.is_set():
                         return
 
                     try:

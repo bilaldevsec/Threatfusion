@@ -13,7 +13,8 @@ Common name, client-provided certificate labels, IDs, roles, headers, and JSON f
 OpenSSL's client-purpose check rejects an incompatible EKU such as `serverAuth` alone. It does not
 require an EKU extension to be present: a certificate without EKU can authenticate if its exact
 fingerprint and human SAN were explicitly allowlisted. Issuance must supply the intended explicit
-`clientAuth` restriction; automatic provisioning validation is still an open operational requirement.
+`clientAuth` restriction; the local operator enrollment interface now enforces explicit
+clientAuth-only EKU and CA:FALSE. Manually constructed registries retain the existing listener rule.
 
 The matched record yields only an actor ID. The separate `AnalystAuthorizationRegistry` then maps
 that server-owned actor ID to its enabled `viewer` or `analyst` role and issues a process-local
@@ -41,10 +42,14 @@ provisioned outside the checkout with access limited to their designated account
 credential is tracked here; tests generate disposable certificates under pytest temporary paths.
 The issuer and provisioning process are deployment responsibilities, not implemented by this module.
 
+The [local operator runbook](human_credential_operator_runbook.md) implements public-certificate
+enrollment and exact-fingerprint disable/revoke into versioned, private metadata, with a strict
+loader and construction adapter for both listeners. CA issuance and secure delivery remain external.
+
 To rotate, issue a new certificate and add its fingerprint as another record for the same actor while
 retaining the old record for a bounded operational overlap. To revoke or disable, replace the
-deployment-owned registry with the old fingerprint marked revoked/disabled or removed, close the old
-listener, join its caller-owned `process_one` worker, and construct a new listener with the replacement
+deployment-owned registry with the old fingerprint marked revoked/disabled (the operator CLI retains
+the record), close the old listener, join its caller-owned `process_one` worker, and construct a new listener with the replacement
 registry. Reopening the same object retains its original registry and does not apply revocation.
 There is no live reload: changing a configuration file alone has no effect. A disabled actor also
 requires a replacement authorization registry and repository/view objects bound to that registry.
@@ -116,8 +121,8 @@ browser safety, long-running concurrency, audit completeness, backup/recovery or
 
 Bounded local security audit events are persisted through the TLS listener using the `AnalystSecurityAuditRepository` (`analyst_security_audit_sqlite_v1`). State mutations (`states.sqlite3`) and security audit records (`audit.sqlite3`) reside in two independent SQLite databases with distinct transaction boundaries; there is no distributed transaction or two-phase commit across them.
 
-- **Authentication Failures:** When an authenticated peer fails the internal application registry check (e.g. revoked cert, wrong SAN, disabled actor), an `authentication_rejected` event is logged detailing `reason_code` `authentication_failed`. Audit append for authentication failures is best-effort: if appending to the audit repository fails, the listener swallows the audit error and returns 401 `authentication_failed` (or closes the connection) to preserve the authentication contract without leaking internal audit storage status or 503 errors to unauthenticated peers.
-- **Authorization Failures:** When an admitted actor attempts an unauthorized action (e.g., a viewer attempting an analyst transition), an `authorization_rejected` event is logged with `reason_code` `forbidden`. An audit failure at this boundary returns 503 `unavailable`.
+- **Authentication Failures:** When an authenticated peer fails the internal application registry check (e.g. revoked/disabled certificate or wrong SAN), an `authentication_rejected` event is logged detailing `reason_code` `authentication_failed`. Audit append for authentication failures is best-effort: if appending to the audit repository fails, the listener swallows the audit error and returns 401 `authentication_failed` (or closes the connection) to preserve the authentication contract without leaking internal audit storage status or 503 errors to unauthenticated peers.
+- **Authorization Failures:** A certificate-mapped actor absent or disabled in the authorization registry receives 401 `authentication_failed` (or TLS close), with best-effort `authorization_rejected` / `forbidden` audit. When an admitted actor attempts an unauthorized action (e.g., a viewer attempting an analyst transition), an `authorization_rejected` event is logged with `reason_code` `forbidden`. An audit failure at this boundary returns 503 `unavailable`.
 - **Success & Lifecycle:** A `request_admitted` event is recorded before repository dispatch or mutation, and a `request_completed` event is written after dispatch terminates.
 - **Route Normalization:** Audit records persist only fixed recognized route templates (`/v1/analyst/alerts`, `/v1/analyst/alerts/<alert_candidate_id>`, `/v1/analyst/alerts/<alert_candidate_id>/transitions`) or omit the route (`None`) for unrecognized paths, preventing raw unvalidated URL paths and query strings from entering audit storage.
 - **Idle Connections & Handshake Drops:** Unauthenticated peers failing TLS handshake, as well as valid TLS connections that close (empty disconnect) or time out before sending any HTTP request bytes, do not generate false authentication or request-rejection audit events. Malformed framed HTTP requests continue to be rejected and audited as `request_rejected`.
@@ -154,3 +159,28 @@ Every credential-denial case exercises list, detail and transition with spies pr
 alert-storage calls. Temporary test credential files are removed at fixture teardown. No producer,
 model, artifact or state-rule change was needed. Provisioning, browser origin/session safety, security
 audit and endurance requirements remain open under TF-008/TF-009.
+
+## Controlled local human lifecycle, 2026-09-28
+
+`HumanListenerLifecycle` supplies a bounded composition for both human listeners
+with explicit TLS, authorization, view and audit dependencies; see the
+[operator runbook](human_credential_operator_runbook.md#controlled-restart-and-integration).
+It calls `human_credentials.construct_listener` under one shared directory lock,
+validates both listeners and repository schemas/read probes before opening, then
+owns one process_one worker per listener. No demo credentials or producer are involved.
+At least one active authorized credential must remain for startup.
+
+Disk save, old-generation stop/join, policy loading and replacement readiness are
+separate states. Replacement first sets both admission-stop flags, closes both
+listeners, and joins all old workers. A flag prevents pending peers from entering
+the dispatch section; a peer already inside that section may finish while close
+waits. Only after that drain can a new generation load and open. Startup failure,
+including partial open/worker startup, closes the candidate generation without
+resuming old credentials. Generation counters are process-local, not policy hashes.
+
+The lifecycle context/finally boundary cleans up on KeyboardInterrupt. It does not
+claim bounded shutdown against stalled trusted storage or service-manager/SIGKILL
+handling. Same-actor exact UUIDv4 retries keep their existing idempotency semantics;
+security audit history/classification and independent transaction gaps are unchanged.
+CA issuance, secure Firefox delivery, operator journaling, backup/recovery, endurance
+and service-manager deployment remain open under TF-008/TF-009.

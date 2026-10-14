@@ -814,3 +814,144 @@ policy, and capture-clock quality. TF-008 and TF-009 remain open. An independent
 next product milestone is bounded operational browser credential provisioning
 and revocation evidence; it does not depend on alert correlation. No model,
 dataset or artifact path changed.
+
+### 2026-09-28 — Local operator human enrollment and restriction
+
+Started clean on `gemini/product-20260924` at
+`a6158cda69de1427d9cab30f5c96345c66fc0d16`. The new standard-library
+`threatfusion.operations.human_credentials` module enrolls a pre-issued public
+certificate into versioned operator-owned metadata and disables/revokes its exact
+DER SHA-256 fingerprint. It validates the CA chain/client purpose, explicit
+clientAuth-only EKU, CA:FALSE, exact human URI SAN and certificate validity.
+The loader reuses immutable HumanCredentialRegistry and the separate authorization
+registry; the construction adapter supports both existing listeners without a
+fallback, daemon, issuance or hot reload. See the
+[operator runbook](human_credential_operator_runbook.md).
+
+Acceptance evidence: valid enrollment and exact mapping; invalid certificate/SAN/
+purpose, duplicate/conflicting/malformed metadata, validity/UTC/capacity and unsafe
+file/path rejection; private atomic replacement and failure preservation; lock
+contention and unrelated-file protection; both real loopback mTLS listeners retain
+the old policy across disk changes/reopen and deny restricted certificates after
+reconstruction while another actor reads. Audit history remains intact and new
+credential denials have authentication_rejected/authentication_failed classification.
+Expiry/future enrollment bounds use injected decoded dates; real TLS certificates
+are disposable test fixtures, not operational issuance evidence.
+
+Validation commands and observed results:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src:. threatfusion-venv/bin/pytest -o addopts= -q --tb=short backend/tests/integration/test_operator_human_credentials.py backend/tests/integration/test_analyst_tls_service.py backend/tests/integration/test_analyst_browser_tls_service.py backend/tests/unit/test_analyst_security_audit.py backend/tests/unit/test_analyst_state.py
+```
+
+Sandbox: `85 failed, 82 passed in 30.87s`, exit 1 (root ownership remapped to
+65534 and loopback unavailable). A diagnostic `-xq --tb=short` run of only
+`test_operator_human_credentials.py` stopped at the ownership rejection:
+`1 failed in 8.31s`, exit 1. The exact combined command outside the sandbox:
+`4 failed, 163 passed in 36.25s`, exit 1. All 134 existing tests passed; four new
+assertions incorrectly required an HTTP 401 where the established contract also
+permits TLS close. Those assertions were corrected while retaining audit checks.
+After final UTC/capacity/lock review, only the new test file was rerun:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src:. threatfusion-venv/bin/pytest -o addopts= -q --tb=short backend/tests/integration/test_operator_human_credentials.py
+threatfusion-venv/bin/ruff check .
+threatfusion-venv/bin/black --check backend/src/threatfusion/operations/human_credentials.py
+threatfusion-venv/bin/black --check backend/tests/integration/test_operator_human_credentials.py
+git diff HEAD --check
+```
+
+Final operator tests: `38 passed in 12.40s`, exit 0. Repository Ruff passes,
+exit 0 (initial fixture import warnings F811/E402 fixed). Individual Black checks
+pass, exit 0. Multi-file Black format/check invocations stalled and were interrupted
+(exit 130); individual file formatting/checks completed. Whitespace check passes,
+exit 0. No full suite or model inference ran. Changes are uncommitted for review.
+
+Self-review retained strict ownership checks despite the sandbox incompatibility,
+checked both UTC bounds explicitly, verified no role fields or private material
+enter policy, and inspected all changed/new source, tests and documentation.
+No independent security review is claimed. CA issuance, secure delivery, recovery,
+live reload, endurance, operator-action audit history and policy archival remain
+outside this phase; the 64-record cap includes retained disabled/revoked records.
+TF-008 and TF-009 remain open, as do unrelated scientific/product evidence gaps.
+Frozen RF, experimental unfused AE and blocked rate-log1p remain untouched.
+Recommended next action: review this uncommitted enrollment/revocation phase.
+
+
+### 2026-09-28 — Credential gate completed; controlled human listener lifecycle
+
+Workspace verified as `/home/muhammad-bilal/projects/threatfusion-gemini`, branch
+`gemini/product-20260924`, HEAD `a6158cda69de1427d9cab30f5c96345c66fc0d16`,
+push URL `no-push://requires-explicit-review`. The initial six changed/untracked
+credential-phase files were preserved. The previously corrected combined gate was
+run before implementation: **172 passed in 38.81s, exit 0**. This completes that
+gate; earlier failed runs above remain historical failures.
+
+Acceptance criteria were fixed before editing: both policy-backed listeners validate
+before opening; replacement stops both admission paths and joins every old worker
+before constructing replacements; failures leave no accepting generation; disk saves
+are distinct from active policy; denial causes no protected view calls; audit history
+and exact same-UUID transition retry survive replacement.
+
+The new `operations.human_listener_lifecycle.HumanListenerLifecycle` uses explicit
+TLS configurations, authorization, view and audit dependencies. The dependency chain
+is retained alert repository -> authorization-bound analyst state repository ->
+`AnalystAlertViewModel`, plus the separate audit repository. The existing registered
+browser composition generates demo credentials and invokes inference, so it was not
+reused or run. The producer's fixed-worker lifecycle pattern informed ownership;
+producer implementation is unchanged. This is a local Python lifecycle entry point,
+not a generic server, deployment CLI, or service-manager configuration.
+
+Each replacement stops admission on both listeners before waiting on either's
+in-flight operation, closes sockets and joins its two owned process_one workers.
+Only then does it load both listeners through `human_credentials.construct_listener`
+under a shared policy-directory lock. Repository schema validation and bounded read
+probes precede opening. Both opens and both worker starts must succeed before workers
+are released. Failure cleans up without restoring the old credential snapshot.
+An all-restricted policy has no eligible actor and leaves the service failed/closed.
+The runbook distinguishes metadata saved, old generation stopped, policy loaded and
+new listeners accepting; generations are process-local counters, not disk revisions.
+
+Exact validation commands:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src:. threatfusion-venv/bin/pytest -o addopts= -q --tb=short backend/tests/integration/test_operator_human_credentials.py backend/tests/integration/test_analyst_tls_service.py backend/tests/integration/test_analyst_browser_tls_service.py backend/tests/unit/test_analyst_security_audit.py backend/tests/unit/test_analyst_state.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src:. threatfusion-venv/bin/pytest -o addopts= -q --tb=short backend/tests/integration/test_human_listener_lifecycle.py
+threatfusion-venv/bin/ruff check .
+threatfusion-venv/bin/black --check backend/src/threatfusion/operations/human_credentials.py
+threatfusion-venv/bin/black --check backend/src/threatfusion/operations/human_listener_lifecycle.py
+threatfusion-venv/bin/black --check backend/tests/integration/test_operator_human_credentials.py
+threatfusion-venv/bin/black --check backend/tests/integration/test_human_listener_lifecycle.py
+threatfusion-venv/bin/black --check backend/src/threatfusion/api/analyst_tls_service.py
+threatfusion-venv/bin/black --check backend/src/threatfusion/api/analyst_browser_tls_service.py
+git diff HEAD --check
+```
+
+The first new lifecycle test invocation failed at setup: **14 errors in 7.96s,
+exit 1**, at the strict policy ancestor-ownership check under the sandbox. The
+explicitly authorized outside-sandbox run then passed **14 passed in 12.46s,
+exit 0**. Expanded final lifecycle tests passed **17 passed in 13.32s, exit 0**.
+They exercise real loopback TLS with disposable certificates, both enrolled actors,
+unchanged old generations after disk restriction, exact disable/revoke replacement,
+zero protected view access on denial, retained audit classification/history, invalid
+policy and dependencies on replacement and cold startup, second-open failure,
+partial worker startup, context/interrupted-close cleanup, schema rejection with an
+empty queue, and dispatched transition drain followed by `existing` UUIDv4 replay.
+No failing sandbox run is counted as passing evidence.
+
+After listener edits, the exact combined gate was repeated: **172 passed in 38.49s,
+exit 0**. Ruff: `All checks passed!`, exit 0. Six individual Black checks each
+reported `1 file would be left unchanged.`, exit 0. Whitespace check: no output,
+exit 0. An earlier multi-file `black --workers 1` format invocation stalled and was
+interrupted (exit 130), so its chained tests did not run; individual formatting/checks
+and the independent pytest commands above completed. No full backend suite, model
+inference, evaluation, fitting, package/dataset download, deployment, staging, commit
+or push was performed. Original protected workspace, models and datasets were untouched.
+
+CA issuance, secure certificate/private-key delivery to Firefox, operator-action
+journaling, backup/recovery, endurance and service-manager deployment remain open.
+There is no claimed deadline for a stalled trusted repository/filesystem, no general
+signal handler or crash/SIGKILL recovery, and no independent security review in this
+milestone. TF-008 and TF-009 remain open. All changes remain unstaged/uncommitted.
+Recommended next action: review the complete credential/lifecycle diff against the
+admission, startup rollback and shutdown ownership contract before any deployment.
