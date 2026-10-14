@@ -38,7 +38,10 @@ same restriction is safe. Unknown fingerprints fail. There is no delete, enable
 or un-revoke command. The fingerprint returned by enrollment is the SHA-256 of
 the complete DER certificate, not a subject or public-key hash. Record the exact
 fingerprint, action and restart outcome in the operator's controlled change log.
-The CLI does not implement an operator-action audit journal.
+Under the existing directory lock, each successful state-changing action
+(`init`, `enroll`, `disable`, `revoke`) appends a deterministic entry to
+`journal.jsonl` (mode 0600, schema `operator_human_credential_journal_v1`,
+capped at 64 records and 64 KiB) in the policy directory.
 
 Success exits 0 with `saved_restart_required` (enrollment also returns the public
 fingerprint); policy failure exits 1 with only `credential_policy_invalid`.
@@ -82,6 +85,19 @@ a mode-0600 temporary file, fsync, atomically replace, then fsync the directory.
 Cooperating concurrent operators fail immediately on contention. The directory
 must stay in place; these protections do not defend against root or a malicious
 process using the same trusted account. Crash recovery and backups are unproven.
+
+An append-only journal (`journal.jsonl`, mode 0600, schema
+`operator_human_credential_journal_v1`) records every successful state change
+under the same directory lock and descriptor-relative traversal. Each JSONL line
+contains a monotonic 1-based sequence number (`seq`), UTC ISO timestamp
+(`recorded_at_utc`), `action` (`init`|`enroll`|`disable`|`revoke`), `actor_id`
+(or null for `init`), `sha256_fingerprint` (or null for `init`), `resulting_status`
+(`initialized`|`active`|`disabled`|`revoked`), `total_records`, and `active_records`.
+Raw PEM bytes and secret keys are never written to the journal. The journal is
+capped at 64 records and 64 KiB. Symlinks, unsafe permissions, corrupt JSON,
+non-monotonic sequence numbers, or capacity overflows raise `CredentialPolicyError`.
+The `threatfusion.operations.human_credentials.read_journal(policy_dir)` helper
+reads and validates journal integrity under the directory lock.
 
 ## Controlled restart and integration
 
@@ -183,7 +199,8 @@ signal handling are not established. No hot reload, CRL or OCSP is implemented.
 The directory must remain in place and all writers must use the locking operator API.
 These controls do not defend against root or a malicious process on the trusted account.
 
-CA issuance, secure certificate/private-key delivery to Firefox, operator-action
-journaling, backup/recovery, endurance and service-manager deployment remain open.
+CA issuance, secure certificate/private-key delivery to Firefox, backup/recovery,
+endurance and service-manager deployment remain open. Operator-action journaling is
+implemented via `journal.jsonl`.
 The existing 64-record bound includes tombstones. Restore access by enrolling a
 replacement certificate, not by reverting revoked metadata. TF-008 and TF-009 remain open.

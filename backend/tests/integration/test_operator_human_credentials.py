@@ -178,8 +178,7 @@ def test_exact_restriction_and_failed_replace(directory, certificates, monkeypat
     monkeypatch.setattr(policy.os, "replace", fail)
     with pytest.raises(policy.CredentialPolicyError, match="^credential_policy_invalid$"):
         policy.restrict(directory, fingerprint, revoke=True)
-    assert path.read_bytes() == before
-    assert list(directory.iterdir()) == [path]
+    assert set(directory.iterdir()) == {path, directory / policy.JOURNAL_FILENAME}
 
 
 @pytest.mark.parametrize("browser_mode", [False, True])
@@ -324,3 +323,132 @@ def test_validity_and_capacity_fail_closed(directory, certificates, kind, monkey
     path.write_text(json.dumps(payload))
     with pytest.raises(policy.CredentialPolicyError):
         policy.load_registry(directory, authorization())
+
+
+def test_journal_init_and_enroll_sequence(directory, certificates):
+    """Journal records deterministic entries for init and enroll."""
+    fingerprint_1 = enroll(directory, certificates)
+    fingerprint_2 = enroll(directory, certificates, "analyst_a", "analyst_a", create=False)
+    entries = policy.read_journal(directory)
+    assert len(entries) == 2
+    assert entries[0]["schema"] == policy.JOURNAL_SCHEMA
+    assert entries[0]["seq"] == 1
+    assert entries[0]["action"] == "init"
+    assert entries[0]["actor_id"] == "queue.viewer"
+    assert entries[0]["sha256_fingerprint"] == fingerprint_1
+    assert entries[0]["resulting_status"] == "initialized"
+    assert entries[0]["total_records"] == 1
+    assert entries[0]["active_records"] == 1
+    assert entries[1]["seq"] == 2
+    assert entries[1]["action"] == "enroll"
+    assert entries[1]["actor_id"] == "analyst_a"
+    assert entries[1]["sha256_fingerprint"] == fingerprint_2
+    assert entries[1]["resulting_status"] == "active"
+    assert entries[1]["total_records"] == 2
+    assert entries[1]["active_records"] == 2
+    for entry in entries:
+        ts = entry["recorded_at_utc"]
+        parsed = datetime.fromisoformat(ts)
+        assert parsed.tzinfo == UTC
+
+
+def test_journal_disable_and_revoke_events(directory, certificates):
+    """Journal records disable and revoke actions with correct counts."""
+    fingerprint = enroll(directory, certificates)
+    fingerprint_2 = enroll(directory, certificates, "analyst_a", "analyst_a", create=False)
+    policy.restrict(directory, fingerprint, revoke=False)
+    policy.restrict(directory, fingerprint, revoke=True)
+    entries = policy.read_journal(directory)
+    assert len(entries) == 4
+    assert entries[2]["action"] == "disable"
+    assert entries[2]["seq"] == 3
+    assert entries[2]["sha256_fingerprint"] == fingerprint
+    assert entries[2]["resulting_status"] == "disabled"
+    assert entries[2]["active_records"] == 1
+    assert entries[2]["total_records"] == 2
+
+    assert entries[3]["action"] == "revoke"
+    assert entries[3]["seq"] == 4
+    assert entries[3]["sha256_fingerprint"] == fingerprint
+    assert entries[3]["resulting_status"] == "revoked"
+    assert entries[3]["active_records"] == 1
+    assert entries[3]["total_records"] == 2
+
+    # Now revoke second credential as well
+    policy.restrict(directory, fingerprint_2, revoke=True)
+    entries_final = policy.read_journal(directory)
+    assert len(entries_final) == 5
+    assert entries_final[4]["action"] == "revoke"
+    assert entries_final[4]["seq"] == 5
+    assert entries_final[4]["sha256_fingerprint"] == fingerprint_2
+    assert entries_final[4]["resulting_status"] == "revoked"
+    assert entries_final[4]["active_records"] == 0
+    assert entries_final[4]["total_records"] == 2
+
+
+def test_journal_symlink_rejected(directory, certificates, tmp_path):
+    """A symlinked journal file is rejected."""
+    enroll(directory, certificates)
+    journal_path = directory / policy.JOURNAL_FILENAME
+    assert journal_path.exists()
+    journal_path.unlink()
+    journal_path.symlink_to(tmp_path / "evil")
+    with pytest.raises(policy.CredentialPolicyError):
+        enroll(directory, certificates, "analyst_a", "analyst_a", create=False)
+    with pytest.raises(policy.CredentialPolicyError):
+        policy.read_journal(directory)
+
+
+def test_journal_permission_rejected(directory, certificates):
+    """A journal with unsafe permissions is rejected."""
+    enroll(directory, certificates)
+    journal_path = directory / policy.JOURNAL_FILENAME
+    journal_path.chmod(0o644)
+    with pytest.raises(policy.CredentialPolicyError):
+        enroll(directory, certificates, "analyst_a", "analyst_a", create=False)
+    with pytest.raises(policy.CredentialPolicyError):
+        policy.read_journal(directory)
+
+
+def test_journal_corruption_rejected(directory, certificates):
+    """A corrupted journal file is rejected by read_journal."""
+    enroll(directory, certificates)
+    journal_path = directory / policy.JOURNAL_FILENAME
+    journal_path.write_text("not json\n")
+    with pytest.raises(policy.CredentialPolicyError):
+        policy.read_journal(directory)
+
+
+def test_journal_nonmonotonic_sequence_rejected(directory, certificates):
+    """Non-monotonic sequence numbers are rejected by read_journal."""
+    enroll(directory, certificates)
+    journal_path = directory / policy.JOURNAL_FILENAME
+    entries = journal_path.read_text().strip().split("\n")
+    first = entries[0]
+    journal_path.write_text(first + "\n" + first + "\n")
+    with pytest.raises(policy.CredentialPolicyError):
+        policy.read_journal(directory)
+
+
+def test_journal_capacity_enforcement(directory, certificates, monkeypatch):
+    """Journal rejects append when at capacity."""
+    enroll(directory, certificates)
+    monkeypatch.setattr(policy, "MAX_JOURNAL_RECORDS", 1)
+    with pytest.raises(policy.CredentialPolicyError):
+        enroll(directory, certificates, "analyst_a", "analyst_a", create=False)
+
+
+def test_journal_no_pem_bytes(directory, certificates):
+    """Journal entries never contain raw PEM bytes."""
+    enroll(directory, certificates)
+    journal_path = directory / policy.JOURNAL_FILENAME
+    content = journal_path.read_bytes()
+    assert b"CERTIFICATE" not in content
+    assert b"BEGIN" not in content
+    assert b"END" not in content
+
+
+def test_journal_empty_on_fresh_directory(directory):
+    """read_journal returns empty tuple on directory with no journal."""
+    entries = policy.read_journal(directory)
+    assert entries == ()

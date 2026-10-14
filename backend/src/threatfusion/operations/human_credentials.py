@@ -36,6 +36,35 @@ FILENAME = "human-credentials.json"
 MAX_BYTES = 65536
 _FIELDS = {"actor_id", "certificate_sha256", "enabled", "revoked", "not_before", "not_after"}
 
+JOURNAL_SCHEMA = "operator_human_credential_journal_v1"
+JOURNAL_FILENAME = "journal.jsonl"
+MAX_JOURNAL_BYTES = 65536
+MAX_JOURNAL_RECORDS = 64
+_ALLOWED_JOURNAL_FIELDS = {
+    "schema",
+    "seq",
+    "sequence",
+    "recorded_at_utc",
+    "timestamp",
+    "action",
+    "actor_id",
+    "sha256_fingerprint",
+    "resulting_status",
+    "status",
+    "active_records",
+    "total_records",
+    "active_count",
+    "total_count",
+}
+_REQUIRED_JOURNAL_FIELDS = {
+    "schema",
+    "seq",
+    "recorded_at_utc",
+    "action",
+    "resulting_status",
+    "total_records",
+}
+
 
 class CredentialPolicyError(RuntimeError):
     """Only a fixed error reaches operator output."""
@@ -243,19 +272,193 @@ def _certificate(certificate: Path, ca: Path, actor: str):
     return record
 
 
+def _read_journal(fd) -> list[dict[str, object]]:
+    try:
+        file_fd = os.open(JOURNAL_FILENAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+    except FileNotFoundError:
+        return []
+    with os.fdopen(file_fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_nlink != 1
+            or info.st_size > MAX_JOURNAL_BYTES
+        ):
+            raise CredentialPolicyError()
+        raw = stream.read(MAX_JOURNAL_BYTES + 1)
+    if len(raw) > MAX_JOURNAL_BYTES:
+        raise CredentialPolicyError()
+    if not raw:
+        return []
+    lines = raw.split(b"\n")
+    if lines[-1] != b"":
+        raise CredentialPolicyError()
+    entries = []
+    expected_seq = 1
+    for line in lines[:-1]:
+        if not line:
+            raise CredentialPolicyError()
+        entry = json.loads(line.decode("utf-8"), object_pairs_hook=_unique)
+        if type(entry) is not dict:
+            raise CredentialPolicyError()
+        if not _REQUIRED_JOURNAL_FIELDS.issubset(set(entry)) or not set(entry).issubset(
+            _ALLOWED_JOURNAL_FIELDS
+        ):
+            raise CredentialPolicyError()
+        if entry["schema"] != JOURNAL_SCHEMA:
+            raise CredentialPolicyError()
+        seq = entry["seq"]
+        if type(seq) is not int or isinstance(seq, bool) or seq != expected_seq:
+            raise CredentialPolicyError()
+        ts = entry["recorded_at_utc"]
+        if type(ts) is not str:
+            raise CredentialPolicyError()
+        parsed = datetime.fromisoformat(ts)
+        if not is_utc(parsed) or parsed.isoformat() != ts:
+            raise CredentialPolicyError()
+        if entry["action"] not in {"init", "enroll", "disable", "revoke"}:
+            raise CredentialPolicyError()
+        if entry["resulting_status"] not in {"initialized", "active", "disabled", "revoked"}:
+            raise CredentialPolicyError()
+        actor = entry.get("actor_id")
+        if actor is not None and (type(actor) is not str or not valid_actor_id(actor)):
+            raise CredentialPolicyError()
+        fp = entry.get("sha256_fingerprint")
+        if fp is not None and (type(fp) is not str or re.fullmatch(r"[0-9a-f]{64}", fp) is None):
+            raise CredentialPolicyError()
+        tot = entry["total_records"]
+        if type(tot) is not int or isinstance(tot, bool) or tot < 0 or tot > MAX_JOURNAL_RECORDS:
+            raise CredentialPolicyError()
+        act = entry.get("active_records", entry.get("active_count"))
+        if act is not None and (
+            type(act) is not int or isinstance(act, bool) or act < 0 or act > tot
+        ):
+            raise CredentialPolicyError()
+        entries.append(entry)
+        expected_seq += 1
+    if len(entries) > MAX_JOURNAL_RECORDS:
+        raise CredentialPolicyError()
+    return entries
+
+
+def _append_journal(
+    fd,
+    existing_entries: list[dict[str, object]],
+    *,
+    action: str,
+    resulting_status: str,
+    actor_id: str | None,
+    sha256_fingerprint: str | None,
+    total_records: int,
+    active_records: int,
+) -> None:
+    if len(existing_entries) >= MAX_JOURNAL_RECORDS:
+        raise CredentialPolicyError()
+    seq = len(existing_entries) + 1
+    now_str = datetime.now(UTC).isoformat()
+    entry = {
+        "schema": JOURNAL_SCHEMA,
+        "seq": seq,
+        "sequence": seq,
+        "recorded_at_utc": now_str,
+        "timestamp": now_str,
+        "action": action,
+        "actor_id": actor_id,
+        "sha256_fingerprint": sha256_fingerprint,
+        "resulting_status": resulting_status,
+        "status": resulting_status,
+        "active_records": active_records,
+        "active_count": active_records,
+        "total_records": total_records,
+        "total_count": total_records,
+    }
+    raw = (json.dumps(entry, sort_keys=True) + "\n").encode("utf-8")
+    if len(existing_entries) == 0:
+        name = ".journal-" + uuid4().hex
+        file_fd = os.open(
+            name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd
+        )
+        try:
+            with os.fdopen(file_fd, "wb") as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.link(name, JOURNAL_FILENAME, src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
+            os.unlink(name, dir_fd=fd)
+            os.fsync(fd)
+        finally:
+            try:
+                os.unlink(name, dir_fd=fd)
+            except FileNotFoundError:
+                pass
+    else:
+        file_fd = os.open(JOURNAL_FILENAME, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW, dir_fd=fd)
+        try:
+            info = os.fstat(file_fd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_nlink != 1
+                or info.st_size + len(raw) > MAX_JOURNAL_BYTES
+            ):
+                raise CredentialPolicyError()
+            written = os.write(file_fd, raw)
+            if written != len(raw):
+                raise CredentialPolicyError()
+            os.fsync(file_fd)
+            os.fsync(fd)
+        finally:
+            os.close(file_fd)
+
+
+def read_journal(policy_dir: Path | str) -> tuple[dict[str, object], ...]:
+    """Validate and read operator credential journal entries under directory lock."""
+    directory = Path(policy_dir) if not isinstance(policy_dir, Path) else policy_dir
+    with _boundary(), _directory(directory) as fd:
+        return tuple(_read_journal(fd))
+
+
+def init(directory: Path, certificate: Path, ca: Path, actor: str) -> str:
+    """Initialize local policy with the first credential; returns DER fingerprint."""
+    return enroll(directory, certificate, ca, actor, create=True)
+
+
 def enroll(directory: Path, certificate: Path, ca: Path, actor: str, *, create=False) -> str:
     """Create or extend local policy; returns only the enrolled DER fingerprint."""
     with _boundary(), _directory(directory, write=True) as fd:
+        existing_journal = _read_journal(fd)
+        if create and len(existing_journal) > 0:
+            raise CredentialPolicyError()
+        if len(existing_journal) >= MAX_JOURNAL_RECORDS:
+            raise CredentialPolicyError()
         records = [] if create else _read(fd)
         record = _certificate(certificate, ca, actor)
         records.append(record)
         _write(fd, records, create=create)
+        active_count = sum(1 for r in records if r.enabled and not r.revoked)
+        _append_journal(
+            fd,
+            existing_journal,
+            action="init" if create else "enroll",
+            resulting_status="initialized" if create else "active",
+            actor_id=record.actor_id,
+            sha256_fingerprint=record.certificate_sha256,
+            total_records=len(records),
+            active_records=active_count,
+        )
         return record.certificate_sha256
 
 
 def restrict(directory: Path, fingerprint: str, *, revoke: bool) -> None:
     """Retain the exact record; no delete, re-enable, or un-revoke operation."""
     with _boundary(), _directory(directory, write=True) as fd:
+        existing_journal = _read_journal(fd)
+        if len(existing_journal) >= MAX_JOURNAL_RECORDS:
+            raise CredentialPolicyError()
         if (
             type(revoke) is not bool
             or type(fingerprint) is not str
@@ -264,7 +467,12 @@ def restrict(directory: Path, fingerprint: str, *, revoke: bool) -> None:
             raise CredentialPolicyError()
         # Expired records may still be restricted, but cannot be loaded as active.
         records = _read(fd, current=False)
-        if not any(r.certificate_sha256 == fingerprint for r in records):
+        matched = None
+        for r in records:
+            if r.certificate_sha256 == fingerprint:
+                matched = r
+                break
+        if matched is None:
             raise CredentialPolicyError()
         records = [
             (
@@ -275,6 +483,17 @@ def restrict(directory: Path, fingerprint: str, *, revoke: bool) -> None:
             for r in records
         ]
         _write(fd, records)
+        active_count = sum(1 for r in records if r.enabled and not r.revoked)
+        _append_journal(
+            fd,
+            existing_journal,
+            action="revoke" if revoke else "disable",
+            resulting_status="revoked" if revoke else "disabled",
+            actor_id=matched.actor_id,
+            sha256_fingerprint=fingerprint,
+            total_records=len(records),
+            active_records=active_count,
+        )
 
 
 def load_registry(directory: Path, authorization) -> HumanCredentialRegistry:

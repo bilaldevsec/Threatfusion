@@ -310,9 +310,9 @@ class AnalystBrowserTlsListener:
             with accepted as connection:
                 accepted = None
                 with self._state_lock:
+                    self._active = connection
                     if self._listener is not listener or self._admission_stopped.is_set():
                         return
-                    self._active = connection
                 connection.do_handshake()
                 if connection.version() != "TLSv1.3":
                     return

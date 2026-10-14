@@ -56,8 +56,13 @@ requires a replacement authorization registry and repository/view objects bound 
 
 `close()` prevents pending accepted/handshaking/reading connections from starting repository work,
 interrupts their sockets, and waits for any repository operation already dispatched under its state
-lock. Such an operation may commit before close returns; no old operation can start afterward. Its
-response may be lost during shutdown, so the client must use the same UUIDv4 command ID on retry.
+lock. In both `AnalystBrowserTlsListener` and `AnalystTlsListener`, `process_one()` assigns
+`self._active` to the accepted connection under lock before `connection.do_handshake()`.
+When `close()` runs, it calls `shutdown(socket.SHUT_RDWR)` and `close()` on the active connection,
+promptly interrupting stalled TLS handshakes so caller-owned workers join in < 5.0 seconds rather
+than blocking for the 60.0-second browser handshake deadline. An admitted operation already inside
+the protected dispatch section finishes cleanly before `close()` returns; no new operation can start
+afterward. Its response may be lost during shutdown, so the client must use the same UUIDv4 command ID on retry.
 Revocation is effective for the replacement listener's first request; credentials are checked both
 after TLS authentication and again before dispatch. The registry interval is `[not_before, not_after)`.
 Expired, not-yet-valid, unknown, wrong-SAN, revoked and disabled credentials are denied. CA replacement
@@ -182,5 +187,6 @@ The lifecycle context/finally boundary cleans up on KeyboardInterrupt. It does n
 claim bounded shutdown against stalled trusted storage or service-manager/SIGKILL
 handling. Same-actor exact UUIDv4 retries keep their existing idempotency semantics;
 security audit history/classification and independent transaction gaps are unchanged.
-CA issuance, secure Firefox delivery, operator journaling, backup/recovery, endurance
-and service-manager deployment remain open under TF-008/TF-009.
+CA issuance, secure Firefox delivery, backup/recovery, endurance and
+service-manager deployment remain open under TF-008/TF-009. Operator-action
+journaling is implemented via `journal.jsonl`.

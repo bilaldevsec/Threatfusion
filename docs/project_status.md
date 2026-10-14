@@ -955,3 +955,53 @@ signal handler or crash/SIGKILL recovery, and no independent security review in 
 milestone. TF-008 and TF-009 remain open. All changes remain unstaged/uncommitted.
 Recommended next action: review the complete credential/lifecycle diff against the
 admission, startup rollback and shutdown ownership contract before any deployment.
+
+### 2026-10-14 — Operator credential action journaling and bounded handshake drain
+
+Workspace verified as `/home/muhammad-bilal/projects/threatfusion-gemini`, branch
+`gemini/product-20260924`, HEAD `c7d42b7`, push URL `no-push://requires-explicit-review`.
+
+Acceptance criteria addressed:
+1. **Append-Only Operator Credential Action Journal:** Maintained under directory lock
+   and descriptor-relative ancestor checks (`0700`, owner `0` or `os.geteuid()`, no symlinks)
+   as `journal.jsonl` (mode 0600, schema `operator_human_credential_journal_v1`, capped at
+   64 records and 64 KiB) inside the private policy metadata directory.
+   Deterministic JSONL records for successful `init`, `enroll`, `disable`, and `revoke`
+   actions track monotonic 1-based sequence numbers (`seq`), UTC ISO timestamps
+   (`recorded_at_utc`), action types, actor ID (when applicable), fingerprint (when applicable),
+   resulting status (`initialized`|`active`|`disabled`|`revoked`), total record count, and
+   active record count. Raw PEM bytes, private keys, and secrets are never recorded.
+   Symlinks, non-0600 permissions, file size/record count overflows, non-monotonic sequence
+   numbers, and corrupted entries fail closed with `CredentialPolicyError`. Validated via
+   `read_journal(policy_dir)`.
+2. **Bounded Listener Drain on Stalled TLS Handshake:** In both
+   `AnalystBrowserTlsListener` and `AnalystTlsListener`, `process_one()` assigns `self._active = connection`
+   under lock before calling `connection.do_handshake()`. On `close()`, the active connection is safely
+   interrupted via `shutdown(socket.SHUT_RDWR)` followed by `close()`. This ensures that a client stalling
+   mid-TLS-handshake does not block caller-owned worker threads during `HumanListenerLifecycle.replace()`
+   or `shutdown()`, guaranteeing worker joining within < 5.0 seconds (verified in
+   `test_stalled_handshake_does_not_block_replace_or_shutdown`) rather than blocking for the 60.0-second
+   browser handshake timeout. Requests already admitted into the protected dispatch section continue to
+   drain cleanly before close completes.
+
+Exact validation commands and results:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src:. threatfusion-venv/bin/pytest -o addopts= -q --tb=short backend/tests/integration/test_operator_human_credentials.py backend/tests/integration/test_human_listener_lifecycle.py backend/tests/integration/test_analyst_tls_service.py backend/tests/integration/test_analyst_browser_tls_service.py backend/tests/unit/test_analyst_security_audit.py backend/tests/unit/test_analyst_state.py
+threatfusion-venv/bin/ruff check .
+threatfusion-venv/bin/black --check backend/src/threatfusion/operations/human_credentials.py
+threatfusion-venv/bin/black --check backend/src/threatfusion/api/analyst_browser_tls_service.py
+threatfusion-venv/bin/black --check backend/src/threatfusion/api/analyst_tls_service.py
+threatfusion-venv/bin/black --check backend/tests/integration/test_operator_human_credentials.py
+threatfusion-venv/bin/black --check backend/tests/integration/test_human_listener_lifecycle.py
+git diff HEAD --check
+```
+
+Combined suite: **199 passed in 35.36s, exit 0**.
+Ruff: `All checks passed!`, exit 0.
+Individual Black checks: all 5 touched files unchanged, exit 0.
+`git diff HEAD --check`: clean (0 errors), exit 0.
+
+CA issuance, secure certificate/private-key delivery to Firefox, backup/recovery,
+endurance, service-manager deployment, and the defensible distinct-alert correlation key
+remain open. TF-008 and TF-009 remain open. All changes remain unstaged/uncommitted for review.

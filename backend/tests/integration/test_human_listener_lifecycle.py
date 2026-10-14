@@ -305,3 +305,45 @@ def test_invalid_state_schema_fails_even_with_empty_queue(setup):
     with pytest.raises(HumanLifecycleError):
         service.replace()
     assert not service._listeners
+
+
+def test_stalled_handshake_does_not_block_replace_or_shutdown(setup, certificates):
+    """A client stalling mid-TLS-handshake does not block lifecycle replace or shutdown."""
+    import time
+
+    service, _, _, _, _, _ = setup
+    service.replace()
+    _, browser_address = service.addresses
+    workers_before = tuple(w for w, _, _ in service._workers)
+
+    # Raw TCP client connects to browser listener and stalls mid-handshake
+    stalled = socket.create_connection(browser_address, timeout=2)
+    try:
+        time.sleep(0.1)
+
+        start = time.monotonic()
+        snapshot = service.replace()
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 5.0, f"replace() blocked for {elapsed:.2f}s"
+        assert snapshot["state"] == "accepting"
+        assert all(not w.is_alive() for w in workers_before)
+    finally:
+        stalled.close()
+
+    # Now test shutdown with stalled client
+    _, browser_address_2 = service.addresses
+    workers_2 = tuple(w for w, _, _ in service._workers)
+    stalled_2 = socket.create_connection(browser_address_2, timeout=2)
+    try:
+        time.sleep(0.1)
+
+        start = time.monotonic()
+        shutdown_snapshot = service.shutdown()
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 5.0, f"shutdown() blocked for {elapsed:.2f}s"
+        assert shutdown_snapshot["state"] == "stopped"
+        assert all(not w.is_alive() for w in workers_2)
+    finally:
+        stalled_2.close()
