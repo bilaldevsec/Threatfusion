@@ -133,6 +133,33 @@ Bounded local security audit events are persisted through the TLS listener using
 - **Idle Connections & Handshake Drops:** Unauthenticated peers failing TLS handshake, as well as valid TLS connections that close (empty disconnect) or time out before sending any HTTP request bytes, do not generate false authentication or request-rejection audit events. Malformed framed HTTP requests continue to be rejected and audited as `request_rejected`.
 - **Audit Failures, Replay, and Audit Gap:** An audit write failure before state mutation (`request_admitted`) blocks the request with a 503 `unavailable` response. If an audit write fails after a state transition has committed to `states.sqlite3`, the listener returns 503 `unavailable` rather than falsely claiming success. When the client retries the transition with the same canonical UUIDv4 `transition_id`, the state repository detects the idempotent replay, returns `existing` disposition, and avoids duplicating state history; the retry attempt records its own `request_admitted` and `request_completed` events. However, because the state commit and audit append have independent transaction boundaries, the original failed completion write is not retroactively inserted into `audit.sqlite3`, leaving an audit gap for the initial request's completion event.
 
+### Security Audit Export, Archive Verification, and Quiescent Retention Pruning
+
+To manage `audit.sqlite3` capacity safely without risking the loss of unarchived audit trails,
+`threatfusion.operations.audit_retention` provides fail-closed export, verification, and prefix pruning:
+
+- **Tamper-Evident Archive Export (`export_security_audit_archive`):**
+  Reads rows from `audit.sqlite3` in strict order (`ORDER BY event_time ASC, audit_event_id ASC`),
+  optionally bounded up to a specific `up_to_audit_id`. Writes a deterministic JSONL export
+  (`audit_events.jsonl`, mode 0600) and companion manifest (`manifest.json`, mode 0600, schema
+  `security_audit_archive_v1`) into a locked mode-0700 archive directory. The manifest records
+  `sha256_digest`, `size_bytes`, `row_count`, `first_audit_id`, `last_audit_id`, `first_recorded_at_utc`,
+  and `last_recorded_at_utc`.
+- **Cryptographic & Structural Verification (`verify_security_audit_archive`):**
+  Enforces mode-0700 directory, mode-0600 files, symlink absence, JSONL schema validation, monotonic
+  timestamp/UUID ordering, row count match, and exact SHA-256 digest match against the manifest.
+  Any tampering or mismatch raises `AuditRetentionError`.
+- **Atomic Contiguous Prefix Pruning (`prune_archived_security_audit`):**
+  First verifies the target archive via `verify_security_audit_archive`. Opens an exclusive transaction
+  (`BEGIN IMMEDIATE`) on `audit.sqlite3`, reads the first `manifest["row_count"]` rows, and compares
+  every field against the archive. If any field or prefix mismatch is detected, it rolls back and raises
+  `AuditRetentionError("prefix_mismatch")`. Only after 100% prefix equivalence is established does it
+  execute `DELETE FROM audit_events WHERE event_time < ? OR (event_time = ? AND audit_event_id <= ?)`,
+  ensuring zero unarchived rows are deleted.
+- **Quiescent Lifecycle Pruning (`HumanListenerLifecycle.prune_security_audit_quiescent`):**
+  Synchronously pauses listener admission, joins active worker threads (< 5.0s drain), executes
+  `prune_archived_security_audit`, and automatically restarts fresh listeners via `replace()`.
+
 ## Read-Only Analyst Dashboard Slice
 
 The authenticated read-only analyst dashboard slice (`threatfusion.api.analyst_dashboard`) connects a human analyst to the `AnalystTlsListener` over mutual TLS 1.3 loopback transport, retrieving real persisted alerts and detail without violating transport constraints:

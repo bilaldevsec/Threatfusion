@@ -1101,3 +1101,52 @@ Individual Black checks: all 4 touched files unchanged, exit 0.
 CA issuance, secure certificate/private-key delivery to Firefox, long-term endurance, and the
 defensible distinct-alert correlation key remain open. TF-008 and TF-009 remain open. All changes
 remain unstaged/uncommitted for review.
+
+### 2026-10-14 — Tamper-evident security audit export, retention pruning, and hash-chained journal rotation
+
+Workspace verified as `/home/muhammad-bilal/projects/threatfusion-gemini`, branch
+`gemini/product-20260924`, HEAD `b1faf50`, push URL `no-push://requires-explicit-review`.
+
+Acceptance criteria addressed:
+1. **Hash-Chained Journal Rotation at the 64-Record Cap:** `threatfusion.operations.human_credentials.rotate_journal`
+   solves the open 64-record journal capacity constraint under directory locks and descriptor-relative
+   traversal. It archives the full `journal.jsonl` and writes a companion manifest `manifest.json`
+   (mode 0600, schema `operator_human_credential_journal_archive_v1`) with `sha256_digest`, `first_seq`,
+   `last_seq`, and `previous_archive_sha256`. It then atomically replaces `journal.jsonl` in the policy
+   directory with a continuation checkpoint entry (`seq = last_seq + 1`, `action = "journal_rotated"`,
+   `resulting_status = "rotated"`, `previous_archive_sha256 = archive_sha256`). Sequence progression
+   continues monotonically (`last_seq + 2`, ...) while the file record count resets to 1 (allowing 63
+   more operator actions). Cryptographic integrity is verified via `verify_journal_archive(archive_dir)`.
+2. **Tamper-Evident Security Audit Export & Verification:** `export_security_audit_archive` writes
+   canonical ordered JSONL events (`audit_events.jsonl`, mode 0600) and an immutable manifest
+   (`manifest.json`, mode 0600, schema `security_audit_archive_v1`) into a locked mode-0700 archive directory,
+   recording SHA-256 digest, row count, and first/last event IDs and timestamps. `verify_security_audit_archive`
+   validates cryptographic digests, JSONL formatting, schema constraints, and monotonic timestamps.
+3. **Atomic Contiguous Prefix Pruning:** `prune_archived_security_audit` first verifies the archive, opens
+   an exclusive SQLite transaction on `audit.sqlite3`, and confirms that the first `manifest["row_count"]`
+   rows in the database match the archive byte-for-byte. It deletes only the verified contiguous prefix
+   (`WHERE event_time < ? OR (event_time = ? AND audit_event_id <= ?)`), guaranteeing zero unarchived event loss.
+   `HumanListenerLifecycle.prune_security_audit_quiescent` coordinates this pruning with worker drain (< 5.0s)
+   and fresh generation restart.
+
+Exact validation commands and results:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src:. threatfusion-venv/bin/pytest -o addopts= -q --tb=short backend/tests/integration/test_audit_retention.py backend/tests/integration/test_operator_human_credentials.py backend/tests/integration/test_human_service_runner.py backend/tests/integration/test_human_listener_lifecycle.py backend/tests/integration/test_storage_backup.py backend/tests/unit/test_analyst_security_audit.py backend/tests/unit/test_analyst_state.py
+threatfusion-venv/bin/ruff check .
+threatfusion-venv/bin/black --check backend/src/threatfusion/operations/human_credentials.py
+threatfusion-venv/bin/black --check backend/src/threatfusion/operations/audit_retention.py
+threatfusion-venv/bin/black --check backend/src/threatfusion/operations/human_listener_lifecycle.py
+threatfusion-venv/bin/black --check backend/tests/integration/test_operator_human_credentials.py
+threatfusion-venv/bin/black --check backend/tests/integration/test_audit_retention.py
+git diff HEAD --check
+```
+
+Combined suite: **166 passed in 44.89s, exit 0**.
+Ruff: `All checks passed!`, exit 0.
+Individual Black checks: all 5 touched files unchanged, exit 0.
+`git diff HEAD --check`: clean (0 errors), exit 0.
+
+CA issuance, secure certificate/private-key delivery to Firefox, long-term endurance, and the
+defensible distinct-alert correlation key remain open. TF-008 and TF-009 remain open. All changes
+remain unstaged/uncommitted for review.

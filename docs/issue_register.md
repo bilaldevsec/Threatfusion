@@ -444,3 +444,33 @@ and `threatfusion.operations.human_service_runner`:
 
 CA issuance, secure Firefox credential delivery, long-term endurance, and the defensible
 distinct-alert correlation key remain open under TF-008 and TF-009.
+
+### TF-008 / TF-009 tamper-evident security audit export, retention pruning, and hash-chained journal rotation, 2026-10-14
+
+Both TF-008 and TF-009 remain **open**. Long-term maintenance mechanisms for bounded SQLite audit
+history and credential policy journaling are now implemented in `threatfusion.operations.audit_retention`
+and `threatfusion.operations.human_credentials`:
+
+1. **Hash-Chained Journal Rotation at the 64-Record Cap:** `rotate_journal(policy_dir, archive_dir)`
+   solves the open 64-record journal capacity constraint under directory locks and descriptor-relative
+   traversal. It archives the full `journal.jsonl` and writes a companion manifest `manifest.json`
+   (mode 0600, schema `operator_human_credential_journal_archive_v1`) with `sha256_digest`, `first_seq`,
+   `last_seq`, and `previous_archive_sha256`. It then atomically replaces `journal.jsonl` in the policy
+   directory with a continuation checkpoint entry (`seq = last_seq + 1`, `action = "journal_rotated"`,
+   `resulting_status = "rotated"`, `previous_archive_sha256 = archive_sha256`). Sequence progression
+   continues monotonically (`last_seq + 2`, ...) while the file record count resets to 1 (allowing 63
+   more operator actions). Cryptographic integrity is verified via `verify_journal_archive(archive_dir)`.
+2. **Tamper-Evident Security Audit Export & Verification:** `export_security_audit_archive` writes
+   canonical ordered JSONL events (`audit_events.jsonl`, mode 0600) and an immutable manifest
+   (`manifest.json`, mode 0600, schema `security_audit_archive_v1`) into a locked mode-0700 archive directory,
+   recording SHA-256 digest, row count, and first/last event IDs and timestamps. `verify_security_audit_archive`
+   validates cryptographic digests, JSONL formatting, schema constraints, and monotonic timestamps.
+3. **Atomic Contiguous Prefix Pruning:** `prune_archived_security_audit` first verifies the archive, opens
+   an exclusive SQLite transaction on `audit.sqlite3`, and confirms that the first `manifest["row_count"]`
+   rows in the database match the archive byte-for-byte. It deletes only the verified contiguous prefix
+   (`WHERE event_time < ? OR (event_time = ? AND audit_event_id <= ?)`), guaranteeing zero unarchived event loss.
+   `HumanListenerLifecycle.prune_security_audit_quiescent` coordinates this pruning with worker drain (< 5.0s)
+   and fresh generation restart.
+
+CA issuance, secure Firefox credential delivery, long-term endurance, and the defensible
+distinct-alert correlation key remain open under TF-008 and TF-009.

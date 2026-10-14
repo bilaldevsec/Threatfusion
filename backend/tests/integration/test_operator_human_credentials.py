@@ -452,3 +452,107 @@ def test_journal_empty_on_fresh_directory(directory):
     """read_journal returns empty tuple on directory with no journal."""
     entries = policy.read_journal(directory)
     assert entries == ()
+
+
+def test_journal_rotation_at_capacity_and_chaining(directory, certificates, tmp_path):
+    """Rotate journal at capacity, verify archive manifest, and continue monotonic sequence."""
+    fp1 = enroll(directory, certificates)
+    fp2 = enroll(directory, certificates, "analyst_a", "analyst_a", create=False)
+
+    # Alternate disable and disable again or revoke up to capacity (64 entries total)
+    for _ in range(62):
+        policy.restrict(directory, fp1, revoke=False)
+
+    entries = policy.read_journal(directory)
+    assert len(entries) == 64
+    assert entries[0]["seq"] == 1
+    assert entries[-1]["seq"] == 64
+
+    # The 65th action must fail due to capacity
+    with pytest.raises(policy.CredentialPolicyError):
+        policy.restrict(directory, fp2, revoke=False)
+
+    # Perform rotation to archive directory
+    archive_dir = tmp_path / "journal_archive_1"
+    archive_dir.mkdir(mode=0o700)
+    manifest = policy.rotate_journal(directory, archive_dir)
+
+    assert manifest["schema"] == policy.JOURNAL_ARCHIVE_SCHEMA
+    assert manifest["record_count"] == 64
+    assert manifest["first_seq"] == 1
+    assert manifest["last_seq"] == 64
+    assert manifest["archived_up_to_seq"] == 64
+    assert manifest["previous_archive_sha256"] is None
+
+    # Verify archive directory contents and integrity
+    verified_manifest = policy.verify_journal_archive(archive_dir)
+    assert verified_manifest == manifest
+
+    # Policy directory now contains 1 continuation checkpoint entry
+    rotated_entries = policy.read_journal(directory)
+    assert len(rotated_entries) == 1
+    assert rotated_entries[0]["seq"] == 65
+    assert rotated_entries[0]["action"] == "journal_rotated"
+    assert rotated_entries[0]["resulting_status"] == "rotated"
+    assert rotated_entries[0]["previous_archive_sha256"] == manifest["sha256_digest"]
+    assert rotated_entries[0]["archived_up_to_seq"] == 64
+
+    # Now the 65th operator action succeeds and appends with seq=66
+    policy.restrict(directory, fp2, revoke=False)
+    subsequent_entries = policy.read_journal(directory)
+    assert len(subsequent_entries) == 2
+    assert subsequent_entries[0]["seq"] == 65
+    assert subsequent_entries[1]["seq"] == 66
+    assert subsequent_entries[1]["action"] == "disable"
+    assert subsequent_entries[1]["sha256_fingerprint"] == fp2
+
+    # Second rotation chains hash provenance
+    archive_dir_2 = tmp_path / "journal_archive_2"
+    archive_dir_2.mkdir(mode=0o700)
+    manifest_2 = policy.rotate_journal(directory, archive_dir_2)
+    assert manifest_2["record_count"] == 2
+    assert manifest_2["first_seq"] == 65
+    assert manifest_2["last_seq"] == 66
+    assert manifest_2["previous_archive_sha256"] == manifest["sha256_digest"]
+
+    # Third generation starts with seq=67
+    gen3_entries = policy.read_journal(directory)
+    assert len(gen3_entries) == 1
+    assert gen3_entries[0]["seq"] == 67
+    assert gen3_entries[0]["previous_archive_sha256"] == manifest_2["sha256_digest"]
+
+
+def test_rotate_journal_rejects_dirty_or_symlink_archive(directory, certificates, tmp_path):
+    """rotate_journal rejects non-empty archive directory or symlink."""
+    enroll(directory, certificates)
+
+    # Non-empty archive
+    dirty_dir = tmp_path / "dirty_archive"
+    dirty_dir.mkdir(mode=0o700)
+    (dirty_dir / "existing.txt").write_text("hello")
+    # Actually create manifest.json or journal.jsonl
+    (dirty_dir / policy.JOURNAL_FILENAME).write_text("dummy")
+    with pytest.raises(policy.CredentialPolicyError):
+        policy.rotate_journal(directory, dirty_dir)
+
+    # Symlink archive dir
+    symlink_target = tmp_path / "target_dir"
+    symlink_target.mkdir(mode=0o700)
+    symlink_dir = tmp_path / "symlink_dir"
+    symlink_dir.symlink_to(symlink_target)
+    with pytest.raises(policy.CredentialPolicyError):
+        policy.rotate_journal(directory, symlink_dir)
+
+
+def test_verify_journal_archive_detects_tampering(directory, certificates, tmp_path):
+    """verify_journal_archive fails closed on any tampering."""
+    enroll(directory, certificates)
+    archive_dir = tmp_path / "archive_tamper"
+    archive_dir.mkdir(mode=0o700)
+    _ = policy.rotate_journal(directory, archive_dir)
+
+    # Tamper with journal file
+    j_file = archive_dir / policy.JOURNAL_FILENAME
+    j_file.write_bytes(j_file.read_bytes() + b"\n")
+    with pytest.raises(policy.CredentialPolicyError):
+        policy.verify_journal_archive(archive_dir)

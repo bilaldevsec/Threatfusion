@@ -90,14 +90,43 @@ An append-only journal (`journal.jsonl`, mode 0600, schema
 `operator_human_credential_journal_v1`) records every successful state change
 under the same directory lock and descriptor-relative traversal. Each JSONL line
 contains a monotonic 1-based sequence number (`seq`), UTC ISO timestamp
-(`recorded_at_utc`), `action` (`init`|`enroll`|`disable`|`revoke`), `actor_id`
-(or null for `init`), `sha256_fingerprint` (or null for `init`), `resulting_status`
-(`initialized`|`active`|`disabled`|`revoked`), `total_records`, and `active_records`.
+(`recorded_at_utc`), `action` (`init`|`enroll`|`disable`|`revoke`|`journal_rotated`),
+`actor_id` (or null for non-enrollment actions), `sha256_fingerprint`, `resulting_status`
+(`initialized`|`active`|`disabled`|`revoked`|`rotated`), `total_records`, and `active_records`.
 Raw PEM bytes and secret keys are never written to the journal. The journal is
 capped at 64 records and 64 KiB. Symlinks, unsafe permissions, corrupt JSON,
 non-monotonic sequence numbers, or capacity overflows raise `CredentialPolicyError`.
 The `threatfusion.operations.human_credentials.read_journal(policy_dir)` helper
 reads and validates journal integrity under the directory lock.
+
+### Hash-chained journal rotation at the 64-record cap
+
+When the journal reaches its 64-record cap, subsequent write actions (`enroll`, `disable`, `revoke`)
+fail closed with `CredentialPolicyError`. To archive the journal and continue operating without
+losing sequence monotonicity or cryptographic chain provenance, the operator rotates the journal:
+
+```sh
+install -d -m 700 /home/operator/threatfusion-archives/journal-01
+PYTHONPATH=backend/src threatfusion-venv/bin/python -m threatfusion.operations.human_credentials \
+  --directory /home/operator/threatfusion-human-policy \
+  rotate-journal --archive-dir /home/operator/threatfusion-archives/journal-01
+```
+
+Rotation executes under exclusive locks on both directories:
+1. Validates the active journal, reads its exact byte content, and computes its SHA-256 digest.
+2. Atomically writes the archived `journal.jsonl` (mode 0600) and companion manifest `manifest.json`
+   (mode 0600, schema `operator_human_credential_journal_archive_v1`) into the archive directory.
+   The manifest records `sha256_digest`, `size_bytes`, `record_count`, `first_seq`, `last_seq`,
+   `archived_up_to_seq`, and `previous_archive_sha256`.
+3. Atomically replaces `journal.jsonl` in the policy directory with a seeded continuation checkpoint:
+   `seq = last_seq + 1`, `action = "journal_rotated"`, `resulting_status = "rotated"`,
+   `previous_archive_sha256 = sha256_digest`, `archived_up_to_seq = last_seq`, and current
+   policy `active_records` / `total_records`.
+4. Monotonic sequence progression continues seamlessly (`last_seq + 2`, `last_seq + 3`, ...) while
+   the active file's record count resets to 1, allowing up to 63 additional operator actions before
+   the next rotation.
+5. Archived journals can be cryptographically verified at any time using
+   `threatfusion.operations.human_credentials.verify_journal_archive(archive_dir)`.
 
 ## Controlled restart and integration
 

@@ -38,6 +38,8 @@ _FIELDS = {"actor_id", "certificate_sha256", "enabled", "revoked", "not_before",
 
 JOURNAL_SCHEMA = "operator_human_credential_journal_v1"
 JOURNAL_FILENAME = "journal.jsonl"
+JOURNAL_ARCHIVE_SCHEMA = "operator_human_credential_journal_archive_v1"
+JOURNAL_ARCHIVE_MANIFEST_FILENAME = "manifest.json"
 MAX_JOURNAL_BYTES = 65536
 MAX_JOURNAL_RECORDS = 64
 _ALLOWED_JOURNAL_FIELDS = {
@@ -55,6 +57,8 @@ _ALLOWED_JOURNAL_FIELDS = {
     "total_records",
     "active_count",
     "total_count",
+    "previous_archive_sha256",
+    "archived_up_to_seq",
 }
 _REQUIRED_JOURNAL_FIELDS = {
     "schema",
@@ -297,7 +301,7 @@ def _read_journal(fd) -> list[dict[str, object]]:
         raise CredentialPolicyError()
     entries = []
     expected_seq = 1
-    for line in lines[:-1]:
+    for i, line in enumerate(lines[:-1]):
         if not line:
             raise CredentialPolicyError()
         entry = json.loads(line.decode("utf-8"), object_pairs_hook=_unique)
@@ -309,6 +313,45 @@ def _read_journal(fd) -> list[dict[str, object]]:
             raise CredentialPolicyError()
         if entry["schema"] != JOURNAL_SCHEMA:
             raise CredentialPolicyError()
+        action = entry["action"]
+        if action not in {
+            "init",
+            "enroll",
+            "disable",
+            "revoke",
+            "journal_rotated",
+            "archive_checkpoint",
+        }:
+            raise CredentialPolicyError()
+        if entry["resulting_status"] not in {
+            "initialized",
+            "active",
+            "disabled",
+            "revoked",
+            "rotated",
+        }:
+            raise CredentialPolicyError()
+        if action in {"journal_rotated", "archive_checkpoint"}:
+            if i != 0 or entry["resulting_status"] != "rotated":
+                raise CredentialPolicyError()
+            prev_hash = entry.get("previous_archive_sha256")
+            if type(prev_hash) is not str or re.fullmatch(r"[0-9a-f]{64}", prev_hash) is None:
+                raise CredentialPolicyError()
+            seq = entry["seq"]
+            arch_up_to = entry.get("archived_up_to_seq")
+            if (
+                type(seq) is not int
+                or isinstance(seq, bool)
+                or seq <= 1
+                or type(arch_up_to) is not int
+                or isinstance(arch_up_to, bool)
+                or arch_up_to != seq - 1
+            ):
+                raise CredentialPolicyError()
+            expected_seq = seq
+        else:
+            if i == 0:
+                expected_seq = 1
         seq = entry["seq"]
         if type(seq) is not int or isinstance(seq, bool) or seq != expected_seq:
             raise CredentialPolicyError()
@@ -317,10 +360,6 @@ def _read_journal(fd) -> list[dict[str, object]]:
             raise CredentialPolicyError()
         parsed = datetime.fromisoformat(ts)
         if not is_utc(parsed) or parsed.isoformat() != ts:
-            raise CredentialPolicyError()
-        if entry["action"] not in {"init", "enroll", "disable", "revoke"}:
-            raise CredentialPolicyError()
-        if entry["resulting_status"] not in {"initialized", "active", "disabled", "revoked"}:
             raise CredentialPolicyError()
         actor = entry.get("actor_id")
         if actor is not None and (type(actor) is not str or not valid_actor_id(actor)):
@@ -343,6 +382,10 @@ def _read_journal(fd) -> list[dict[str, object]]:
     return entries
 
 
+def _journal_counts(records: list[HumanCredential]) -> tuple[int, int]:
+    return sum(1 for r in records if r.enabled and not r.revoked), len(records)
+
+
 def _append_journal(
     fd,
     existing_entries: list[dict[str, object]],
@@ -356,7 +399,7 @@ def _append_journal(
 ) -> None:
     if len(existing_entries) >= MAX_JOURNAL_RECORDS:
         raise CredentialPolicyError()
-    seq = len(existing_entries) + 1
+    seq = existing_entries[-1]["seq"] + 1 if existing_entries else 1
     now_str = datetime.now(UTC).isoformat()
     entry = {
         "schema": JOURNAL_SCHEMA,
@@ -420,6 +463,213 @@ def read_journal(policy_dir: Path | str) -> tuple[dict[str, object], ...]:
     directory = Path(policy_dir) if not isinstance(policy_dir, Path) else policy_dir
     with _boundary(), _directory(directory) as fd:
         return tuple(_read_journal(fd))
+
+
+def rotate_journal(policy_dir: Path | str, archive_dir: Path | str) -> dict[str, object]:
+    """Rotate active journal at capacity into an archive directory and seed a hash-chained checkpoint."""
+    p_dir = Path(policy_dir) if not isinstance(policy_dir, Path) else policy_dir
+    a_dir = Path(archive_dir) if not isinstance(archive_dir, Path) else archive_dir
+    if not p_dir.is_absolute() or ".." in p_dir.parts:
+        raise CredentialPolicyError()
+    if not a_dir.is_absolute() or ".." in a_dir.parts:
+        raise CredentialPolicyError()
+
+    with _boundary(), _directory(p_dir, write=True) as pol_fd:
+        with _directory(a_dir, write=True) as arch_fd:
+            for check_name in (JOURNAL_FILENAME, JOURNAL_ARCHIVE_MANIFEST_FILENAME):
+                try:
+                    chk = os.open(check_name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=arch_fd)
+                    os.close(chk)
+                    raise CredentialPolicyError()
+                except FileNotFoundError:
+                    pass
+
+            entries = _read_journal(pol_fd)
+            if not entries:
+                raise CredentialPolicyError()
+
+            try:
+                jfd = os.open(
+                    JOURNAL_FILENAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=pol_fd
+                )
+            except FileNotFoundError:
+                raise CredentialPolicyError()
+            try:
+                info = os.fstat(jfd)
+                if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_JOURNAL_BYTES:
+                    raise CredentialPolicyError()
+                raw_bytes = os.read(jfd, MAX_JOURNAL_BYTES + 1)
+                if len(raw_bytes) > MAX_JOURNAL_BYTES:
+                    raise CredentialPolicyError()
+            finally:
+                os.close(jfd)
+
+            sha256_digest = hashlib.sha256(raw_bytes).hexdigest()
+            first_seq = entries[0]["seq"]
+            last_seq = entries[-1]["seq"]
+            record_count = len(entries)
+            prev_archive = entries[0].get("previous_archive_sha256")
+
+            arch_jfd = os.open(
+                JOURNAL_FILENAME,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=arch_fd,
+            )
+            try:
+                os.fchmod(arch_jfd, 0o600)
+                written = os.write(arch_jfd, raw_bytes)
+                if written != len(raw_bytes):
+                    raise CredentialPolicyError()
+                os.fsync(arch_jfd)
+            finally:
+                os.close(arch_jfd)
+
+            now_str = datetime.now(UTC).isoformat()
+            manifest = {
+                "schema": JOURNAL_ARCHIVE_SCHEMA,
+                "archived_at_utc": now_str,
+                "archive_file": JOURNAL_FILENAME,
+                "sha256_digest": sha256_digest,
+                "size_bytes": len(raw_bytes),
+                "record_count": record_count,
+                "first_seq": first_seq,
+                "last_seq": last_seq,
+                "archived_up_to_seq": last_seq,
+                "previous_archive_sha256": prev_archive,
+            }
+            manifest_bytes = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode("utf-8")
+            mfd = os.open(
+                JOURNAL_ARCHIVE_MANIFEST_FILENAME,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=arch_fd,
+            )
+            try:
+                os.fchmod(mfd, 0o600)
+                written = os.write(mfd, manifest_bytes)
+                if written != len(manifest_bytes):
+                    raise CredentialPolicyError()
+                os.fsync(mfd)
+            finally:
+                os.close(mfd)
+            os.fsync(arch_fd)
+
+            records = _read(pol_fd)
+            active_count, total_count = _journal_counts(records)
+
+            checkpoint_entry = {
+                "schema": JOURNAL_SCHEMA,
+                "seq": last_seq + 1,
+                "sequence": last_seq + 1,
+                "recorded_at_utc": now_str,
+                "timestamp": now_str,
+                "action": "journal_rotated",
+                "resulting_status": "rotated",
+                "status": "rotated",
+                "previous_archive_sha256": sha256_digest,
+                "archived_up_to_seq": last_seq,
+                "active_records": active_count,
+                "active_count": active_count,
+                "total_records": total_count,
+                "total_count": total_count,
+            }
+            cp_raw = (json.dumps(checkpoint_entry, sort_keys=True) + "\n").encode("utf-8")
+
+            tmp_name = ".journal-" + uuid4().hex
+            tmp_fd = os.open(
+                tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=pol_fd
+            )
+            try:
+                os.fchmod(tmp_fd, 0o600)
+                written = os.write(tmp_fd, cp_raw)
+                if written != len(cp_raw):
+                    raise CredentialPolicyError()
+                os.fsync(tmp_fd)
+            finally:
+                os.close(tmp_fd)
+
+            try:
+                os.replace(tmp_name, JOURNAL_FILENAME, src_dir_fd=pol_fd, dst_dir_fd=pol_fd)
+                os.fsync(pol_fd)
+            finally:
+                try:
+                    os.unlink(tmp_name, dir_fd=pol_fd)
+                except FileNotFoundError:
+                    pass
+
+            return manifest
+
+
+def verify_journal_archive(archive_dir: Path | str) -> dict[str, object]:
+    """Cryptographically and structurally verify an archived operator credential journal."""
+    a_dir = Path(archive_dir) if not isinstance(archive_dir, Path) else archive_dir
+    if not a_dir.is_absolute() or ".." in a_dir.parts:
+        raise CredentialPolicyError()
+
+    with _boundary(), _directory(a_dir, write=False) as arch_fd:
+        try:
+            mfd = os.open(
+                JOURNAL_ARCHIVE_MANIFEST_FILENAME,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=arch_fd,
+            )
+        except FileNotFoundError:
+            raise CredentialPolicyError()
+        try:
+            info = os.fstat(mfd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_nlink != 1
+                or info.st_size > MAX_JOURNAL_BYTES
+            ):
+                raise CredentialPolicyError()
+            raw_manifest = os.read(mfd, MAX_JOURNAL_BYTES + 1)
+        finally:
+            os.close(mfd)
+
+        manifest = json.loads(raw_manifest.decode("utf-8"), object_pairs_hook=_unique)
+        if type(manifest) is not dict or manifest.get("schema") != JOURNAL_ARCHIVE_SCHEMA:
+            raise CredentialPolicyError()
+
+        try:
+            jfd = os.open(
+                JOURNAL_FILENAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=arch_fd
+            )
+        except FileNotFoundError:
+            raise CredentialPolicyError()
+        try:
+            info = os.fstat(jfd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_nlink != 1
+                or info.st_size > MAX_JOURNAL_BYTES
+            ):
+                raise CredentialPolicyError()
+            raw_journal = os.read(jfd, MAX_JOURNAL_BYTES + 1)
+        finally:
+            os.close(jfd)
+
+        if len(raw_journal) != manifest.get("size_bytes"):
+            raise CredentialPolicyError()
+        if hashlib.sha256(raw_journal).hexdigest() != manifest.get("sha256_digest"):
+            raise CredentialPolicyError()
+
+        entries = _read_journal(arch_fd)
+        if len(entries) != manifest.get("record_count"):
+            raise CredentialPolicyError()
+        if entries[0]["seq"] != manifest.get("first_seq") or entries[-1]["seq"] != manifest.get(
+            "last_seq"
+        ):
+            raise CredentialPolicyError()
+        if manifest.get("archived_up_to_seq") != manifest.get("last_seq"):
+            raise CredentialPolicyError()
+
+        return manifest
 
 
 def init(directory: Path, certificate: Path, ca: Path, actor: str) -> str:
@@ -532,6 +782,8 @@ def main(argv=None) -> int:
     for name in ("disable", "revoke"):
         command = commands.add_parser(name)
         command.add_argument("--fingerprint", required=True)
+    rotate_cmd = commands.add_parser("rotate-journal")
+    rotate_cmd.add_argument("--archive-dir", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         if args.command in ("init", "enroll"):
@@ -545,6 +797,9 @@ def main(argv=None) -> int:
             print(
                 json.dumps({"status": "saved_restart_required", "certificate_sha256": fingerprint})
             )
+        elif args.command == "rotate-journal":
+            manifest = rotate_journal(args.directory, args.archive_dir)
+            print(json.dumps(manifest))
         else:
             restrict(args.directory, args.fingerprint, revoke=args.command == "revoke")
             print('{"status":"saved_restart_required"}')

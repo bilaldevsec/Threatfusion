@@ -249,6 +249,29 @@ class HumanListenerLifecycle:
 
             return manifest
 
+    def prune_security_audit_quiescent(
+        self, archive_dir: Path | str, audit_db_path: Path | str | None = None
+    ) -> dict[str, object]:
+        """Stop/join workers, prune verified archived audit rows, resume listener generation."""
+        from threatfusion.operations.audit_retention import prune_archived_security_audit
+
+        with self._control:
+            if self._shutdown():
+                raise KeyboardInterrupt
+
+            directory, api_config, browser_config, authorization, view, audit = self._arguments
+            db_path = Path(audit_db_path) if audit_db_path is not None else audit._database_path
+
+            result = prune_archived_security_audit(audit_db_path=db_path, archive_dir=archive_dir)
+
+            try:
+                self.replace()
+            except BaseException:
+                self._shutdown()
+                raise
+
+            return result
+
     def __enter__(self):
         self.replace()
         return self
