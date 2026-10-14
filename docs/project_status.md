@@ -1204,3 +1204,58 @@ Individual Black checks: all 2 touched files unchanged, exit 0.
 
 Automated browser-profile provisioning, long-term endurance, and the defensible distinct-alert
 correlation key remain open under TF-008 and TF-009. All changes remain unstaged/uncommitted for review.
+
+### 2026-10-14 — Package discovery consolidation, zero-PYTHONPATH editable install, and full-repository verification gate
+
+Workspace verified as `/home/muhammad-bilal/projects/threatfusion-gemini`, branch
+`gemini/product-20260924`, HEAD `95d6094`, push URL `no-push://requires-explicit-review`.
+
+Acceptance criteria addressed:
+1. **Timestamp ISO Pre-Parsing (TF-005):** In `backend/src/threatfusion/datasets/adapters/base.py`,
+   `parse_required_timestamp` now attempts `datetime.fromisoformat(text)` with UTC normalization
+   before falling back to pandas `dayfirst=True` parsing. This eliminates the four historical
+   `UserWarning: Parsing dates in %Y-%m-%dT%H:%M:%S.%f%z format when dayfirst=True was specified`
+   warnings emitted across Mordor test profiles and raw readers, while strictly preserving
+   numeric epoch parsing and byte-identical datetime values.
+2. **Package Discovery Consolidation & Top-Level `src` Alias:** `pyproject.toml` was updated with
+   `[tool.setuptools.package-dir]` mapping `"threatfusion" = "backend/src/threatfusion"` and
+   `"src" = "src"`, and `[tool.setuptools.packages.find]` configured with `where = ["backend/src", "."]`
+   and `include = ["threatfusion*", "src*"]`. The top-level `src/__init__.py` alias exports
+   `src.threatfusion` without polluting global namespace.
+3. **Zero-PYTHONPATH Offline Editable Installation:** Editable installation was completed strictly
+   offline via `threatfusion-venv/bin/pip install --no-build-isolation --no-deps -e .` with exit 0,
+   zero network requests, and zero package/wheel downloads. Subprocess unit test
+   `test_subprocess_import_zero_pythonpath_external_cwd` confirms that running Python from an external
+   directory (e.g. `/tmp`) with `PYTHONPATH` unset successfully imports `threatfusion`, all 13
+   subpackages, and `src`.
+4. **Full-Repository Zero-PYTHONPATH Verification Gate:** Dedicated regression unit test file
+   `backend/tests/unit/test_package_discovery.py` verifies all package discovery, alias resolution,
+   and TF-005 timestamp contracts. The complete repository test suite passed with `PYTHONPATH` unset:
+   `env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 threatfusion-venv/bin/pytest` passed 1284 tests in
+   111.45s with zero failures and zero warnings.
+
+Exact validation commands and results:
+
+```sh
+threatfusion-venv/bin/pip install --no-build-isolation --no-deps -e .
+env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 threatfusion-venv/bin/pytest -o addopts= -q --tb=short backend/tests/unit/test_package_discovery.py backend/tests/integration/test_human_ca_issuance.py backend/tests/integration/test_audit_retention.py backend/tests/integration/test_operator_human_credentials.py backend/tests/integration/test_human_service_runner.py backend/tests/integration/test_human_listener_lifecycle.py backend/tests/integration/test_storage_backup.py
+env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 threatfusion-venv/bin/pytest -o addopts= -q --tb=short backend/tests/unit
+env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 threatfusion-venv/bin/pytest -o addopts= -q --tb=short backend/tests
+threatfusion-venv/bin/ruff check .
+threatfusion-venv/bin/black --check src/__init__.py
+threatfusion-venv/bin/black --check backend/src/threatfusion/datasets/adapters/base.py
+threatfusion-venv/bin/black --check backend/tests/unit/test_package_discovery.py
+git diff HEAD --check
+```
+
+Results:
+- Operations and discovery integration suite: **180 passed in 48.45s, exit 0**.
+- Complete unit test suite: **1030 passed in 39.51s, exit 0** (zero warnings).
+- Full repository test suite: **1284 passed in 111.45s, exit 0** (zero warnings).
+- Ruff: `All checks passed!`, exit 0.
+- Individual Black checks: all 3 touched files unchanged, exit 0.
+- `git diff HEAD --check`: clean (0 errors), exit 0.
+
+TF-005 is marked **resolved**. Automated browser-profile provisioning, long-term endurance, and the
+defensible distinct-alert correlation key remain open under TF-008 and TF-009. All changes remain
+unstaged/uncommitted for review.

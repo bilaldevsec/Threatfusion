@@ -101,6 +101,12 @@ def parse_required_timestamp(value: Any, source: str, field: str) -> datetime:
     except (OverflowError, ValueError):
         pass
 
+    try:
+        dt = datetime.fromisoformat(text)
+        return dt.astimezone(UTC) if dt.tzinfo else dt.replace(tzinfo=UTC)
+    except ValueError:
+        pass
+
     parsed = pd.to_datetime(text, errors="coerce", utc=True, dayfirst=True)
     if pd.isna(parsed):
         raise SourceRowValidationError(source, field, "must be a parseable timestamp")
