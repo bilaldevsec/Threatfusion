@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import stat
 from contextlib import closing
+from pathlib import Path
 from threading import Event, RLock, Thread
 
 from threatfusion.operations import human_credentials as policy
+from threatfusion.operations.storage_backup import (
+    create_storage_snapshot,
+    restore_storage_snapshot,
+    verify_storage_snapshot,
+)
 
 
 class HumanLifecycleError(RuntimeError):
@@ -23,7 +29,14 @@ class HumanListenerLifecycle:
     """
 
     def __init__(
-        self, directory, api_configuration, browser_configuration, authorization, view, audit
+        self,
+        directory,
+        api_configuration,
+        browser_configuration,
+        authorization,
+        view,
+        audit,
+        storage_directory=None,
     ):
         self._arguments = (
             directory,
@@ -33,6 +46,7 @@ class HumanListenerLifecycle:
             view,
             audit,
         )
+        self._storage_directory = Path(storage_directory) if storage_directory is not None else None
         self._control = RLock()
         self._stop = Event()
         self._ready = Event()
@@ -174,6 +188,66 @@ class HumanListenerLifecycle:
                     raise KeyboardInterrupt from None
                 raise HumanLifecycleError() from None
         return self.snapshot()
+
+    def snapshot_quiescent(
+        self, snapshot_dir: Path | str, storage_dir: Path | str | None = None
+    ) -> dict[str, object]:
+        """Stop admission/join workers, take cross-DB snapshot, resume fresh generation."""
+        with self._control:
+            if self._shutdown():
+                raise KeyboardInterrupt
+            directory, api_config, browser_config, authorization, view, audit = self._arguments
+            src_dir = (
+                Path(storage_dir)
+                if storage_dir is not None
+                else (self._storage_directory or view._repository._alerts._database_path.parent)
+            )
+            alerts_path = view._repository._alerts._database_path
+            states_path = view._repository._database_path
+            audit_path = audit._database_path
+
+            manifest = create_storage_snapshot(
+                snapshot_dir=snapshot_dir,
+                source_dir=src_dir,
+                alerts_path=alerts_path,
+                states_path=states_path,
+                audit_path=audit_path,
+            )
+
+            try:
+                self.replace()
+            except BaseException:
+                self._shutdown()
+                raise
+
+            return manifest
+
+    def restore_quiescent(
+        self, snapshot_dir: Path | str, storage_dir: Path | str | None = None
+    ) -> dict[str, object]:
+        """Verify candidate snapshot, stop/join workers, restore databases, resume generation."""
+        with self._control:
+            manifest = verify_storage_snapshot(snapshot_dir)
+
+            if self._shutdown():
+                raise KeyboardInterrupt
+
+            directory, api_config, browser_config, authorization, view, audit = self._arguments
+            dest_dir = (
+                Path(storage_dir)
+                if storage_dir is not None
+                else (self._storage_directory or view._repository._alerts._database_path.parent)
+            )
+
+            restore_storage_snapshot(snapshot_dir=snapshot_dir, target_dir=dest_dir)
+
+            try:
+                self.replace()
+            except BaseException:
+                self._shutdown()
+                raise
+
+            return manifest
 
     def __enter__(self):
         self.replace()

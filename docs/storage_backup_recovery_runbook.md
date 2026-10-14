@@ -175,8 +175,44 @@ All failures raise `StorageBackupError` (CLI exit code 1) with one of the follow
 - `referential_integrity_failed`: An `alert_candidate_id` referenced in `states.sqlite3` is absent from `alerts.sqlite3`.
 - `source_file_invalid` / `file_invalid`: File access error or file is not a regular file.
 
+## Quiescent snapshot and restore coordination with HumanListenerLifecycle
+
+To eliminate any risk of sequential interleaving during active listener traffic without requiring manual
+process stopping, `HumanListenerLifecycle` provides programmatic quiescent coordination methods:
+
+- **`snapshot_quiescent(snapshot_dir, storage_dir=None) -> dict[str, object]`**:
+  1. Stops listener admission on both API and browser mTLS endpoints.
+  2. Closes sockets and active connections, interrupting pending handshakes and joining both worker
+     threads (< 5.0s drain) so zero in-flight requests or writes are active across the three databases.
+  3. Executes `create_storage_snapshot(source_dir, snapshot_dir)` under exclusive directory lock,
+     performing page-level backups, `PRAGMA integrity_check`, referential integrity verification, and
+     manifest generation.
+  4. Starts a fresh listener generation via `replace()`, restoring listener admission.
+  5. Returns the verified `storage_snapshot_manifest_v1` dictionary. If restarting the generation fails,
+     fails closed leaving no half-open listeners.
+
+- **`restore_quiescent(snapshot_dir, storage_dir=None) -> dict[str, object]`**:
+  1. Validates the candidate snapshot directory via `verify_storage_snapshot(snapshot_dir)`.
+  2. Stops listener admission, closes sockets, and joins both worker threads.
+  3. Executes `restore_storage_snapshot(snapshot_dir, target_dir)` under directory lock, atomically
+     replacing active database files from the verified snapshot.
+  4. Starts a fresh listener generation bound to the restored database state, verifying schema integrity.
+  5. Returns the verified `storage_snapshot_manifest_v1` dictionary.
+
+Example programmatic usage:
+
+```python
+# Create quiescent point-in-time snapshot with automated drain and resume
+manifest = lifecycle.snapshot_quiescent("/home/operator/threatfusion-snapshots/quiescent-01")
+print(f"Quiescent snapshot generation: {lifecycle.snapshot()['generation']}")
+
+# Restore snapshot quiescing active listeners and resuming on restored state
+restored_manifest = lifecycle.restore_quiescent("/home/operator/threatfusion-snapshots/quiescent-01")
+print(f"Resumed on restored snapshot, generation: {lifecycle.snapshot()['generation']}")
+```
+
 ## Open boundaries under TF-008 and TF-009
 
 This procedure solves coordinated snapshot creation, integrity verification, and atomic restore
-for local SQLite storage. Operational browser credential delivery, CA issuance, daemon service-manager
-deployment, and long-term endurance testing remain open under TF-008 and TF-009.
+for local SQLite storage. Operational browser credential delivery, CA issuance,
+long-term endurance testing, and the defensible distinct-alert correlation key remain open under TF-008 and TF-009.

@@ -1051,3 +1051,53 @@ Individual Black checks: all touched files unchanged, exit 0.
 CA issuance, secure certificate/private-key delivery to Firefox, service-manager deployment,
 long-term endurance, and the defensible distinct-alert correlation key remain open.
 TF-008 and TF-009 remain open. All changes remain unstaged/uncommitted for review.
+
+### 2026-10-14 — Quiescent lifecycle snapshot/restore coordination and signal-safe service runner
+
+Workspace verified as `/home/muhammad-bilal/projects/threatfusion-gemini`, branch
+`gemini/product-20260924`, HEAD `2742aa9`, push URL `no-push://requires-explicit-review`.
+
+Acceptance criteria addressed:
+1. **Quiescent Lifecycle Snapshot & Restore:** `HumanListenerLifecycle` now provides
+   `snapshot_quiescent(snapshot_dir)` and `restore_quiescent(snapshot_dir)`. These operations
+   synchronously stop listener admission on both API and browser mTLS endpoints, close sockets,
+   and join both worker threads (< 5.0s drain), ensuring zero concurrent requests or active SQLite
+   writes are in progress. Quiescent snapshots capture page-level database copies via
+   `create_storage_snapshot` and automatically start a fresh listener generation via `replace()`;
+   quiescent restores cryptographically verify the candidate snapshot, atomically restore databases
+   via `restore_storage_snapshot`, and restart fresh listeners bound to the restored database state.
+2. **Signal-Safe Service Supervisor Runner:** `threatfusion.operations.human_service_runner.HumanServiceRunner`
+   provides a single-process supervised controller for `HumanListenerLifecycle` with deterministic
+   POSIX signal handling:
+   - `SIGTERM` / `SIGINT`: invokes `trigger_shutdown()`, stops listener admission, closes sockets,
+     drains in-flight requests, joins workers (< 5.0s), and exits `0`.
+   - `SIGHUP`: invokes `trigger_reload()`, executing `lifecycle.replace()` under directory lock to
+     load updated credential policy and advance generation; on reload failure (such as all actors
+     restricted or corrupt policy), fails closed, shuts down listeners, and exits `2`.
+   - Initial startup failure (e.g. missing/corrupt policy directory) or unhandled worker failure exits `1`.
+   - Programmatic triggers (`trigger_shutdown()`, `trigger_reload()`, `run_until_stopped()`, and
+     context manager) enable deterministic lifecycle automation and testability.
+3. **Hardened Service Manager Deployment:** A reference Linux `systemd` unit configuration
+   (`threatfusion-analyst.service`) defines unprivileged user isolation (`operator`), `UMask=0077`,
+   `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectSystem=strict`, and `ExecReload=/bin/kill -HUP $MAINPID`.
+
+Exact validation commands and results:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src:. threatfusion-venv/bin/pytest -o addopts= -q --tb=short backend/tests/integration/test_human_service_runner.py backend/tests/integration/test_human_listener_lifecycle.py backend/tests/integration/test_storage_backup.py backend/tests/integration/test_operator_human_credentials.py backend/tests/unit/test_analyst_security_audit.py backend/tests/unit/test_analyst_state.py
+threatfusion-venv/bin/ruff check .
+threatfusion-venv/bin/black --check backend/src/threatfusion/operations/human_service_runner.py
+threatfusion-venv/bin/black --check backend/src/threatfusion/operations/human_listener_lifecycle.py
+threatfusion-venv/bin/black --check backend/tests/integration/test_human_service_runner.py
+threatfusion-venv/bin/black --check backend/tests/integration/test_human_listener_lifecycle.py
+git diff HEAD --check
+```
+
+Combined suite: **156 passed in 34.06s, exit 0**.
+Ruff: `All checks passed!`, exit 0.
+Individual Black checks: all 4 touched files unchanged, exit 0.
+`git diff HEAD --check`: clean (0 errors), exit 0.
+
+CA issuance, secure certificate/private-key delivery to Firefox, long-term endurance, and the
+defensible distinct-alert correlation key remain open. TF-008 and TF-009 remain open. All changes
+remain unstaged/uncommitted for review.

@@ -414,3 +414,33 @@ snapshots are therefore recommended for exact point-in-time alignment.
 The expanded gate passes 148 tests (exit 0). CA issuance, secure Firefox credential delivery,
 daemon service-manager deployment, long-term endurance, and the defensible distinct-alert
 correlation key remain open under TF-008 and TF-009.
+
+### TF-009 quiescent lifecycle coordination and signal-safe service runner, 2026-10-14
+
+Both TF-008 and TF-009 remain **open**. Bounded quiescent storage coordination and a signal-safe
+service supervisor runner are now implemented in `threatfusion.operations.human_listener_lifecycle`
+and `threatfusion.operations.human_service_runner`:
+
+1. **Quiescent Snapshot and Restore Coordination:** `HumanListenerLifecycle` now provides
+   `snapshot_quiescent(snapshot_dir)` and `restore_quiescent(snapshot_dir)`. These operations stop
+   listener admission, close active sockets, and join both worker threads (< 5.0s drain), ensuring
+   zero concurrent requests or active SQLite transactions during backup or restore. Quiescent
+   snapshots capture page-level database copies via `create_storage_snapshot` and automatically
+   resume a fresh generation (`replace()`); quiescent restores verify the candidate snapshot,
+   atomically restore databases via `restore_storage_snapshot`, and restart a fresh generation
+   bound to the restored database state.
+2. **Signal-Safe Service Runner:** `HumanServiceRunner` wraps `HumanListenerLifecycle` in a
+   supervised single-process controller with deterministic POSIX signal handling:
+   - `SIGTERM` / `SIGINT`: clean stop drain, closes listeners, joins workers, exits `0`.
+   - `SIGHUP`: triggers generation replacement (`replace()`) under directory lock to load updated
+     credential policy; on reload failure (such as all actors restricted or corrupt policy), fails
+     closed, shuts down listeners, and exits `2`.
+   - Initial startup failure or unhandled worker crash exits `1`.
+   - Programmatic triggers (`trigger_shutdown()`, `trigger_reload()`, `run_until_stopped()`, and
+     context manager) enable deterministic lifecycle automation and testing.
+3. **Hardened Service Manager Deployment:** A reference Linux `systemd` unit configuration
+   (`threatfusion-analyst.service`) defines unprivileged user isolation (`operator`), `UMask=0077`,
+   `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectSystem=strict`, and `ExecReload=/bin/kill -HUP $MAINPID`.
+
+CA issuance, secure Firefox credential delivery, long-term endurance, and the defensible
+distinct-alert correlation key remain open under TF-008 and TF-009.

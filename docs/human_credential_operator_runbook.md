@@ -194,13 +194,70 @@ event. Audit's best-effort denial and independent-database gap semantics are unc
 The tests use disposable certificates and synthetic retained alert fixtures without
 model inference. Shutdown interrupts incomplete handshakes/reads and drains already
 dispatched work. No upper bound is claimed for a stuck trusted filesystem/repository
-operation; repeated asynchronous signals, SIGKILL, crash recovery, and service-manager
-signal handling are not established. No hot reload, CRL or OCSP is implemented.
+operation; repeated asynchronous signals, SIGKILL, and crash recovery are not established.
+No hot reload, CRL or OCSP is implemented.
 The directory must remain in place and all writers must use the locking operator API.
 These controls do not defend against root or a malicious process on the trusted account.
 
+## Signal-safe supervisor runner and service manager integration
+
+For long-running operational supervision, `threatfusion.operations.human_service_runner.HumanServiceRunner`
+wraps `HumanListenerLifecycle` in a single-process supervisor loop with signal handling:
+
+- **Signal Handling:**
+  - `SIGTERM` / `SIGINT`: invokes `trigger_shutdown()`, stops listener admission, closes sockets,
+    interrupts pending handshakes, drains in-flight requests, joins workers (< 5.0s), and exits `0`.
+  - `SIGHUP`: invokes `trigger_reload()`, executing `lifecycle.replace()` under directory lock to
+    load the updated credential policy and advance generation. If reload fails (e.g., all actors
+    restricted or corrupted policy), the runner fails closed, shuts down listeners, and exits `2`.
+  - Initial startup failure (e.g. invalid policy directory or corrupted repository) or unhandled
+    listener worker crash immediately exits `1`.
+- **Programmatic Control:**
+  - `runner.is_ready`: returns `True` only when listeners are accepting and shutdown is not requested.
+  - `runner.generation`: tracks current lifecycle generation count.
+  - `runner.state`: tracks supervisor lifecycle state (`"initialized"`, `"running"`, `"reloading"`, `"stopping"`, `"stopped"`, `"failed"`).
+  - `runner.trigger_shutdown()` and `runner.trigger_reload()`: allow deterministic programmatic triggers.
+  - `runner.run_until_stopped(poll_interval_seconds=0.05)`: blocks until signal or stop trigger.
+  - Context manager `with HumanServiceRunner(lifecycle) as runner:` ensures clean shutdown drain on exit.
+
+### Hardened reference systemd unit (`threatfusion-analyst.service`)
+
+Deploying under Linux `systemd` requires a dedicated unprivileged user (`operator`) with strict
+isolation privileges and read-only access to system binaries:
+
+```ini
+[Unit]
+Description=ThreatFusion Analyst Loopback TLS Service
+After=network.target
+
+[Service]
+Type=simple
+User=operator
+Group=operator
+WorkingDirectory=/home/operator/threatfusion
+Environment=PYTHONPATH=backend/src
+ExecStart=/home/operator/threatfusion/threatfusion-venv/bin/python -m threatfusion.operations.human_service_runner
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=10s
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/operator/threatfusion-storage /home/operator/threatfusion-human-policy
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Reloading credentials under systemd is performed via `systemctl reload threatfusion-analyst`, which
+issues `SIGHUP` to trigger generation replacement without dropping the service supervisor process.
+
 CA issuance, secure certificate/private-key delivery to Firefox, backup/recovery,
-endurance and service-manager deployment remain open. Operator-action journaling is
-implemented via `journal.jsonl`.
+endurance, and the defensible distinct-alert correlation key remain open.
+Operator-action journaling is implemented via `journal.jsonl`.
 The existing 64-record bound includes tombstones. Restore access by enrolling a
 replacement certificate, not by reverting revoked metadata. TF-008 and TF-009 remain open.

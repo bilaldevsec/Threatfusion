@@ -347,3 +347,74 @@ def test_stalled_handshake_does_not_block_replace_or_shutdown(setup, certificate
         assert all(not w.is_alive() for w in workers_2)
     finally:
         stalled_2.close()
+
+
+def test_snapshot_quiescent_captures_consistent_databases_and_resumes(
+    setup, tmp_path, certificates
+):
+    """snapshot_quiescent stops listeners, takes verified cross-DB snapshot, and resumes."""
+    service, _, _, candidate, _, _ = setup
+    service.replace()
+    gen_before = service.snapshot()["generation"]
+
+    snapshot_dir = tmp_path / "quiescent_snapshot"
+    manifest = service.snapshot_quiescent(snapshot_dir)
+
+    assert manifest["schema"] == "storage_snapshot_manifest_v1"
+    assert manifest["databases"]["alerts"]["row_counts"]["alert_candidates"] >= 1
+    assert manifest["cross_database_consistency"]["orphan_states_count"] == 0
+
+    snap_after = service.snapshot()
+    assert snap_after["accepting"] is True
+    assert snap_after["generation"] == gen_before + 1
+
+    # Verify new generation serves requests over TLS
+    api_address, _ = service.addresses
+    request = (
+        b"GET /v1/analyst/alerts HTTP/1.1\r\n"
+        b"Host: threatfusion-analyst-loopback\r\n"
+        b"Connection: close\r\n\r\n"
+    )
+    status_code, _ = exchange(api_address, certificates, "viewer", request)
+    assert status_code == 200
+
+
+def test_restore_quiescent_reverts_state_and_resumes(setup, tmp_path, certificates):
+    """restore_quiescent stops listeners, restores snapshot, and resumes on restored state."""
+    service, _, template, candidate, states, _ = setup
+    service.replace()
+
+    snapshot_dir = tmp_path / "quiescent_snapshot"
+    service.snapshot_quiescent(snapshot_dir)
+
+    # Mutate analyst_states in active database
+    with sqlite3.connect(states._database_path) as conn:
+        conn.execute(
+            "INSERT INTO analyst_states(alert_candidate_id, state, version, updated_at, updated_by, last_transition_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                candidate.alert_candidate_id,
+                "in_review",
+                1,
+                datetime.now(UTC).isoformat(),
+                "analyst_a",
+                str(uuid4()),
+            ),
+        )
+        conn.commit()
+
+    # Verify mutation is present before restore
+    with sqlite3.connect(states._database_path) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM analyst_states").fetchone()[0]
+        assert count == 1
+
+    # Restore snapshot
+    restored_manifest = service.restore_quiescent(snapshot_dir)
+    assert restored_manifest["schema"] == "storage_snapshot_manifest_v1"
+
+    # Verify state was reverted back to 0 analyst_states
+    with sqlite3.connect(states._database_path) as conn:
+        count_restored = conn.execute("SELECT COUNT(*) FROM analyst_states").fetchone()[0]
+        assert count_restored == 0
+
+    assert service.snapshot()["accepting"] is True
