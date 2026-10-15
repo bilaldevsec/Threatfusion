@@ -622,6 +622,7 @@ class IncidentSqliteRepository:
                     conn.execute(_CREATE_INCIDENTS_TABLE)
                     conn.execute(_CREATE_CONSTITUENTS_TABLE)
                     conn.execute(_CREATE_CONSTITUENTS_INDEX)
+                    conn.execute(f"PRAGMA user_version = {INCIDENT_REPOSITORY_SCHEMA_VERSION};")
                 else:
                     # Verify schema identity
                     row = conn.execute(

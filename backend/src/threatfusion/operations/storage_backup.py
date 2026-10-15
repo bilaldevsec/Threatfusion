@@ -35,28 +35,34 @@ MANIFEST_FILENAME = "manifest.json"
 ALERTS_DB_ROLE = "alerts"
 STATES_DB_ROLE = "states"
 AUDIT_DB_ROLE = "audit"
+INCIDENTS_DB_ROLE = "incidents"
 
 ALERTS_DB_FILENAME = "alerts.sqlite3"
 STATES_DB_FILENAME = "states.sqlite3"
 AUDIT_DB_FILENAME = "audit.sqlite3"
+INCIDENTS_DB_FILENAME = "incidents.sqlite3"
 
-SUPPORTED_DB_ROLES = (ALERTS_DB_ROLE, STATES_DB_ROLE, AUDIT_DB_ROLE)
+CORE_DB_ROLES = (ALERTS_DB_ROLE, STATES_DB_ROLE, AUDIT_DB_ROLE)
+SUPPORTED_DB_ROLES = (ALERTS_DB_ROLE, STATES_DB_ROLE, AUDIT_DB_ROLE, INCIDENTS_DB_ROLE)
 EXPECTED_DB_FILENAMES = {
     ALERTS_DB_ROLE: ALERTS_DB_FILENAME,
     STATES_DB_ROLE: STATES_DB_FILENAME,
     AUDIT_DB_ROLE: AUDIT_DB_FILENAME,
+    INCIDENTS_DB_ROLE: INCIDENTS_DB_FILENAME,
 }
 
 EXPECTED_SCHEMA_IDENTITIES = {
     ALERTS_DB_ROLE: "alert_candidate_sqlite_v1",
     STATES_DB_ROLE: "analyst_state_sqlite_v1",
     AUDIT_DB_ROLE: "analyst_security_audit_sqlite_v1",
+    INCIDENTS_DB_ROLE: "incident_sqlite_v1",
 }
 
 EXPECTED_SCHEMA_VERSIONS = {
     ALERTS_DB_ROLE: 1,
     STATES_DB_ROLE: 1,
     AUDIT_DB_ROLE: 1,
+    INCIDENTS_DB_ROLE: 1,
 }
 
 MAX_MANIFEST_BYTES = 65536
@@ -275,6 +281,16 @@ def _inspect_database(db_path: Path, role: str) -> dict[str, object]:
                 row_counts["audit_metadata"] = conn.execute(
                     "SELECT COUNT(*) FROM audit_metadata"
                 ).fetchone()[0]
+            elif role == INCIDENTS_DB_ROLE:
+                row_counts["incidents"] = conn.execute("SELECT COUNT(*) FROM incidents").fetchone()[
+                    0
+                ]
+                row_counts["incident_constituent_alerts"] = conn.execute(
+                    "SELECT COUNT(*) FROM incident_constituent_alerts"
+                ).fetchone()[0]
+                row_counts["repository_metadata"] = conn.execute(
+                    "SELECT COUNT(*) FROM repository_metadata"
+                ).fetchone()[0]
         finally:
             conn.close()
     except (sqlite3.DatabaseError, sqlite3.Error):
@@ -290,8 +306,10 @@ def _inspect_database(db_path: Path, role: str) -> dict[str, object]:
     }
 
 
-def _check_cross_database_consistency(alerts_path: Path, states_path: Path) -> dict[str, int]:
-    """Verify that every alert_candidate_id in analyst state exists in retained alerts."""
+def _check_cross_database_consistency(
+    alerts_path: Path, states_path: Path, incidents_path: Path | None = None
+) -> dict[str, int]:
+    """Verify that every alert_candidate_id in analyst state and incidents exists in retained alerts."""
     try:
         alerts_conn = sqlite3.connect(
             f"file:{alerts_path.resolve()}?mode=ro",
@@ -303,6 +321,13 @@ def _check_cross_database_consistency(alerts_path: Path, states_path: Path) -> d
             uri=True,
             timeout=SQLITE_TIMEOUT_SECONDS,
         )
+        incidents_conn = None
+        if incidents_path is not None and incidents_path.exists():
+            incidents_conn = sqlite3.connect(
+                f"file:{incidents_path.resolve()}?mode=ro",
+                uri=True,
+                timeout=SQLITE_TIMEOUT_SECONDS,
+            )
         try:
             alert_ids = {
                 row[0]
@@ -322,14 +347,35 @@ def _check_cross_database_consistency(alerts_path: Path, states_path: Path) -> d
             if orphans:
                 raise StorageBackupError("referential_integrity_failed")
 
-            return {
+            total_incidents = 0
+            if incidents_conn is not None:
+                inc_alert_ids = {
+                    row[0]
+                    for row in incidents_conn.execute(
+                        "SELECT alert_candidate_id FROM incident_constituent_alerts"
+                    )
+                }
+                inc_orphans = inc_alert_ids - alert_ids
+                if inc_orphans:
+                    raise StorageBackupError("referential_integrity_failed")
+                total_incidents = incidents_conn.execute(
+                    "SELECT COUNT(*) FROM incidents"
+                ).fetchone()[0]
+
+            res = {
                 "total_alert_candidates": len(alert_ids),
                 "total_analyst_states": len(state_ids),
                 "orphan_states_count": 0,
             }
+            if incidents_conn is not None:
+                res["total_incidents"] = total_incidents
+                res["orphan_incident_alerts_count"] = 0
+            return res
         finally:
             alerts_conn.close()
             states_conn.close()
+            if incidents_conn is not None:
+                incidents_conn.close()
     except (sqlite3.DatabaseError, sqlite3.Error):
         raise StorageBackupError("database_corrupt") from None
 
@@ -376,7 +422,8 @@ def _resolve_paths(
     alerts_path: Path | str | None = None,
     states_path: Path | str | None = None,
     audit_path: Path | str | None = None,
-) -> tuple[Path, Path, Path, Path]:
+    incidents_path: Path | str | None = None,
+) -> tuple[Path, Path, Path, Path, Path | None]:
     """Resolve snapshot directory and source database paths from positional/keyword args."""
     resolved_source_dir: Path | None = None
     resolved_snapshot_dir: Path | None = None
@@ -410,14 +457,22 @@ def _resolve_paths(
             Path(states_path) if states_path else (resolved_source_dir / STATES_DB_FILENAME)
         )
         res_audit = Path(audit_path) if audit_path else (resolved_source_dir / AUDIT_DB_FILENAME)
+        if incidents_path is not None:
+            res_incidents = Path(incidents_path) if Path(incidents_path).exists() else None
+        else:
+            cand = resolved_source_dir / INCIDENTS_DB_FILENAME
+            res_incidents = cand if cand.exists() else None
     else:
         if not (alerts_path and states_path and audit_path):
             raise StorageBackupError("source_directory_missing")
         res_alerts = Path(alerts_path)
         res_states = Path(states_path)
         res_audit = Path(audit_path)
+        res_incidents = (
+            Path(incidents_path) if incidents_path and Path(incidents_path).exists() else None
+        )
 
-    return resolved_snapshot_dir, res_alerts, res_states, res_audit
+    return resolved_snapshot_dir, res_alerts, res_states, res_audit, res_incidents
 
 
 def create_storage_snapshot(
@@ -429,9 +484,10 @@ def create_storage_snapshot(
     alerts_path: Path | str | None = None,
     states_path: Path | str | None = None,
     audit_path: Path | str | None = None,
+    incidents_path: Path | str | None = None,
 ) -> dict[str, object]:
     """Create a consistent online snapshot of all three SQLite databases into snapshot_dir."""
-    target_snapshot_dir, src_alerts, src_states, src_audit = _resolve_paths(
+    target_snapshot_dir, src_alerts, src_states, src_audit, src_incidents = _resolve_paths(
         source,
         destination,
         source_dir=source_dir,
@@ -439,6 +495,7 @@ def create_storage_snapshot(
         alerts_path=alerts_path,
         states_path=states_path,
         audit_path=audit_path,
+        incidents_path=incidents_path,
     )
 
     _ensure_private_directory(target_snapshot_dir)
@@ -462,16 +519,27 @@ def create_storage_snapshot(
         states_info = _inspect_database(dest_states, STATES_DB_ROLE)
         audit_info = _inspect_database(dest_audit, AUDIT_DB_ROLE)
 
-        consistency_info = _check_cross_database_consistency(dest_alerts, dest_states)
+        databases_manifest = {
+            ALERTS_DB_ROLE: alerts_info,
+            STATES_DB_ROLE: states_info,
+            AUDIT_DB_ROLE: audit_info,
+        }
+
+        dest_incidents = None
+        if src_incidents is not None and src_incidents.exists():
+            dest_incidents = target_snapshot_dir / INCIDENTS_DB_FILENAME
+            _backup_sqlite(src_incidents, dest_incidents)
+            incidents_info = _inspect_database(dest_incidents, INCIDENTS_DB_ROLE)
+            databases_manifest[INCIDENTS_DB_ROLE] = incidents_info
+
+        consistency_info = _check_cross_database_consistency(
+            dest_alerts, dest_states, dest_incidents
+        )
 
         manifest_data = {
             "schema": SNAPSHOT_MANIFEST_SCHEMA,
             "created_at_utc": datetime.now(UTC).isoformat(),
-            "databases": {
-                ALERTS_DB_ROLE: alerts_info,
-                STATES_DB_ROLE: states_info,
-                AUDIT_DB_ROLE: audit_info,
-            },
+            "databases": databases_manifest,
             "cross_database_consistency": consistency_info,
         }
 
@@ -492,6 +560,8 @@ def verify_storage_snapshot(snapshot_dir: Path | str) -> dict[str, object]:
             STATES_DB_FILENAME,
             AUDIT_DB_FILENAME,
         }
+        if INCIDENTS_DB_FILENAME in non_hidden:
+            expected_set.add(INCIDENTS_DB_FILENAME)
 
         if set(non_hidden) != expected_set:
             unexpected = set(non_hidden) - expected_set
@@ -520,8 +590,12 @@ def verify_storage_snapshot(snapshot_dir: Path | str) -> dict[str, object]:
             raise StorageBackupError("manifest_invalid")
 
         db_manifests = manifest["databases"]
-        for role in SUPPORTED_DB_ROLES:
+        for role in CORE_DB_ROLES:
             if role not in db_manifests:
+                raise StorageBackupError("manifest_invalid")
+
+        for role in db_manifests:
+            if role not in SUPPORTED_DB_ROLES:
                 raise StorageBackupError("manifest_invalid")
 
             expected_filename = EXPECTED_DB_FILENAMES[role]
@@ -546,7 +620,12 @@ def verify_storage_snapshot(snapshot_dir: Path | str) -> dict[str, object]:
 
         alerts_path = target_snapshot_dir / ALERTS_DB_FILENAME
         states_path = target_snapshot_dir / STATES_DB_FILENAME
-        _check_cross_database_consistency(alerts_path, states_path)
+        incidents_path = (
+            target_snapshot_dir / INCIDENTS_DB_FILENAME
+            if INCIDENTS_DB_ROLE in db_manifests
+            else None
+        )
+        _check_cross_database_consistency(alerts_path, states_path, incidents_path)
 
         return manifest
 
@@ -588,7 +667,7 @@ def restore_storage_snapshot(
     manifest = verify_storage_snapshot(resolved_snapshot_dir)
 
     with _directory_context(resolved_target_dir, write=True) as target_fd:
-        for role in SUPPORTED_DB_ROLES:
+        for role in manifest["databases"]:
             filename = EXPECTED_DB_FILENAMES[role]
             src_file = resolved_snapshot_dir / filename
             dest_file = resolved_target_dir / filename
@@ -630,13 +709,19 @@ def restore_storage_snapshot(
         except OSError:
             raise StorageBackupError("file_invalid") from None
 
-        for role in SUPPORTED_DB_ROLES:
+        for role in manifest["databases"]:
             dest_file = resolved_target_dir / EXPECTED_DB_FILENAMES[role]
             _inspect_database(dest_file, role)
 
+        incidents_path = (
+            resolved_target_dir / INCIDENTS_DB_FILENAME
+            if INCIDENTS_DB_ROLE in manifest["databases"]
+            else None
+        )
         _check_cross_database_consistency(
             resolved_target_dir / ALERTS_DB_FILENAME,
             resolved_target_dir / STATES_DB_FILENAME,
+            incidents_path,
         )
 
         return manifest

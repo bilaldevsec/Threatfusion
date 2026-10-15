@@ -1212,3 +1212,114 @@ def test_browser_post_version_conflict_and_invalid_transition(tmp_path, certific
         assert events[3].event_type == "request_rejected"
     finally:
         srv.close()
+
+
+def test_browser_post_transition_admission_audit_failure_blocks_mutation(
+    tmp_path, certificates, monkeypatch
+):
+    """Pre-mutation admission audit failure returns 503 and executes 0 mutations in state repository."""
+    srv, audit, view, candidate_id = _listener(tmp_path, certificates)
+    srv.open()
+    try:
+        transition_id = str(uuid.uuid4())
+        csrf_token = srv.generate_csrf_token("analyst_a", candidate_id, 0, transition_id)
+        form_data = urllib.parse.urlencode(
+            {
+                "expected_version": "0",
+                "transition_request_id": transition_id,
+                "csrf_token": csrf_token,
+                "target_state": "in_review",
+                "reason": "Admission audit failure test",
+            }
+        )
+        req = _post_req(srv.address[1], f"/v1/analyst/alerts/{candidate_id}/transitions", form_data)
+
+        orig_append = audit.append
+
+        def _fail_admission(ev):
+            if ev.event_type == "request_admitted":
+                raise AnalystSecurityAuditError("disk_full")
+            return orig_append(ev)
+
+        monkeypatch.setattr(audit, "append", _fail_admission)
+
+        mutation_calls = []
+        orig_trans = view._repository.transition
+
+        def _track_trans(*args, **kwargs):
+            mutation_calls.append(1)
+            return orig_trans(*args, **kwargs)
+
+        monkeypatch.setattr(view._repository, "transition", _track_trans)
+
+        code, _, body = _exchange(srv, certificates, "analyst_a", req)
+        assert code == 503
+        assert b"503" in body or b"Unavailable" in body
+
+        assert len(mutation_calls) == 0
+        cap = view._repository._authorization.issue_for_trusted_actor("analyst_a")
+        detail = view._repository.get_alert(cap, candidate_id)
+        assert detail.analyst_state.state == "new"
+        assert detail.analyst_state.version == 0
+        assert detail.transitions == ()
+    finally:
+        srv.close()
+
+
+def test_browser_post_transition_completion_audit_failure_and_retry_deduplication(
+    tmp_path, certificates, monkeypatch
+):
+    """Post-mutation completion audit failure returns 503; same-UUIDv4 retry deduplicates cleanly."""
+    srv, audit, view, candidate_id = _listener(tmp_path, certificates)
+    srv.open()
+    try:
+        transition_id = str(uuid.uuid4())
+        csrf_token = srv.generate_csrf_token("analyst_a", candidate_id, 0, transition_id)
+        form_data = urllib.parse.urlencode(
+            {
+                "expected_version": "0",
+                "transition_request_id": transition_id,
+                "csrf_token": csrf_token,
+                "target_state": "in_review",
+                "reason": "Completion audit failure test",
+            }
+        )
+        req = _post_req(srv.address[1], f"/v1/analyst/alerts/{candidate_id}/transitions", form_data)
+
+        fail_completion = [True]
+        orig_append = audit.append
+
+        def _append_hook(ev):
+            if ev.event_type == "request_completed" and fail_completion[0]:
+                fail_completion[0] = False
+                raise AnalystSecurityAuditError("audit_storage_full")
+            return orig_append(ev)
+
+        monkeypatch.setattr(audit, "append", _append_hook)
+
+        # First attempt: mutation succeeds, but completion audit append fails -> returns 503
+        code1, _, body1 = _exchange(srv, certificates, "analyst_a", req)
+        assert code1 == 503
+        assert b"503" in body1 or b"Unavailable" in body1
+
+        # Verify that the transition committed in states.sqlite3 despite audit failure
+        cap = view._repository._authorization.issue_for_trusted_actor("analyst_a")
+        detail1 = view._repository.get_alert(cap, candidate_id)
+        assert detail1.analyst_state.state == "in_review"
+        assert detail1.analyst_state.version == 1
+        assert len(detail1.transitions) == 1
+
+        # Second attempt (Retry): same original transition_request_id and compatible request
+        code2, _, body2 = _exchange(srv, certificates, "analyst_a", req)
+        assert code2 == 200
+        html2 = body2.decode("utf-8")
+        assert "in_review" in html2
+
+        # Verify NO duplicate state or history record was created
+        detail2 = view._repository.get_alert(cap, candidate_id)
+        assert detail2.analyst_state.state == "in_review"
+        assert detail2.analyst_state.version == 1
+        assert len(detail2.transitions) == 1
+        assert detail2.transitions[0].transition_id == transition_id
+    finally:
+        srv.close()

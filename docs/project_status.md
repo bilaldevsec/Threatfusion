@@ -1360,4 +1360,28 @@ correlation key. All changes remain unstaged/uncommitted for review.
   3. Black: all modified files verified with `black --check`, exit 0.
   4. `git diff HEAD --check`: clean (0 errors), exit 0.
 
-TF-008 and TF-009 remain **open** pending long-term endurance testing, live telemetry, and external CA provisioning. All Milestone #18 changes remain unstaged/uncommitted for review.
+TF-008 and TF-009 remain **open** pending long-term endurance testing, live telemetry, and external CA provisioning. Milestone #18 was committed to `gemini/product-20260924` at `d71e33385750d4ebfd7d7c62b70f86230f8df3e6`.
+
+### 2026-10-15 — Phase P0/P1/P2 Quality & Blocker Resolution: Section 7 Lifecycle Startup Interruption Repair, Section 6.3 Dual-SQLite Audit Failure Verification, and Canonical Gemini Master Export (Milestone #19)
+
+- Repaired the Section 7 human listener lifecycle startup interruption blocker in `backend/src/threatfusion/operations/human_listener_lifecycle.py`:
+  - Caught `BaseException` in `worker.start()` to capture `KeyboardInterrupt` before and during OS thread creation.
+  - Implemented bounded native thread creation verification: checks `worker.ident is not None or worker.is_alive()` or bounded wait on `worker._started`. When native creation does not occur, records `record[2] = True` (`failed_to_start = True`).
+  - In `_shutdown()`, cleanly skips unstarted workers without hanging on `finished.wait()` for non-existent threads.
+  - Deterministically closes listening sockets, signals `_stop`, releases `_ready`, waits on `finished.wait(timeout=1.0)`, and joins started workers with bounded timeouts. Zero worker or socket leaks.
+  - Verified by 6 isolated watchdog regressions in `backend/tests/integration/test_human_listener_lifecycle.py` covering first and second worker pre-native and post-native interruptions and OS runtime errors (26 passed in 10.86s).
+- Verified Section 6.3 browser transition dual-SQLite audit failure semantics and retry deduplication in `backend/tests/integration/test_analyst_browser_tls_service.py`:
+  - Verified pre-mutation admission audit failure raises HTTP 503 and blocks state mutation (0 mutations).
+  - Verified post-commit completion audit failure returns HTTP 503, commits transition in `states.sqlite3`, and UUIDv4 retry returns HTTP 200 with 0 duplicate transitions.
+  - 32 browser TLS tests pass in 11.49s.
+- Extended `backend/src/threatfusion/operations/storage_backup.py` with support for optional `incidents.sqlite3` (`incident_sqlite_v1`):
+  - Updated snapshot creation, verification, and atomic restore to seamlessly handle 4-DB setups (`alerts`, `states`, `audit`, `incidents`) while retaining 100% backward compatibility with 3-DB setups.
+  - Enforced cross-database referential consistency checks between `incident_constituent_alerts` and `alert_candidates`.
+  - Added `PRAGMA user_version = 1` initialization to `IncidentSqliteRepository`.
+  - 13 storage backup tests pass in 4.91s.
+- Created canonical Gemini project master export `docs/GEMINI_PROJECT_MASTER.md` (Revision `TF-GEMINI-MASTER-2026-10-15-v2`), recording current HEAD `d71e333`, Milestone #18 committed status, Section 7 blocker resolution, Section 6.3 dual-DB audit verification, optional incidents backup support, and capability status.
+- Verification:
+  - 26 lifecycle tests, 13 storage backup tests, 32 browser TLS tests, 129 correlation/pipeline tests pass (214+ combined tests pass with 0 errors).
+  - Ruff, Black, and `git diff HEAD --check` pass cleanly.
+
+TF-008 and TF-009 remain **open** pending long-term endurance testing, live telemetry, and external CA provisioning. All Milestone #19 changes remain unstaged/uncommitted for review.

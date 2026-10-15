@@ -479,3 +479,84 @@ def test_cli_commands(tmp_path: Path, source_storage, capsys):
     assert (target_dir / ALERTS_DB_FILENAME).exists()
     assert (target_dir / STATES_DB_FILENAME).exists()
     assert (target_dir / AUDIT_DB_FILENAME).exists()
+
+
+def test_storage_backup_with_optional_incidents_database(tmp_path: Path, source_storage):
+    """Snapshot, verify, and restore work seamlessly when optional incidents.sqlite3 is present."""
+    from threatfusion.alerts.correlation_engine import IncidentRecord, IncidentSqliteRepository
+    from threatfusion.operations.storage_backup import INCIDENTS_DB_FILENAME
+
+    source_dir = source_storage["directory"]
+    incidents_path = source_dir / INCIDENTS_DB_FILENAME
+    inc_repo = IncidentSqliteRepository(incidents_path)
+
+    # Insert a valid incident referencing the existing candidate in alerts.sqlite3
+    candidate_id = source_storage["candidates"][0].alert_candidate_id
+    obs_t = datetime.now(UTC)
+    incident = IncidentRecord(
+        schema_version="incident_record_v1",
+        incident_id="incident_v1:" + "e" * 64,
+        correlation_mode="burst_correlated",
+        window_type="burst_30s",
+        correlation_rule_id="corr_burst_5tuple_30s_v1",
+        entity_namespace_id="edge-router-01",
+        constituent_alert_ids=(candidate_id,),
+        constituent_alert_count=1,
+        max_probability_score=0.92,
+        escalated_decision="Attack",
+        earliest_observed_at=obs_t.isoformat(),
+        latest_observed_at=obs_t.isoformat(),
+        provenance_status="verified_entity_bearing",
+        created_at=obs_t.isoformat(),
+    )
+    inc_repo.insert(incident)
+
+    snapshot_dir = tmp_path / "snapshot_with_incidents"
+    manifest = create_storage_snapshot(source_dir, snapshot_dir)
+    assert "incidents" in manifest["databases"]
+    assert manifest["cross_database_consistency"]["total_incidents"] == 1
+    assert manifest["cross_database_consistency"]["orphan_incident_alerts_count"] == 0
+
+    verified = verify_storage_snapshot(snapshot_dir)
+    assert verified == manifest
+
+    target_dir = tmp_path / "restore_with_incidents"
+    target_dir.mkdir(mode=0o700)
+    restored = restore_storage_snapshot(snapshot_dir, target_dir)
+    assert restored == manifest
+    assert (target_dir / INCIDENTS_DB_FILENAME).exists()
+
+
+def test_storage_backup_incidents_referential_integrity_failure(tmp_path: Path, source_storage):
+    """Snapshot fails closed if incidents.sqlite3 references non-existent alert_candidate_id."""
+    from threatfusion.alerts.correlation_engine import IncidentRecord, IncidentSqliteRepository
+    from threatfusion.operations.storage_backup import INCIDENTS_DB_FILENAME
+
+    source_dir = source_storage["directory"]
+    incidents_path = source_dir / INCIDENTS_DB_FILENAME
+    inc_repo = IncidentSqliteRepository(incidents_path)
+
+    obs_t = datetime.now(UTC)
+    orphan_id = "alert_candidate_v1:" + "9" * 64
+    incident = IncidentRecord(
+        schema_version="incident_record_v1",
+        incident_id="incident_v1:" + "f" * 64,
+        correlation_mode="burst_correlated",
+        window_type="burst_30s",
+        correlation_rule_id="corr_burst_5tuple_30s_v1",
+        entity_namespace_id="edge-router-01",
+        constituent_alert_ids=(orphan_id,),
+        constituent_alert_count=1,
+        max_probability_score=0.95,
+        escalated_decision="Attack",
+        earliest_observed_at=obs_t.isoformat(),
+        latest_observed_at=obs_t.isoformat(),
+        provenance_status="verified_entity_bearing",
+        created_at=obs_t.isoformat(),
+    )
+    inc_repo.insert(incident)
+
+    snapshot_dir = tmp_path / "orphan_snapshot"
+    with pytest.raises(StorageBackupError) as exc_info:
+        create_storage_snapshot(source_dir, snapshot_dir)
+    assert exc_info.value.code == "referential_integrity_failed"

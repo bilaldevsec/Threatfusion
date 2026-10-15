@@ -1,5 +1,6 @@
 """Both policy-backed human listeners, real TLS, and controlled generation changes."""
 
+from contextlib import contextmanager
 import json
 import socket
 import ssl
@@ -418,3 +419,160 @@ def test_restore_quiescent_reverts_state_and_resumes(setup, tmp_path, certificat
         assert count_restored == 0
 
     assert service.snapshot()["accepting"] is True
+
+
+_real_thread_start = Thread.start
+
+
+@contextmanager
+def _watchdog(seconds: float = 4.0, description: str = "operation"):
+    timed_out = [False]
+    done = Event()
+
+    def _monitor():
+        if not done.wait(timeout=seconds):
+            timed_out[0] = True
+
+    t = Thread(target=_monitor, daemon=True)
+    _real_thread_start(t)
+    try:
+        yield
+    finally:
+        done.set()
+        assert not timed_out[0], f"Watchdog deadline of {seconds}s exceeded during {description}"
+
+
+def test_first_worker_pre_native_creation_keyboard_interrupt(setup, monkeypatch):
+    """First worker start() interrupted by KeyboardInterrupt before native thread creation."""
+    service = setup[0]
+
+    def failing_start(worker):
+        raise KeyboardInterrupt("simulated pre-native interruption on worker 1")
+
+    monkeypatch.setattr(lifecycle.Thread, "start", failing_start)
+
+    with _watchdog(3.0, "first worker pre-native KeyboardInterrupt"):
+        with pytest.raises(KeyboardInterrupt):
+            service.replace()
+
+    assert service.snapshot()["state"] == "failed"
+    assert service.snapshot()["live_workers"] == 0
+    assert not service._listeners
+
+
+def test_second_worker_pre_native_creation_keyboard_interrupt(setup, monkeypatch):
+    """Worker 1 starts normally; worker 2 interrupted by KeyboardInterrupt before native thread creation."""
+    service = setup[0]
+    original_start = Thread.start
+    started = []
+
+    def start_hook(worker):
+        if started:
+            raise KeyboardInterrupt("simulated pre-native interruption on worker 2")
+        original_start(worker)
+        started.append(worker)
+
+    monkeypatch.setattr(lifecycle.Thread, "start", start_hook)
+
+    with _watchdog(3.0, "second worker pre-native KeyboardInterrupt"):
+        with pytest.raises(KeyboardInterrupt):
+            service.replace()
+
+    assert service.snapshot()["state"] == "failed"
+    assert len(started) == 1
+    assert not started[0].is_alive(), "First worker was not joined during interruption cleanup"
+    assert service.snapshot()["live_workers"] == 0
+    assert not service._listeners
+
+
+def test_first_worker_post_native_creation_interruption_before_start_returns(setup, monkeypatch):
+    """Worker 1 creates native thread, but parent receives KeyboardInterrupt before start() returns."""
+    service = setup[0]
+    original_start = Thread.start
+    started = []
+
+    def start_hook(worker):
+        original_start(worker)
+        started.append(worker)
+        raise KeyboardInterrupt("simulated post-native interruption on worker 1")
+
+    monkeypatch.setattr(lifecycle.Thread, "start", start_hook)
+
+    with _watchdog(3.0, "first worker post-native KeyboardInterrupt"):
+        with pytest.raises(KeyboardInterrupt):
+            service.replace()
+
+    assert service.snapshot()["state"] == "failed"
+    assert len(started) == 1
+    assert not started[0].is_alive(), "Worker 1 thread was leaked after post-native interruption"
+    assert service.snapshot()["live_workers"] == 0
+    assert not service._listeners
+
+
+def test_second_worker_post_native_creation_interruption_before_start_returns(setup, monkeypatch):
+    """Worker 1 starts normally; worker 2 creates native thread, but parent receives KeyboardInterrupt."""
+    service = setup[0]
+    original_start = Thread.start
+    started = []
+
+    def start_hook(worker):
+        original_start(worker)
+        started.append(worker)
+        if len(started) == 2:
+            raise KeyboardInterrupt("simulated post-native interruption on worker 2")
+
+    monkeypatch.setattr(lifecycle.Thread, "start", start_hook)
+
+    with _watchdog(3.0, "second worker post-native KeyboardInterrupt"):
+        with pytest.raises(KeyboardInterrupt):
+            service.replace()
+
+    assert service.snapshot()["state"] == "failed"
+    assert len(started) == 2
+    assert not started[0].is_alive(), "Worker 1 was leaked"
+    assert not started[1].is_alive(), "Worker 2 was leaked"
+    assert service.snapshot()["live_workers"] == 0
+    assert not service._listeners
+
+
+def test_first_worker_runtime_error_creation_failure(setup, monkeypatch):
+    """Worker 1 start() fails with OS RuntimeError (can't start new thread)."""
+    service = setup[0]
+
+    def failing_start(worker):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(lifecycle.Thread, "start", failing_start)
+
+    with _watchdog(3.0, "first worker RuntimeError"):
+        with pytest.raises(HumanLifecycleError):
+            service.replace()
+
+    assert service.snapshot()["state"] == "failed"
+    assert service.snapshot()["live_workers"] == 0
+    assert not service._listeners
+
+
+def test_second_worker_runtime_error_creation_failure(setup, monkeypatch):
+    """Worker 1 starts normally; worker 2 start() fails with OS RuntimeError."""
+    service = setup[0]
+    original_start = Thread.start
+    started = []
+
+    def start_hook(worker):
+        if started:
+            raise RuntimeError("can't start new thread")
+        original_start(worker)
+        started.append(worker)
+
+    monkeypatch.setattr(lifecycle.Thread, "start", start_hook)
+
+    with _watchdog(3.0, "second worker RuntimeError"):
+        with pytest.raises(HumanLifecycleError):
+            service.replace()
+
+    assert service.snapshot()["state"] == "failed"
+    assert len(started) == 1
+    assert not started[0].is_alive(), "Worker 1 was not joined on worker 2 failure"
+    assert service.snapshot()["live_workers"] == 0
+    assert not service._listeners

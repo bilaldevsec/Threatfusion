@@ -670,3 +670,43 @@ Both TF-008 and TF-009 remain **open**.
 
 Dual-window incident correlation, entity provenance boundaries, alert reduction metrics, and dashboard surfacing are implemented
 and verified. Long-term endurance, live telemetry, and external CA provisioning remain open under TF-008 and TF-009.
+
+### TF-008 / TF-009 Phase P0/P1/P2 quality & blocker resolution: Section 7 lifecycle startup interruption repair, Section 6.3 dual-SQLite audit failure verification, and storage backup incidents support, 2026-10-15
+
+Both TF-008 and TF-009 remain **open**.
+
+1. **Human Listener Lifecycle Startup Interruption Repair (`human_listener_lifecycle.py`):**
+   Prior review identified that a `KeyboardInterrupt` (`BaseException`) inside `worker.start()` before native OS
+   thread creation bypassed `except Exception`, leaving the worker record marked "possibly started" while no native
+   thread existed to set the completion event, resulting in a hang during shutdown cleanup.
+   - Updated `worker.start()` error handling to trap `BaseException`, ensuring interruptions and system exits are captured.
+   - Added bounded native thread creation verification: checks `worker.ident is not None or worker.is_alive()` or waits
+     bounded timeout (50ms) on `worker._started`. If native creation never occurred, `record[2] = True` (`failed_to_start = True`).
+   - In `_shutdown()`, cleanly skips workers whose native thread creation never occurred (`ident is None` and not alive),
+     preventing indefinite waits on `finished.wait()`.
+   - For started threads, cleanly closes listening sockets, sets `_stop`, releases `_ready`, waits on `finished.wait(timeout=1.0)`,
+     and deterministically joins `worker`. Zero leaked worker handles or listening sockets.
+   - Partial startup failure rolls back candidate generation without restoring old restricted credentials or falsely declaring success.
+   - Verified by 6 isolated watchdog regressions in `backend/tests/integration/test_human_listener_lifecycle.py` covering first and
+     second worker pre-native and post-native `KeyboardInterrupt` and `RuntimeError` failures. All 26 lifecycle tests pass.
+2. **Browser Transition Dual-SQLite Audit Failure & Retry Deduplication Verification (`test_analyst_browser_tls_service.py`):**
+   - Verified that pre-mutation admission audit failure in `AnalystBrowserTlsService` raises HTTP 503 unavailable and blocks
+     mutation in `AnalystStateRepository` (0 state mutations committed).
+   - Verified that post-commit completion audit failure returns HTTP 503 unavailable, state transition commits to `states.sqlite3`,
+     and replaying the transition with the same UUIDv4 `transition_request_id` returns HTTP 200 with the committed state and
+     generates 0 duplicate transitions in `alert_state_transitions`.
+3. **Storage Snapshot Backup Support for Optional `incidents.sqlite3` (`storage_backup.py`):**
+   - Added `INCIDENTS_DB_ROLE = "incidents"` with schema `incident_sqlite_v1`.
+   - Updated `create_storage_snapshot`, `verify_storage_snapshot`, and `restore_storage_snapshot` to include `incidents.sqlite3`
+     when present, while preserving 100% backward compatibility when only the 3 core DBs (`alerts`, `states`, `audit`) are present.
+   - Added cross-database referential consistency validation: verifies that every constituent alert in `incident_constituent_alerts`
+     corresponds to a valid candidate in `alert_candidates`.
+   - Added `PRAGMA user_version = 1` initialization to `IncidentSqliteRepository`.
+   - Verified by 13 tests in `backend/tests/integration/test_storage_backup.py`, including optional incidents database backup/restore
+     and referential integrity failure detection.
+4. **Canonical Gemini Master Project Export (`docs/GEMINI_PROJECT_MASTER.md`):**
+   - Created canonical project export `docs/GEMINI_PROJECT_MASTER.md` (Revision `TF-GEMINI-MASTER-2026-10-15-v2`), recording
+     current HEAD `d71e333`, Milestone #18 committed status, Section 7 lifecycle blocker resolution, Section 6.3 dual-DB
+     audit failure verification, optional incidents backup support, and capability status updates.
+
+Operational credential provisioning, external CA issuance/delivery runbooks, and long-term endurance remain open under TF-008 and TF-009.

@@ -105,10 +105,14 @@ class HumanListenerLifecycle:
         for worker, finished, failed_to_start in self._workers:
             if failed_to_start:
                 continue
+            # If native thread creation never occurred, never block indefinitely
+            if worker.ident is None and not worker.is_alive():
+                if hasattr(worker, "_started") and not worker._started.is_set():
+                    continue
             while True:
                 try:
                     finished.wait()
-                    if worker.ident is not None:
+                    if worker.ident is not None or worker.is_alive():
                         worker.join()
                     break
                 except KeyboardInterrupt:
@@ -175,8 +179,17 @@ class HumanListenerLifecycle:
                         self._workers.append(record)
                         try:
                             worker.start()
-                        except Exception:
-                            record[2] = True
+                        except BaseException:
+                            # Interruption or failure occurred during start().
+                            # Distinguish whether native OS thread creation actually occurred:
+                            started = False
+                            if worker.ident is not None or worker.is_alive():
+                                started = True
+                            elif hasattr(worker, "_started") and worker._started.wait(timeout=0.05):
+                                started = True
+
+                            if not started:
+                                record[2] = True
                             raise
                     self._generation += 1
                     self._state = "accepting"
