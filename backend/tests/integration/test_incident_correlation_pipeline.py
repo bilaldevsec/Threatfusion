@@ -252,3 +252,84 @@ def test_dashboard_surfacing_unsw_and_correlated_incidents(tmp_path: Path):
     assert "singleton_unverified_provenance" in html_unsw
     assert "unverified_provenance" in html_unsw
     assert "UNSW-NB15 raw telemetry lacks authenticated entity endpoints" in html_unsw
+
+
+def test_incident_grouping_correction_and_replay_safety(tmp_path: Path):
+    """Audited grouping correction splits an alert into a new incident with idempotent UUIDv4 replay safety."""
+    from threatfusion.alerts.correlation_engine import CorrelationSafetyError
+
+    incidents_db = tmp_path / "incidents.sqlite3"
+    incident_repo = IncidentSqliteRepository(incidents_db)
+
+    base_t = datetime(2026, 10, 15, 14, 30, 0, tzinfo=UTC)
+    cands = [
+        _make_candidate(i, score=0.80 + (i * 0.05), observed_at=base_t + timedelta(seconds=i * 2))
+        for i in range(1, 4)
+    ]
+    prov = EntityProvenanceContract(
+        entity_namespace_id="sensor-split-test",
+        clock_synchronized=True,
+        src_entity_id="10.0.0.1",
+        dst_entity_id="10.0.0.2",
+        protocol="tcp",
+        service_or_port="80",
+    )
+    correlatable = [CorrelatableAlert(c, prov) for c in cands]
+    incidents, _ = correlate_alert_candidates(correlatable)
+    assert len(incidents) == 1
+    assert incidents[0].constituent_alert_count == 3
+    orig_incident_id = incidents[0].incident_id
+
+    incident_repo.insert(incidents[0])
+
+    # Analyst performs manual grouping correction on candidate 2
+    cand2_id = cands[1].alert_candidate_id
+    req_id = str(uuid4())
+
+    split_inc = incident_repo.correct_incident_grouping(
+        cand2_id,
+        actor_id="analyst_lead_karachi",
+        reason="Candidate 2 is a separate scanner probe; manual split into standalone incident",
+        correction_request_id=req_id,
+    )
+
+    assert split_inc is not None
+    assert split_inc.incident_id != orig_incident_id
+    assert split_inc.constituent_alert_count == 1
+    assert split_inc.constituent_alert_ids == (cand2_id,)
+    assert split_inc.correlation_mode == "manual_correction_split"
+    assert split_inc.provenance_status == "manual_corrected"
+
+    # Original incident constituent count decreased to 2
+    orig_reloaded = incident_repo.get_incident(orig_incident_id)
+    assert orig_reloaded is not None
+    assert orig_reloaded.constituent_alert_count == 2
+    assert cand2_id not in orig_reloaded.constituent_alert_ids
+    assert cands[0].alert_candidate_id in orig_reloaded.constituent_alert_ids
+    assert cands[2].alert_candidate_id in orig_reloaded.constituent_alert_ids
+
+    # Idempotent replay of exact same correction_request_id
+    replay_inc = incident_repo.correct_incident_grouping(
+        cand2_id,
+        actor_id="analyst_lead_karachi",
+        reason="Candidate 2 is a separate scanner probe; manual split into standalone incident",
+        correction_request_id=req_id,
+    )
+    assert replay_inc.incident_id == split_inc.incident_id
+
+    # Conflict check: same correction_request_id with different actor
+    with pytest.raises(CorrelationSafetyError, match="correction_request_conflict"):
+        incident_repo.correct_incident_grouping(
+            cand2_id,
+            actor_id="rogue_actor",
+            reason="conflicting correction",
+            correction_request_id=req_id,
+        )
+
+    # Audit log verification
+    corrections = incident_repo.get_grouping_corrections(cand2_id)
+    assert len(corrections) == 1
+    assert corrections[0]["correction_request_id"] == req_id
+    assert corrections[0]["alert_candidate_id"] == cand2_id
+    assert corrections[0]["actor_id"] == "analyst_lead_karachi"
+    assert corrections[0]["target_incident_id"] == split_inc.incident_id

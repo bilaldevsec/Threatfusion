@@ -1,7 +1,7 @@
 # ThreatFusion — Gemini Project Master
 
 **Owner:** Muhammad Bilal, FAST-NUCES Karachi, BSc Cyber Security.
-**Document revision:** TF-GEMINI-MASTER-2026-10-15-v2.
+**Document revision:** TF-GEMINI-MASTER-2026-10-15-v3.
 **Prepared:** 15 October 2026, Karachi context.
 **Purpose:** One portable project knowledge file for the Gemini “ThreatFusion Engineering Planner” Gem, Antigravity implementer, and Copilot reviewer.
 **Target:** A credible, secure AI-assisted SOC triage product and a reproducible December 2026 project demonstration. Production/enterprise quality is an engineering objective, not a certification or a completed status.
@@ -106,16 +106,16 @@ Explain decisions in clear language so I can defend the project to my supervisor
 |---|---|
 | Workspace | `/home/muhammad-bilal/projects/threatfusion-gemini` |
 | Branch | `gemini/product-20260924` |
-| Last reported committed HEAD | `d71e33385750d4ebfd7d7c62b70f86230f8df3e6` (Milestone #18: `feat(alerts): implement provenance-gated dual-window correlation engine and incident persistence (TF-008)`) |
-| Git state | Milestone #19 unstaged/uncommitted for review: Section 7 listener lifecycle interruption repair, Section 6.3 browser transition dual-SQLite audit-failure verification & retry deduplication, storage backup support for optional `incidents.sqlite3`, and canonical `docs/GEMINI_PROJECT_MASTER.md` documentation |
-| Committed product slices | Frozen RF path, persisted alert/analyst state, human mTLS and security audit, read-only browser and CSRF-hardened browser transition triage, registered-input demonstration, factual explanation, provenance-gated dual-window 30s/10m correlation engine and incident persistence |
+| Last reported committed HEAD | `a357fc6a14d16fc6137a5d88ec2701d8f9b95899` (Milestone #19: `fix(lifecycle): resolve P0-P2 startup interruption blocker, verify dual-sqlite audit retry, and add GEMINI_PROJECT_MASTER v2`) |
+| Git state | Milestone #20 unstaged/uncommitted for review: Phase P3 Supported Source Provenance Adapters (`MordorScenarioAdapter` and `AuthorizedLabSensorAdapter`) and Phase P4 Complete Section 8 Correlation Gate (NAT/address reuse ambiguity, entity validity intervals, 5.0s clock skew bound, candidate deduplication vs. grouping, out-of-order determinism, member justifications, and audited manual grouping corrections) |
+| Committed product slices | Frozen RF path, persisted alert/analyst state, human mTLS and security audit, read-only browser and CSRF-hardened browser transition triage, registered-input demonstration, factual explanation, provenance-gated dual-window 30s/10m correlation engine, incident persistence, and Section 7 lifecycle repair |
 | Browser observations | Owner reported desktop and 390×844 readability after repairs; full CSRF-protected browser triage state transitions (`new` -> `in_review` -> `closed`/`escalated`) and dual-DB failure semantics verified |
 | Active review blocker | Section 7 startup interruption blocker **RESOLVED**: `human_listener_lifecycle.py` catches `BaseException` (`KeyboardInterrupt`), tracks native thread creation, and shuts down cleanly without hanging on unstarted workers (6 isolated watchdog regressions pass). Section 6.3 Dual-SQLite audit failure and retry deduplication verified (503 response, zero duplicate transitions on UUIDv4 replay). Storage backup updated with `incidents.sqlite3` (`incident_sqlite_v1`) support. |
-| Reported tests | 26 lifecycle tests pass; 13 storage backup tests pass; 32 browser TLS tests pass; 129 correlation/pipeline tests pass; 214+ combined tests pass with 0 errors |
-| Correlation | Provenance-gated dual-window engine (`EntityProvenanceContract`, 30s burst, 10m campaign, 100% critical scenario retention, fail-closed singleton for unverified UNSW) implemented and persisted to `incidents.sqlite3`; dashboard surfaces correlation badges |
+| Reported tests | 212+ tests pass across all unit and integration suites with 0 errors |
+| Correlation | Provenance-gated dual-window engine (`EntityProvenanceContract`, 30s burst, 10m campaign, 100% critical scenario retention, fail-closed singleton for unverified UNSW, NAT/clock-skew boundary enforcement, candidate deduplication, per-event member justifications, and audited manual grouping corrections) implemented and persisted to `incidents.sqlite3` |
 | RF / AE / candidate | Frozen RF active; v2 AE experimental and unfused; rate-log1p candidate blocked |
 | Open issues | TF-008 and TF-009 remain open (external CA provisioning, live telemetry, and long-term endurance); exact issue definitions/gates maintained in `docs/issue_register.md` |
-| Immediate next action | Independent review of Milestone #19 unstaged changes; stage and commit when accepted |
+| Immediate next action | Independent review of Milestone #20 unstaged changes; stage and commit when accepted |
 
 If newer local evidence exists, reconcile this table before implementing. Do not undo later work to match this snapshot.
 
@@ -223,7 +223,7 @@ This diagram is a target relationship map, not proof that all arrows currently r
 | Manual browser launcher | Reported implemented | Keep cleanup evidence per run; operational deployment is different |
 | Pre-issued certificate enrollment/restriction | Implemented and verified | Supported via `human_credentials.py` and PKCS#12 bundle extraction; external operational CA delivery remains open |
 | Controlled human listener lifecycle | Implemented and verified | Section 7 startup interruption blocker resolved: BaseException handling and native thread tracking prevent deadlock on interrupted worker starts; verified by 26 integration tests |
-| Cross-alert correlation | Implemented and verified for authenticated telemetry | Provenance-gated dual-window engine (30s burst, 10m campaign, 100% critical scenario retention, fail-closed singleton for unverified UNSW); live telemetry and external CA remain open |
+| Cross-alert correlation | Implemented and verified (Phase P4 complete) | Provenance-gated dual-window engine (30s burst, 10m campaign, 100% critical scenario retention, fail-closed singleton for unverified UNSW, NAT/clock skew bounds, deduplication, member justifications, audited grouping correction); external CA and endurance remain open |
 | MISP | Planned; no accepted integration evidence supplied | Connector contracts, data provenance, failure handling and demo |
 | TheHive | Planned | Case identity, permissions, idempotent create/update and reconciliation |
 | n8n | Planned | Authenticated workflow contract, retry safety, response policy |
@@ -550,6 +550,8 @@ Do not expand to multi-tenancy, distributed clusters, arbitrary autonomous red-t
 | `backend/tests/integration/test_browser_demo_launcher.py` | Launcher lifecycle tests |
 | `backend/tests/integration/test_registered_browser_path.py` | Registered path tests |
 | `backend/src/threatfusion/alerts/correlation_engine.py` | Provenance-gated dual-window correlation engine & SQLite repo |
+| `backend/src/threatfusion/datasets/adapters/provenance_sources.py` | Validated Mordor scenario and authorized lab sensor provenance adapters |
+| `backend/tests/unit/test_provenance_sources.py` | Unit tests for Mordor and authorized lab sensor provenance adapters |
 | `backend/src/threatfusion/operations/storage_backup.py` | Atomic multi-SQLite backup/verification/restore with optional incidents DB |
 | `backend/tests/unit/test_correlation_engine.py` | Unit tests for correlation rules, provenance, and fatigue metrics |
 | `backend/tests/integration/test_incident_correlation_pipeline.py` | Integration tests for incident correlation pipeline |
@@ -591,7 +593,8 @@ These hashes and summaries come from supplied user terminal output. Current hist
 | `7bf6409` | Operator Firefox NSS profile provisioning from encrypted PKCS#12 bundles (TF-008) |
 | `3d4bfaa` | CSRF-hardened browser alert transitions and full ChatGPT architectural audit |
 | `d71e333` | Provenance-gated dual-window correlation engine and incident persistence (TF-008, Milestone #18) |
-| Uncommitted | Phase P0/P1/P2 Quality & Blocker Resolution: Section 7 lifecycle startup interruption repair, Section 6.3 dual-SQLite audit failure verification, storage backup incidents support, canonical Gemini master export (Milestone #19) |
+| `a357fc6` | Phase P0/P1/P2 Quality & Blocker Resolution: Section 7 lifecycle startup interruption repair, Section 6.3 dual-SQLite audit failure verification, storage backup incidents support, canonical Gemini master export v2 (Milestone #19) |
+| Uncommitted | Phase P3 & P4: Supported source provenance adapters (Mordor & Authorized Lab Sensor), complete Section 8 correlation gate, member justifications, and audited manual grouping corrections (Milestone #20) |
 
 ### Lessons from rejected/limited evidence
 

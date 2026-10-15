@@ -1384,4 +1384,28 @@ TF-008 and TF-009 remain **open** pending long-term endurance testing, live tele
   - 26 lifecycle tests, 13 storage backup tests, 32 browser TLS tests, 129 correlation/pipeline tests pass (214+ combined tests pass with 0 errors).
   - Ruff, Black, and `git diff HEAD --check` pass cleanly.
 
-TF-008 and TF-009 remain **open** pending long-term endurance testing, live telemetry, and external CA provisioning. All Milestone #19 changes remain unstaged/uncommitted for review.
+TF-008 and TF-009 remain **open** pending long-term endurance testing, live telemetry, and external CA provisioning. Milestone #19 was committed to `gemini/product-20260924` at `a357fc6a14d16fc6137a5d88ec2701d8f9b95899`.
+
+### 2026-10-15 — Phase P3 & P4: Supported Source Provenance Adapters, Complete Section 8 Correlation Gate, and Audited Grouping Corrections (Milestone #20)
+
+- Implemented supported source provenance adapters in `backend/src/threatfusion/datasets/adapters/provenance_sources.py` (and exported in `adapters/__init__.py`):
+  - `MordorScenarioAdapter`: Normalizes supported Mordor host/security events bound to scenario captures with explicit `source_mode = "scenario_replay"`, `scenario_id`, `entity_namespace_id = f"mordor:{scenario_id}"`, entity endpoints, validity intervals, clock origin (`"utc_event_log"`), and clock synchronization evidence. Rejects missing endpoints, invalid timestamps, or wrong modes with `SourceRowValidationError`.
+  - `AuthorizedLabSensorAdapter`: Normalizes real or lab sensor events gated by allowlisted `RegisteredSensorManifest`. Enforces pre-registered `sensor_id` validation, replay/duplicate `source_event_id` detection, and strict separation between dataset/scenario replay and authorized lab sensors (`source_mode = "authorized_lab_sensor"`).
+- Completed Section 8 Correlation Edge-Case and Grouping Gates in `backend/src/threatfusion/alerts/correlation_engine.py`:
+  - NAT / Address Reuse Ambiguity: Alerts with `address_reuse_or_nat=True` fail closed to `singleton_unverified_provenance` (`"nat_address_reuse_ambiguous"`).
+  - Entity Validity Interval Enforcement: Alerts with timestamps outside `[validity_start_utc, validity_end_utc]` fail closed (`"outside_entity_validity_interval"`).
+  - Clock Skew Bound: Tolerates clock skew up to 5.0s (`MAX_ALLOWABLE_CLOCK_SKEW_SECONDS = 5.0`). Skew > 5.0s fails closed (`"clock_skew_exceeded"`).
+  - Candidate Deduplication vs. Grouping: Repeated submissions of the exact same `alert_candidate_id` collapse cleanly upfront without inflating total alert counts or constituent alert counts.
+  - Out-of-Order Determinism & Exact Boundaries: Pre-sorting on `(parsed_timestamp, alert_candidate_id)` ensures identical incident clusters regardless of arrival order. Exact boundaries ($\le 30.0\text{s}$ included in burst; $> 30.0\text{s}$ excluded; $\le 600.0\text{s}$ included in campaign; $> 600.0\text{s}$ excluded) verified.
+  - Per-Event Grouping Justification: Structured `MemberJustification` (`anchor_alert_id`, `delta_seconds`, `matched_relationship_key`, `rule_id`, `provenance_summary`) stored for every constituent alert in `incident_constituent_alerts` table in SQLite.
+  - Audited Grouping Correction (`correct_incident_grouping`): Investigators can manually split erroneously grouped alerts into separate standalone incidents (`correlation_mode = "manual_correction_split"`) with idempotent UUIDv4 replay safety and audit logging to `incident_grouping_corrections`.
+- Updated `backend/src/threatfusion/operations/storage_backup.py` to record `incident_grouping_corrections` in snapshot manifests.
+- Added comprehensive unit and integration tests:
+  - `backend/tests/unit/test_provenance_sources.py` (5 tests)
+  - `backend/tests/unit/test_correlation_engine.py` (expanded to 13 tests)
+  - `backend/tests/integration/test_incident_correlation_pipeline.py` (expanded to 3 tests)
+- Verification:
+  - Full test suite passes: 212+ tests pass with exit 0.
+  - Ruff, Black, and `git diff HEAD --check` pass cleanly.
+
+TF-008 and TF-009 remain **open** pending long-term endurance testing, live telemetry, and external CA provisioning. All Milestone #20 changes remain unstaged/uncommitted for review.

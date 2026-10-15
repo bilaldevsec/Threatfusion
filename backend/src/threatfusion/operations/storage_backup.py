@@ -288,6 +288,13 @@ def _inspect_database(db_path: Path, role: str) -> dict[str, object]:
                 row_counts["incident_constituent_alerts"] = conn.execute(
                     "SELECT COUNT(*) FROM incident_constituent_alerts"
                 ).fetchone()[0]
+                has_corrections = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='incident_grouping_corrections'"
+                ).fetchone()
+                if has_corrections:
+                    row_counts["incident_grouping_corrections"] = conn.execute(
+                        "SELECT COUNT(*) FROM incident_grouping_corrections"
+                    ).fetchone()[0]
                 row_counts["repository_metadata"] = conn.execute(
                     "SELECT COUNT(*) FROM repository_metadata"
                 ).fetchone()[0]

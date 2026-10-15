@@ -322,3 +322,26 @@ Correlated incidents are transactionally persisted to SQLite (`incidents.sqlite3
 - `AnalystAlertViewModel.get_alert(...)` queries `IncidentSqliteRepository` to surface `incident_correlation` metadata in the alert detail response.
 - If an alert candidate lacks a correlated incident record (e.g. raw UNSW-NB15 alerts), the view model automatically defaults it to `singleton_unverified_provenance` with an explicit notice: `"UNSW-NB15 raw telemetry lacks authenticated entity endpoints and clock synchronization; evaluated as an isolated singleton incident."`
 - The browser dashboard (`analyst_dashboard.py`) renders an **Incident Correlation &amp; Provenance** section displaying correlation mode, window type, rule identity, constituent count, provenance status badges (`verified_entity_bearing` / `unverified_provenance`), and explanatory narrative.
+
+### 6. Supported Source Provenance Adapters & Complete Section 8 Correlation Gate (Milestone #20)
+
+Milestone #20 implements the full Phase P3 and Phase P4 requirements from `docs/GEMINI_PROJECT_MASTER.md`:
+
+1. **Supported Source Provenance Adapters (`provenance_sources.py`):**
+   - **`MordorScenarioAdapter`**: Normalizes supported Mordor host/security events bound to specific scenario captures, with explicit `source_mode = "scenario_replay"`, `scenario_id`, `entity_namespace_id = f"mordor:{scenario_id}"`, entity endpoints, validity intervals, clock origin (`"utc_event_log"`), and clock synchronization evidence. Rejects missing endpoints, invalid timestamps, or wrong modes with `SourceRowValidationError`.
+   - **`AuthorizedLabSensorAdapter`**: Normalizes real or lab sensor events gated by an allowlisted `RegisteredSensorManifest`. Enforces pre-registered `sensor_id` validation, duplicate `source_event_id` detection, and strict separation between dataset/scenario replay and authorized lab sensors (`source_mode = "authorized_lab_sensor"`).
+2. **Address Reuse / NAT & Entity Validity Interval Enforcement:**
+   - If `address_reuse_or_nat is True` (e.g. unmapped NAT gateway or DHCP lease churn without host identity), or if `observed_at_utc` falls outside `[validity_start_utc, validity_end_utc]`, the engine fails closed into `singleton_unverified_provenance` with specific provenance status (`"nat_address_reuse_ambiguous"` or `"outside_entity_validity_interval"`).
+3. **Clock Skew Tolerance Gate:**
+   - `max_clock_skew_seconds <= 5.0` is tolerated under synchronized clocks (`MAX_ALLOWABLE_CLOCK_SKEW_SECONDS = 5.0`). Exceeding this bound fails closed to `singleton_unverified_provenance` (`"clock_skew_exceeded"`).
+4. **Candidate Deduplication vs. Incident Grouping:**
+   - Repeated submissions of the exact same `alert_candidate_id` collapse cleanly upfront without inflating total alert counts or constituent alert counts.
+5. **Exact Boundary Semantics & Out-of-Order Determinism:**
+   - Pre-sorting on `(parsed_timestamp, alert_candidate_id)` guarantees out-of-order and late-arriving events produce identical incident clusters.
+   - Boundaries: $\Delta t \le 30.0\text{s}$ is included in burst window; $\Delta t = 30.001\text{s}$ is excluded. $\Delta t \le 600.0\text{s}$ is included in campaign window; $\Delta t = 600.001\text{s}$ is excluded and starts a new cluster.
+6. **Per-Event Grouping Justification (`MemberJustification`):**
+   - Every constituent alert carries an explicit structured `MemberJustification` (`anchor_alert_id`, `delta_seconds`, `matched_relationship_key`, `rule_id`, `provenance_summary`) persisted to `incident_constituent_alerts` in SQLite.
+7. **Audited Grouping Correction (`correct_incident_grouping`):**
+   - Investigators can manually split erroneously grouped alerts into separate standalone incidents (`correlation_mode = "manual_correction_split"`).
+   - Replays with the identical UUIDv4 `correction_request_id` return the existing split incident idempotently, while conflicts raise `CorrelationSafetyError("correction_request_conflict")`.
+   - All manual split actions are immutably logged to `incident_grouping_corrections`.
