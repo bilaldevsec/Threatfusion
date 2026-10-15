@@ -1431,4 +1431,42 @@ TF-008 and TF-009 remain **open** pending long-term endurance testing, live tele
   - 46 unit and integration tests pass across `test_multi_signal_risk.py`, `test_jury_traceability_and_feedback.py`, `test_provenance_sources.py`, `test_correlation_engine.py`, and `test_incident_correlation_pipeline.py`.
   - Ruff, Black, and `git diff HEAD --check` pass cleanly.
 
-TF-010 is **resolved**; TF-008 and TF-009 remain **open** pending long-term endurance testing, live telemetry, and external CA provisioning. All Milestone #21 changes remain unstaged/uncommitted for review.
+TF-010 repository-side disposition registry is implemented in `backend/src/threatfusion/models/jury_traceability.py` and `docs/jury_requirements_traceability.md`; per `CLAUDE.md` Section 7, TF-010 is kept **open** pending physical attachment of the signed external jury brief. Milestone #21 was committed to `gemini/product-20260924` at `7017bd7`.
+
+### 2026-10-16 — Phase F / Milestone #22: Deep Presentation Extraction (Slides 1-15), Slide 14 Suricata 14-Feature Live-Ingestion Pipeline, CLAUDE.md Continuity Installation, and End-to-End Product Spine Verification (Milestone #22)
+
+- **Deep Extraction of Final Presentation (Slides 1–15) & Slide 14 Azure VM Architecture Audit:**
+  - Fully extracted all 15 slides, numeric claims, architectural diagrams, and verbatim speaker notes from `/home/muhammad-bilal/Downloads/Final Presentation (1).pptx` using custom XML parsing of presentation slide and notesSlide components.
+  - Published comprehensive reference report `docs/fyp2_final_presentation_and_azure_live_path_audit.md` mapping each presentation slide to repository artifacts, documentation, and source modules.
+  - Verified and documented all slide metrics (Random Forest 94.95% accuracy, 75.87% macro-F1, Autoencoder 96.36% / 96.41% accuracy, combined threshold, and 68.76% macro-F1).
+  - Explicitly mapped the 5-stage Slide 14 planned Azure VM live-ingestion pipeline:
+    - Box 01: Attacker VM (10.0.0.4) running Nmap, curl, ping, and safe attack scripts.
+    - Box 02: Victim VM (10.0.0.5, private IP only) with Suricata network inspection capturing `eve.json` flow events.
+    - Box 03: ThreatFusion Flow Adapter extracting the exact 14 features and binding `EntityProvenanceContract`.
+    - Box 04: Registered Producer secure record transfer over mutual TLS (TLS 1.3).
+    - Box 05: ThreatFusion Backend executing frozen Random Forest inference (`random_forest.joblib`), dual-window incident correlation (`incidents.sqlite3`), operator mTLS triage via `HumanListenerLifecycle`, and 4-database atomic storage snapshot.
+- **`CLAUDE.md` Continuity Installation & Governance Alignment:**
+  - Installed `/home/muhammad-bilal/Downloads/THREATFUSION_CLAUDE_HANDOFF.md` into repository root as `CLAUDE.md` with dated Section 19 Gemini branch reconciliation.
+  - Enforced `CLAUDE.md` Section 7 ("Never close an issue because code 'looks complete.' Close only when its acceptance evidence is satisfied"): reconciled `docs/issue_register.md` to keep **TF-010 as `open`** until the external dated, signed FYP-1 jury brief/rubric is formally attached.
+- **Slide 14 Box 03 Suricata 14-Feature Flow Adapter (`SuricataFlowAdapter`):**
+  - Implemented `backend/src/threatfusion/datasets/adapters/suricata_flow.py` extracting the exact 14 model features:
+    - 10 numeric features: `duration_ms`, `fwd_packets`, `bwd_packets`, `fwd_bytes`, `bwd_bytes`, `packets_per_second`, `bytes_per_second`, `fwd_packet_length_mean`, `bwd_packet_length_mean`, `dst_port`.
+    - 4 protocol one-hot indicators: `protocol_tcp`, `protocol_udp`, `protocol_icmp`, `protocol_other`.
+  - Bound `EntityProvenanceContract` to ensure sensor allowlisting, clock synchronization, private IP routing, and no NAT/address reuse ambiguity.
+  - Implemented PEP 562 lazy attribute loading in `backend/src/threatfusion/datasets/adapters/__init__.py` to eliminate circular import loops with `network_inference.py`.
+- **End-to-End Product Spine Integration & Quiescent 4-DB Snapshot Support:**
+  - Wired `incident_repository` into `HumanListenerLifecycle` (`backend/src/threatfusion/operations/human_listener_lifecycle.py`), validating its schema on startup/replace and passing `incidents_path` to `snapshot_quiescent()`.
+  - Added optional `include_incidents` parameter to `scripts/run_registered_browser_path.py` preserving 100% backward compatibility with `test_registered_browser_path.py`.
+  - Implemented end-to-end integration test `backend/tests/integration/test_slide14_suricata_live_ingestion_path.py`:
+    - Simulates Attacker VM flow against Victim VM private IP 10.0.0.5.
+    - Adapts flow via `SuricataFlowAdapter` into 14 features with verified `EntityProvenanceContract`.
+    - Executes frozen Random Forest inference (`random_forest.joblib`), producing Attack decision ($p = 0.5341$).
+    - Persists `AlertCandidate` to `alerts.sqlite3` and correlates into `incidents.sqlite3` (`singleton_verified_provenance`, `verified_entity_bearing`).
+    - Launches `HumanListenerLifecycle` and performs authenticated browser mTLS `GET /` (Queue) and `GET /v1/analyst/alerts/{id}` (Detail).
+    - Issues authenticated browser mTLS `POST /v1/analyst/alerts/{id}/transitions` with CSRF token and UUIDv4 transition ID, transitioning alert to `in_review` (version 1) in `states.sqlite3`.
+    - Executes `snapshot_quiescent()`, producing a verified 4-database snapshot (`alerts`, `states`, `audit`, `incidents`), verified by `verify_storage_snapshot()`.
+- **Verification:**
+  - 120+ focused unit and integration tests pass cleanly across all affected test suites.
+  - Ruff, Black, and `git diff HEAD --check` pass with zero errors.
+  - Frozen model SHA-256 digests verified identical; zero training/fitting performed.
+  - All Milestone #22 changes remain unstaged and uncommitted for user review.

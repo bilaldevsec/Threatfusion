@@ -178,6 +178,7 @@ def run_registered_browser_path(
     ) = None,
     *,
     runtime_parent: Path | None = None,
+    include_incidents: bool = False,
 ) -> dict[str, object]:
     """Run one registered RF inference and reconcile its authenticated browser display."""
     boundary = UnswNetworkInferenceBoundary(project_root=PROJECT_ROOT)
@@ -232,6 +233,21 @@ def run_registered_browser_path(
                 ),
                 "persisted_alert_mismatch",
             )
+
+            incident_id = None
+            incident_count = 0
+            if include_incidents:
+                from threatfusion.alerts.correlation_engine import (
+                    CorrelatableAlert,
+                    IncidentSqliteRepository,
+                    correlate_alert_candidates,
+                )
+
+                incidents_repo = IncidentSqliteRepository(root / "incidents.sqlite3")
+                corr_res = correlate_alert_candidates([CorrelatableAlert(candidate=candidate)])
+                incidents_repo.insert_many(corr_res.incidents)
+                incident_count = incidents_repo.count_incidents()
+                incident_id = corr_res.incidents[0].incident_id if corr_res.incidents else None
 
             browser, view, authorization, human_credentials, browser_audit = _create_browser(
                 root, reopened_alerts
@@ -332,7 +348,7 @@ def run_registered_browser_path(
                     "browser_explanation_mismatch",
                 )
                 inspect(root, browser, human_credentials, detail)
-            return {
+            evidence = {
                 "status": "completed",
                 "scope": "one_registered_unsw_replay_automated_tls_not_manual_browser",
                 "source_member_sha256": replay_demo.MEMBER_SHA256,
@@ -351,6 +367,10 @@ def run_registered_browser_path(
                 "injected_view_failure_http_status": failure_code,
                 "persisted_alert_count": len(reopened_alerts.list()),
             }
+            if include_incidents:
+                evidence["incident_id"] = incident_id
+                evidence["incident_count"] = incident_count
+            return evidence
         finally:
             if browser is not None:
                 browser.close()

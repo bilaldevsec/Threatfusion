@@ -37,6 +37,7 @@ class HumanListenerLifecycle:
         view,
         audit,
         storage_directory=None,
+        incident_repository=None,
     ):
         self._arguments = (
             directory,
@@ -47,6 +48,7 @@ class HumanListenerLifecycle:
             audit,
         )
         self._storage_directory = Path(storage_directory) if storage_directory is not None else None
+        self._incident_repository = incident_repository
         self._control = RLock()
         self._stop = Event()
         self._ready = Event()
@@ -157,7 +159,10 @@ class HumanListenerLifecycle:
                     if not active:
                         raise HumanLifecycleError()
                     # Reuse repository schema gates, including an empty state database.
-                    for repository in (view._repository._alerts, view._repository, audit):
+                    repos = [view._repository._alerts, view._repository, audit]
+                    if self._incident_repository is not None:
+                        repos.append(self._incident_repository)
+                    for repository in repos:
                         if not stat.S_ISREG(repository._database_path.lstat().st_mode):
                             raise HumanLifecycleError()
                         with closing(repository._connect()) as connection:
@@ -218,6 +223,11 @@ class HumanListenerLifecycle:
             alerts_path = view._repository._alerts._database_path
             states_path = view._repository._database_path
             audit_path = audit._database_path
+            incidents_path = (
+                self._incident_repository._database_path
+                if self._incident_repository is not None
+                else None
+            )
 
             manifest = create_storage_snapshot(
                 snapshot_dir=snapshot_dir,
@@ -225,6 +235,7 @@ class HumanListenerLifecycle:
                 alerts_path=alerts_path,
                 states_path=states_path,
                 audit_path=audit_path,
+                incidents_path=incidents_path,
             )
 
             try:

@@ -851,12 +851,32 @@ class IncidentSqliteRepository:
                     conn.execute(_CREATE_CORRECTIONS_TABLE)
                     conn.execute(_CREATE_CORRECTIONS_INDEX)
                     conn.execute(f"PRAGMA user_version = {INCIDENT_REPOSITORY_SCHEMA_VERSION};")
+                self._verify_schema(conn)
         finally:
             conn.close()
 
         mode = stat.S_IMODE(self.path.stat().st_mode)
         if mode != 0o600:
             self.path.chmod(0o600)
+
+    @property
+    def _database_path(self) -> Path:
+        return self.path
+
+    def _verify_schema(self, connection: sqlite3.Connection) -> None:
+        try:
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            row = connection.execute(
+                "SELECT value FROM repository_metadata WHERE key='schema_identity';"
+            ).fetchone()
+            if (
+                not row
+                or row[0] != INCIDENT_REPOSITORY_SCHEMA_IDENTITY
+                or version != INCIDENT_REPOSITORY_SCHEMA_VERSION
+            ):
+                raise CorrelationSafetyError("repository_schema_mismatch")
+        except sqlite3.Error:
+            raise CorrelationSafetyError("repository_schema_mismatch") from None
 
     def insert(self, incident: IncidentRecord) -> None:
         """Atomically persist one incident and its constituent alert references."""
