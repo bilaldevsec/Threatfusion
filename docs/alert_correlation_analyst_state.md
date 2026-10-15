@@ -255,3 +255,70 @@ Missing, modified, wrong-version or differently bound results are unavailable at
 the dashboard parser. Neither failure changes the model decision, immutable alert,
 analyst state or history; the authenticated detail page remains readable. Existing
 backend failures still follow the browser's unavailable/503 contract.
+
+## Authenticated Entity-Bearing Telemetry Contract and Dual-Window Correlation Engine (Milestone #18, TF-008)
+
+Milestone #18 implements the fail-closed dual-window correlation engine and authenticated entity provenance contract
+in `backend/src/threatfusion/alerts/correlation_engine.py`, surfacing incident metadata into `AnalystAlertViewModel`
+and the analyst browser dashboard without weakening existing immutable alert schemas or making false correlation claims.
+
+### 1. Scoped Entity Provenance Contract (`EntityProvenanceContract`)
+
+To prevent the false grouping of distinct entities or unverified network traces, any candidate entering correlation
+must present a structured `EntityProvenanceContract`:
+- `entity_namespace_id`: Explicit sensor/asset namespace ID (e.g. `edge-router-01`, `sensor-karachi-01`).
+- `clock_synchronized`: Boolean asserting that observation timestamps originate from an authenticated, NTP/PTP-synchronized clock.
+- `src_entity_id`: Authenticated source host/asset identifier (IP, MAC, or asset UUID).
+- `dst_entity_id`: Authenticated destination host/asset identifier.
+- `protocol`: Transport protocol (e.g. `tcp`, `udp`, `icmp`).
+- `service_or_port`: Destination port or service name (e.g. `80`, `443`, `ssh`).
+- `observed_at_utc`: ISO-8601 UTC observation timestamp string.
+
+**The UNSW-NB15 Fail-Closed Singleton Guarantee:**
+Raw UNSW-NB15 dataset rows lack authenticated sensor namespaces, lack clock synchronization guarantees, and lack verifiable
+entity lifetime/NAT-free mappings. Under `is_verified()`, if `entity_namespace_id` is missing, `clock_synchronized` is false,
+or endpoints are absent, the correlation engine refuses to merge the alert with any other alert. Every unverified alert is
+assigned to an isolated singleton incident (`correlation_mode = "singleton_unverified_provenance"`, `window_type = "none"`,
+`constituent_alert_ids = (alert_candidate_id,)`). Zero false merges occur across synthetic or unverified rows.
+
+### 2. Dual-Window Correlation Architecture
+
+When alerts carry verified provenance (`is_verified() is True`), they are grouped strictly within matching `entity_namespace_id`
+boundaries under two predeclared temporal windows:
+
+1. **30-Second Burst Window (`BURST_WINDOW_SECONDS = 30.0`)**:
+   - Relationship key: `(entity_namespace_id, src_entity_id, dst_entity_id, protocol, service_or_port)`.
+   - Window duration: $\Delta t \le 30.0$ seconds from the anchor alert.
+   - Result: Collapses high-frequency network bursts and port floods into a single burst incident (`window_type = "burst_30s"`, `correlation_rule_id = "corr_burst_5tuple_30s_v1"`).
+2. **10-Minute Campaign Window (`CAMPAIGN_WINDOW_SECONDS = 600.0`)**:
+   - Relationship key: `(entity_namespace_id, frozenset({src_entity_id, dst_entity_id}))`.
+   - Window duration: $\Delta t \le 600.0$ seconds from the anchor alert.
+   - Result: Correlates multi-port, multi-service lateral movement and reconnaissance across host pairs into a campaign incident (`window_type = "campaign_600s"`, `correlation_rule_id = "corr_campaign_entity_pair_600s_v1"`).
+
+**Strict Cross-Namespace Isolation:**
+Alerts from different namespaces (e.g. `sensor-a` vs `sensor-b`) never correlate, even if timestamps, IPs, and ports match identically.
+
+### 3. Empirical Alert Fatigue Reduction Metric and 100% Critical Scenario Retention Safety Gate
+
+The correlation engine evaluates every batch with `compute_alert_reduction_metrics`:
+- **Alert Fatigue Reduction Ratio**:
+  $$\text{Reduction Ratio} = 1.0 - \frac{\text{Total Incidents}}{\text{Total Alerts}}$$
+- **100% Critical Scenario Retention Safety Gate**:
+  The engine verifies that:
+  - Every input alert candidate is accounted for in exactly one output incident (`alerts_accounted_for == total_input_alerts`).
+  - No critical/attack alert is ever dropped or orphaned (`critical_retention_ratio == 1.0`). If any attack alert is omitted, the engine raises `CorrelationSafetyError("critical_alert_dropped")`.
+  - Every incident inherits the maximum uncalibrated model score of its constituents (`max_probability_score = max(score)`).
+  - If any constituent alert has `decision == "Attack"`, the correlated incident's `escalated_decision` is deterministically `"Attack"` (zero-downgrade invariant).
+
+### 4. Incident SQLite Persistence (`IncidentSqliteRepository`)
+
+Correlated incidents are transactionally persisted to SQLite (`incidents.sqlite3`) with file permissions `0600`:
+- `incidents`: Stores `incident_id`, `schema_version`, `correlation_mode`, `window_type`, `correlation_rule_id`, `entity_namespace_id`, `constituent_alert_count`, `max_probability_score`, `escalated_decision`, `first_observed_at`, `last_observed_at`, and `created_at`.
+- `incident_constituent_alerts`: Maps `incident_id` to `alert_candidate_id` with sequence indexing.
+- Provides idempotent insertion and indexed lookups by `incident_id` or `alert_candidate_id`.
+
+### 5. View Model & Dashboard Integration
+
+- `AnalystAlertViewModel.get_alert(...)` queries `IncidentSqliteRepository` to surface `incident_correlation` metadata in the alert detail response.
+- If an alert candidate lacks a correlated incident record (e.g. raw UNSW-NB15 alerts), the view model automatically defaults it to `singleton_unverified_provenance` with an explicit notice: `"UNSW-NB15 raw telemetry lacks authenticated entity endpoints and clock synchronization; evaluated as an isolated singleton incident."`
+- The browser dashboard (`analyst_dashboard.py`) renders an **Incident Correlation &amp; Provenance** section displaying correlation mode, window type, rule identity, constituent count, provenance status badges (`verified_entity_bearing` / `unverified_provenance`), and explanatory narrative.

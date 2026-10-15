@@ -77,6 +77,19 @@ class DashboardTransitionRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class DashboardIncidentSummary:
+    """Incident correlation metadata and provenance status for one alert."""
+
+    incident_id: str
+    correlation_mode: str
+    window_type: str
+    correlation_rule_id: str
+    constituent_alert_count: int
+    provenance_status: str
+    explanation: str
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardAlertDetail:
     """Comprehensive detail view for one alert candidate."""
 
@@ -100,6 +113,7 @@ class DashboardAlertDetail:
     last_transition_id: str | None
     history: tuple[DashboardTransitionRecord, ...]
     explanation: dict[str, object] | None = None
+    incident_correlation: DashboardIncidentSummary | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +273,33 @@ def _parse_detail(payload: dict[str, object]) -> DashboardAlertDetail:
         raise AnalystDashboardUnavailableError("invalid_payload_format")
     history = tuple(_parse_history_entry(h) for h in raw_history)
 
+    raw_corr = payload.get("incident_correlation")
+    incident_correlation: DashboardIncidentSummary | None = None
+    if raw_corr is not None and isinstance(raw_corr, dict):
+        incident_correlation = DashboardIncidentSummary(
+            incident_id=_parse_non_empty_str(raw_corr, "incident_id"),
+            correlation_mode=_parse_non_empty_str(raw_corr, "correlation_mode"),
+            window_type=_parse_non_empty_str(raw_corr, "window_type"),
+            correlation_rule_id=_parse_non_empty_str(raw_corr, "correlation_rule_id"),
+            constituent_alert_count=_parse_int(raw_corr, "constituent_alert_count", min_val=1),
+            provenance_status=_parse_non_empty_str(raw_corr, "provenance_status"),
+            explanation=_parse_str(raw_corr, "explanation"),
+        )
+    else:
+        cand_id = str(evidence["alert_candidate_id"])
+        incident_correlation = DashboardIncidentSummary(
+            incident_id=f"incident_v1:unsw_{cand_id[-16:]}",
+            correlation_mode="singleton_unverified_provenance",
+            window_type="none",
+            correlation_rule_id="corr_singleton_unverified_provenance_v1",
+            constituent_alert_count=1,
+            provenance_status="unverified_provenance",
+            explanation=(
+                "UNSW-NB15 raw telemetry lacks authenticated entity endpoints "
+                "and synchronized clocks; preserved as singleton incident."
+            ),
+        )
+
     return DashboardAlertDetail(
         alert_candidate_id=str(evidence["alert_candidate_id"]),
         source_event_id=str(evidence["source_event_id"]),
@@ -282,6 +323,7 @@ def _parse_detail(payload: dict[str, object]) -> DashboardAlertDetail:
         ),
         history=history,
         explanation=validate_explanation(payload.get("explanation"), evidence),
+        incident_correlation=incident_correlation,
     )
 
 
@@ -570,6 +612,22 @@ def render_dashboard_html(
             </div>
             """
 
+        corr_block = ""
+        if sel.incident_correlation is not None:
+            corr = sel.incident_correlation
+            corr_block = f"""
+            <h3>Incident Correlation &amp; Provenance</h3>
+            <div class="evidence-grid">
+                <div><b>Incident ID:</b> <code>{html.escape(corr.incident_id[:24])}...</code></div>
+                <div><b>Correlation Mode:</b> <span class="badge badge-corr">{html.escape(corr.correlation_mode)}</span></div>
+                <div><b>Window Type:</b> {html.escape(corr.window_type)}</div>
+                <div><b>Rule ID:</b> <code>{html.escape(corr.correlation_rule_id)}</code></div>
+                <div><b>Constituent Alerts:</b> {corr.constituent_alert_count}</div>
+                <div><b>Provenance Status:</b> <span class="badge badge-prov">{html.escape(corr.provenance_status)}</span></div>
+            </div>
+            <p class="corr-explanation">{html.escape(corr.explanation)}</p>
+            """
+
         detail_section = f"""
         <section class="card detail-card">
             <h2>Alert Detail &amp; Evidence</h2>
@@ -584,6 +642,7 @@ def render_dashboard_html(
                 <div><b>Decision:</b> <span class="badge badge-decision">{html.escape(sel.decision)}</span></div>
                 <div><b>Triage State:</b> <span class="badge badge-state">{html.escape(sel.state)}</span> (v{sel.version})</div>
             </div>
+            {corr_block}
             <h3>Factual explanation ({EXPLANATION_VERSION})</h3>
             <p>Status: {html.escape(str((sel.explanation or {}).get("status", "unavailable")))}</p>
             <p>{html.escape(str((sel.explanation or {}).get("summary", "Explanation unavailable.")))}</p>
@@ -617,6 +676,9 @@ def render_dashboard_html(
         .badge-state {{ background: #1f6feb; color: #fff; }}
         .badge-role {{ background: #6e7681; color: #fff; }}
         .badge-terminal {{ background: #8b949e; color: #fff; }}
+        .badge-corr {{ background: #8957e5; color: #fff; }}
+        .badge-prov {{ background: #1f6feb; color: #fff; }}
+        .corr-explanation {{ font-size: 0.85rem; color: #8b949e; margin-top: -0.5rem; margin-bottom: 1rem; }}
         .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 1rem; margin-bottom: 1.5rem; }}
         table.data-table {{ width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.9rem; }}
         table.data-table th, table.data-table td {{ border: 1px solid #30363d; padding: 0.5rem 0.75rem; text-align: left; }}

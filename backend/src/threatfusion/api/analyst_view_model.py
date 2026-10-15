@@ -96,10 +96,16 @@ class AnalystAlertViewModel:
     actor IDs, roles, headers, certificates, or JSON as authentication evidence.
     """
 
-    def __init__(self, repository: AnalystStateRepository) -> None:
+    def __init__(
+        self,
+        repository: AnalystStateRepository,
+        *,
+        incident_repository: object | None = None,
+    ) -> None:
         if type(repository) is not AnalystStateRepository:
             raise AnalystViewError("analyst_view_unavailable")
         self._repository = repository
+        self._incident_repository = incident_repository
 
     def list_alerts(
         self, capability: AnalystCapability, *, limit: int = 50, offset: int = 0
@@ -124,11 +130,56 @@ class AnalystAlertViewModel:
             detail = self._repository.get_alert(capability, alert_candidate_id)
             if detail is None:
                 return None
+
+            incident = None
+            if self._incident_repository is not None and hasattr(
+                self._incident_repository, "get_incident_for_alert"
+            ):
+                incident = self._incident_repository.get_incident_for_alert(alert_candidate_id)
+
+            if incident is not None:
+                correlation_meta = {
+                    "incident_id": str(incident.incident_id),
+                    "correlation_mode": str(incident.correlation_mode),
+                    "window_type": str(incident.window_type),
+                    "correlation_rule_id": str(incident.correlation_rule_id),
+                    "constituent_alert_count": int(incident.constituent_alert_count),
+                    "provenance_status": str(incident.provenance_status),
+                    "explanation": (
+                        "Correlated within 30s burst window."
+                        if incident.window_type == "burst_30s"
+                        else (
+                            "Correlated within 10m campaign window."
+                            if incident.window_type == "campaign_600s"
+                            else "Preserved as verified singleton incident."
+                        )
+                    ),
+                }
+            else:
+                from threatfusion.alerts.correlation_engine import derive_incident_id
+
+                inc_id = derive_incident_id(
+                    "corr_singleton_unverified_provenance_v1", (alert_candidate_id,)
+                )
+                correlation_meta = {
+                    "incident_id": inc_id,
+                    "correlation_mode": "singleton_unverified_provenance",
+                    "window_type": "none",
+                    "correlation_rule_id": "corr_singleton_unverified_provenance_v1",
+                    "constituent_alert_count": 1,
+                    "provenance_status": "unverified_provenance",
+                    "explanation": (
+                        "UNSW-NB15 raw telemetry lacks authenticated entity endpoints "
+                        "and synchronized clocks; preserved as singleton incident."
+                    ),
+                }
+
             return {
                 "schema_version": VIEW_SCHEMA_VERSION,
                 **_item(detail),
                 "analyst_history": [_event(event) for event in detail.transitions],
                 "explanation": explanation_for(_evidence(detail.candidate)),
+                "incident_correlation": correlation_meta,
             }
         except AnalystStateError as error:
             raise AnalystViewError(error.code) from None

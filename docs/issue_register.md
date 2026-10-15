@@ -626,3 +626,47 @@ Both TF-008 and TF-009 remain **open**.
 
 Automated browser triage workflows and CSRF defenses are implemented and verified. Long-term endurance, live telemetry,
 and the defensible distinct-alert correlation key remain open under TF-008 and TF-009.
+
+### TF-008 / TF-009 authenticated entity provenance contract, dual-window 30s/10m alert correlation engine, and empirical alert fatigue reduction metric, 2026-10-15
+
+Both TF-008 and TF-009 remain **open**.
+
+1. **Entity Provenance Boundary & Fail-Closed UNSW-NB15 Singleton Isolation (`EntityProvenanceContract`):**
+   Implemented `EntityProvenanceContract` in `backend/src/threatfusion/alerts/correlation_engine.py` requiring explicit
+   `entity_namespace_id`, `clock_synchronized=True`, and non-empty `src_entity_id`/`dst_entity_id`. Raw UNSW-NB15 alerts
+   lacking verified entity namespaces or clock synchronization guarantees are strictly prohibited from merging with other
+   alerts; each is deterministically isolated into a singleton incident (`correlation_mode = "singleton_unverified_provenance"`,
+   `window_type = "none"`), ensuring 0 false merges across synthetic or unverified captures.
+2. **Dual-Window Correlation for Verified Entity Telemetry (`correlate_alert_candidates`):**
+   Authenticated alerts are correlated under two distinct temporal windows within the same `entity_namespace_id`:
+   - **30-Second Burst Window (`BURST_WINDOW_SECONDS = 30.0`)**: Rapid burst alerts sharing exact 5-tuples
+     `(entity_namespace_id, src_entity_id, dst_entity_id, protocol, service_or_port)` within <= 30s collapse into a
+     burst incident (`window_type = "burst_30s"`, `correlation_rule_id = "corr_burst_5tuple_30s_v1"`).
+   - **10-Minute Campaign Window (`CAMPAIGN_WINDOW_SECONDS = 600.0`)**: Multi-stage alerts between the same authenticated
+     endpoint pair `(entity_namespace_id, frozenset({src_entity_id, dst_entity_id}))` within <= 600s collapse into a
+     campaign incident (`window_type = "campaign_600s"`, `correlation_rule_id = "corr_campaign_entity_pair_600s_v1"`).
+   - **Cross-Namespace Isolation**: Alerts from distinct sensor namespaces (`sensor-a` vs `sensor-b`) never correlate.
+3. **Empirical Alert Reduction Metric & 100% Critical Scenario Retention Safety Gate:**
+   Computes alert fatigue reduction ratio 1.0 - (incidents / alerts). Enforces that every input alert is
+   accounted for, and strictly requires critical_retention_ratio == 1.0. If any critical/attack alert is omitted or
+   dropped, the engine raises `CorrelationSafetyError("critical_alert_dropped")`. Every correlated incident inherits the maximum
+   uncalibrated model score and escalates to decision "Attack" if any constituent alert is an Attack (zero downgrade invariant).
+4. **SQLite Transactional Persistence (`IncidentSqliteRepository`):**
+   Implements fail-closed SQLite persistence (`incidents.sqlite3`) with tables `incidents` and `incident_constituent_alerts`
+   under file mode 0600, supporting idempotent insertion and index lookups by `incident_id` or `alert_candidate_id`.
+5. **Dashboard & View Model Surfacing:**
+   `AnalystAlertViewModel.get_alert` queries `IncidentSqliteRepository` and returns `incident_correlation` metadata,
+   defaulting unverified raw UNSW-NB15 alerts cleanly to `singleton_unverified_provenance` with clear narrative notes.
+   `render_dashboard_html` renders an **Incident Correlation & Provenance** section with mode, window, rule, constituent count,
+   and provenance badges.
+6. **Unit & Integration Test Verification:**
+   `test_correlation_engine.py` (6 tests) and `test_incident_correlation_pipeline.py` (2 integration tests) verify:
+   - UNSW-NB15 10 singleton alerts produce 10 separate incidents (0% false merge, reduction ratio 0.0).
+   - 20 authenticated sensor burst alerts within 30s collapse into 1 incident (95% reduction ratio, 100% critical retention).
+   - Multi-port campaign alerts within 8m collapse into 1 campaign incident; alert at 601s starts a new incident.
+   - Cross-namespace isolation between identical IPs/ports across different sensors.
+   - Fail-closed error on critical alert omission.
+   - View model integration and server-rendered HTML dashboard presentation.
+
+Dual-window incident correlation, entity provenance boundaries, alert reduction metrics, and dashboard surfacing are implemented
+and verified. Long-term endurance, live telemetry, and external CA provisioning remain open under TF-008 and TF-009.

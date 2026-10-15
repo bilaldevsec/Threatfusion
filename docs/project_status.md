@@ -1326,3 +1326,38 @@ protection, and the defensible distinct-alert correlation key. All changes remai
 
 TF-008 and TF-009 remain **open** pending long-term endurance testing, live telemetry, and the defensible distinct-alert
 correlation key. All changes remain unstaged/uncommitted for review.
+
+### 2026-10-15 — TF-008 Authenticated Entity-Bearing Telemetry Contract, Dual-Window 30s/10m Alert Correlation Engine, and Empirical Alert Fatigue Reduction Metric (Milestone #18)
+
+- Created `backend/src/threatfusion/alerts/correlation_engine.py` defining `EntityProvenanceContract` requiring explicit
+  `entity_namespace_id`, `clock_synchronized=True`, and non-empty `src_entity_id`/`dst_entity_id`. Raw UNSW-NB15 alerts
+  lacking verified entity namespaces or clock synchronization guarantees are strictly isolated into singleton incidents
+  (`correlation_mode = "singleton_unverified_provenance"`, `window_type = "none"`), ensuring 0 false merges across synthetic
+  or unverified network traces.
+- Implemented dual-window temporal correlation in `correlate_alert_candidates` for verified entity telemetry:
+  - 30-Second Burst Window (`BURST_WINDOW_SECONDS = 30.0`): Groups rapid burst alerts sharing 5-tuple
+    `(entity_namespace_id, src_entity_id, dst_entity_id, protocol, service_or_port)` within <= 30s into burst incidents
+    (`window_type = "burst_30s"`, rule `corr_burst_5tuple_30s_v1`).
+  - 10-Minute Campaign Window (`CAMPAIGN_WINDOW_SECONDS = 600.0`): Groups multi-stage alerts between the same authenticated
+    endpoint pair `(entity_namespace_id, frozenset({src_entity_id, dst_entity_id}))` within <= 600s into campaign incidents
+    (`window_type = "campaign_600s"`, rule `corr_campaign_entity_pair_600s_v1`).
+  - Strict Cross-Namespace Isolation: Alerts from distinct namespaces (`sensor-a` vs `sensor-b`) never correlate.
+- Implemented empirical alert fatigue reduction metric and safety gate in `compute_alert_reduction_metrics`:
+  - Computes reduction ratio: 1.0 - (incidents / alerts).
+  - 100% Critical Scenario Retention: Enforces `critical_retention_ratio == 1.0`. Raises `CorrelationSafetyError("critical_alert_dropped")`
+    if any attack alert is omitted, and preserves maximum uncalibrated score and escalated decision `"Attack"` on every incident.
+- Implemented transactional SQLite persistence in `IncidentSqliteRepository` (`incidents.sqlite3`, mode 0600) with tables
+  `incidents` and `incident_constituent_alerts`.
+- Surfaced incident correlation metadata into `AnalystAlertViewModel.get_alert`, cleanly defaulting unverified raw UNSW-NB15 alerts
+  to `singleton_unverified_provenance` with provenance narrative notes.
+- Updated `render_dashboard_html` (`threatfusion.api.analyst_dashboard`) to display an **Incident Correlation & Provenance** section
+  with mode, window, rule, constituent alert count, and provenance badges (`verified_entity_bearing` / `unverified_provenance`).
+- Created unit tests (`backend/tests/unit/test_correlation_engine.py`) and integration tests
+  (`backend/tests/integration/test_incident_correlation_pipeline.py`).
+- Verification:
+  1. Focused test suite: **129 passed in 22.27s, exit 0**.
+  2. Ruff: `All checks passed!`, exit 0.
+  3. Black: all modified files verified with `black --check`, exit 0.
+  4. `git diff HEAD --check`: clean (0 errors), exit 0.
+
+TF-008 and TF-009 remain **open** pending long-term endurance testing, live telemetry, and external CA provisioning. All Milestone #18 changes remain unstaged/uncommitted for review.
