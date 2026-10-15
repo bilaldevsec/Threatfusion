@@ -465,7 +465,22 @@ class AnalystDashboardClient:
         return DashboardSnapshot(queue=queue, selected=selected, status=status)
 
 
-def render_dashboard_html(snapshot: DashboardSnapshot, *, browser_links: bool = False) -> str:
+VALID_NEXT_STATES: dict[str, tuple[str, ...]] = {
+    "new": ("in_review",),
+    "in_review": ("closed", "escalated"),
+    "closed": (),
+    "escalated": (),
+}
+
+
+def render_dashboard_html(
+    snapshot: DashboardSnapshot,
+    *,
+    browser_links: bool = False,
+    actor_role: str = "viewer",
+    csrf_token: str | None = None,
+    transition_request_id: str | None = None,
+) -> str:
     """Render a clean, sanitized HTML presentation of the authenticated dashboard snapshot."""
     queue_rows = []
     for item in snapshot.queue.items:
@@ -513,6 +528,48 @@ def render_dashboard_html(snapshot: DashboardSnapshot, *, browser_links: bool = 
             else "<tr><td colspan='5' class='empty-history'>No analyst transitions recorded.</td></tr>"
         )
 
+        valid_targets = VALID_NEXT_STATES.get(sel.state, ())
+        if actor_role == "analyst" and valid_targets and csrf_token and transition_request_id:
+            options_html = "".join(
+                f'<option value="{html.escape(target)}">{html.escape(target)}</option>'
+                for target in valid_targets
+            )
+            transition_block = f"""
+            <div class="transition-container">
+                <h3>Triage Action</h3>
+                <form method="POST" action="/v1/analyst/alerts/{html.escape(sel.alert_candidate_id, quote=True)}/transitions" class="transition-form">
+                    <input type="hidden" name="expected_version" value="{sel.version}">
+                    <input type="hidden" name="transition_request_id" value="{html.escape(transition_request_id, quote=True)}">
+                    <input type="hidden" name="csrf_token" value="{html.escape(csrf_token, quote=True)}">
+                    <div class="form-group">
+                        <label for="target_state">Target State</label>
+                        <select name="target_state" id="target_state" class="form-control">
+                            {options_html}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="reason">Rationale / Reason</label>
+                        <input type="text" name="reason" id="reason" class="form-control" maxlength="512" placeholder="Triage rationale...">
+                    </div>
+                    <button type="submit" class="btn-submit">Submit Transition</button>
+                </form>
+            </div>
+            """
+        elif actor_role == "analyst" and not valid_targets:
+            transition_block = f"""
+            <div class="transition-container">
+                <h3>Triage Action</h3>
+                <p><span class="badge badge-terminal">{html.escape(sel.state)}</span> is a terminal state. No further transitions permitted.</p>
+            </div>
+            """
+        else:
+            transition_block = f"""
+            <div class="transition-container">
+                <h3>Triage Action</h3>
+                <p><span class="badge badge-role">Role: {html.escape(actor_role)} (Read-Only)</span></p>
+            </div>
+            """
+
         detail_section = f"""
         <section class="card detail-card">
             <h2>Alert Detail &amp; Evidence</h2>
@@ -531,6 +588,7 @@ def render_dashboard_html(snapshot: DashboardSnapshot, *, browser_links: bool = 
             <p>Status: {html.escape(str((sel.explanation or {}).get("status", "unavailable")))}</p>
             <p>{html.escape(str((sel.explanation or {}).get("summary", "Explanation unavailable.")))}</p>
             <p>{html.escape(LIMITATIONS)}</p>
+            {transition_block}
             <h3>Transition History</h3>
             <div class="table-scroll" role="region" aria-label="Analyst transition history" tabindex="0">
             <table class="data-table">
@@ -557,6 +615,8 @@ def render_dashboard_html(snapshot: DashboardSnapshot, *, browser_links: bool = 
         .badge-auth {{ background: #238636; color: #fff; }}
         .badge-decision {{ background: #da3633; color: #fff; }}
         .badge-state {{ background: #1f6feb; color: #fff; }}
+        .badge-role {{ background: #6e7681; color: #fff; }}
+        .badge-terminal {{ background: #8b949e; color: #fff; }}
         .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 1rem; margin-bottom: 1.5rem; }}
         table.data-table {{ width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.9rem; }}
         table.data-table th, table.data-table td {{ border: 1px solid #30363d; padding: 0.5rem 0.75rem; text-align: left; }}
@@ -572,12 +632,21 @@ def render_dashboard_html(snapshot: DashboardSnapshot, *, browser_links: bool = 
         }}
         .evidence-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 0.5rem; margin-bottom: 1rem; }}
         .evidence-grid > div {{ min-width: 0; overflow-wrap: anywhere; }}
+        .transition-container {{ margin-top: 1.5rem; padding: 1rem; background: #21262d; border: 1px solid #30363d; border-radius: 6px; }}
+        .transition-form {{ margin-top: 0.5rem; }}
+        .form-group {{ margin-bottom: 0.75rem; }}
+        .form-group label {{ display: block; margin-bottom: 0.25rem; font-weight: bold; font-size: 0.85rem; color: #8b949e; }}
+        .form-control {{ background: #0f141c; border: 1px solid #30363d; color: #e6edf3; padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.9rem; width: 100%; max-width: 320px; box-sizing: border-box; }}
+        .form-control:focus {{ outline: 2px solid #58a6ff; border-color: #58a6ff; }}
+        .btn-submit {{ background: #238636; color: #fff; border: 1px solid #2ea043; padding: 0.45rem 1.2rem; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 0.9rem; }}
+        .btn-submit:hover {{ background: #2ea043; }}
     </style>
 </head>
 <body>
     <header>
         <h1>ThreatFusion Analyst Dashboard</h1>
         <span class="badge badge-auth">mTLS Authenticated</span> &middot;
+        <span>Role: <b class="badge badge-role">{html.escape(actor_role)}</b></span> &middot;
         <span>Status: <b>{html.escape(snapshot.status)}</b></span> &middot;
         <span>Loaded Alerts: <b>{snapshot.queue.total_loaded}</b></span>
     </header>

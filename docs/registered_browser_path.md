@@ -43,11 +43,12 @@ listeners, and removes the runtime. Successful stdout is one sanitized JSON obje
 and alert IDs, model decision, state, and HTTP statuses. Failure stdout contains a fixed sanitized
 reason and exits nonzero. No database, key, raw row, prediction matrix, or HTML report is retained.
 
-The automated TLS exchange verifies the browser listener and rendered HTML. No human-operated browser
-was opened or tested. Browser trust-store enrollment, certificate selection, accessibility, future
-write authentication/CSRF design, full explanation, operational recovery, and endurance remain open
-under TF-008 and TF-009. This path derives no relationship key and makes no incident or cross-source
-claim.
+The automated TLS exchange verifies the browser listener, rendered HTML, and the CSRF-hardened
+browser state transition workflow (`POST /v1/analyst/alerts/<id>/transitions`). No human-operated browser
+was opened or tested for this milestone. Automated operator NSS profile provisioning (`threatfusion.operations.human_browser_provisioning`),
+same-origin verification, and HMAC-SHA256 CSRF protection are implemented. Accessibility, operational recovery,
+live telemetry, and long-term endurance remain open under TF-008 and TF-009. This path derives no relationship
+key and makes no incident or cross-source claim.
 
 ## Bounded manual inspection launcher (2026-09-27)
 
@@ -208,5 +209,5 @@ keyboard or screen-reader accessibility, endurance, or full product acceptance.
 The latest report includes no final launcher output or exact temporary runtime
 path. Cleanup for this latest run is unverified. The prior read-only check of
 port 33991 and its temporary profile applies to that earlier run only. Continue
-to require a defensible distinct-alert relationship key and operational browser
-credential provisioning; TF-008 and TF-009 remain open.
+to require a defensible distinct-alert relationship key, operational browser
+credential provisioning, and long-term endurance proofs; TF-008 and TF-009 remain open.

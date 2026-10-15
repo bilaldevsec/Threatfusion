@@ -665,3 +665,106 @@ def test_responsive_queue_and_detail_keep_full_evidence_and_selectable_link():
     assert f"Candidate ID:</b> <code>{candidate_id}</code>" in page
     assert f"Source Event ID:</b> <code>{source_id}</code>" in page
     assert "Created At:</b> 2026-09-24T12:00:01Z" in page
+
+
+def test_render_dashboard_html_analyst_role_with_csrf_renders_transition_form():
+    candidate_id = "alert_candidate_v1:" + "a" * 64
+    detail_payload = _valid_detail_payload()
+    detail_payload["detection_evidence"]["alert_candidate_id"] = candidate_id
+    detail_payload["analyst_state"]["state"] = "new"
+    detail_payload["analyst_state"]["version"] = 0
+    snapshot = DashboardSnapshot(
+        queue=DashboardAlertQueue(
+            items=(_parse_summary(detail_payload),),
+            total_loaded=1,
+            limit=50,
+            offset=0,
+        ),
+        selected=_parse_detail(detail_payload),
+        status="active",
+    )
+
+    csrf_token = "c" * 64
+    transition_request_id = "11111111-2222-4333-8444-555555555555"
+
+    html = render_dashboard_html(
+        snapshot,
+        browser_links=True,
+        actor_role="analyst",
+        csrf_token=csrf_token,
+        transition_request_id=transition_request_id,
+    )
+
+    assert f'action="/v1/analyst/alerts/{candidate_id}/transitions"' in html
+    assert '<input type="hidden" name="expected_version" value="0">' in html
+    assert (
+        f'<input type="hidden" name="transition_request_id" value="{transition_request_id}">'
+        in html
+    )
+    assert f'<input type="hidden" name="csrf_token" value="{csrf_token}">' in html
+    assert '<select name="target_state" id="target_state"' in html
+    assert '<option value="in_review">in_review</option>' in html
+    assert '<input type="text" name="reason"' in html
+    assert '<button type="submit" class="btn-submit">Submit Transition</button>' in html
+    assert 'Role: <b class="badge badge-role">analyst</b>' in html
+
+
+def test_render_dashboard_html_viewer_role_renders_readonly_badge():
+    candidate_id = "alert_candidate_v1:" + "a" * 64
+    detail_payload = _valid_detail_payload()
+    detail_payload["detection_evidence"]["alert_candidate_id"] = candidate_id
+    detail_payload["analyst_state"]["state"] = "new"
+    snapshot = DashboardSnapshot(
+        queue=DashboardAlertQueue(
+            items=(_parse_summary(detail_payload),),
+            total_loaded=1,
+            limit=50,
+            offset=0,
+        ),
+        selected=_parse_detail(detail_payload),
+        status="active",
+    )
+
+    html = render_dashboard_html(
+        snapshot,
+        browser_links=True,
+        actor_role="viewer",
+    )
+
+    assert "<form" not in html
+    assert "Submit Transition" not in html
+    assert "Role: viewer (Read-Only)" in html
+    assert 'Role: <b class="badge badge-role">viewer</b>' in html
+
+
+def test_render_dashboard_html_terminal_state_renders_terminal_badge():
+    candidate_id = "alert_candidate_v1:" + "a" * 64
+    detail_payload = _valid_detail_payload()
+    detail_payload["detection_evidence"]["alert_candidate_id"] = candidate_id
+    detail_payload["analyst_state"]["state"] = "closed"
+    detail_payload["analyst_state"]["version"] = 2
+    snapshot = DashboardSnapshot(
+        queue=DashboardAlertQueue(
+            items=(_parse_summary(detail_payload),),
+            total_loaded=1,
+            limit=50,
+            offset=0,
+        ),
+        selected=_parse_detail(detail_payload),
+        status="active",
+    )
+
+    csrf_token = "c" * 64
+    transition_request_id = "11111111-2222-4333-8444-555555555555"
+
+    html = render_dashboard_html(
+        snapshot,
+        browser_links=True,
+        actor_role="analyst",
+        csrf_token=csrf_token,
+        transition_request_id=transition_request_id,
+    )
+
+    assert "<form" not in html
+    assert "Submit Transition" not in html
+    assert "is a terminal state. No further transitions permitted." in html

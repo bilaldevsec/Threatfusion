@@ -1,13 +1,16 @@
-"""Browser-facing read-only analyst boundary."""
+"""Browser-facing analyst boundary with CSRF defense and audited alert transitions."""
 
 from __future__ import annotations
 
 import hashlib
+import hmac
+import os
 import re
 import socket
 import ssl
 import threading
 import time
+import urllib.parse
 import uuid
 from datetime import UTC, datetime
 
@@ -23,7 +26,12 @@ from threatfusion.db.analyst_security_audit import (
     AnalystSecurityAuditError,
     create_analyst_security_audit_event,
 )
-from threatfusion.schemas.analyst_state import AnalystAuthorizationRegistry, AnalystStateError
+from threatfusion.schemas.analyst_state import (
+    ANALYST_STATES,
+    AnalystAuthorizationRegistry,
+    AnalystStateError,
+    canonical_uuid4,
+)
 
 from threatfusion.api.analyst_dashboard import (
     DashboardAlertQueue,
@@ -37,8 +45,12 @@ from threatfusion.api.analyst_dashboard import (
 # This fixed total timeout bounds even unauthenticated connections.
 BROWSER_HANDSHAKE_SECONDS = 60.0
 MAX_BROWSER_HEAD_BYTES = 8192
+MAX_BROWSER_BODY_BYTES = 2048
 MAX_BROWSER_RESPONSE_BYTES = 131072
 _ALERT_PATH = re.compile(r"^/v1/analyst/alerts/(alert_candidate_v1:[0-9a-f]{64})(?:\?.*)?$")
+_TRANSITION_PATH = re.compile(
+    r"^/v1/analyst/alerts/(alert_candidate_v1:[0-9a-f]{64})/transitions\Z"
+)
 
 
 def _html_response(code: int, html_body: str) -> bytes:
@@ -98,6 +110,7 @@ class AnalystBrowserTlsListener:
         self._state_lock = threading.Lock()
         self._process_lock = threading.Lock()
         self._admission_stopped = threading.Event()
+        self._csrf_secret = os.urandom(32)
         try:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             context.minimum_version = ssl.TLSVersion.TLSv1_3
@@ -117,6 +130,35 @@ class AnalystBrowserTlsListener:
             if self._listener is None:
                 raise AnalystTlsError("listener_unavailable")
             return self._listener.getsockname()
+
+    def generate_csrf_token(
+        self,
+        actor_id: str,
+        alert_candidate_id: str,
+        expected_version: int,
+        transition_request_id: str,
+    ) -> str:
+        message = (
+            f"{actor_id}:{alert_candidate_id}:{expected_version}:{transition_request_id}".encode(
+                "utf-8"
+            )
+        )
+        return hmac.new(self._csrf_secret, message, digestmod=hashlib.sha256).hexdigest()
+
+    def verify_csrf_token(
+        self,
+        token: str,
+        actor_id: str,
+        alert_candidate_id: str,
+        expected_version: int,
+        transition_request_id: str,
+    ) -> bool:
+        if not isinstance(token, str) or len(token) != 64:
+            return False
+        expected = self.generate_csrf_token(
+            actor_id, alert_candidate_id, expected_version, transition_request_id
+        )
+        return hmac.compare_digest(token, expected)
 
     def open(self) -> None:
         with self._state_lock:
@@ -152,7 +194,9 @@ class AnalystBrowserTlsListener:
                     pass
                 connection.close()
 
-    def _read_browser_request(self, connection: ssl.SSLSocket) -> tuple[str, str]:
+    def _read_browser_request(
+        self, connection: ssl.SSLSocket
+    ) -> tuple[str, str, dict[str, str], bytes]:
         deadline = time.monotonic() + REQUEST_SECONDS
         buffer = bytearray()
         while b"\r\n\r\n" not in buffer:
@@ -176,9 +220,7 @@ class AnalystBrowserTlsListener:
                 raise AnalystTlsError("request_invalid")
             buffer.extend(chunk)
 
-        head_bytes, body_bytes = buffer.split(b"\r\n\r\n", 1)
-        if body_bytes:
-            raise AnalystTlsError("request_invalid")
+        head_bytes, initial_body = buffer.split(b"\r\n\r\n", 1)
         try:
             head = head_bytes.decode("ascii")
         except UnicodeDecodeError:
@@ -190,12 +232,12 @@ class AnalystBrowserTlsListener:
         if len(request_line) != 3:
             raise AnalystTlsError("request_invalid")
         method, target, version = request_line
-        if method != "GET":
+        if method not in ("GET", "POST"):
             raise AnalystTlsError("request_invalid")
         if version not in ("HTTP/1.1", "HTTP/1.0"):
             raise AnalystTlsError("request_invalid")
 
-        headers = {}
+        headers: dict[str, str] = {}
         for line in lines[1:]:
             if not line:
                 continue
@@ -210,29 +252,73 @@ class AnalystBrowserTlsListener:
 
         if "transfer-encoding" in headers:
             raise AnalystTlsError("request_invalid")
-        if headers.get("content-length", "0") != "0":
-            raise AnalystTlsError("request_invalid")
 
         try:
             actual_port = self.address[1]
         except AnalystTlsError:
             actual_port = self._configuration.bind_port
 
-        expected_host = f"localhost:{actual_port}"
+        expected_hosts = (
+            "localhost",
+            "127.0.0.1",
+            f"localhost:{actual_port}",
+            f"127.0.0.1:{actual_port}",
+        )
         req_host = headers.get("host")
-        if req_host not in ("localhost", expected_host):
+        if req_host not in expected_hosts:
             raise AnalystTlsError("request_invalid")
 
-        req_origin = headers.get("origin")
-        expected_origin = f"https://localhost:{actual_port}"
-        if req_origin and req_origin != expected_origin:
+        if method == "GET":
+            if headers.get("content-length", "0") != "0":
+                raise AnalystTlsError("request_invalid")
+            if initial_body:
+                raise AnalystTlsError("request_invalid")
+
+            expected_origins = (
+                f"https://localhost:{actual_port}",
+                f"https://127.0.0.1:{actual_port}",
+            )
+            req_origin = headers.get("origin")
+            if req_origin and req_origin not in expected_origins:
+                raise AnalystTlsError("request_invalid")
+
+            sec_fetch_site = headers.get("sec-fetch-site")
+            if sec_fetch_site and sec_fetch_site not in ("none", "same-origin"):
+                raise AnalystTlsError("request_invalid")
+
+            return method, target, headers, b""
+
+        # method == "POST"
+        content_type = headers.get("content-type", "")
+        if content_type.split(";")[0].strip() != "application/x-www-form-urlencoded":
             raise AnalystTlsError("request_invalid")
 
-        sec_fetch_site = headers.get("sec-fetch-site")
-        if sec_fetch_site and sec_fetch_site not in ("none", "same-origin"):
+        content_length_str = headers.get("content-length")
+        if not content_length_str or not content_length_str.isdigit():
             raise AnalystTlsError("request_invalid")
 
-        return method, target
+        content_length = int(content_length_str)
+        if content_length <= 0 or content_length > MAX_BROWSER_BODY_BYTES:
+            raise AnalystTlsError("request_invalid")
+
+        body = bytearray(initial_body)
+        while len(body) < content_length:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AnalystTlsError("request_invalid")
+            connection.settimeout(remaining)
+            try:
+                chunk = connection.recv(min(4096, content_length - len(body)))
+            except (TimeoutError, ssl.SSLError, OSError):
+                raise AnalystTlsError("request_invalid") from None
+            if not chunk:
+                raise AnalystTlsError("request_invalid")
+            body.extend(chunk)
+
+        if len(body) != content_length:
+            raise AnalystTlsError("request_invalid")
+
+        return method, target, headers, bytes(body)
 
     def _dispatch(self, capability, target: str) -> tuple[int, bytes]:
         path_only = target.split("?", 1)[0]
@@ -248,11 +334,21 @@ class AnalystBrowserTlsListener:
             )
 
             selected = None
+            csrf_token = None
+            transition_request_id = None
             if not queue.is_empty:
                 try:
                     detail_res = self._view.get_alert(capability, queue.items[0].alert_candidate_id)
                     if detail_res is not None:
                         selected = _parse_detail(detail_res)
+                        if capability.role == "analyst":
+                            transition_request_id = str(uuid.uuid4())
+                            csrf_token = self.generate_csrf_token(
+                                capability.actor_id,
+                                selected.alert_candidate_id,
+                                selected.version,
+                                transition_request_id,
+                            )
                     status = "active"
                 except AnalystViewError:
                     status = "unavailable"
@@ -260,7 +356,16 @@ class AnalystBrowserTlsListener:
                 status = "empty"
 
             snapshot = DashboardSnapshot(queue=queue, selected=selected, status=status)
-            return 200, _html_response(200, render_dashboard_html(snapshot, browser_links=True))
+            return 200, _html_response(
+                200,
+                render_dashboard_html(
+                    snapshot,
+                    browser_links=True,
+                    actor_role=capability.role,
+                    csrf_token=csrf_token,
+                    transition_request_id=transition_request_id,
+                ),
+            )
 
         match = _ALERT_PATH.fullmatch(target)
         if match:
@@ -282,9 +387,29 @@ class AnalystBrowserTlsListener:
             else:
                 return 404, _error_page(404, "Not Found")
 
+            csrf_token = None
+            transition_request_id = None
+            if capability.role == "analyst":
+                transition_request_id = str(uuid.uuid4())
+                csrf_token = self.generate_csrf_token(
+                    capability.actor_id,
+                    selected.alert_candidate_id,
+                    selected.version,
+                    transition_request_id,
+                )
+
             status = "active"
             snapshot = DashboardSnapshot(queue=queue, selected=selected, status=status)
-            return 200, _html_response(200, render_dashboard_html(snapshot, browser_links=True))
+            return 200, _html_response(
+                200,
+                render_dashboard_html(
+                    snapshot,
+                    browser_links=True,
+                    actor_role=capability.role,
+                    csrf_token=csrf_token,
+                    transition_request_id=transition_request_id,
+                ),
+            )
 
         return 404, _error_page(404, "Not Found")
 
@@ -330,6 +455,7 @@ class AnalystBrowserTlsListener:
                     outcome,
                     reason_code,
                     request_route=None,
+                    body_sha256=None,
                 ):
                     try:
                         self._audit.append(
@@ -342,7 +468,7 @@ class AnalystBrowserTlsListener:
                                 actor_id=actor_id,
                                 credential_sha256=credential_sha256,
                                 request_route=request_route,
-                                body_sha256=None,
+                                body_sha256=body_sha256,
                             )
                         )
                     except AnalystSecurityAuditError:
@@ -378,7 +504,7 @@ class AnalystBrowserTlsListener:
                     return
 
                 try:
-                    method, target = self._read_browser_request(connection)
+                    method, target, headers, body = self._read_browser_request(connection)
                 except AnalystTlsError as error:
                     if error.code == "connection_idle":
                         return
@@ -397,8 +523,65 @@ class AnalystBrowserTlsListener:
                     route = path_only
                 elif _ALERT_PATH.fullmatch(target):
                     route = "/v1/analyst/alerts/<alert_candidate_id>"
+                elif _TRANSITION_PATH.fullmatch(path_only):
+                    route = "/v1/analyst/alerts/<alert_candidate_id>/transitions"
                 else:
                     route = None
+
+                body_sha256 = hashlib.sha256(body).hexdigest() if body else None
+
+                # Same-origin enforcement for POST
+                if method == "POST":
+                    if not _TRANSITION_PATH.fullmatch(path_only):
+                        try:
+                            audit_log(
+                                "request_rejected",
+                                "admission",
+                                "rejected",
+                                "request_invalid",
+                                request_route=route,
+                                body_sha256=body_sha256,
+                            )
+                        except AnalystTlsError:
+                            pass
+                        connection.sendall(_error_page(404, "Not Found"))
+                        return
+
+                    try:
+                        actual_port = self.address[1]
+                    except AnalystTlsError:
+                        actual_port = self._configuration.bind_port
+
+                    allowed_origins = {
+                        f"https://127.0.0.1:{actual_port}",
+                        f"https://localhost:{actual_port}",
+                    }
+                    sec_fetch_site = headers.get("sec-fetch-site")
+                    origin = headers.get("origin")
+
+                    has_valid_fetch_site = sec_fetch_site == "same-origin"
+                    has_valid_origin = origin in allowed_origins
+
+                    same_origin_valid = (
+                        (has_valid_fetch_site or has_valid_origin)
+                        and (sec_fetch_site is None or sec_fetch_site == "same-origin")
+                        and (origin is None or origin in allowed_origins)
+                    )
+
+                    if not same_origin_valid:
+                        try:
+                            audit_log(
+                                "authorization_rejected",
+                                "authorization",
+                                "rejected",
+                                "forbidden",
+                                request_route=route,
+                                body_sha256=body_sha256,
+                            )
+                        except AnalystTlsError:
+                            pass
+                        connection.sendall(_error_page(403, "Forbidden"))
+                        return
 
                 try:
                     audit_log(
@@ -407,6 +590,7 @@ class AnalystBrowserTlsListener:
                         "admitted",
                         "request_admitted",
                         request_route=route,
+                        body_sha256=body_sha256,
                     )
                 except AnalystTlsError:
                     connection.sendall(_error_page(503, "Unavailable"))
@@ -427,6 +611,8 @@ class AnalystBrowserTlsListener:
                                 "authentication",
                                 "rejected",
                                 "authentication_failed",
+                                request_route=route,
+                                body_sha256=body_sha256,
                             )
                         except AnalystTlsError:
                             pass
@@ -437,13 +623,256 @@ class AnalystBrowserTlsListener:
                     except AnalystStateError:
                         try:
                             audit_log(
-                                "authorization_rejected", "authorization", "rejected", "forbidden"
+                                "authorization_rejected",
+                                "authorization",
+                                "rejected",
+                                "forbidden",
+                                request_route=route,
+                                body_sha256=body_sha256,
                             )
                         except AnalystTlsError:
                             pass
                         connection.sendall(_error_page(401, "Authentication failed"))
                         return
 
+                    if method == "POST":
+                        # Role verification: viewer attempting POST
+                        if capability.role != "analyst":
+                            try:
+                                audit_log(
+                                    "authorization_rejected",
+                                    "authorization",
+                                    "rejected",
+                                    "forbidden",
+                                    request_route=route,
+                                    body_sha256=body_sha256,
+                                )
+                            except AnalystTlsError:
+                                pass
+                            connection.sendall(_error_page(403, "Forbidden"))
+                            return
+
+                        # Parse urlencoded form
+                        try:
+                            form_text = body.decode("utf-8")
+                            parsed_form = urllib.parse.parse_qs(
+                                form_text, keep_blank_values=True, strict_parsing=True
+                            )
+                        except Exception:
+                            try:
+                                audit_log(
+                                    "request_rejected",
+                                    "admission",
+                                    "rejected",
+                                    "request_invalid",
+                                    request_route=route,
+                                    body_sha256=body_sha256,
+                                )
+                            except AnalystTlsError:
+                                pass
+                            connection.sendall(_error_page(400, "Bad Request"))
+                            return
+
+                        form = {k: v[0] for k, v in parsed_form.items() if len(v) == 1}
+                        expected_version_str = form.get("expected_version")
+                        transition_request_id = form.get("transition_request_id")
+                        csrf_token = form.get("csrf_token")
+                        target_state = form.get("target_state") or form.get("to_state")
+                        rationale = form.get("reason") or form.get("rationale") or ""
+
+                        match = _TRANSITION_PATH.fullmatch(path_only)
+                        if not match:
+                            connection.sendall(_error_page(404, "Not Found"))
+                            return
+                        candidate_id = match.group(1)
+
+                        if (
+                            not expected_version_str
+                            or not re.fullmatch(r"(?:0|[1-9][0-9]*)", expected_version_str)
+                            or not transition_request_id
+                            or not canonical_uuid4(transition_request_id)
+                            or not csrf_token
+                            or not target_state
+                            or target_state not in ANALYST_STATES
+                            or len(rationale.encode("utf-8")) > 512
+                        ):
+                            try:
+                                audit_log(
+                                    "request_rejected",
+                                    "admission",
+                                    "rejected",
+                                    "request_invalid",
+                                    request_route=route,
+                                    body_sha256=body_sha256,
+                                )
+                            except AnalystTlsError:
+                                pass
+                            connection.sendall(_error_page(400, "Bad Request"))
+                            return
+
+                        expected_version = int(expected_version_str)
+
+                        # CSRF Token Verification
+                        if not self.verify_csrf_token(
+                            csrf_token,
+                            actor_id=actor_id,
+                            alert_candidate_id=candidate_id,
+                            expected_version=expected_version,
+                            transition_request_id=transition_request_id,
+                        ):
+                            try:
+                                audit_log(
+                                    "authorization_rejected",
+                                    "authorization",
+                                    "rejected",
+                                    "forbidden",
+                                    request_route=route,
+                                    body_sha256=body_sha256,
+                                )
+                            except AnalystTlsError:
+                                pass
+                            connection.sendall(_error_page(403, "Forbidden"))
+                            return
+
+                        # Dispatch state transition
+                        try:
+                            self._view.transition(
+                                capability,
+                                alert_candidate_id=candidate_id,
+                                expected_version=expected_version,
+                                to_state=target_state,
+                                transition_id=transition_request_id,
+                                rationale=rationale,
+                            )
+                        except AnalystViewError as error:
+                            if error.code == "analyst_not_authorized":
+                                try:
+                                    audit_log(
+                                        "authorization_rejected",
+                                        "authorization",
+                                        "rejected",
+                                        "forbidden",
+                                        request_route=route,
+                                        body_sha256=body_sha256,
+                                    )
+                                except AnalystTlsError:
+                                    pass
+                                connection.sendall(_error_page(403, "Forbidden"))
+                                return
+                            elif error.code in (
+                                "analyst_state_version_conflict",
+                                "analyst_transition_identity_conflict",
+                            ):
+                                try:
+                                    audit_log(
+                                        "request_completed",
+                                        "completion",
+                                        "completed",
+                                        "request_completed",
+                                        request_route=route,
+                                        body_sha256=body_sha256,
+                                    )
+                                except AnalystTlsError:
+                                    pass
+                                connection.sendall(_error_page(409, "Version Conflict"))
+                                return
+                            elif error.code == "alert_candidate_not_found":
+                                connection.sendall(_error_page(404, "Not Found"))
+                                return
+                            elif error.code == "analyst_view_unavailable":
+                                try:
+                                    audit_log(
+                                        "internal_failure",
+                                        "internal",
+                                        "failed",
+                                        "internal_error",
+                                        request_route=route,
+                                        body_sha256=body_sha256,
+                                    )
+                                except AnalystTlsError:
+                                    pass
+                                connection.sendall(_error_page(503, "Unavailable"))
+                                return
+                            else:
+                                try:
+                                    audit_log(
+                                        "request_rejected",
+                                        "admission",
+                                        "rejected",
+                                        "request_invalid",
+                                        request_route=route,
+                                        body_sha256=body_sha256,
+                                    )
+                                except AnalystTlsError:
+                                    pass
+                                connection.sendall(_error_page(400, "Bad Request"))
+                                return
+
+                        # Render updated HTML detail
+                        try:
+                            result = self._view.list_alerts(capability, limit=50, offset=0)
+                            detail_res = self._view.get_alert(capability, candidate_id)
+                        except AnalystViewError:
+                            try:
+                                audit_log(
+                                    "internal_failure",
+                                    "internal",
+                                    "failed",
+                                    "internal_error",
+                                    request_route=route,
+                                    body_sha256=body_sha256,
+                                )
+                            except AnalystTlsError:
+                                pass
+                            connection.sendall(_error_page(503, "Unavailable"))
+                            return
+
+                        items = [_parse_summary(item) for item in result.get("items", [])]
+                        queue = DashboardAlertQueue(
+                            items=tuple(items), total_loaded=len(items), limit=50, offset=0
+                        )
+                        selected = _parse_detail(detail_res) if detail_res is not None else None
+
+                        new_transition_id = str(uuid.uuid4())
+                        new_csrf_token = (
+                            self.generate_csrf_token(
+                                actor_id,
+                                selected.alert_candidate_id,
+                                selected.version,
+                                new_transition_id,
+                            )
+                            if selected is not None
+                            else None
+                        )
+
+                        snapshot = DashboardSnapshot(
+                            queue=queue, selected=selected, status="active"
+                        )
+                        html = render_dashboard_html(
+                            snapshot,
+                            browser_links=True,
+                            actor_role=capability.role,
+                            csrf_token=new_csrf_token,
+                            transition_request_id=new_transition_id,
+                        )
+
+                        try:
+                            audit_log(
+                                "request_completed",
+                                "completion",
+                                "completed",
+                                "request_completed",
+                                request_route=route,
+                                body_sha256=body_sha256,
+                            )
+                        except AnalystTlsError:
+                            connection.sendall(_error_page(503, "Unavailable"))
+                            return
+
+                        connection.sendall(_html_response(200, html))
+                        return
+
+                    # GET request handling
                     try:
                         response_code, response_bytes = self._dispatch(capability, target)
                         if response_code == 503:

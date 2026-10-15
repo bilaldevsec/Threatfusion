@@ -1293,3 +1293,36 @@ unstaged/uncommitted for review.
 
 TF-008 and TF-009 remain **open** pending long-term endurance testing, browser write authentication/CSRF
 protection, and the defensible distinct-alert correlation key. All changes remain unstaged/uncommitted for review.
+
+### 2026-10-14 — TF-008 CSRF-hardened, same-origin verified browser alert state transitions and audited HTML triage workflow
+
+- Implemented cryptographic per-actor HMAC-SHA256 CSRF protection in `AnalystBrowserTlsListener`
+  (`threatfusion.api.analyst_browser_tls_service`), generated from an ephemeral 32-byte listener secret
+  (`os.urandom(32)`) and bound to `(actor_id, alert_candidate_id, expected_version, transition_request_id)`.
+  Verified via constant-time `hmac.compare_digest`.
+- Enforced same-origin framing defenses on `POST /v1/analyst/alerts/<alert_candidate_id>/transitions`: requires
+  `Content-Type: application/x-www-form-urlencoded` bounded to 2,048 bytes; validates `Sec-Fetch-Site: same-origin`
+  and loopback `Origin` (`https://127.0.0.1:<port>` / `https://localhost:<port>`). Missing or cross-site headers
+  are rejected upfront with HTTP `403 Forbidden` and audited as `authorization_rejected` (`forbidden`).
+- Enforced strict role-based authorization: authenticated peers with role `viewer` are prevented from mutating
+  state, returning `403 Forbidden` and logging `authorization_rejected` (`forbidden`) with zero calls to
+  `AnalystStateRepository`.
+- Enhanced `render_dashboard_html` (`threatfusion.api.analyst_dashboard`) to render a zero-JavaScript triage
+  `<form method="POST">` for `analyst` peers, embedding hidden inputs for `expected_version`, canonical UUIDv4
+  `transition_request_id`, and `csrf_token`, with `<select name="target_state">` populated with valid next
+  states (`new` -> `in_review`; `in_review` -> `closed`, `escalated`) and bounded `<input name="reason">`.
+  Peers with role `viewer` and alerts in terminal states (`closed`, `escalated`) receive clear read-only or
+  terminal state badges without active form controls.
+- Audited state transitions execute through `AnalystAlertViewModel.transition`, recording `request_admitted`
+  before mutation and `request_completed` after mutation in `audit.sqlite3` with normalized route
+  `/v1/analyst/alerts/<alert_candidate_id>/transitions` and `body_sha256`. Successful transitions return HTTP 200
+  with updated HTML detail and fresh CSRF tokens for subsequent steps. Version conflicts return `409 Conflict`,
+  invalid transitions return `400 Bad Request`, and storage failures return `503 Unavailable`.
+- Verification run:
+  1. Full 6-suite verification gate (214 tests): **214 passed in 37.55s, exit 0**.
+  2. Ruff: `All checks passed!`, exit 0.
+  3. Black: all modified files verified with `black --check`, exit 0.
+  4. `git diff HEAD --check`: clean (0 errors), exit 0.
+
+TF-008 and TF-009 remain **open** pending long-term endurance testing, live telemetry, and the defensible distinct-alert
+correlation key. All changes remain unstaged/uncommitted for review.

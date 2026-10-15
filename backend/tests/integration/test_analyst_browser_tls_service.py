@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import socket
 import ssl
 import subprocess
@@ -10,6 +11,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Thread
 import time
+import urllib.parse
+import uuid
 
 import pytest
 
@@ -31,6 +34,7 @@ from threatfusion.schemas.analyst_state import (
     AnalystAuthorizationRegistry,
     AnalystRegistryEntry,
     AnalystStateError,
+    canonical_uuid4,
 )
 
 from backend.tests.unit.test_analyst_view_model import _candidate
@@ -287,6 +291,39 @@ def _exchange(listener, certs, identity, request, *, context=None):
 
 def _req(port, target="/", extra="", method="GET") -> bytes:
     return f"{method} {target} HTTP/1.1\r\nHost: localhost:{port}\r\n{extra}\r\n".encode("ascii")
+
+
+def _post_req(
+    port,
+    target,
+    body: str | bytes,
+    *,
+    content_type: str = "application/x-www-form-urlencoded",
+    origin: str | None = None,
+    sec_fetch_site: str | None = "same-origin",
+    extra: str = "",
+) -> bytes:
+    raw_body = body.encode("utf-8") if isinstance(body, str) else body
+    headers = [
+        f"POST {target} HTTP/1.1",
+        f"Host: localhost:{port}",
+        f"Content-Type: {content_type}",
+        f"Content-Length: {len(raw_body)}",
+    ]
+    if origin is not False:
+        headers.append(f"Origin: {origin if origin is not None else f'https://localhost:{port}'}")
+    if sec_fetch_site is not None:
+        headers.append(f"Sec-Fetch-Site: {sec_fetch_site}")
+    if extra:
+        headers.append(extra.strip())
+    head_text = "\r\n".join(headers) + "\r\n\r\n"
+    return head_text.encode("ascii") + raw_body
+
+
+def _extract_form_field(html: str, field_name: str) -> str:
+    match = re.search(rf'<input type="hidden" name="{re.escape(field_name)}" value="([^"]*)"', html)
+    assert match is not None, f"Field {field_name} not found in HTML"
+    return match.group(1)
 
 
 def test_browser_tls_authorized_viewer_html_response(tmp_path, certificates):
@@ -825,3 +862,353 @@ def test_browser_pending_handshake_is_bounded(tmp_path, certificates, monkeypatc
     finally:
         srv.close()
         worker.join(timeout=2)
+
+
+def test_browser_analyst_triage_flow_and_subsequent_transition(tmp_path, certificates):
+    srv, audit, view, candidate_id = _listener(tmp_path, certificates)
+    srv.open()
+    try:
+        # Step 1: GET alert detail as analyst_a to inspect triage form & CSRF token
+        code, head, body = _exchange(
+            srv,
+            certificates,
+            "analyst_a",
+            _req(srv.address[1], f"/v1/analyst/alerts/{candidate_id}"),
+        )
+        assert code == 200
+        html = body.decode("utf-8")
+        assert f'action="/v1/analyst/alerts/{candidate_id}/transitions"' in html
+        expected_version = _extract_form_field(html, "expected_version")
+        transition_request_id = _extract_form_field(html, "transition_request_id")
+        csrf_token = _extract_form_field(html, "csrf_token")
+        assert expected_version == "0"
+        assert len(csrf_token) == 64
+        assert canonical_uuid4(transition_request_id)
+
+        # Step 2: POST transition from new -> in_review
+        form_data = urllib.parse.urlencode(
+            {
+                "expected_version": expected_version,
+                "transition_request_id": transition_request_id,
+                "csrf_token": csrf_token,
+                "target_state": "in_review",
+                "reason": "Triage investigation started",
+            }
+        )
+        post_bytes = _post_req(
+            srv.address[1], f"/v1/analyst/alerts/{candidate_id}/transitions", form_data
+        )
+        code2, head2, body2 = _exchange(srv, certificates, "analyst_a", post_bytes)
+        assert code2 == 200
+        html2 = body2.decode("utf-8")
+        assert 'Triage State:</b> <span class="badge badge-state">in_review</span> (v1)' in html2
+        assert "Triage investigation started" in html2
+        assert "analyst_a" in html2
+        assert '<option value="closed">closed</option>' in html2
+        assert '<option value="escalated">escalated</option>' in html2
+
+        # Step 3: Verify repository state
+        capability = view._repository._authorization.issue_for_trusted_actor("analyst_a")
+        detail = view._repository.get_alert(capability, candidate_id)
+        assert detail.analyst_state.state == "in_review"
+        assert detail.analyst_state.version == 1
+        assert detail.analyst_state.updated_by == "analyst_a"
+        assert len(detail.transitions) == 1
+        assert detail.transitions[0].to_state == "in_review"
+        assert detail.transitions[0].rationale == "Triage investigation started"
+
+        # Step 4: Perform second transition from in_review -> closed
+        expected_version_v1 = _extract_form_field(html2, "expected_version")
+        transition_request_id_v1 = _extract_form_field(html2, "transition_request_id")
+        csrf_token_v1 = _extract_form_field(html2, "csrf_token")
+        assert expected_version_v1 == "1"
+        assert transition_request_id_v1 != transition_request_id
+        assert csrf_token_v1 != csrf_token
+
+        form_data_v1 = urllib.parse.urlencode(
+            {
+                "expected_version": expected_version_v1,
+                "transition_request_id": transition_request_id_v1,
+                "csrf_token": csrf_token_v1,
+                "target_state": "closed",
+                "reason": "Confirmed benign scanner traffic",
+            }
+        )
+        post_bytes_v1 = _post_req(
+            srv.address[1], f"/v1/analyst/alerts/{candidate_id}/transitions", form_data_v1
+        )
+        code3, head3, body3 = _exchange(srv, certificates, "analyst_a", post_bytes_v1)
+        assert code3 == 200
+        html3 = body3.decode("utf-8")
+        assert 'Triage State:</b> <span class="badge badge-state">closed</span> (v2)' in html3
+        assert "Confirmed benign scanner traffic" in html3
+        assert "is a terminal state. No further transitions permitted." in html3
+        assert "<form" not in html3
+
+        # Step 5: Verify terminal state in repository
+        detail_closed = view._repository.get_alert(capability, candidate_id)
+        assert detail_closed.analyst_state.state == "closed"
+        assert detail_closed.analyst_state.version == 2
+        assert len(detail_closed.transitions) == 2
+
+        # Step 6: Verify audit trail
+        events = list(audit.list())
+        assert len(events) == 6
+        assert events[0].event_type == "request_admitted"
+        assert events[1].event_type == "request_completed"
+        assert events[2].event_type == "request_admitted"
+        assert events[2].request_route == "/v1/analyst/alerts/<alert_candidate_id>/transitions"
+        assert events[2].body_sha256 is not None
+        assert events[3].event_type == "request_completed"
+        assert events[3].request_route == "/v1/analyst/alerts/<alert_candidate_id>/transitions"
+        assert events[4].event_type == "request_admitted"
+        assert events[5].event_type == "request_completed"
+    finally:
+        srv.close()
+
+
+def test_browser_viewer_cannot_post_transition(tmp_path, certificates):
+    srv, audit, view, candidate_id = _listener(tmp_path, certificates)
+    srv.open()
+    try:
+        transition_id = str(uuid.uuid4())
+        csrf_token = srv.generate_csrf_token("queue.viewer", candidate_id, 0, transition_id)
+        form_data = urllib.parse.urlencode(
+            {
+                "expected_version": "0",
+                "transition_request_id": transition_id,
+                "csrf_token": csrf_token,
+                "target_state": "in_review",
+                "reason": "Viewer unauthorized attempt",
+            }
+        )
+        post_bytes = _post_req(
+            srv.address[1], f"/v1/analyst/alerts/{candidate_id}/transitions", form_data
+        )
+        code, head, body = _exchange(srv, certificates, "viewer", post_bytes)
+        assert code == 403
+        assert b"Forbidden" in body
+
+        # Verify state in repository remains untouched
+        viewer_cap = view._repository._authorization.issue_for_trusted_actor("queue.viewer")
+        detail = view._repository.get_alert(viewer_cap, candidate_id)
+        assert detail.analyst_state.state == "new"
+        assert detail.analyst_state.version == 0
+        assert detail.transitions == ()
+
+        # Verify audit log
+        events = list(audit.list())
+        assert len(events) == 2
+        assert events[0].event_type == "request_admitted"
+        assert events[0].actor_id == "queue.viewer"
+        assert events[1].event_type == "authorization_rejected"
+        assert events[1].processing_stage == "authorization"
+        assert events[1].outcome == "rejected"
+        assert events[1].reason_code == "forbidden"
+        assert events[1].actor_id == "queue.viewer"
+    finally:
+        srv.close()
+
+
+def test_browser_post_same_origin_and_framing_rejections(tmp_path, certificates):
+    srv, audit, view, candidate_id = _listener(tmp_path, certificates)
+    srv.open()
+    try:
+        transition_id = str(uuid.uuid4())
+        csrf_token = srv.generate_csrf_token("analyst_a", candidate_id, 0, transition_id)
+        form_data = urllib.parse.urlencode(
+            {
+                "expected_version": "0",
+                "transition_request_id": transition_id,
+                "csrf_token": csrf_token,
+                "target_state": "in_review",
+                "reason": "Test same origin",
+            }
+        )
+
+        # 1. Sec-Fetch-Site: cross-site
+        req1 = _post_req(
+            srv.address[1],
+            f"/v1/analyst/alerts/{candidate_id}/transitions",
+            form_data,
+            sec_fetch_site="cross-site",
+        )
+        code1, _, body1 = _exchange(srv, certificates, "analyst_a", req1)
+        assert code1 == 403
+        assert b"Forbidden" in body1
+
+        # 2. Untrusted Origin
+        req2 = _post_req(
+            srv.address[1],
+            f"/v1/analyst/alerts/{candidate_id}/transitions",
+            form_data,
+            origin="https://evil.attacker.com:8443",
+        )
+        code2, _, body2 = _exchange(srv, certificates, "analyst_a", req2)
+        assert code2 == 403
+        assert b"Forbidden" in body2
+
+        # 3. Missing both Sec-Fetch-Site and Origin
+        raw_body = form_data.encode("utf-8")
+        req3 = (
+            f"POST /v1/analyst/alerts/{candidate_id}/transitions HTTP/1.1\r\n"
+            f"Host: localhost:{srv.address[1]}\r\n"
+            f"Content-Type: application/x-www-form-urlencoded\r\n"
+            f"Content-Length: {len(raw_body)}\r\n\r\n"
+        ).encode("ascii") + raw_body
+        code3, _, body3 = _exchange(srv, certificates, "analyst_a", req3)
+        assert code3 == 403
+        assert b"Forbidden" in body3
+
+        # Zero mutations in state repository
+        cap = view._repository._authorization.issue_for_trusted_actor("analyst_a")
+        detail = view._repository.get_alert(cap, candidate_id)
+        assert detail.analyst_state.state == "new"
+        assert detail.analyst_state.version == 0
+        assert detail.transitions == ()
+
+        # Audit events all recorded as authorization_rejected
+        events = list(audit.list())
+        assert len(events) == 3
+        for ev in events:
+            assert ev.event_type == "authorization_rejected"
+            assert ev.reason_code == "forbidden"
+    finally:
+        srv.close()
+
+
+def test_browser_post_csrf_tampering_and_cross_actor_rejected(tmp_path, certificates):
+    srv, audit, view, candidate_id = _listener(tmp_path, certificates)
+    srv.open()
+    try:
+        transition_id = str(uuid.uuid4())
+        valid_csrf = srv.generate_csrf_token("analyst_a", candidate_id, 0, transition_id)
+
+        # 1. Tampered CSRF token (corrupt last character)
+        tampered_csrf = valid_csrf[:-1] + ("0" if valid_csrf[-1] != "0" else "1")
+        form1 = urllib.parse.urlencode(
+            {
+                "expected_version": "0",
+                "transition_request_id": transition_id,
+                "csrf_token": tampered_csrf,
+                "target_state": "in_review",
+                "reason": "Tampered token attempt",
+            }
+        )
+        req1 = _post_req(srv.address[1], f"/v1/analyst/alerts/{candidate_id}/transitions", form1)
+        code1, _, body1 = _exchange(srv, certificates, "analyst_a", req1)
+        assert code1 == 403
+        assert b"Forbidden" in body1
+
+        # 2. Cross-actor CSRF token (token minted for analyst.b, submitted by analyst_a)
+        cross_csrf = srv.generate_csrf_token("analyst.b", candidate_id, 0, transition_id)
+        form2 = urllib.parse.urlencode(
+            {
+                "expected_version": "0",
+                "transition_request_id": transition_id,
+                "csrf_token": cross_csrf,
+                "target_state": "in_review",
+                "reason": "Cross-actor token attempt",
+            }
+        )
+        req2 = _post_req(srv.address[1], f"/v1/analyst/alerts/{candidate_id}/transitions", form2)
+        code2, _, body2 = _exchange(srv, certificates, "analyst_a", req2)
+        assert code2 == 403
+        assert b"Forbidden" in body2
+
+        # 3. Mismatched candidate ID in token
+        other_candidate_id = "alert_candidate_v1:" + "f" * 64
+        mismatched_csrf = srv.generate_csrf_token("analyst_a", other_candidate_id, 0, transition_id)
+        form3 = urllib.parse.urlencode(
+            {
+                "expected_version": "0",
+                "transition_request_id": transition_id,
+                "csrf_token": mismatched_csrf,
+                "target_state": "in_review",
+                "reason": "Mismatched candidate id",
+            }
+        )
+        req3 = _post_req(srv.address[1], f"/v1/analyst/alerts/{candidate_id}/transitions", form3)
+        code3, _, body3 = _exchange(srv, certificates, "analyst_a", req3)
+        assert code3 == 403
+        assert b"Forbidden" in body3
+
+        # Zero state modifications
+        cap = view._repository._authorization.issue_for_trusted_actor("analyst_a")
+        detail = view._repository.get_alert(cap, candidate_id)
+        assert detail.analyst_state.state == "new"
+        assert detail.analyst_state.version == 0
+        assert detail.transitions == ()
+
+        # Audit events: each attempt admitted, then authorization_rejected
+        events = list(audit.list())
+        assert len(events) == 6
+        assert [e.event_type for e in events] == [
+            "request_admitted",
+            "authorization_rejected",
+            "request_admitted",
+            "authorization_rejected",
+            "request_admitted",
+            "authorization_rejected",
+        ]
+        for e in events[1::2]:
+            assert e.reason_code == "forbidden"
+    finally:
+        srv.close()
+
+
+def test_browser_post_version_conflict_and_invalid_transition(tmp_path, certificates):
+    srv, audit, view, candidate_id = _listener(tmp_path, certificates)
+    srv.open()
+    try:
+        # 1. Version conflict (stale expected_version=1 on version 0 alert)
+        trans_id1 = str(uuid.uuid4())
+        csrf1 = srv.generate_csrf_token("analyst_a", candidate_id, 1, trans_id1)
+        form1 = urllib.parse.urlencode(
+            {
+                "expected_version": "1",
+                "transition_request_id": trans_id1,
+                "csrf_token": csrf1,
+                "target_state": "in_review",
+                "reason": "Stale version test",
+            }
+        )
+        req1 = _post_req(srv.address[1], f"/v1/analyst/alerts/{candidate_id}/transitions", form1)
+        code1, _, body1 = _exchange(srv, certificates, "analyst_a", req1)
+        assert code1 == 409
+        assert b"Version Conflict" in body1
+
+        # 2. Invalid state transition (new -> closed directly)
+        trans_id2 = str(uuid.uuid4())
+        csrf2 = srv.generate_csrf_token("analyst_a", candidate_id, 0, trans_id2)
+        form2 = urllib.parse.urlencode(
+            {
+                "expected_version": "0",
+                "transition_request_id": trans_id2,
+                "csrf_token": csrf2,
+                "target_state": "closed",
+                "reason": "Invalid jump to closed",
+            }
+        )
+        req2 = _post_req(srv.address[1], f"/v1/analyst/alerts/{candidate_id}/transitions", form2)
+        code2, _, body2 = _exchange(srv, certificates, "analyst_a", req2)
+        assert code2 == 400
+        assert b"Bad Request" in body2
+
+        # Zero state modifications
+        cap = view._repository._authorization.issue_for_trusted_actor("analyst_a")
+        detail = view._repository.get_alert(cap, candidate_id)
+        assert detail.analyst_state.state == "new"
+        assert detail.analyst_state.version == 0
+        assert detail.transitions == ()
+
+        events = list(audit.list())
+        assert len(events) == 4
+        # Version conflict: request_admitted -> request_completed
+        assert events[0].event_type == "request_admitted"
+        assert events[1].event_type == "request_completed"
+        # Invalid transition: request_admitted -> request_rejected
+        assert events[2].event_type == "request_admitted"
+        assert events[3].event_type == "request_rejected"
+    finally:
+        srv.close()

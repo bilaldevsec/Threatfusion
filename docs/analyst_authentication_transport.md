@@ -45,8 +45,9 @@ The issuer and provisioning process are deployment responsibilities, not impleme
 The [local operator runbook](human_credential_operator_runbook.md) implements offline Root CA
 management, encrypted PKCS#12 client bundle issuance, public-certificate enrollment,
 exact-fingerprint disable/revoke into versioned private metadata, and automated fail-closed Firefox
-NSS SQLite profile provisioning (`threatfusion.operations.human_browser_provisioning`). Browser
-write authentication/CSRF protection, long-term endurance, and live production telemetry remain open.
+NSS SQLite profile provisioning (`threatfusion.operations.human_browser_provisioning`). Bounded
+browser write authentication, CSRF token validation, same-origin enforcement, and HTML triage workflows
+are implemented and verified. Long-term endurance and distinct-alert correlation key remain open under TF-008 and TF-009.
 
 To rotate, issue a new certificate and add its fingerprint as another record for the same actor while
 retaining the old record for a bounded operational overlap. To revoke or disable, replace the
@@ -98,16 +99,41 @@ distinct from alert detection and analyst state databases.
 ## Browser and claim boundary
 
 The strict `AnalystTlsListener` header contract does not accept browser requests. The separate
-`AnalystBrowserTlsListener` now serves a bounded, read-only HTML queue and alert detail over local
-mTLS, with Host, Origin and Fetch-Site checks. Browser certificate selection, trust-store installation,
-private-key protection, accessibility and future write authentication/CSRF protection remain to be
-designed and tested operationally. Neither listener is an internet-facing or production-ready service.
+`AnalystBrowserTlsListener` serves a bounded, mTLS-authenticated HTML queue and alert detail over local
+mTLS, and now supports audited alert state transitions (`POST /v1/analyst/alerts/<alert_candidate_id>/transitions`)
+with fail-closed CSRF protection and same-origin validation:
+
+- **Cryptographic Per-Actor CSRF Token:** Each listener instance generates a 32-byte secret (`os.urandom(32)`).
+  When serving alert detail to an authenticated `analyst` peer, the listener mints an HMAC-SHA256 CSRF token
+  binding `(actor_id, alert_candidate_id, expected_version, transition_request_id)`. The token is validated
+  using constant-time `hmac.compare_digest`. Any missing, tampered, or cross-actor CSRF token is rejected with
+  `403 Forbidden` and audited as `authorization_rejected` with zero state repository mutations.
+- **Same-Origin & Framing Enforcement:** On `POST`, the listener requires `Content-Type: application/x-www-form-urlencoded`
+  (bounded to 2,048 bytes). It validates same-origin request headers: `Sec-Fetch-Site` must be `"same-origin"` if present,
+  `Origin` must match `https://127.0.0.1:<port>` or `https://localhost:<port>` if present, and at least one must be
+  provided. Missing or cross-site headers are rejected with `403 Forbidden` and audited as `authorization_rejected`.
+- **Role Verification:** Authenticated peers with role `viewer` are prevented from mutating state: POST attempts
+  return `403 Forbidden` and record `authorization_rejected` (`forbidden`) without invoking the state repository.
+- **Server-Rendered HTML Triage Form:** The alert detail view embeds a zero-JavaScript `<form method="POST">`
+  when accessed by an `analyst` role, with hidden fields for `expected_version`, canonical UUIDv4 `transition_request_id`,
+  and `csrf_token`, plus `<select name="target_state">` populated with valid next transitions (`new` -> `in_review`,
+  `in_review` -> `closed` or `escalated`) and bounded `<input name="reason">`. When accessed by a `viewer` or when the
+  alert is in a terminal state (`closed`, `escalated`), an active mutation form is never rendered; instead, clear
+  read-only / terminal state badges are displayed.
+- **Audited State Transitions:** Successful transitions record `request_admitted` prior to mutation and `request_completed`
+  after mutation in `audit.sqlite3` with normalized route `/v1/analyst/alerts/<alert_candidate_id>/transitions` and
+  request `body_sha256`. The HTTP 200 response renders the updated HTML detail view with fresh CSRF tokens for subsequent
+  steps. Version conflicts return `409 Conflict`, invalid state jumps return `400 Bad Request`, and storage outages
+  return `503 Unavailable`.
 
 Real-loopback tests establish these properties for temporary test certificates and one-request
 connections:
 
 - A viewer certificate reads list/detail but cannot transition; two analyst certificates map to
   distinct actor IDs, and only the authenticated actor is recorded in transition history.
+- An analyst certificate completes valid transitions (`new` -> `in_review` -> `closed`), updating `states.sqlite3`
+  and rendering updated HTML views with new CSRF tokens, while viewer POSTs, cross-site headers, tampered CSRF tokens,
+  and cross-actor tokens are rejected fail-closed with 403 Forbidden and zero state changes.
 - Missing, producer-CA and wrong-`clientAuth`-purpose certificates cannot complete a usable analyst
   request. Revoked, unknown and
   wrong-SAN certificates cannot read; a wrong-SAN certificate is denied even when its fingerprint is
@@ -122,7 +148,8 @@ connections:
   raw exception text.
 
 The tests do not establish secure real-world credential issuance, workstation account isolation,
-browser safety, long-running concurrency, audit completeness, backup/recovery or operational capacity.
+long-running concurrency, backup/recovery, live telemetry, or operational capacity. Long-term endurance
+and the defensible distinct-alert correlation key remain open under TF-008 and TF-009.
 
 ## Security Audit Events
 
@@ -217,6 +244,6 @@ claim bounded shutdown against stalled trusted storage or service-manager/SIGKIL
 handling. Same-actor exact UUIDv4 retries keep their existing idempotency semantics;
 Automated operator Firefox profile provisioning (`threatfusion.operations.human_browser_provisioning`),
 offline Root CA issuance, encrypted PKCS#12 bundle delivery, operator-action journaling (`journal.jsonl`),
-multi-database snapshot/restore, and service-manager deployment are implemented and verified. Long-term
-endurance, browser write authentication/CSRF protection, and the defensible distinct-alert correlation
-key remain open under TF-008 and TF-009.
+multi-database snapshot/restore, service-manager deployment, and CSRF-hardened browser state transitions
+with audited HTML triage workflows are implemented and verified. Long-term endurance, live telemetry, and the
+defensible distinct-alert correlation key remain open under TF-008 and TF-009.

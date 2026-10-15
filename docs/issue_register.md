@@ -579,3 +579,50 @@ Both TF-008 and TF-009 remain **open**.
 
 Automated operator Firefox profile provisioning is implemented and verified. Browser write authentication/CSRF
 protection, long-term endurance, and the defensible distinct-alert correlation key remain open under TF-008 and TF-009.
+
+### TF-008 CSRF-hardened, same-origin verified browser alert state transitions and audited HTML triage workflow, 2026-10-14
+
+Both TF-008 and TF-009 remain **open**.
+
+1. **Cryptographic Per-Actor CSRF Token Generation & Verification:**
+   `AnalystBrowserTlsListener` initializes an ephemeral 32-byte secret (`os.urandom(32)`). When rendering
+   alert detail to an authenticated mTLS peer with role `analyst`, it generates an HMAC-SHA256 CSRF token
+   cryptographically binding `(actor_id, alert_candidate_id, expected_version, transition_request_id)`.
+   Upon `POST /v1/analyst/alerts/<alert_candidate_id>/transitions`, the token is verified using constant-time
+   `hmac.compare_digest`. Any missing, tampered, expired, or cross-actor CSRF token is rejected fail-closed
+   with HTTP `403 Forbidden` and audited as `authorization_rejected` (`forbidden`) with zero state modifications.
+2. **Same-Origin & Framing Enforcement:**
+   POST requests must specify `Content-Type: application/x-www-form-urlencoded` bounded to 2,048 bytes.
+   Browser origin headers are strictly enforced: `Sec-Fetch-Site` must be `"same-origin"` if present,
+   `Origin` must match `https://127.0.0.1:<port>` or `https://localhost:<port>` if present, and at least one
+   must be supplied. Missing or cross-site headers are rejected upfront with `403 Forbidden` and audited as
+   `authorization_rejected` (`forbidden`).
+3. **Role-Based Mutation Denial for Viewers:**
+   Peers authenticated with role `viewer` cannot mutate alert state: any POST transition attempt is rejected
+   with `403 Forbidden` and audited as `authorization_rejected` (`forbidden`) without invoking `AnalystStateRepository`.
+4. **Server-Rendered Zero-JavaScript HTML Triage Workflow (`render_dashboard_html`):**
+   The alert detail view embeds a server-rendered `<form method="POST">` when accessed by an `analyst` peer,
+   populating hidden inputs for `expected_version`, canonical UUIDv4 `transition_request_id`, and `csrf_token`,
+   alongside a `<select name="target_state">` with valid next transitions (`new` -> `in_review`; `in_review` ->
+   `closed`, `escalated`) and a bounded `<input name="reason">`. When accessed by a `viewer` or when the alert
+   has reached a terminal state (`closed` or `escalated`), no form or submission controls are rendered; clear
+   read-only and terminal state badges are displayed instead.
+5. **Audited State Transitions & Error Semantics:**
+   State transitions are executed through `AnalystAlertViewModel.transition`, recording `request_admitted`
+   prior to mutation and `request_completed` after successful mutation in `audit.sqlite3` with normalized
+   route `/v1/analyst/alerts/<alert_candidate_id>/transitions` and `body_sha256`. Successful transitions
+   return HTTP 200 with the updated HTML detail view, displaying the new version, state, transition history,
+   and fresh CSRF tokens for subsequent workflow steps. Stale `expected_version` inputs return `409 Conflict`,
+   invalid transitions return `400 Bad Request`, and storage failures return `503 Unavailable`.
+6. **Integration & Security Tests (`test_analyst_browser_tls_service.py` & `test_analyst_dashboard.py`):**
+   Tests verify:
+   - Complete browser triage workflow: analyst GET detail -> extract CSRF token -> POST transition `new` ->
+     `in_review` -> HTTP 200 with updated detail -> second transition `in_review` -> `closed` -> terminal state.
+   - Fail-closed security rejections with zero state mutations: viewer POST denial (403), cross-site
+     `Sec-Fetch-Site` (403), untrusted `Origin` (403), missing same-origin headers (403), tampered CSRF token
+     (403), cross-actor CSRF token (403), stale version conflict (409), and invalid state jumps (400).
+   - Server-rendered HTML presentation: analyst form with valid target states and CSRF token, viewer read-only
+     badge without `<form>`, and terminal state notice.
+
+Automated browser triage workflows and CSRF defenses are implemented and verified. Long-term endurance, live telemetry,
+and the defensible distinct-alert correlation key remain open under TF-008 and TF-009.
