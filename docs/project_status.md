@@ -1408,4 +1408,27 @@ TF-008 and TF-009 remain **open** pending long-term endurance testing, live tele
   - Full test suite passes: 212+ tests pass with exit 0.
   - Ruff, Black, and `git diff HEAD --check` pass cleanly.
 
-TF-008 and TF-009 remain **open** pending long-term endurance testing, live telemetry, and external CA provisioning. All Milestone #20 changes remain unstaged/uncommitted for review.
+TF-008 and TF-009 remain **open** pending long-term endurance testing, live telemetry, and external CA provisioning. Milestone #20 was committed to `gemini/product-20260924` at `21cda98797f1f7d5402ae3857b2fe5283f6f059c`.
+
+### 2026-10-16 — Phase P5: Jury Requirements Traceability Registry (TF-010 Resolved), Missing-Data Aware Multi-Signal Risk & RF/AE Ablation Engine (TF-002/TF-003/TF-004), and Offline Retraining Feedback Ledger (TF-007) (Milestone #21)
+
+- **Jury Requirements Traceability Registry (`jury_traceability_matrix_v1`, TF-010 resolved):**
+  - Created `backend/src/threatfusion/models/jury_traceability.py` and published authoritative specification `docs/jury_requirements_traceability.md`.
+  - Immutable registry covers all 6 jury-approved datasets (`UNSW-NB15`, `CIC-IDS2017`, `CSE-CIC-IDS2018_subset`, `Mordor_scenarios`, `Synthetic_UEBA`, `Authorized_Lab_Sensor`) and 5 model families (`Logistic_Regression`, `Random_Forest`, `Autoencoder_v2`, `Rate_Log1p_Candidate`, `Heuristic_Statistical_Signals`).
+  - `verify_jury_traceability_completeness()` asserts non-empty dispositions, explicit leakage boundaries, and disk SHA-256 digest integrity across all baseline models (`random_forest.joblib`, `autoencoder_state.pt`, `logistic_regression.joblib`, `rate-log1p`).
+- **Missing-Data Aware Multi-Signal Risk Policy (`dynamic_risk_assessment_v1`):**
+  - Created `backend/src/threatfusion/models/multi_signal_risk.py` implementing the 7 canonical detection signals (`supervised_rf`, `autoencoder_v2_reconstruction`, `isolation_forest_outlier`, `ueba_behavioral_deviation`, `threat_intel_ioc`, `payload_entropy`, `periodic_beaconing`).
+  - Enforced the Missing-Data Invariant: missing evidence is not benign evidence. Unavailable signals are subtracted from the denominator ($D = 100.0 \times \frac{\sum_{i \in A} w_i \times s_i}{\sum_{i \in A} w_i}$). Proven: when `supervised_rf = 0.90` and other 6 signals are unavailable, $D = 90.0$ (not diluted to 27.0).
+  - Strict fail-closed error handling for empty available sets, score out-of-bounds/NaN, invalid weights, and unstated unavailability reasons.
+- **Leakage-Aware RF vs. RF+AE Ablation & Metrics Evaluator (`detector_ablation_report_v1`):**
+  - Implemented `evaluate_detector_ablation()` calculating class-aware metrics: confusion matrices (`tp`, `fp`, `tn`, `fn`), `precision`, `recall`, `f1_score`, `pr_auc`, `false_alert_burden_per_1000`, and delta statistics.
+  - Formulates promotion verdicts: rejects regressions (`rejected_regression`), retains advisory candidates as `experimental_unfused_retained`, and approves baselines (`approved_baseline`).
+- **Offline Retraining Feedback Ledger (`offline_retraining_feedback_sqlite_v1`):**
+  - Created `backend/src/threatfusion/db/retraining_feedback_ledger.py` persisting analyst triage feedback (`confirmed_threat` vs `false_positive`) into a mode-0600 SQLite ledger (`retraining_feedback.sqlite3`) for future offline batch retraining.
+  - Implemented idempotent `transition_request_id` replay deduplication and conflict detection.
+  - Implemented pre- and post-write SHA-256 verification of frozen production models (`random_forest.joblib` and `autoencoder_state.pt`), proving zero online weight drift for the academic jury viva.
+- **Verification:**
+  - 46 unit and integration tests pass across `test_multi_signal_risk.py`, `test_jury_traceability_and_feedback.py`, `test_provenance_sources.py`, `test_correlation_engine.py`, and `test_incident_correlation_pipeline.py`.
+  - Ruff, Black, and `git diff HEAD --check` pass cleanly.
+
+TF-010 is **resolved**; TF-008 and TF-009 remain **open** pending long-term endurance testing, live telemetry, and external CA provisioning. All Milestone #21 changes remain unstaged/uncommitted for review.

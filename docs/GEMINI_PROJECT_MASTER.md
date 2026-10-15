@@ -1,8 +1,8 @@
 # ThreatFusion — Gemini Project Master
 
 **Owner:** Muhammad Bilal, FAST-NUCES Karachi, BSc Cyber Security.
-**Document revision:** TF-GEMINI-MASTER-2026-10-15-v3.
-**Prepared:** 15 October 2026, Karachi context.
+**Document revision:** TF-GEMINI-MASTER-2026-10-16-v4.
+**Prepared:** 16 October 2026, Karachi context.
 **Purpose:** One portable project knowledge file for the Gemini “ThreatFusion Engineering Planner” Gem, Antigravity implementer, and Copilot reviewer.
 **Target:** A credible, secure AI-assisted SOC triage product and a reproducible December 2026 project demonstration. Production/enterprise quality is an engineering objective, not a certification or a completed status.
 
@@ -106,16 +106,16 @@ Explain decisions in clear language so I can defend the project to my supervisor
 |---|---|
 | Workspace | `/home/muhammad-bilal/projects/threatfusion-gemini` |
 | Branch | `gemini/product-20260924` |
-| Last reported committed HEAD | `a357fc6a14d16fc6137a5d88ec2701d8f9b95899` (Milestone #19: `fix(lifecycle): resolve P0-P2 startup interruption blocker, verify dual-sqlite audit retry, and add GEMINI_PROJECT_MASTER v2`) |
-| Git state | Milestone #20 unstaged/uncommitted for review: Phase P3 Supported Source Provenance Adapters (`MordorScenarioAdapter` and `AuthorizedLabSensorAdapter`) and Phase P4 Complete Section 8 Correlation Gate (NAT/address reuse ambiguity, entity validity intervals, 5.0s clock skew bound, candidate deduplication vs. grouping, out-of-order determinism, member justifications, and audited manual grouping corrections) |
-| Committed product slices | Frozen RF path, persisted alert/analyst state, human mTLS and security audit, read-only browser and CSRF-hardened browser transition triage, registered-input demonstration, factual explanation, provenance-gated dual-window 30s/10m correlation engine, incident persistence, and Section 7 lifecycle repair |
+| Last reported committed HEAD | `21cda98797f1f7d5402ae3857b2fe5283f6f059c` (Milestone #20: `feat(correlation): add P3-P4 provenance adapters, section 8 correlation edge-case gates, and grouping correction`) |
+| Git state | Milestone #21 unstaged/uncommitted for review: Phase P5 Jury Requirements Traceability Registry (`jury_traceability_matrix_v1`, `TF-010` resolved), Missing-Data Aware Multi-Signal Risk & RF/AE Ablation Engine (`dynamic_risk_assessment_v1`, `detector_ablation_report_v1`), and Offline Retraining Feedback Ledger (`offline_retraining_feedback_sqlite_v1`, mode-0600 SQLite with pre/post zero online weight drift verification) |
+| Committed product slices | Frozen RF path, persisted alert/analyst state, human mTLS and security audit, read-only browser and CSRF-hardened browser transition triage, registered-input demonstration, factual explanation, provenance-gated dual-window 30s/10m correlation engine, incident persistence, Section 7 lifecycle repair, Phase P3-P4 provenance adapters (`MordorScenarioAdapter`, `AuthorizedLabSensorAdapter`), Section 8 correlation edge-case gates, and audited grouping corrections |
 | Browser observations | Owner reported desktop and 390×844 readability after repairs; full CSRF-protected browser triage state transitions (`new` -> `in_review` -> `closed`/`escalated`) and dual-DB failure semantics verified |
-| Active review blocker | Section 7 startup interruption blocker **RESOLVED**: `human_listener_lifecycle.py` catches `BaseException` (`KeyboardInterrupt`), tracks native thread creation, and shuts down cleanly without hanging on unstarted workers (6 isolated watchdog regressions pass). Section 6.3 Dual-SQLite audit failure and retry deduplication verified (503 response, zero duplicate transitions on UUIDv4 replay). Storage backup updated with `incidents.sqlite3` (`incident_sqlite_v1`) support. |
-| Reported tests | 212+ tests pass across all unit and integration suites with 0 errors |
+| Active review blocker | Section 7 startup interruption blocker **RESOLVED**: `human_listener_lifecycle.py` catches `BaseException` (`KeyboardInterrupt`), tracks native thread creation, and shuts down cleanly without hanging on unstarted workers (6 isolated watchdog regressions pass). Section 6.3 Dual-SQLite audit failure and retry deduplication verified (503 response, zero duplicate transitions on UUIDv4 replay). Storage backup updated with `incidents.sqlite3` (`incident_sqlite_v1`) support. Phase P5 offline retraining ledger enforces mode-0600 SQLite and verifies frozen model SHA-256 digests before and after recording feedback. |
+| Reported tests | 258+ tests pass across all unit and integration suites with 0 errors (46 focused tests in Milestone #21) |
 | Correlation | Provenance-gated dual-window engine (`EntityProvenanceContract`, 30s burst, 10m campaign, 100% critical scenario retention, fail-closed singleton for unverified UNSW, NAT/clock-skew boundary enforcement, candidate deduplication, per-event member justifications, and audited manual grouping corrections) implemented and persisted to `incidents.sqlite3` |
-| RF / AE / candidate | Frozen RF active; v2 AE experimental and unfused; rate-log1p candidate blocked |
-| Open issues | TF-008 and TF-009 remain open (external CA provisioning, live telemetry, and long-term endurance); exact issue definitions/gates maintained in `docs/issue_register.md` |
-| Immediate next action | Independent review of Milestone #20 unstaged changes; stage and commit when accepted |
+| RF / AE / candidate | Frozen RF active; v2 AE experimental and unfused; rate-log1p candidate blocked; 7-signal missing-data dynamic risk policy active |
+| Open issues | TF-010 **RESOLVED**; TF-008 and TF-009 remain open (external CA provisioning, live telemetry, and long-term endurance); Phase P5 progress recorded under TF-002–TF-004 and TF-007 |
+| Immediate next action | Independent review of Milestone #21 unstaged changes |
 
 If newer local evidence exists, reconcile this table before implementing. Do not undo later work to match this snapshot.
 
@@ -557,6 +557,12 @@ Do not expand to multi-tenancy, distributed clusters, arbitrary autonomous red-t
 | `backend/tests/integration/test_incident_correlation_pipeline.py` | Integration tests for incident correlation pipeline |
 | `backend/tests/integration/test_storage_backup.py` | Storage backup, restore, and referential integrity tests |
 | `docs/THREATFUSION_CHATGPT_FULL_AUDIT_REPORT.md` | Comprehensive ChatGPT project history audit report |
+| `backend/src/threatfusion/models/jury_traceability.py` | Authoritative jury requirements traceability registry (TF-010 resolved) |
+| `backend/src/threatfusion/models/multi_signal_risk.py` | 7-signal missing-data aware dynamic risk policy and RF/AE ablation evaluator |
+| `backend/src/threatfusion/db/retraining_feedback_ledger.py` | Mode-0600 SQLite offline retraining feedback ledger with zero online weight drift |
+| `docs/jury_requirements_traceability.md` | Authoritative jury rubric, dataset/model family dispositions, and non-substitution contracts |
+| `backend/tests/unit/test_multi_signal_risk.py` | Unit tests for multi-signal risk calculation, missing-data invariance, and ablation evaluator |
+| `backend/tests/unit/test_jury_traceability_and_feedback.py` | Unit tests for jury traceability completeness and offline retraining feedback ledger |
 
 Do not assume this is the entire repository. Discover producer/model/source paths by repository search. Read untracked Python files directly: `git diff` and its stat omit them. `AM` and `MM` statuses mean staged and unstaged versions differ.
 
@@ -594,7 +600,8 @@ These hashes and summaries come from supplied user terminal output. Current hist
 | `3d4bfaa` | CSRF-hardened browser alert transitions and full ChatGPT architectural audit |
 | `d71e333` | Provenance-gated dual-window correlation engine and incident persistence (TF-008, Milestone #18) |
 | `a357fc6` | Phase P0/P1/P2 Quality & Blocker Resolution: Section 7 lifecycle startup interruption repair, Section 6.3 dual-SQLite audit failure verification, storage backup incidents support, canonical Gemini master export v2 (Milestone #19) |
-| Uncommitted | Phase P3 & P4: Supported source provenance adapters (Mordor & Authorized Lab Sensor), complete Section 8 correlation gate, member justifications, and audited manual grouping corrections (Milestone #20) |
+| `21cda98` | Phase P3 & P4: Supported source provenance adapters (Mordor & Authorized Lab Sensor), complete Section 8 correlation gate, member justifications, and audited manual grouping corrections (Milestone #20) |
+| Uncommitted | Phase P5: Jury Requirements Traceability Registry (TF-010 resolved), Missing-Data Aware Multi-Signal Risk & RF/AE Ablation Engine (TF-002/TF-003/TF-004), and Offline Retraining Feedback Ledger (TF-007) (Milestone #21) |
 
 ### Lessons from rejected/limited evidence
 
