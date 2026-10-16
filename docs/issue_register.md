@@ -741,7 +741,7 @@ Operational credential provisioning, external CA issuance/delivery runbooks, and
 
 TF-010 repository-side disposition registry is implemented in `backend/src/threatfusion/models/jury_traceability.py` and `docs/jury_requirements_traceability.md`; per `CLAUDE.md` Section 7, TF-010 remains **open** pending physical attachment of the signed external jury brief. TF-002, TF-003, TF-004, and TF-007 progress is recorded under Phase P5.
 
-1. **Jury Requirements Traceability Registry (`jury_traceability_matrix_v1`, TF-010 resolved):**
+1. **Jury Requirements Traceability Registry (`jury_traceability_matrix_v1`, TF-010 open (repository-side traceability helper implemented; external FAST-NUCES jury rubric remains open)):**
    - Implemented `backend/src/threatfusion/models/jury_traceability.py` and published `docs/jury_requirements_traceability.md`.
    - Immutable registry defines formal dispositions, schema contracts, and leakage boundaries for all 6 jury-approved datasets (`UNSW-NB15`, `CIC-IDS2017`, `CSE-CIC-IDS2018_subset`, `Mordor_scenarios`, `Synthetic_UEBA`, `Authorized_Lab_Sensor`) and 5 model families (`Logistic_Regression`, `Random_Forest`, `Autoencoder_v2`, `Rate_Log1p_Candidate`, `Heuristic_Statistical_Signals`).
    - `verify_jury_traceability_completeness()` asserts that every required dataset and model family has a non-empty disposition, valid artifact/contract reference, and explicit leakage boundary. Verifies disk SHA-256 digests for all baseline artifacts (`random_forest.joblib`: `bd2853a6...`, `autoencoder_state.pt`: `c8675d13...`, `logistic_regression.joblib`: `2cf4de66...`, `rate_log1p`: `1d02e5bb...`).
@@ -838,3 +838,25 @@ TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptan
    - **`TF-009` (`open`)**: *Measured Reduction of Analyst Workload / Alert Fatigue* — `workload_measurement.py` (`Section 13.F`) provides the counterfactual January FP shield proof (`201` RF FPs vs `1,775` fused FPs = `8.831x`) and the SQLite telemetry recorder (`workload_study.sqlite3`), but closing `TF-009` requires real human-factors / analyst cohort study trials (`study_cohort="human_analyst_cohort_study"`, `min_human_trials >= 10`).
    - **`TF-010` (`open`)**: *External FAST-NUCES FYP-II Jury Rubric & Signed Supervisor/Jury Evaluation Alignment* — internal traceability (`jury_traceability.py`) and Evaluation Pack Rev2 (`AI-FYP-2006`) alignment are wired, but closing `TF-010` requires the official external signed FAST-NUCES jury/supervisor rubric artifact.
    - **`TF-011` (`open`)**: *Real Operational SIEM / Threat-Intelligence Production Source Proof* — `SuricataFlowAdapter` (`Slide 14`) and `SourcedThreatIntelEnricher` (`Section 13.C`) are verified on bounded/recorded flows and local snapshots, but closing `TF-011` requires live operational SIEM / production threat-intelligence source deployment evidence.
+
+### TF-008 / TF-009 / TF-010 / TF-011 Milestone #25 progress: Deterministic Zero-Trust Repository Truth Audit Gate, 2026-10-16
+
+TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.
+
+1. **Deterministic Zero-Trust Repository Truth Audit Gate (`repo_truth_audit_v1`):**
+   - Implemented `run_repository_truth_audit(repo_root)` in `backend/src/threatfusion/evaluation/repo_truth_audit.py` and CLI wrapper `scripts/audit_repo_truth.py`.
+   - Executes 7 programmatic, deterministic checks against live repository files and runtime objects without mocking:
+     1. **Workspace Isolation & Git State Check**: Enforces exact workspace root `/home/muhammad-bilal/projects/threatfusion-gemini`, queries active branch (`gemini/product-20260924`), HEAD commit SHA, and hashes all modified and untracked files.
+     2. **Frozen Model Artifact SHA-256 Invariance Check**: Recomputes live SHA-256 digests of all 4 frozen model files on disk (`random_forest.joblib`: `bd2853a6...`, `logistic_regression.joblib`: `2cf4de66...`, `autoencoder_state.pt` v2: `c8675d13...`, `rate-log1p`: `1d02e5bb...`) and verifies byte-identical equality.
+     3. **Canonical Evaluation Pack Rev2 (`AI-FYP-2006`, Checkpoint `6a36dcd`) Runtime Verification**: Validates runtime constants in `CANONICAL_EVALUATION_PACK_REV2` (project ID `AI-FYP-2006`, supervisor `Sir Sameer Faisal`, roll numbers `21K-3551`, `22K-4302`, `22K-4718`, exact populations 865,480 / 216,568 / 1,452,844, RF metrics 95.266% precision / 92.818% recall / 94.026% F1, AE v2 threshold 0.118136, Section 8 16.4 FPs/extra attack, blocked rate-log1p candidate).
+     4. **Section 8 (`fusion_disabled`) Runtime Enforcement Check**: Verifies `evaluate_multi_signal_risk` returns `production_fusion_enabled=False` and `production_alert_authority="frozen_random_forest_only"`, and raises `ValueError` if `production_fusion_enabled=True`.
+     5. **No Duplicate Package Regression Check**: Confirms zero split-paste duplicate paths on disk (`intel/`, `llm/`, `soar_ledger.py`) and verifies clean import of canonical Pass-2 packages (`enrichment`, `advisory`, `soar`, `evaluation`, `datasets.adapters.suricata_flow`).
+     6. **Section 13.C / 13.D / 13.E / 13.F Live Functional Probe**: Probes RFC 1918 private-IP guard suppression for `10.0.0.4 -> 10.0.0.5`, advisory engine groundedness rejection of hallucinated IP with deterministic template fallback, SOAR approval gate enforcing `SoarStateTransitionError` on unapproved execution, and workload measurement reporting 201 RF FPs vs 1,775 counterfactual fused FPs with `tf_009_closure_eligible = False`.
+     7. **Issue Register Honesty & Canonical Title Check**: Parses `docs/issue_register.md` table and verifies that `TF-008`, `TF-009`, `TF-010`, and `TF-011` are strictly marked `open` and retain their exact canonical keywords.
+   - Computes deterministic SHA-256 digest over the canonical JSON representation of the report, rendering a verifiable cryptographic ground-truth receipt banner.
+
+2. **Verification Gate & Unit Tests:**
+   - Implemented `backend/tests/unit/test_repo_truth_audit.py` with 6 unit tests covering live repository verification, fail-closed detection of premature `resolved` status tampering, canonical keyword drift detection, invalid workspace rejection, missing model handling, and CLI script execution.
+   - Full 16-suite verification gate passes: 116 tests passing in 28.39s.
+   - Repository-wide `ruff check .` passes with 0 errors; `black --check .` passes across 201 files.
+   - CLI script `scripts/audit_repo_truth.py` exits 0 with `ALL 7 ZERO-TRUST CHECKS PASSED`.

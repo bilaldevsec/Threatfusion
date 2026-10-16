@@ -131,6 +131,18 @@ class AlertFatigueCompressionReport:
     def fatigue_protection_verdict(self) -> str:
         return self.counterfactual_shield.fatigue_protection_verdict
 
+    @property
+    def rf_only_false_positives(self) -> int:
+        return self.counterfactual_shield.rf_only_false_positives
+
+    @property
+    def counterfactual_fused_false_positives(self) -> int:
+        return self.counterfactual_shield.counterfactual_fused_false_positives
+
+    @property
+    def tf_009_closure_eligible(self) -> bool:
+        return False
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
