@@ -1582,3 +1582,19 @@ TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptan
   - Frozen model SHA-256 digests remain byte-identical; zero training or online drift.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.
+
+### Milestone #26: Presentation Deck & Academic Defense Harmonization (2026-10-16)
+
+- **Presentation Deck Harmonization (`scripts/generate_harmonized_defense_deck.py`):**
+  - Harmonized `/home/muhammad-bilal/Downloads/Final Presentation (1).pptx` with authoritative Evaluation Pack Rev2 (`AI-FYP-2006`, checkpoint `6a36dcd`) into `artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx` (92,623 bytes, exactly 15 slides).
+  - Pinned project identity: `AI-FYP-2006`, FAST-NUCES Karachi CS492 FYP-II, Supervisor: Sir Sameer Faisal, Team: Muhammad Bilal (21K-3551), Muhammad Suhaib Shaikh (22K-4302), Muhammad Hasnain (22K-4718).
+  - Completely eliminated legacy split-inversion metrics (89.77% RF, 94.95% multimodal fusion) from all slides.
+  - Injected exact Evaluation Pack Rev2 metrics on January Validation (216,568 rows): Frozen RF precision 95.27%, recall 92.82%, F1 94.03%, FPR 0.095% (only 201 false alarms in 212,210 benign flows).
+  - Emphasized Core Defense Pillar (Section 8 Invariant): Autoencoder adds 96 attacks (+2.37% recall) but triggers 1,574 additional false alarms (8.83x inflation, 16.3958 FPs per gained attack); automatic fusion is strictly disabled in production (`production_fusion_enabled = False`).
+  - Upgraded Slide 14 live architecture status from "Pending" to **Bounded Recorded/Local Integration Path Verified (16/16 Test Gates); Live Azure/SIEM Deployment Open (TF-011)** (`test_slide14_suricata_live_ingestion_path.py`). Explicitly documents that the repository software spine (Suricata eve.json -> 14 features -> loopback mTLS 1.3 -> Frozen RF -> Correlation -> RFC1918 Threat-Intel -> Advisory -> Reversible SOAR) is verified by automated integration tests, while live Azure VM / production SIEM field deployment remains unverified and open under `TF-011`.
+  - Integrated Section 13 Modern SOC Pillars (13.C RFC1918 Threat-Intel Guard, 13.D Evidence-Bound Advisory, 13.E Reversible SOAR Ledger, 13.F Workload Shield with 8.831x FP reduction).
+- **Academic Defense Brief & Harmonization Report (`docs/defense_slide_deck_harmonization.md`):**
+  - Comprehensive slide-by-slide before-and-after mapping across all 15 slides.
+  - Linked all claims directly to immutable model SHA-256 hashes and `audit_repo_truth.py` zero-trust receipt.
+  - Authored detailed panel and jury talking points for Sir Sameer Faisal and the FAST-NUCES evaluation panel covering model selection, Autoencoder false alarms, Section 8 fusion policy, Slide 14 live ingestion, and open issue integrity.
+TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.

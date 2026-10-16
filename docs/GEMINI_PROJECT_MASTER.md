@@ -106,16 +106,16 @@ Explain decisions in clear language so I can defend the project to my supervisor
 |---|---|
 | Workspace | `/home/muhammad-bilal/projects/threatfusion-gemini` |
 | Branch | `gemini/product-20260924` |
-| Last reported committed HEAD | `6f59fb0118e19d0f0bd796a34b6502f0cd7ace57` (Milestone #24: `feat(eval): implement Section 13.F workload measurement harness, fix canonical TF-008..TF-011 definitions, and add turnkey two-track SOC demo runner`) |
-| Git state | Milestone #25 implemented: Deterministic Zero-Trust Repository Truth Audit Gate (`backend/src/threatfusion/evaluation/repo_truth_audit.py`, `scripts/audit_repo_truth.py`, and `backend/tests/unit/test_repo_truth_audit.py`). |
-| Committed product slices | Frozen RF path, persisted alert/analyst state, human mTLS and security audit, read-only browser and CSRF-hardened browser transition triage, registered-input demonstration, factual explanation, provenance-gated dual-window 30s/10m correlation engine, incident persistence, Section 7 lifecycle repair, Phase P3-P4 provenance adapters (`MordorScenarioAdapter`, `AuthorizedLabSensorAdapter`), Section 8 correlation edge-case gates, audited grouping corrections, Phase P5 missing-data risk evaluator and retraining feedback ledger, Slide 1–15 extraction audit, Slide 14 Suricata 14-feature flow adapter, `CLAUDE.md` installation, 4-DB atomic quiescent snapshot, Section 13.C Threat Intel Enrichment, Section 13.D Advisory Debrief Engine, Section 13.E Approval-Gated Reversible SOAR Ledger, Section 13.F Workload Measurement Harness, Turnkey Two-Track Demo Runner, and Deterministic Zero-Trust Repository Truth Audit Gate |
+| Last reported committed HEAD | `e9b6f86c2e391b10a9f5d1646738ee6346aa868f` (Milestone #25: `feat(eval): implement deterministic zero-trust repository truth audit gate and harden canonical issue verification`) |
+| Git state | Milestone #26 implemented: Presentation Deck & Academic Defense Harmonization (`scripts/generate_harmonized_defense_deck.py`, `docs/defense_slide_deck_harmonization.md`, and `artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx`). |
+| Committed product slices | Frozen RF path, persisted alert/analyst state, human mTLS and security audit, read-only browser and CSRF-hardened browser transition triage, registered-input demonstration, factual explanation, provenance-gated dual-window 30s/10m correlation engine, incident persistence, Section 7 lifecycle repair, Phase P3-P4 provenance adapters (`MordorScenarioAdapter`, `AuthorizedLabSensorAdapter`), Section 8 correlation edge-case gates, audited grouping corrections, Phase P5 missing-data risk evaluator and retraining feedback ledger, Slide 1–15 extraction audit, Slide 14 Suricata 14-feature flow adapter, `CLAUDE.md` installation, 4-DB atomic quiescent snapshot, Section 13.C Threat Intel Enrichment, Section 13.D Advisory Debrief Engine, Section 13.E Approval-Gated Reversible SOAR Ledger, Section 13.F Workload Measurement Harness, Turnkey Two-Track Demo Runner, Deterministic Zero-Trust Repository Truth Audit Gate, and Academic Presentation Deck Harmonization |
 | Browser observations | Owner reported desktop and 390×844 readability after repairs; full CSRF-protected browser triage state transitions (`new` -> `in_review` -> `closed`/`escalated`) and dual-DB failure semantics verified; full Slide 14 browser flow demonstrated |
 | Active review blocker | Section 7 startup interruption blocker **RESOLVED**: `human_listener_lifecycle.py` catches `BaseException` (`KeyboardInterrupt`), tracks native thread creation, and shuts down cleanly without hanging on unstarted workers (6 isolated watchdog regressions pass). Section 6.3 Dual-SQLite audit failure and retry deduplication verified (503 response, zero duplicate transitions on UUIDv4 replay). Storage backup updated with `incidents.sqlite3` (`incident_sqlite_v1`) support. Phase P5 offline retraining ledger enforces mode-0600 SQLite and verifies frozen model SHA-256 digests before and after recording feedback. Milestone #22 wires `incident_repository` into `HumanListenerLifecycle` and verifies quiescent 4-DB atomic snapshot across `alerts`, `states`, `audit`, and `incidents`. |
-| Reported tests | 116 passed across 16 full unit/integration test suites (28.39s); zero warnings, model digests verified identical |
+| Reported tests | 17 full test suites (125 tests) passing cleanly (43.53s); zero warnings, model digests verified identical; 7/7 zero-trust audit checks pass |
 | Correlation | Provenance-gated dual-window engine (`EntityProvenanceContract`, 30s burst, 10m campaign, 100% critical scenario retention, fail-closed singleton for unverified UNSW, NAT/clock-skew boundary enforcement, candidate deduplication, per-event member justifications, and audited manual grouping corrections) implemented and persisted to `incidents.sqlite3` |
 | RF / AE / candidate | Frozen RF active (`bd2853a6...`); v2 AE experimental and unfused (`c8675d13...`); rate-log1p candidate blocked (`1d02e5bb...`); 7-signal missing-data dynamic risk policy active; Section 8 `fusion_disabled = True` invariant enforced (8.831x FP inflation shield) |
 | Open issues | **TF-008** (`open`): Independent Model Benchmark Beyond Inspected January/February UNSW Splits; **TF-009** (`open`): Measured Reduction of Analyst Workload / Alert Fatigue (`tf_009_closure_eligible = False` until >=10 human trials); **TF-010** (`open`): External FAST-NUCES FYP-II Jury Rubric & Signed Supervisor/Jury Evaluation Alignment; **TF-011** (`open`): Real Operational SIEM / Threat-Intelligence Production Source Proof |
-| Immediate next action | Stage and commit Milestone #25: Deterministic Zero-Trust Repository Truth Audit Gate |
+| Immediate next action | Stage and commit Milestone #26: Presentation Deck & Academic Defense Harmonization |
 
 If newer local evidence exists, reconcile this table before implementing. Do not undo later work to match this snapshot.
 
@@ -397,7 +397,7 @@ The repository formally reconciles the two presentation decks to prevent jury an
   - Blocked `rate-log1p`: traversed 1.45M February rows, failed all 4 numerical gates (59 < 96 attacks, 2,080 > 1,574 benign FPs).
 - **Earlier Draft Deck (`Final Presentation (1).pptx`):**
   - Contained legacy FYP-I split metrics (94.95% RF accuracy on inverted split, 96.36%/96.41% AE accuracy).
-  - Contained Slide 14 (Planned Azure VM Live-Ingestion Path), now formally implemented via `SuricataFlowAdapter`.
+  - Contained Slide 14 (Planned Azure VM Live-Ingestion Path): repository software spine (Suricata eve.json -> 14 features -> loopback mTLS 1.3 -> Frozen RF -> Correlation -> RFC1918 Threat-Intel -> Advisory -> Reversible SOAR) is verified by automated integration tests (`test_slide14_suricata_live_ingestion_path.py`), while live Azure VM / production SIEM field deployment remains unverified and open under `TF-011`.
 
 ## 10. LLM explanations, retrieval, and MITRE annotations
 
@@ -599,6 +599,12 @@ Do not expand to multi-tenancy, distributed clusters, arbitrary autonomous red-t
 | `backend/tests/unit/test_workload_measurement.py` | Unit tests for Section 13.F Alert-Fatigue & Analyst Workload Harness |
 | `backend/tests/unit/test_threat_intel_enrichment.py` | Unit tests for Threat Intel Enrichment |
 | `backend/tests/unit/test_advisory_and_soar_ledger.py` | Unit tests for Advisory Explanation & SOAR Playbook Ledger |
+| `backend/src/threatfusion/evaluation/repo_truth_audit.py` | Deterministic Zero-Trust Repository Truth Audit Gate engine |
+| `scripts/audit_repo_truth.py` | CLI executable for deterministic zero-trust truth audit gate |
+| `backend/tests/unit/test_repo_truth_audit.py` | Unit tests for deterministic zero-trust repository truth audit gate |
+| `scripts/generate_harmonized_defense_deck.py` | Milestone #26 Defense Presentation Deck Harmonizer (AI-FYP-2006) |
+| `backend/tests/unit/test_defense_deck_harmonization.py` | Unit tests for Milestone #26 Defense Presentation Deck Harmonizer |
+| `docs/defense_slide_deck_harmonization.md` | Academic defense brief and slide-by-slide harmonization report |
 
 Do not assume this is the entire repository. Discover producer/model/source paths by repository search. Read untracked Python files directly: `git diff` and its stat omit them. `AM` and `MM` statuses mean staged and unstaged versions differ.
 
@@ -638,8 +644,8 @@ These hashes and summaries come from supplied user terminal output. Current hist
 | `a357fc6` | Phase P0/P1/P2 Quality & Blocker Resolution: Section 7 lifecycle startup interruption repair, Section 6.3 dual-SQLite audit failure verification, storage backup incidents support, canonical Gemini master export v2 (Milestone #19) |
 | `7017bd7` | Phase P5: Jury Requirements Traceability Registry (TF-010 open (repository-side traceability helper implemented; external FAST-NUCES jury rubric remains open)), Missing-Data Aware Multi-Signal Risk & RF/AE Ablation Engine (TF-002/TF-003/TF-004), and Offline Retraining Feedback Ledger (TF-007) (Milestone #21) |
 | `3f32c7f` | Milestone #23: Unified Pass-2 threat intel, advisory debrief, and SOAR ledger packages |
-| `6f59fb0` | Milestone #24: Section 13.F Workload Measurement Harness, Evaluation Pack Rev2 (6a36dcd), Canonical TF-008..TF-011 definitions, Turnkey Two-Track SOC Demo Runner |
-| Staged | Milestone #25: Deterministic Zero-Trust Repository Truth Audit Gate (repo_truth_audit.py, audit_repo_truth.py) |
+| `e9b6f86` | Milestone #25: Deterministic Zero-Trust Repository Truth Audit Gate (repo_truth_audit.py, audit_repo_truth.py) |
+| Unstaged | Milestone #26: Presentation Deck & Academic Defense Harmonization (generate_harmonized_defense_deck.py, defense_slide_deck_harmonization.md) |
 
 ### Lessons from rejected/limited evidence
 
