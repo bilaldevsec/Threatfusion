@@ -110,6 +110,101 @@ class DynamicRiskAssessment:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class MultiSignalRiskResult:
+    """Multi-signal risk evaluation result strictly enforcing Section 8 fusion_disabled."""
+
+    experimental_composite_score: float
+    separate_signal_breakdown: Mapping[str, float | None]
+    production_fusion_enabled: bool = False
+    production_alert_authority: str = "frozen_random_forest_only"
+    evaluation_mode: str = "experimental_offline_non_production_fusion_disabled"
+
+    def __post_init__(self) -> None:
+        if self.production_fusion_enabled:
+            raise ValueError(
+                "Production fusion is strictly disabled (fusion_disabled per Section 8). "
+                "production_fusion_enabled must be False."
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "experimental_composite_score": self.experimental_composite_score,
+            "separate_signal_breakdown": dict(self.separate_signal_breakdown),
+            "production_fusion_enabled": self.production_fusion_enabled,
+            "production_alert_authority": self.production_alert_authority,
+            "evaluation_mode": self.evaluation_mode,
+        }
+
+
+def evaluate_multi_signal_risk(
+    *,
+    rf_prob: float | None = None,
+    ae_error: float | None = None,
+    ti_confidence: float | None = None,
+    asset_crit: float | None = None,
+    vel_burst: float | None = None,
+    hist_fp: float | None = None,
+    campaign_sev: float | None = None,
+    production_fusion_enabled: bool = False,
+    custom_weights: Mapping[str, float] | None = None,
+) -> MultiSignalRiskResult:
+    """Evaluate multi-signal risk strictly enforcing Section 8 fusion_disabled invariant.
+
+    Raises ValueError if production_fusion_enabled is True.
+    Preserves raw inputs in separate_signal_breakdown as None when not provided.
+    """
+    if production_fusion_enabled:
+        raise ValueError(
+            "Production fusion is strictly disabled (fusion_disabled per Section 8). "
+            "production_fusion_enabled must be False."
+        )
+
+    breakdown: dict[str, float | None] = {
+        "rf_prob": rf_prob,
+        "ae_error": ae_error,
+        "ti_confidence": ti_confidence,
+        "asset_crit": asset_crit,
+        "vel_burst": vel_burst,
+        "hist_fp": hist_fp,
+        "campaign_sev": campaign_sev,
+    }
+
+    default_weights = {
+        "rf_prob": 0.35,
+        "ae_error": 0.15,
+        "ti_confidence": 0.15,
+        "asset_crit": 0.10,
+        "vel_burst": 0.10,
+        "hist_fp": 0.05,
+        "campaign_sev": 0.10,
+    }
+    weights = dict(default_weights)
+    if custom_weights:
+        weights.update(custom_weights)
+
+    weighted_sum = 0.0
+    effective_denom = 0.0
+
+    for key, val in breakdown.items():
+        if val is not None:
+            w = weights.get(key, 0.1)
+            weighted_sum += w * float(val)
+            effective_denom += w
+
+    composite_score = (
+        round((weighted_sum / effective_denom) * 100.0, 4) if effective_denom > 0.0 else 0.0
+    )
+
+    return MultiSignalRiskResult(
+        experimental_composite_score=composite_score,
+        separate_signal_breakdown=breakdown,
+        production_fusion_enabled=False,
+        production_alert_authority="frozen_random_forest_only",
+        evaluation_mode="experimental_offline_non_production_fusion_disabled",
+    )
+
+
 def _validate_weights(custom_weights: Mapping[str, float] | None) -> dict[str, float]:
     weights = dict(DEFAULT_SIGNAL_WEIGHTS)
     if custom_weights is not None:

@@ -14,17 +14,20 @@ from threatfusion.datasets.adapters.base import SourceRowValidationError, parse_
 
 ALL_THREATFUSION_PACKAGES = [
     "threatfusion",
+    "threatfusion.advisory",
     "threatfusion.alerts",
     "threatfusion.api",
     "threatfusion.config",
     "threatfusion.datasets",
     "threatfusion.datasets.adapters",
     "threatfusion.db",
+    "threatfusion.enrichment",
     "threatfusion.features",
     "threatfusion.models",
     "threatfusion.operations",
     "threatfusion.preprocessing",
     "threatfusion.schemas",
+    "threatfusion.soar",
     "threatfusion.utils",
 ]
 

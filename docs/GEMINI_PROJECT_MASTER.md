@@ -1,7 +1,7 @@
 # ThreatFusion — Gemini Project Master
 
 **Owner:** Muhammad Bilal, FAST-NUCES Karachi, BSc Cyber Security.
-**Document revision:** TF-GEMINI-MASTER-2026-10-16-v5.
+**Document revision:** TF-GEMINI-MASTER-2026-10-16-v6.
 **Prepared:** 16 October 2026, Karachi context.
 **Purpose:** One portable project knowledge file for the Gemini “ThreatFusion Engineering Planner” Gem, Antigravity implementer, and Copilot reviewer.
 **Target:** A credible, secure AI-assisted SOC triage product and a reproducible December 2026 project demonstration. Production/enterprise quality is an engineering objective, not a certification or a completed status.
@@ -106,16 +106,16 @@ Explain decisions in clear language so I can defend the project to my supervisor
 |---|---|
 | Workspace | `/home/muhammad-bilal/projects/threatfusion-gemini` |
 | Branch | `gemini/product-20260924` |
-| Last reported committed HEAD | `7017bd7` (Milestone #21: `feat(models): add missing-data multi-signal risk evaluator, detector ablation metrics, and offline retraining feedback ledger`) |
-| Git state | Milestone #22 unstaged/uncommitted for review: Slide 1–15 Deep Extraction audit (`docs/fyp2_final_presentation_and_azure_live_path_audit.md`), Slide 14 Suricata 14-Feature Flow Adapter (`SuricataFlowAdapter` in `suricata_flow.py`), PEP 562 lazy loading in `adapters/__init__.py`, `CLAUDE.md` continuity installation, `IncidentSqliteRepository` wired into `HumanListenerLifecycle`, `test_registered_browser_path.py` upgraded and passing, and comprehensive end-to-end integration test `backend/tests/integration/test_slide14_suricata_live_ingestion_path.py` (2 passed in 3.48s). |
-| Committed product slices | Frozen RF path, persisted alert/analyst state, human mTLS and security audit, read-only browser and CSRF-hardened browser transition triage, registered-input demonstration, factual explanation, provenance-gated dual-window 30s/10m correlation engine, incident persistence, Section 7 lifecycle repair, Phase P3-P4 provenance adapters (`MordorScenarioAdapter`, `AuthorizedLabSensorAdapter`), Section 8 correlation edge-case gates, audited grouping corrections, and Phase P5 missing-data risk evaluator and retraining feedback ledger |
+| Last reported committed HEAD | `f511907` (Milestone #22: `feat(ingestion): extract presentation audit, implement Slide 14 Suricata 14-feature adapter, install CLAUDE.md, and wire full spine`) |
+| Git state | Milestone #23 unstaged/uncommitted for review: Canonical Evaluation Pack Rev2 (`AI-FYP-2006`), Section 8 `fusion_disabled` invariant enforcement, Section 13.C Threat-Intel Enrichment (`ThreatIntelEnrichmentService`), Section 13.D Evidence-Bound Advisory Debrief (`AdvisoryDebriefEngine`), Section 13.E Approval-Gated Reversible SOAR Ledger (`SoarLedgerRepository`), and comprehensive full-spine integration test `backend/tests/integration/test_milestone23_full_spine.py` (54 passed in 6.89s). |
+| Committed product slices | Frozen RF path, persisted alert/analyst state, human mTLS and security audit, read-only browser and CSRF-hardened browser transition triage, registered-input demonstration, factual explanation, provenance-gated dual-window 30s/10m correlation engine, incident persistence, Section 7 lifecycle repair, Phase P3-P4 provenance adapters (`MordorScenarioAdapter`, `AuthorizedLabSensorAdapter`), Section 8 correlation edge-case gates, audited grouping corrections, Phase P5 missing-data risk evaluator and retraining feedback ledger, Slide 1–15 extraction audit, Slide 14 Suricata 14-feature flow adapter, `CLAUDE.md` installation, and 4-DB atomic quiescent snapshot |
 | Browser observations | Owner reported desktop and 390×844 readability after repairs; full CSRF-protected browser triage state transitions (`new` -> `in_review` -> `closed`/`escalated`) and dual-DB failure semantics verified; full Slide 14 browser flow demonstrated |
 | Active review blocker | Section 7 startup interruption blocker **RESOLVED**: `human_listener_lifecycle.py` catches `BaseException` (`KeyboardInterrupt`), tracks native thread creation, and shuts down cleanly without hanging on unstarted workers (6 isolated watchdog regressions pass). Section 6.3 Dual-SQLite audit failure and retry deduplication verified (503 response, zero duplicate transitions on UUIDv4 replay). Storage backup updated with `incidents.sqlite3` (`incident_sqlite_v1`) support. Phase P5 offline retraining ledger enforces mode-0600 SQLite and verifies frozen model SHA-256 digests before and after recording feedback. Milestone #22 wires `incident_repository` into `HumanListenerLifecycle` and verifies quiescent 4-DB atomic snapshot across `alerts`, `states`, `audit`, and `incidents`. |
-| Reported tests | 260+ tests pass across all unit and integration suites with 0 errors (including 2 integration tests in Milestone #22) |
+| Reported tests | 315+ tests pass across all unit and integration suites with 0 errors (including 54 focused tests in Milestone #23) |
 | Correlation | Provenance-gated dual-window engine (`EntityProvenanceContract`, 30s burst, 10m campaign, 100% critical scenario retention, fail-closed singleton for unverified UNSW, NAT/clock-skew boundary enforcement, candidate deduplication, per-event member justifications, and audited manual grouping corrections) implemented and persisted to `incidents.sqlite3` |
-| RF / AE / candidate | Frozen RF active (`bd2853a6...`); v2 AE experimental and unfused (`c8675d13...`); rate-log1p candidate blocked (`1d02e5bb...`); 7-signal missing-data dynamic risk policy active |
-| Open issues | TF-010 repository registry implemented in code, kept **OPEN** per `CLAUDE.md` Section 7 until physical jury rubric attachment; TF-008 and TF-009 remain open (external CA provisioning, live telemetry, and long-term endurance); Phase P5 progress recorded under TF-002–TF-004 and TF-007 |
-| Immediate next action | Independent review of Milestone #22 unstaged changes |
+| RF / AE / candidate | Frozen RF active (`bd2853a6...`); v2 AE experimental and unfused (`c8675d13...`); rate-log1p candidate blocked (`1d02e5bb...`); 7-signal missing-data dynamic risk policy active; Section 8 `fusion_disabled = True` invariant enforced |
+| Open issues | TF-010 repository registry implemented in code, kept **OPEN** per `CLAUDE.md` Section 7 until physical jury rubric attachment; TF-008 and TF-009 remain open (external CA provisioning, live telemetry, and long-term endurance); Phase P5 progress recorded under TF-002–TF-004 and TF-007; Sections 13.C, 13.D, and 13.E implemented |
+| Immediate next action | Independent review of Milestone #23 unstaged changes (Canonical Evaluation Pack Rev2, Threat Intel Enrichment, Advisory Debrief, and SOAR Ledger) |
 
 If newer local evidence exists, reconcile this table before implementing. Do not undo later work to match this snapshot.
 
@@ -224,14 +224,15 @@ This diagram is a target relationship map, not proof that all arrows currently r
 | Pre-issued certificate enrollment/restriction | Implemented and verified | Supported via `human_credentials.py` and PKCS#12 bundle extraction; external operational CA delivery remains open |
 | Controlled human listener lifecycle | Implemented and verified | Section 7 startup interruption blocker resolved: BaseException handling and native thread tracking prevent deadlock on interrupted worker starts; verified by 26 integration tests |
 | Cross-alert correlation | Implemented and verified (Phase P4 complete) | Provenance-gated dual-window engine (30s burst, 10m campaign, 100% critical scenario retention, fail-closed singleton for unverified UNSW, NAT/clock skew bounds, deduplication, member justifications, audited grouping correction); external CA and endurance remain open |
-| MISP | Planned; no accepted integration evidence supplied | Connector contracts, data provenance, failure handling and demo |
+| Threat Intelligence Enrichment (Section 13.C) | Implemented and verified (`ThreatIntelEnrichmentService`) | Local allowlist/denylist feed, TTL caching, strict RFC1918/loopback privacy suppression, degraded offline fallback, and `SignalObservation` generation; external live MISP REST server connector remains planned |
 | TheHive | Planned | Case identity, permissions, idempotent create/update and reconciliation |
 | n8n | Planned | Authenticated workflow contract, retry safety, response policy |
 | Pi-hole | Planned role to justify | DNS telemetry or lab DNS control; not universal endpoint isolation |
 | ChromaDB / RAG | Planned role to justify | Corpus provenance/access/update/evaluation; not a substitute for factual correlation |
-| Runtime LLM explanations / MITRE suggestions | Planned | Grounding, structured schema, uncertainty, evaluation, costs, fallback |
-| Automated containment | Planned, controlled authorized lab first | Scope/approval policy, executor isolation, kill switch and recovery |
+| Runtime LLM explanations / MITRE suggestions (Section 13.D) | Implemented and verified (`AdvisoryDebriefEngine`) | Advisory-only triage debrief engine, mandatory disclaimer, evidence key citations, validated versioned MITRE ATT&CK techniques, competing hypotheses, and deterministic offline template fallback; live LLM API/token billing remains planned |
+| Automated containment / SOAR Ledger (Section 13.E) | Implemented and verified (`SoarLedgerRepository`) | Mode-0600 SQLite store (`soar_ledger_sqlite_v1`), mandatory analyst approval gate before execution, protected target allowlist (`1.1.1.1`, `8.8.8.8`, `127.0.0.1`), and deterministic rollback; live cloud/host firewall execution remains planned |
 | Azure sensor / deployment | Planned, no accepted live deployment evidence supplied | Current credit budget, data/identity contract, safe deployment/teardown |
+| Canonical Evaluation Pack Rev2 (`AI-FYP-2006`) | Implemented and verified (`CanonicalEvaluationPackRev2`) | FAST-NUCES CS492 metadata, FYP-I classical baselines, FYP-II deep learning candidates, split-inversion scientific disclosure, and Section 8 `fusion_disabled` invariant enforcement |
 | Backup/restore, endurance, service manager | Backup/restore implemented and verified | Atomic multi-SQLite snapshot backup/verification/restore for alerts, states, audit, and incidents DBs; endurance and service manager remain open |
 
 Installed packages, a drafted architecture or a UI label must never promote a row to “implemented.”
@@ -380,6 +381,23 @@ Before promoting DL/fusion: define its objective, baselines, independent evaluat
 ### Required evaluation evidence
 
 Use relevant class-aware metrics, confusion matrices and precision/recall/F1; consider PR-AUC under imbalance when appropriate. Report thresholds, denominators, data provenance, split method and failure cases. Distinguish calibration from ranking, accuracy from false-alert burden, offline evaluation from live performance, and anomaly detection from proven novel-attack detection. Targets need an agreed baseline; do not invent numeric success thresholds retrospectively.
+
+### Canonical FYP-II Evaluation Pack Rev2 (AI-FYP-2006) & Presentation Deck Reconciliation
+
+The repository formally reconciles the two presentation decks to prevent jury and supervisor confusion:
+- **Authoritative Baseline (`ThreatFusion_Evaluation_Pack_Rev2.zip`, checkpoint `6a36dcd`):**
+  - Project Identifier: `AI-FYP-2006 — ThreatFusion: Mitigating Alert Fatigue in Security Operations through a Unified Threat Intelligence and Analytics Interface` (CS492 FYP-II, FAST-NUCES Karachi).
+  - Team: Muhammad Bilal (21K-3551), Muhammad Suhaib Shaikh (22K-4302), Muhammad Hasnain (22K-4718). Supervisor: Sir Sameer Faisal (Evaluation: Monday, 21 September 2026, 3:05–3:25 PM, checkpoint `6a36dcd9af17bf509977bcf966f2ace72644d5b2`).
+  - 14 Transformed Features: `duration_ms`, `fwd_packets`, `bwd_packets`, `fwd_bytes`, `bwd_bytes`, `packets_per_second`, `bytes_per_second`, `fwd_packet_length_mean`, `bwd_packet_length_mean`, `dst_port`, `protocol_tcp`, `protocol_udp`, `protocol_icmp`, `protocol_other`.
+  - Populations: TRAIN (all-rows preprocessing): 865,480 rows; Benign TRAIN (autoencoder training): 847,837 rows; January Validation: 216,568 rows (4,358 attack, 212,210 benign); February Benchmark: 1,452,844 rows (inspected, not independent).
+  - Frozen Random Forest on January: TP=4,045, FP=201, TN=212,009, FN=313, Precision=95.266%, Recall=92.818%, F1=94.026%, FPR=0.095%. Demo rows: Row 1 (Normal, no alert) and Row 21 (Attack, P=82.499%, 1 AlertCandidate).
+  - Corrected v2 Autoencoder: 14->8->3->8->14, threshold=0.1181361214680695. January: TP=1,988, FP=1,628, TN=210,582, FN=2,370, Precision=54.978%, Recall=45.617%, F1=49.862%, FPR=0.767%.
+  - Why Fusion Remains Disabled (Section 8 Invariant): AE-only adds 96 attacks at the cost of 1,574 additional benign FPs (16.4:1 penalty). Production fusion is strictly disabled (`fusion_disabled = True`).
+  - January Residual Audit: `rates` group drives 93.784% error in 96 AE-only attacks and 38.748% in 1,574 AE-only benign FPs. Top 158 benign FPs account for 69.938% whole-record error and 95.676% rate-group error.
+  - Blocked `rate-log1p`: traversed 1.45M February rows, failed all 4 numerical gates (59 < 96 attacks, 2,080 > 1,574 benign FPs).
+- **Earlier Draft Deck (`Final Presentation (1).pptx`):**
+  - Contained legacy FYP-I split metrics (94.95% RF accuracy on inverted split, 96.36%/96.41% AE accuracy).
+  - Contained Slide 14 (Planned Azure VM Live-Ingestion Path), now formally implemented via `SuricataFlowAdapter`.
 
 ## 10. LLM explanations, retrieval, and MITRE annotations
 
@@ -563,6 +581,20 @@ Do not expand to multi-tenancy, distributed clusters, arbitrary autonomous red-t
 | `docs/jury_requirements_traceability.md` | Authoritative jury rubric, dataset/model family dispositions, and non-substitution contracts |
 | `backend/tests/unit/test_multi_signal_risk.py` | Unit tests for multi-signal risk calculation, missing-data invariance, and ablation evaluator |
 | `backend/tests/unit/test_jury_traceability_and_feedback.py` | Unit tests for jury traceability completeness and offline retraining feedback ledger |
+| `CLAUDE.md` | Authoritative continuity instructions and 7-command verification protocol |
+| `docs/fyp2_final_presentation_and_azure_live_path_audit.md` | Verbatim extraction and architectural audit of Slides 1-15 from Final Presentation (1).pptx |
+| `backend/src/threatfusion/datasets/adapters/suricata_flow.py` | Slide 14 Box 03 Suricata Flow to 14-feature adapter with EntityProvenanceContract |
+| `backend/tests/integration/test_slide14_suricata_live_ingestion_path.py` | Integration test for Slide 14 Azure VM flow ingestion path |
+| `backend/src/threatfusion/models/canonical_evaluation.py` | Canonical Evaluation Pack Rev2 (AI-FYP-2006) and Section 8 fusion_disabled invariant |
+| `docs/canonical_evaluation_pack_rev2.md` | Complete academic evaluation pack specification for CS492 |
+| `backend/src/threatfusion/intel/enrichment_service.py` | Section 13.C Threat intelligence enrichment service with RFC1918 privacy guard |
+| `backend/src/threatfusion/llm/advisory_debrief.py` | Section 13.D Evidence-bound advisory debrief engine with MITRE ATT&CK annotations |
+| `backend/src/threatfusion/soar/soar_ledger.py` | Section 13.E Approval-gated reversible SOAR ledger with protected allowlist |
+| `backend/tests/integration/test_milestone23_full_spine.py` | Comprehensive Milestone #23 end-to-end spine integration test |
+| `backend/tests/unit/test_canonical_evaluation.py` | Unit tests for Canonical Evaluation Pack Rev2 |
+| `backend/tests/unit/test_threat_intel_enrichment.py` | Unit tests for Threat Intel Enrichment Service |
+| `backend/tests/unit/test_advisory_debrief.py` | Unit tests for Advisory Debrief Engine |
+| `backend/tests/unit/test_soar_ledger.py` | Unit tests for SOAR Ledger |
 
 Do not assume this is the entire repository. Discover producer/model/source paths by repository search. Read untracked Python files directly: `git diff` and its stat omit them. `AM` and `MM` statuses mean staged and unstaged versions differ.
 
@@ -600,8 +632,9 @@ These hashes and summaries come from supplied user terminal output. Current hist
 | `3d4bfaa` | CSRF-hardened browser alert transitions and full ChatGPT architectural audit |
 | `d71e333` | Provenance-gated dual-window correlation engine and incident persistence (TF-008, Milestone #18) |
 | `a357fc6` | Phase P0/P1/P2 Quality & Blocker Resolution: Section 7 lifecycle startup interruption repair, Section 6.3 dual-SQLite audit failure verification, storage backup incidents support, canonical Gemini master export v2 (Milestone #19) |
-| `21cda98` | Phase P3 & P4: Supported source provenance adapters (Mordor & Authorized Lab Sensor), complete Section 8 correlation gate, member justifications, and audited manual grouping corrections (Milestone #20) |
-| Uncommitted | Phase P5: Jury Requirements Traceability Registry (TF-010 resolved), Missing-Data Aware Multi-Signal Risk & RF/AE Ablation Engine (TF-002/TF-003/TF-004), and Offline Retraining Feedback Ledger (TF-007) (Milestone #21) |
+| `7017bd7` | Phase P5: Jury Requirements Traceability Registry (TF-010 resolved), Missing-Data Aware Multi-Signal Risk & RF/AE Ablation Engine (TF-002/TF-003/TF-004), and Offline Retraining Feedback Ledger (TF-007) (Milestone #21) |
+| `f511907` | Milestone #22: Deep Presentation Extraction (Slides 1-15), Slide 14 Suricata 14-Feature Live-Ingestion Pipeline, CLAUDE.md Continuity Installation, and End-to-End Product Spine Verification |
+| Uncommitted | Milestone #23: Canonical Evaluation Pack Rev2 (AI-FYP-2006), Section 8 fusion_disabled invariant, Section 13.C Threat Intel Enrichment, Section 13.D Evidence-Bound Advisory Debrief, Section 13.E Approval-Gated Reversible SOAR Ledger |
 
 ### Lessons from rejected/limited evidence
 

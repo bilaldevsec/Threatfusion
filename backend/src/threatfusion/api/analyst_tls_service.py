@@ -14,6 +14,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from threatfusion.api.analyst_view_model import AnalystAlertViewModel, AnalystViewError
@@ -326,6 +327,10 @@ class AnalystTlsListener:
         authorization: AnalystAuthorizationRegistry,
         view: AnalystAlertViewModel,
         audit: AnalystSecurityAuditRepository,
+        *,
+        threat_intel_enricher: Any = None,
+        advisory_engine: Any = None,
+        soar_repository: Any = None,
     ) -> None:
         if (
             type(configuration) is not AnalystTlsConfiguration
@@ -341,6 +346,9 @@ class AnalystTlsListener:
         self._credentials = credentials
         self._authorization = authorization
         self._view = view
+        self._threat_intel_enricher = threat_intel_enricher
+        self._advisory_engine = advisory_engine
+        self._soar_repository = soar_repository
         self._listener: socket.socket | None = None
         self._active: socket.socket | None = None
         self._state_lock = threading.Lock()
@@ -386,6 +394,71 @@ class AnalystTlsListener:
                 listener.close()
             raise AnalystTlsError("listener_unavailable") from None
 
+    def _augment_alert_detail(self, result: dict[str, object], candidate_id: str) -> None:
+        if self._threat_intel_enricher is not None and "threat_intel_enrichment" not in result:
+            try:
+                if hasattr(self._threat_intel_enricher, "get_enrichment"):
+                    res = self._threat_intel_enricher.get_enrichment(candidate_id)
+                elif hasattr(self._threat_intel_enricher, "get_enrichment_for_candidate"):
+                    res = self._threat_intel_enricher.get_enrichment_for_candidate(candidate_id)
+                elif isinstance(self._threat_intel_enricher, dict):
+                    res = self._threat_intel_enricher.get(candidate_id)
+                elif callable(self._threat_intel_enricher):
+                    res = self._threat_intel_enricher(candidate_id)
+                else:
+                    res = getattr(self._threat_intel_enricher, "last_result", None)
+                if res is not None:
+                    result["threat_intel_enrichment"] = (
+                        res.to_dict() if hasattr(res, "to_dict") else res
+                    )
+            except Exception:
+                pass
+
+        if self._advisory_engine is not None and "advisory_explanation" not in result:
+            try:
+                if hasattr(self._advisory_engine, "get_explanation"):
+                    res = self._advisory_engine.get_explanation(candidate_id)
+                elif hasattr(self._advisory_engine, "get_explanation_for_candidate"):
+                    res = self._advisory_engine.get_explanation_for_candidate(candidate_id)
+                elif isinstance(self._advisory_engine, dict):
+                    res = self._advisory_engine.get(candidate_id)
+                elif callable(self._advisory_engine):
+                    res = self._advisory_engine(candidate_id)
+                else:
+                    res = getattr(self._advisory_engine, "last_result", None)
+                if res is not None:
+                    result["advisory_explanation"] = (
+                        res.to_dict() if hasattr(res, "to_dict") else res
+                    )
+            except Exception:
+                pass
+
+        if self._soar_repository is not None and "soar_recommendations" not in result:
+            try:
+                if hasattr(self._soar_repository, "list_records_for_candidate"):
+                    recs = self._soar_repository.list_records_for_candidate(candidate_id)
+                elif hasattr(self._soar_repository, "get_records_for_candidate"):
+                    recs = self._soar_repository.get_records_for_candidate(candidate_id)
+                elif hasattr(self._soar_repository, "repository") and hasattr(
+                    self._soar_repository.repository, "list_records_for_candidate"
+                ):
+                    recs = self._soar_repository.repository.list_records_for_candidate(candidate_id)
+                elif isinstance(self._soar_repository, dict):
+                    recs = self._soar_repository.get(candidate_id, [])
+                elif isinstance(self._soar_repository, (list, tuple)):
+                    recs = [
+                        r
+                        for r in self._soar_repository
+                        if getattr(r, "candidate_id", None) == candidate_id
+                    ]
+                else:
+                    recs = []
+                result["soar_recommendations"] = [
+                    r.to_dict() if hasattr(r, "to_dict") else r for r in recs
+                ]
+            except Exception:
+                pass
+
     def _dispatch(self, capability, method: str, target: str, body: bytes):
         if method == "GET" and (
             target == "/v1/analyst/alerts" or target.startswith("/v1/analyst/alerts?")
@@ -394,7 +467,10 @@ class AnalystTlsListener:
             return 200, self._view.list_alerts(capability, limit=limit, offset=offset)
         if method == "GET" and (match := _ALERT_PATH.fullmatch(target)):
             result = self._view.get_alert(capability, match.group(1))
-            return (404, {"error": "not_found"}) if result is None else (200, result)
+            if result is None:
+                return 404, {"error": "not_found"}
+            self._augment_alert_detail(result, match.group(1))
+            return 200, result
         if method == "POST" and (match := _TRANSITION_PATH.fullmatch(target)):
             command = _command(body)
             return 200, self._view.transition(

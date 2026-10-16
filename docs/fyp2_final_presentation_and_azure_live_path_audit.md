@@ -226,3 +226,48 @@ flowchart LR
 - **Alert Persistence:** On `Attack`, writes alert candidate to `alerts.sqlite3` (`alert_candidates_v1`).
 - **Incident Correlation:** Gated by `EntityProvenanceContract`, clusters into dual-window burst/campaign incidents in `incidents.sqlite3`.
 - **Analyst Interface:** Available for secure mTLS review via analyst browser service.
+
+---
+
+## 5. Presentation Deck Distinction & Authoritative September 21 Baseline (AI-FYP-2006)
+
+To prevent supervisor and academic jury confusion, the repository explicitly distinguishes between the two presentation decks:
+
+### 5.1 Authoritative Baseline: `ThreatFusion_Evaluation_Pack_Rev2.zip` (Checkpoint `6a36dcd`)
+- **Official Project Identity:** `AI-FYP-2006 — ThreatFusion: Mitigating Alert Fatigue in Security Operations through a Unified Threat Intelligence and Analytics Interface` (CS492 FYP-II, FAST-NUCES Karachi).
+- **Team & Supervisor:**
+  - Muhammad Bilal (21K-3551)
+  - Muhammad Suhaib Shaikh (22K-4302)
+  - Muhammad Hasnain (22K-4718)
+  - **Supervisor:** Sir Sameer Faisal (Progress Evaluation slot: Monday, 21 September 2026, 3:05–3:25 PM, repository checkpoint `6a36dcd9af17bf509977bcf966f2ace72644d5b2`).
+- **Deck & Pack Artifacts:** `ThreatFusion_FYP_II_Progress_Presentation_Rev2_Ready.pptx`, `ThreatFusion_Progress_Report.docx`, `ThreatFusion_Presenter_Guide_Rev2.docx`, and `README_Evaluation_Pack_Rev2.txt`.
+- **14 Transformed Features:** `duration_ms`, `fwd_packets`, `bwd_packets`, `fwd_bytes`, `bwd_bytes`, `packets_per_second`, `bytes_per_second`, `fwd_packet_length_mean`, `bwd_packet_length_mean`, `dst_port`, `protocol_tcp`, `protocol_udp`, `protocol_icmp`, `protocol_other`.
+- **Dataset Populations:**
+  - **TRAIN (all rows for preprocessing statistics):** 865,480 rows (847,837 benign + 17,643 attack).
+  - **Benign TRAIN (autoencoder weight optimization):** 847,837 benign rows ("benign-only weight training with all-TRAIN preprocessing statistics").
+  - **January UNSW Validation Population:** 216,568 total rows (4,358 attack, 212,210 benign).
+  - **February UNSW Benchmark:** 1,452,844 rows (previously inspected; cannot be claimed as untouched independent evaluation).
+- **Frozen Random Forest Reference (`full-network-random-forest-6d69c72-v1`) on January (216,568 rows):**
+  - $\text{TP} = 4,045$, $\text{FP} = 201$, $\text{TN} = 212,009$, $\text{FN} = 313$, $\text{Precision} = 95.266\%$, $\text{Recall} = 92.818\%$, $\text{F1} = 94.026\%$, $\text{FPR} = 0.095\%$.
+  - **Bounded mTLS Demo Rows:**
+    - Row 1: Normal, $P(\text{Attack}) \approx 0.001\% \to$ no alert.
+    - Row 21: Attack, $P(\text{Attack}) = 0.8249883171915375 \approx 82.499\% \ge 0.5 \to 1$ `AlertCandidate`.
+    - Replay Proof: 2 inference calls, 1 insert call, 1 durable alert before and after replay.
+    - Invalid Producer ID: HTTP 400 `request_rejected` with 0 model/DB calls.
+- **Corrected v2 Single-Record Autoencoder (`full-benign-autoencoder-2a51c94-v2`):**
+  - Architecture: $14 \to 8 \to 3 \to 8 \to 14$ (ReLU hidden layers, linear output, 30 epochs, batch size 1,024, seed 42, single-record $(1, 14)$ forward pass).
+  - Exact MSE formula: $\text{score} = \frac{1}{14} \sum_{j=1}^{14} (\text{float64}(\text{float32}(x_j)) - \text{float64}(r_j))^2$.
+  - Calibrated Threshold (99th percentile of benign January scores): `0.1181361214680695` ($\text{score} > \text{threshold} \Rightarrow \text{anomaly}$; equality is within threshold).
+  - January Results: $\text{TP} = 1,988$, $\text{FP} = 1,628$, $\text{TN} = 210,582$, $\text{FN} = 2,370$, $\text{Precision} = 54.978\%$, $\text{Recall} = 45.617\%$, $\text{F1} = 49.862\%$, $\text{FPR} = 0.767\%$.
+  - February Results (different population, not directly comparable to Jan RF): $\text{TP} = 248,531$, $\text{FP} = 25,934$, $\text{TN} = 1,127,842$, $\text{FN} = 50,537$, $\text{Precision} = 90.551\%$, $\text{Recall} = 83.102\%$, $\text{F1} = 86.667\%$, $\text{FPR} = 2.248\%$.
+- **Why Fusion Remains Disabled (Section 8 Invariant):**
+  - Relative to RF on January, AE-only detections add 96 attacks ($A = 96$) at the severe cost of 1,574 additional benign false positives ($B = 1,574$, $\frac{1574}{96} \approx 16.4$ benign false positives per additional attack detected). Therefore automatic RF+AE fusion is strictly disabled in production (`fusion_disabled = True`).
+- **January Residual Audit (`january-v2-record-concentration-b5e6e5d`) & Blocked rate-log1p Candidate (`rate-log1p-autoencoder-b5e6e5d-v1`, `BLOCKED_preserve_baseline`):**
+  - The `rates` group (`packets_per_second`, `bytes_per_second`) drives 93.784% of pooled reconstruction error in the 96 AE-only attacks and 38.748% in the 1,574 AE-only benign FPs. The top 158 benign-FP records by whole-record error account for 69.938% of total error, and the top 158 by rate-group error account for 95.676% of rate-group error.
+  - The `rate-log1p` candidate was blocked for both:
+    1. **Protocol Violation:** Preparation traversed all 1,452,844 excluded February rows before discarding them.
+    2. **Failing All 4 Numerical Gates:** AE-only attacks $= 59 < 96$; AE-only benign FPs $= 2,080 > 1,574$; $40A \ge 3B$ failed ($2,360 < 6,240$); Total AE FPs $= 2,122 > 1,628$; $\text{TP} = 945$, $\text{Recall} = 21.684\%$, $\text{FPR} = 1.000\%$.
+
+### 5.2 Earlier Draft Deck: `Final Presentation (1).pptx`
+- This earlier file represents a preliminary draft deck containing legacy FYP-I split metrics ($94.95\%$ RF accuracy on the inverted 82k/175k split, $96.36\% / 96.41\%$ AE accuracy).
+- However, its **Slide 14** contained the conceptual architecture for the **Planned Azure VM Live-Ingestion Path**, which has now been formally verified and implemented via `backend/src/threatfusion/datasets/adapters/suricata_flow.py` (`SuricataFlowAdapter`).

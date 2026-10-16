@@ -13,6 +13,7 @@ import time
 import urllib.parse
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from threatfusion.api.analyst_tls_service import (
     AnalystTlsConfiguration,
@@ -90,6 +91,10 @@ class AnalystBrowserTlsListener:
         authorization: AnalystAuthorizationRegistry,
         view: AnalystAlertViewModel,
         audit: AnalystSecurityAuditRepository,
+        *,
+        threat_intel_enricher: Any = None,
+        advisory_engine: Any = None,
+        soar_repository: Any = None,
     ) -> None:
         if (
             type(configuration) is not AnalystTlsConfiguration
@@ -105,6 +110,9 @@ class AnalystBrowserTlsListener:
         self._credentials = credentials
         self._authorization = authorization
         self._view = view
+        self._threat_intel_enricher = threat_intel_enricher
+        self._advisory_engine = advisory_engine
+        self._soar_repository = soar_repository
         self._listener: socket.socket | None = None
         self._active: socket.socket | None = None
         self._state_lock = threading.Lock()
@@ -320,6 +328,71 @@ class AnalystBrowserTlsListener:
 
         return method, target, headers, bytes(body)
 
+    def _augment_alert_detail(self, result: dict[str, object], candidate_id: str) -> None:
+        if self._threat_intel_enricher is not None and "threat_intel_enrichment" not in result:
+            try:
+                if hasattr(self._threat_intel_enricher, "get_enrichment"):
+                    res = self._threat_intel_enricher.get_enrichment(candidate_id)
+                elif hasattr(self._threat_intel_enricher, "get_enrichment_for_candidate"):
+                    res = self._threat_intel_enricher.get_enrichment_for_candidate(candidate_id)
+                elif isinstance(self._threat_intel_enricher, dict):
+                    res = self._threat_intel_enricher.get(candidate_id)
+                elif callable(self._threat_intel_enricher):
+                    res = self._threat_intel_enricher(candidate_id)
+                else:
+                    res = getattr(self._threat_intel_enricher, "last_result", None)
+                if res is not None:
+                    result["threat_intel_enrichment"] = (
+                        res.to_dict() if hasattr(res, "to_dict") else res
+                    )
+            except Exception:
+                pass
+
+        if self._advisory_engine is not None and "advisory_explanation" not in result:
+            try:
+                if hasattr(self._advisory_engine, "get_explanation"):
+                    res = self._advisory_engine.get_explanation(candidate_id)
+                elif hasattr(self._advisory_engine, "get_explanation_for_candidate"):
+                    res = self._advisory_engine.get_explanation_for_candidate(candidate_id)
+                elif isinstance(self._advisory_engine, dict):
+                    res = self._advisory_engine.get(candidate_id)
+                elif callable(self._advisory_engine):
+                    res = self._advisory_engine(candidate_id)
+                else:
+                    res = getattr(self._advisory_engine, "last_result", None)
+                if res is not None:
+                    result["advisory_explanation"] = (
+                        res.to_dict() if hasattr(res, "to_dict") else res
+                    )
+            except Exception:
+                pass
+
+        if self._soar_repository is not None and "soar_recommendations" not in result:
+            try:
+                if hasattr(self._soar_repository, "list_records_for_candidate"):
+                    recs = self._soar_repository.list_records_for_candidate(candidate_id)
+                elif hasattr(self._soar_repository, "get_records_for_candidate"):
+                    recs = self._soar_repository.get_records_for_candidate(candidate_id)
+                elif hasattr(self._soar_repository, "repository") and hasattr(
+                    self._soar_repository.repository, "list_records_for_candidate"
+                ):
+                    recs = self._soar_repository.repository.list_records_for_candidate(candidate_id)
+                elif isinstance(self._soar_repository, dict):
+                    recs = self._soar_repository.get(candidate_id, [])
+                elif isinstance(self._soar_repository, (list, tuple)):
+                    recs = [
+                        r
+                        for r in self._soar_repository
+                        if getattr(r, "candidate_id", None) == candidate_id
+                    ]
+                else:
+                    recs = []
+                result["soar_recommendations"] = [
+                    r.to_dict() if hasattr(r, "to_dict") else r for r in recs
+                ]
+            except Exception:
+                pass
+
     def _dispatch(self, capability, target: str) -> tuple[int, bytes]:
         path_only = target.split("?", 1)[0]
         if path_only in ("/", "/analyst/alerts", "/v1/analyst/alerts"):
@@ -338,8 +411,10 @@ class AnalystBrowserTlsListener:
             transition_request_id = None
             if not queue.is_empty:
                 try:
-                    detail_res = self._view.get_alert(capability, queue.items[0].alert_candidate_id)
+                    first_id = queue.items[0].alert_candidate_id
+                    detail_res = self._view.get_alert(capability, first_id)
                     if detail_res is not None:
+                        self._augment_alert_detail(detail_res, first_id)
                         selected = _parse_detail(detail_res)
                         if capability.role == "analyst":
                             transition_request_id = str(uuid.uuid4())
@@ -383,6 +458,7 @@ class AnalystBrowserTlsListener:
 
             selected = None
             if detail_res is not None:
+                self._augment_alert_detail(detail_res, candidate_id)
                 selected = _parse_detail(detail_res)
             else:
                 return 404, _error_page(404, "Not Found")
@@ -831,6 +907,8 @@ class AnalystBrowserTlsListener:
                         queue = DashboardAlertQueue(
                             items=tuple(items), total_loaded=len(items), limit=50, offset=0
                         )
+                        if detail_res is not None:
+                            self._augment_alert_detail(detail_res, candidate_id)
                         selected = _parse_detail(detail_res) if detail_res is not None else None
 
                         new_transition_id = str(uuid.uuid4())

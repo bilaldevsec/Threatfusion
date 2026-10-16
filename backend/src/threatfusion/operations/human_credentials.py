@@ -767,7 +767,16 @@ def load_registry(directory: Path, authorization) -> HumanCredentialRegistry:
 
 
 def construct_listener(
-    directory: Path, configuration, authorization, view, audit, *, browser=False
+    directory: Path,
+    configuration,
+    authorization,
+    view,
+    audit,
+    *,
+    browser=False,
+    threat_intel_enricher=None,
+    advisory_engine=None,
+    soar_repository=None,
 ):
     """Construction integration point, with no demo fallback or automatic open."""
     from threatfusion.api.analyst_browser_tls_service import AnalystBrowserTlsListener
@@ -775,7 +784,16 @@ def construct_listener(
 
     credentials = load_registry(directory, authorization)
     listener_type = AnalystBrowserTlsListener if browser else AnalystTlsListener
-    return listener_type(configuration, credentials, authorization, view, audit)
+    return listener_type(
+        configuration,
+        credentials,
+        authorization,
+        view,
+        audit,
+        threat_intel_enricher=threat_intel_enricher,
+        advisory_engine=advisory_engine,
+        soar_repository=soar_repository,
+    )
 
 
 def main(argv=None) -> int:

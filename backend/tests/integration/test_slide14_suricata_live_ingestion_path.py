@@ -14,6 +14,10 @@ import pytest
 
 from backend.tests.integration import test_analyst_browser_tls_service as browser_tls
 from backend.tests.integration import test_operator_human_credentials as operator
+from threatfusion.advisory.explanation_engine import (
+    AdvisoryEvidenceBundle,
+    AdvisoryExplanationEngine,
+)
 from threatfusion.alerts.correlation_engine import (
     CorrelatableAlert,
     IncidentSqliteRepository,
@@ -22,6 +26,7 @@ from threatfusion.alerts.correlation_engine import (
 from threatfusion.api.analyst_browser_tls_service import AnalystBrowserTlsListener
 from threatfusion.api.analyst_tls_service import AnalystTlsConfiguration
 from threatfusion.api.analyst_view_model import AnalystAlertViewModel
+from threatfusion.enrichment.threat_intel import SourcedThreatIntelEnricher
 from threatfusion.datasets.adapters.suricata_flow import (
     DEFAULT_SURICATA_SENSOR_NAMESPACE,
     SuricataFlowAdapter,
@@ -56,6 +61,10 @@ from threatfusion.schemas.alert_candidate import (
 from threatfusion.schemas.analyst_state import (
     AnalystAuthorizationRegistry,
     AnalystRegistryEntry,
+)
+from threatfusion.soar.playbook_ledger import (
+    ApprovalGatedSoarEngine,
+    SoarPlaybookSqliteRepository,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -455,3 +464,243 @@ def test_slide14_end_to_end_spine_suricata_to_quiescent_snapshot(tmp_path):
     lifecycle.shutdown()
     assert lifecycle.snapshot()["state"] == "stopped"
     assert lifecycle.snapshot()["live_workers"] == 0
+
+
+def test_slide14_full_post_ingestion_soc_workflow(tmp_path: Path) -> None:
+    """Post-ingestion SOC workflow test for Slide 14 Suricata alert.
+
+    Verifies:
+    1. Suricata 10.0.0.4 -> 10.0.0.5 live flow ingestion -> 14 features -> AlertCandidate.
+    2. Incident correlation in verified singleton mode.
+    3. Threat-Intel Enrichment: RFC 1918 private IP guard triggers for 10.0.0.4/10.0.0.5,
+       annotating internal lab roles without querying external feeds.
+    4. Evidence-Bound Advisory Explanation Engine: generates a grounded debrief
+       with groundedness_verified=True and zero hallucinated IPs.
+    5. Approval-Gated Reversible SOAR Playbook Ledger:
+       - recommends verify_and_contain_lab_source_ip for 10.0.0.4 (pending_approval)
+       - analyst approves recommendation
+       - executes simulated containment (executed_simulated)
+       - cleanly rolls back containment (rolled_back)
+    6. Browser Detail Page: GET /v1/analyst/alerts/{candidate_id} cleanly renders
+       Threat-Intel & Provenance, Advisory Debrief, and SOAR Playbooks sections in HTML.
+    """
+    eve_flow = _sample_suricata_eve_flow()
+    adapter = SuricataFlowAdapter()
+    adapted_result = adapter.adapt_eve_flow_record(eve_flow)
+
+    # Inference with frozen Random Forest
+    inference_boundary = UnswNetworkInferenceBoundary(project_root=PROJECT_ROOT)
+    inference_request = _NetworkInferenceRequest.from_mapping(
+        adapted_result.raw_features,
+        provenance=_NetworkSourceProvenance.approved_unsw(),
+    )
+    inference_result = inference_boundary._predictor.infer(
+        inference_request, model=NetworkModelChoice.RANDOM_FOREST
+    )
+    assert inference_result.status == "completed"
+
+    observed_time = datetime(2026, 10, 15, 12, 0, 0, tzinfo=UTC)
+    source_event_id = derive_source_event_id(
+        source_representation=UNSW_NB15_ARGUS_RAW_REPRESENTATION_V1,
+        manifest_sha256=hashlib.sha256(b"slide14_azure_victim_vm_manifest_soc").hexdigest(),
+        source_member_sha256=hashlib.sha256(
+            adapted_result.source_event_id.encode("utf-8")
+        ).hexdigest(),
+        row_number=1,
+    )
+    candidate_id = derive_alert_candidate_id(
+        source_event_id=source_event_id,
+        detector_identity=DETECTOR_IDENTITY,
+        detector_version=DETECTOR_VERSION,
+        model_identity="random_forest",
+        model_version="network_random_forest_baseline_v1",
+        model_artifact_sha256=APPROVED_MODEL_HASHES["random_forest"]["model"],
+        decision_policy_version=DECISION_POLICY_VERSION,
+    )
+
+    alert_candidate = AlertCandidate(
+        schema_version=ALERT_CANDIDATE_SCHEMA_VERSION,
+        alert_candidate_id=candidate_id,
+        source_event_id=source_event_id,
+        correlation_id=inference_result.correlation_id,
+        detector_identity=DETECTOR_IDENTITY,
+        detector_version=DETECTOR_VERSION,
+        model_identity="random_forest",
+        model_version="network_random_forest_baseline_v1",
+        model_artifact_sha256=APPROVED_MODEL_HASHES["random_forest"]["model"],
+        feature_contract_identity=NETWORK_BEHAVIOR_V1_CONTRACT_VERSION,
+        source_representation_identity=UNSW_NB15_ARGUS_RAW_REPRESENTATION_V1,
+        observed_at=observed_time,
+        created_at=datetime.now(UTC),
+        uncalibrated_model_score=inference_result.attack_probability,
+        decision_threshold=0.5,
+        decision_policy_version=DECISION_POLICY_VERSION,
+        decision="Attack",
+        inference_status="completed",
+        reason="inference_succeeded",
+    )
+
+    alerts_repo = AlertCandidateRepository(tmp_path / "alerts_soc.sqlite3")
+    alerts_repo.insert(alert_candidate)
+
+    # Correlate into Incident
+    incidents_repo = IncidentSqliteRepository(tmp_path / "incidents_soc.sqlite3")
+    correlatable = CorrelatableAlert(
+        candidate=alert_candidate, provenance=adapted_result.provenance
+    )
+    correlation_output = correlate_alert_candidates([correlatable])
+    incidents_repo.insert_many(correlation_output.incidents)
+    incident = correlation_output.incidents[0]
+
+    # 1. Threat-Intel Enrichment (Section 13.C)
+    ti_enricher = SourcedThreatIntelEnricher()
+    ti_result = ti_enricher.enrich_entity_contract(adapted_result.provenance)
+    assert ti_result.status == "internal_lab_entity_annotated"
+    assert ti_result.provenance_verified is True
+    assert ti_result.private_ip_guard_triggered is True
+    assert ti_result.external_lookup_performed is False
+    assert ti_result.internal_lab_annotations.get("10.0.0.4") == "azure_lab_attacker_vm_slide14"
+    assert (
+        ti_result.internal_lab_annotations.get("10.0.0.5") == "azure_lab_victim_suricata_vm_slide14"
+    )
+
+    # 2. Evidence-Bound Advisory Explanation (Section 13.D)
+    bundle = AdvisoryEvidenceBundle(
+        candidate_id=candidate_id,
+        record_id=source_event_id,
+        rf_model_version=alert_candidate.model_version,
+        rf_attack_probability=alert_candidate.uncalibrated_model_score,
+        rf_threshold=alert_candidate.decision_threshold,
+        top_feature_signals={
+            "duration_ms": float(adapted_result.features_14["duration_ms"]),
+            "dst_port": float(adapted_result.features_14["dst_port"]),
+        },
+        incident_id=incident.incident_id,
+        correlation_status=incident.provenance_status,
+        enrichment_result=ti_result,
+    )
+    adv_engine = AdvisoryExplanationEngine()
+    explanation = adv_engine.generate_explanation(bundle)
+    assert explanation.groundedness_verified is True
+    assert explanation.advisory_only_non_authoritative is True
+    assert explanation.generation_mode == "deterministic_evidence_template"
+    assert "10.0.0.4" in explanation.correlation_and_enrichment_context
+
+    # 3. Approval-Gated Reversible SOAR Ledger (Section 13.E)
+    soar_db_path = tmp_path / "soar_soc.sqlite3"
+    soar_repo = SoarPlaybookSqliteRepository(soar_db_path)
+    soar_engine = ApprovalGatedSoarEngine(soar_repo)
+
+    recs = soar_engine.recommend_actions_for_alert(candidate_id, adapted_result.provenance)
+    assert len(recs) >= 1
+    target_rec = [r for r in recs if r.action_type == "verify_and_contain_lab_source_ip"][0]
+    assert target_rec.state == "pending_approval"
+    assert target_rec.target_entity == "10.0.0.4"
+
+    # Analyst approves
+    approved = soar_engine.decide_recommendation(
+        target_rec.playbook_id,
+        actor_id="analyst-client",
+        decision="approve",
+        reason="Confirmed probe from lab attacker VM",
+        expected_version=1,
+    )
+    assert approved.state == "approved"
+
+    # Simulated containment execution
+    executed = soar_engine.execute_approved_action(
+        approved.playbook_id,
+        actor_id="analyst-client",
+        expected_version=approved.version,
+    )
+    assert executed.state == "executed_simulated"
+
+    # Rollback containment
+    rolled_back = soar_engine.rollback_executed_action(
+        executed.playbook_id,
+        actor_id="analyst-client",
+        rollback_reason="Lab exercise complete",
+        expected_version=executed.version,
+    )
+    assert rolled_back.state == "rolled_back"
+
+    # 4. Browser Detail Page Integration
+    cert_dir = tmp_path / "certs_soc"
+    cert_dir.mkdir(mode=0o700)
+    human_ca = browser_tls._ca(cert_dir, "human_soc")
+    server_cert = browser_tls._certificate(
+        cert_dir, "analyst-server", human_ca, purpose="serverAuth", san="DNS:localhost"
+    )
+    analyst_cert = browser_tls._certificate(
+        cert_dir,
+        "analyst_a",
+        human_ca,
+        purpose="clientAuth",
+        san="URI:urn:threatfusion:human:analyst_a",
+    )
+    viewer_cert = browser_tls._certificate(
+        cert_dir,
+        "viewer",
+        human_ca,
+        purpose="clientAuth",
+        san="URI:urn:threatfusion:human:queue.viewer",
+    )
+    cert_map = {
+        "human_ca": human_ca[0],
+        "server": server_cert,
+        "analyst_a": analyst_cert,
+        "viewer": viewer_cert,
+    }
+
+    authorization = AnalystAuthorizationRegistry(
+        (
+            AnalystRegistryEntry("queue.viewer", "viewer"),
+            AnalystRegistryEntry("analyst_a", "analyst"),
+        )
+    )
+
+    states_repo = AnalystStateRepository(
+        tmp_path / "states_soc.sqlite3", alerts_repo, authorization
+    )
+    view_model = AnalystAlertViewModel(states_repo, incident_repository=incidents_repo)
+    audit_repo = AnalystSecurityAuditRepository(tmp_path / "audit_soc.sqlite3")
+
+    api_config = AnalystTlsConfiguration(server_cert[0], server_cert[1], human_ca[0])
+    browser_config = AnalystTlsConfiguration(server_cert[0], server_cert[1], human_ca[0])
+
+    policy_dir = tmp_path / "policy_soc"
+    policy_dir.mkdir(mode=0o700)
+    operator.enroll(policy_dir, cert_map, "viewer", "queue.viewer", create=True)
+    operator.enroll(policy_dir, cert_map, "analyst_a", "analyst_a", create=False)
+
+    lifecycle = HumanListenerLifecycle(
+        directory=policy_dir,
+        api_configuration=api_config,
+        browser_configuration=browser_config,
+        authorization=authorization,
+        view=view_model,
+        audit=audit_repo,
+        incident_repository=incidents_repo,
+        threat_intel_enricher={candidate_id: ti_result},
+        advisory_engine={candidate_id: explanation},
+        soar_repository=soar_repo,
+    )
+    lifecycle.replace()
+
+    browser_addr = lifecycle.addresses[1]
+    browser_port = browser_addr[1]
+
+    req_detail = browser_tls._req(browser_port, target=f"/v1/analyst/alerts/{candidate_id}")
+    code, head, body = _send_browser_request(browser_addr, cert_map, "analyst_a", req_detail)
+    assert code == 200
+    html = body.decode("utf-8")
+
+    assert "Threat-Intel &amp; Provenance" in html
+    assert "Triggered (RFC 1918 Private IP)" in html
+    assert "azure_lab_attacker_vm_slide14" in html
+    assert "Evidence-Bound Advisory Debrief" in html
+    assert "Approval-Gated SOAR Playbooks" in html
+    assert "verify_and_contain_lab_source_ip" in html
+    assert "rolled_back" in html
+
+    lifecycle.shutdown()

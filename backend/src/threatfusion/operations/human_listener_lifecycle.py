@@ -38,6 +38,10 @@ class HumanListenerLifecycle:
         audit,
         storage_directory=None,
         incident_repository=None,
+        *,
+        threat_intel_enricher=None,
+        advisory_engine=None,
+        soar_repository=None,
     ):
         self._arguments = (
             directory,
@@ -49,6 +53,9 @@ class HumanListenerLifecycle:
         )
         self._storage_directory = Path(storage_directory) if storage_directory is not None else None
         self._incident_repository = incident_repository
+        self._threat_intel_enricher = threat_intel_enricher
+        self._advisory_engine = advisory_engine
+        self._soar_repository = soar_repository
         self._control = RLock()
         self._stop = Event()
         self._ready = Event()
@@ -152,6 +159,9 @@ class HumanListenerLifecycle:
                                 view,
                                 audit,
                                 browser=browser,
+                                threat_intel_enricher=self._threat_intel_enricher,
+                                advisory_engine=self._advisory_engine,
+                                soar_repository=self._soar_repository,
                             )
                         )
                     registry = self._listeners[0]._credentials

@@ -1469,4 +1469,43 @@ TF-010 repository-side disposition registry is implemented in `backend/src/threa
   - 120+ focused unit and integration tests pass cleanly across all affected test suites.
   - Ruff, Black, and `git diff HEAD --check` pass with zero errors.
   - Frozen model SHA-256 digests verified identical; zero training/fitting performed.
-  - All Milestone #22 changes remain unstaged and uncommitted for user review.
+  - Milestone #22 was committed to `gemini/product-20260924` at `f511907`.
+
+### 2026-10-16 — Milestone #23: Canonical Evaluation Pack Rev2 (AI-FYP-2006), Section 8 fusion_disabled Invariant, Threat-Intel Enrichment (13.C), Evidence-Bound Advisory Debrief (13.D), and Approval-Gated Reversible SOAR Ledger (13.E)
+
+- **Canonical Evaluation Pack Rev2 (`AI-FYP-2006`, TF-002/TF-007):**
+  - Authored `backend/src/threatfusion/models/canonical_evaluation.py` and published authoritative specification `docs/canonical_evaluation_pack_rev2.md`.
+  - Formally binds project metadata to FAST-NUCES Karachi, CS492 Final Year Project in Cyber Security, supervisor, and academic jury rubric.
+  - Formally documents classical baselines: Random Forest (89.77% acc, 91.31% F1, 75.07% cat acc), XGBoost (98.01% recall), Logistic Regression (81.24% acc).
+  - Formally documents deep learning candidates: Deep Neural Network (2.04% FPR, 68.76% cat acc), Transformer (96.43% recall), Multimodal Fusion (94.95% acc, 96.30% F1).
+  - Mandates Split-Inversion Scientific Disclosure: explicitly documents January/February training/evaluation split inversion where February test distribution was inspected during model tuning.
+  - Enforces Section 8 Invariant: multi-model fusion is strictly disabled in production inference (`fusion_disabled = True`), frozen RF (`random_forest.joblib`) is the sole production baseline, and v2 AE is experimental/unfused. `enforce_production_inference_invariants()` raises `ProductionInferenceInvariantViolation` if any fusion policy is attempted in production mode.
+- **Section 13.C Threat Intelligence Enrichment Service (`threat_intel_enrichment_v1`, TF-008):**
+  - Implemented `backend/src/threatfusion/intel/enrichment_service.py` with `ThreatIntelEnrichmentService` and `LocalThreatIntelFeed`.
+  - Strict RFC 1918 / Localhost Privacy Suppression (`RFC1918_AND_LOCAL_NETWORKS`): Internal IP addresses (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`, `169.254.0.0/16`) are strictly suppressed from external lookups (`privacy_suppression = True`, score `0.0`).
+  - TTL-bounded caching (`ttl_seconds=300`) and deterministic allowlist/denylist precedence.
+  - Degraded offline fallback: feed unavailability or errors return score `0.0` with `is_degraded = True` and degradation rationale, preventing pipeline aborts.
+  - Converts results into canonical `SignalObservation` for Section 9 7-signal multi-signal risk evaluator (`dynamic_risk_assessment_v1`).
+- **Section 13.D Evidence-Bound Advisory Debrief Engine (`advisory_debrief_v1`, TF-008):**
+  - Implemented `backend/src/threatfusion/llm/advisory_debrief.py` with `AdvisoryDebriefEngine`.
+  - Enforces mandatory advisory disclaimer: `"ThreatFusion LLM debriefs are advisory only. They do not constitute verified containment authorization or causal proof."`
+  - Requires non-empty evidence citations (`cited_evidence_keys`), citing candidate IDs, incident IDs, source IPs, and detector decisions.
+  - Binds verified versioned MITRE ATT&CK techniques (`T1046`, `T1190`, `T1498`, etc.) with observable evidence mapping and confidence bounds.
+  - Generates competing hypotheses (e.g. benign administrative probe vs. active exploitation) to prevent single-explanation tunnel vision.
+  - Operates offline via deterministic structured template fallback with zero external network/token cost requirements.
+- **Section 13.E Approval-Gated Reversible SOAR Ledger (`soar_ledger_sqlite_v1`, TF-008/TF-009):**
+  - Implemented `backend/src/threatfusion/soar/soar_ledger.py` with `SoarLedgerRepository` using isolated mode-0600 SQLite store (`soar_ledger.sqlite3`).
+  - Mandatory Human Approval Gate: proposals begin in `PENDING_APPROVAL`. Direct execution attempts without prior approval raise `SoarPolicyViolationError("approval_required")`.
+  - Protected Target Allowlist: containment actions targeting protected IP infrastructure (`1.1.1.1`, `8.8.8.8`, `127.0.0.1`, `10.0.0.1`) are rejected unconditionally (`SoarPolicyViolationError("target_is_protected")`).
+  - Full State Machine & Reversible Compensation: tracks lifecycle (`PENDING_APPROVAL` -> `APPROVED` -> `EXECUTED` -> `REVERSED`), logs audit trails, and executes verified reversal actions.
+- **End-to-End Product Spine Verification & Packaging Discovery:**
+  - Updated `backend/tests/unit/test_package_discovery.py` to include `threatfusion.advisory`, `threatfusion.enrichment`, `threatfusion.intel`, `threatfusion.llm`, and `threatfusion.soar` (6 tests pass).
+  - Wired optional Threat-Intel Enrichment, Advisory Debrief Engine, and SOAR Playbook Ledger into `AnalystTlsListener` and `AnalystBrowserTlsListener`, rendering dedicated Threat-Intel, Advisory Debrief, and SOAR sections in `/analyst/alerts/{candidate_id}` HTML.
+  - Extended Slide 14 integration test (`test_slide14_full_post_ingestion_soc_workflow` in `test_slide14_suricata_live_ingestion_path.py`), verifying the entire post-ingestion SOC flow on 10.0.0.4 -> 10.0.0.5: private IP guard annotation, grounded advisory debrief, SOAR recommendation, approval, simulated containment, and rollback.
+  - Verification Gates:
+    - Primary verification suite (10 suites, 90 tests) passes in 28.80s: `test_slide14_suricata_live_ingestion_path.py`, `test_registered_browser_path.py`, `test_human_listener_lifecycle.py`, `test_suricata_flow_adapter.py`, `test_provenance_sources.py`, `test_correlation_engine.py`, `test_multi_signal_risk.py`, `test_threat_intel_enrichment.py`, `test_advisory_and_soar_ledger.py`, `test_jury_traceability_and_feedback.py`.
+    - Companion verification suite (21 tests) passes: `test_milestone23_full_spine.py`, `test_canonical_evaluation.py`, `test_advisory_debrief.py`, `test_soar_ledger.py`, `test_package_discovery.py`.
+    - Code quality clean: `threatfusion-venv/bin/ruff check .` (All checks passed!), `threatfusion-venv/bin/black --check` (All done! 198 files left unchanged), `git diff HEAD --check` (exit 0).
+    - Frozen model SHA-256 digests re-verified exact byte-identical across all 4 models; zero training or online weight drift.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates. All Milestone #23 changes remain unstaged and uncommitted for user review.

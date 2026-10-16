@@ -114,6 +114,9 @@ class DashboardAlertDetail:
     history: tuple[DashboardTransitionRecord, ...]
     explanation: dict[str, object] | None = None
     incident_correlation: DashboardIncidentSummary | None = None
+    threat_intel_enrichment: dict[str, object] | None = None
+    advisory_explanation: dict[str, object] | None = None
+    soar_recommendations: tuple[object, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,6 +327,21 @@ def _parse_detail(payload: dict[str, object]) -> DashboardAlertDetail:
         history=history,
         explanation=validate_explanation(payload.get("explanation"), evidence),
         incident_correlation=incident_correlation,
+        threat_intel_enrichment=(
+            payload.get("threat_intel_enrichment")
+            if isinstance(payload.get("threat_intel_enrichment"), dict)
+            else None
+        ),
+        advisory_explanation=(
+            payload.get("advisory_explanation")
+            if isinstance(payload.get("advisory_explanation"), dict)
+            else None
+        ),
+        soar_recommendations=(
+            tuple(payload.get("soar_recommendations"))  # type: ignore[arg-type]
+            if isinstance(payload.get("soar_recommendations"), (list, tuple))
+            else None
+        ),
     )
 
 
@@ -628,6 +646,77 @@ def render_dashboard_html(
             <p class="corr-explanation">{html.escape(corr.explanation)}</p>
             """
 
+        ti_block = ""
+        if sel.threat_intel_enrichment:
+            ti = sel.threat_intel_enrichment
+            status = html.escape(str(ti.get("status", "unknown")))
+            reason = html.escape(str(ti.get("reason", "")))
+            guard = (
+                "Triggered (RFC 1918 Private IP)"
+                if ti.get("private_ip_guard_triggered")
+                else "Not triggered"
+            )
+            inspected = (
+                ", ".join(html.escape(str(ip)) for ip in ti.get("inspected_entities", [])) or "None"
+            )
+            lab_annos = ti.get("internal_lab_annotations", {})
+            lab_anno_str = (
+                ", ".join(
+                    f"{html.escape(str(k))} ({html.escape(str(v))})" for k, v in lab_annos.items()
+                )
+                if lab_annos
+                else "None"
+            )
+            ti_block = f"""
+            <h3>Threat-Intel &amp; Provenance</h3>
+            <div class="evidence-grid">
+                <div><b>Status:</b> <span class="badge badge-prov">{status}</span></div>
+                <div><b>Private IP Guard:</b> {guard}</div>
+                <div><b>Inspected Entities:</b> <code>{inspected}</code></div>
+                <div><b>External Lookup:</b> {html.escape(str(ti.get("external_lookup_performed", False)))}</div>
+                <div><b>Lab Annotations:</b> {lab_anno_str}</div>
+            </div>
+            <p class="corr-explanation">{reason}</p>
+            """
+
+        adv_block = ""
+        if sel.advisory_explanation:
+            adv = sel.advisory_explanation
+            headline = html.escape(str(adv.get("summary_headline", "")))
+            rationale = html.escape(str(adv.get("detection_rationale", "")))
+            fusion_note = html.escape(str(adv.get("complementarity_and_fusion_note", "")))
+            context = html.escape(str(adv.get("correlation_and_enrichment_context", "")))
+            adv_block = f"""
+            <h3>Evidence-Bound Advisory Debrief</h3>
+            <p><b>{headline}</b></p>
+            <p>{rationale}</p>
+            <p class="corr-explanation"><b>Fusion Policy:</b> {fusion_note}</p>
+            <p><b>Context:</b> {context}</p>
+            """
+
+        soar_block = ""
+        if sel.soar_recommendations:
+            rec_rows = []
+            for r in sel.soar_recommendations:
+                if isinstance(r, dict):
+                    pid = html.escape(str(r.get("playbook_id", ""))[:16])
+                    atype = html.escape(str(r.get("action_type", "")))
+                    target = html.escape(str(r.get("target_entity", "")))
+                    rstate = html.escape(str(r.get("state", "")))
+                    rec_rows.append(
+                        f'<tr><td><code>{pid}</code></td><td>{atype}</td><td><code>{target}</code></td><td><span class="badge badge-state">{rstate}</span></td></tr>'
+                    )
+            soar_tbody = (
+                "".join(rec_rows) if rec_rows else '<tr><td colspan="4">No actions</td></tr>'
+            )
+            soar_block = f"""
+            <h3>Approval-Gated SOAR Playbooks</h3>
+            <table class="data-table">
+                <thead><tr><th>Playbook ID</th><th>Action Type</th><th>Target</th><th>State</th></tr></thead>
+                <tbody>{soar_tbody}</tbody>
+            </table>
+            """
+
         detail_section = f"""
         <section class="card detail-card">
             <h2>Alert Detail &amp; Evidence</h2>
@@ -643,6 +732,9 @@ def render_dashboard_html(
                 <div><b>Triage State:</b> <span class="badge badge-state">{html.escape(sel.state)}</span> (v{sel.version})</div>
             </div>
             {corr_block}
+            {ti_block}
+            {adv_block}
+            {soar_block}
             <h3>Factual explanation ({EXPLANATION_VERSION})</h3>
             <p>Status: {html.escape(str((sel.explanation or {}).get("status", "unavailable")))}</p>
             <p>{html.escape(str((sel.explanation or {}).get("summary", "Explanation unavailable.")))}</p>

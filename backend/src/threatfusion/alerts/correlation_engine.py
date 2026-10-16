@@ -87,6 +87,44 @@ class EntityProvenanceContract:
     entity_role: str | None = None
     clock_origin: str | None = None
 
+    @property
+    def src_ip(self) -> str | None:
+        if not self.src_entity_id:
+            return None
+        val = self.src_entity_id
+        for prefix in (
+            "attacker:",
+            "victim:",
+            "client:",
+            "server:",
+            "sensor:",
+            "node:",
+            "host:",
+            "vm:",
+        ):
+            if val.startswith(prefix):
+                return val[len(prefix) :]
+        return val
+
+    @property
+    def dst_ip(self) -> str | None:
+        if not self.dst_entity_id:
+            return None
+        val = self.dst_entity_id
+        for prefix in (
+            "attacker:",
+            "victim:",
+            "client:",
+            "server:",
+            "sensor:",
+            "node:",
+            "host:",
+            "vm:",
+        ):
+            if val.startswith(prefix):
+                return val[len(prefix) :]
+        return val
+
     def verification_rejection_reason(self) -> str | None:
         """Return the specific rejection reason if provenance is unverified, or None if verified."""
         if not self.entity_namespace_id or not self.entity_namespace_id.strip():

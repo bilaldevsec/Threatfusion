@@ -331,3 +331,62 @@ class TestDetectorAblation:
                 candidate_preds=[1, 0],
             )
         assert exc_info.value.code == "invalid_ground_truth_labels"
+
+
+class TestMultiSignalRiskEvaluation:
+    """Test evaluate_multi_signal_risk and Section 8 fusion_disabled enforcement."""
+
+    def test_evaluate_multi_signal_risk_fields_and_breakdown(self) -> None:
+        """Verify immutable fields, separate signal breakdown, and non-dilution."""
+        from threatfusion.models.multi_signal_risk import (
+            MultiSignalRiskResult,
+            evaluate_multi_signal_risk,
+        )
+
+        result = evaluate_multi_signal_risk(
+            rf_prob=0.85,
+            ae_error=0.12,
+            # Remaining signals omitted -> None
+        )
+
+        assert isinstance(result, MultiSignalRiskResult)
+        assert result.production_fusion_enabled is False
+        assert result.production_alert_authority == "frozen_random_forest_only"
+        assert result.evaluation_mode == "experimental_offline_non_production_fusion_disabled"
+
+        # Separate signal breakdown must preserve None for missing signals
+        assert result.separate_signal_breakdown["rf_prob"] == 0.85
+        assert result.separate_signal_breakdown["ae_error"] == 0.12
+        assert result.separate_signal_breakdown["ti_confidence"] is None
+        assert result.separate_signal_breakdown["asset_crit"] is None
+        assert result.separate_signal_breakdown["vel_burst"] is None
+        assert result.separate_signal_breakdown["hist_fp"] is None
+        assert result.separate_signal_breakdown["campaign_sev"] is None
+
+        # Composite score must be bounded and non-zero
+        assert 0.0 < result.experimental_composite_score <= 100.0
+
+        # to_dict check
+        res_dict = result.to_dict()
+        assert res_dict["production_fusion_enabled"] is False
+        assert res_dict["production_alert_authority"] == "frozen_random_forest_only"
+
+    def test_evaluate_multi_signal_risk_production_fusion_disabled_guard(self) -> None:
+        """Attempting to enable production fusion raises ValueError per Section 8."""
+        from threatfusion.models.multi_signal_risk import (
+            MultiSignalRiskResult,
+            evaluate_multi_signal_risk,
+        )
+
+        with pytest.raises(ValueError, match="Production fusion is strictly disabled"):
+            evaluate_multi_signal_risk(
+                rf_prob=0.90,
+                production_fusion_enabled=True,
+            )
+
+        with pytest.raises(ValueError, match="Production fusion is strictly disabled"):
+            MultiSignalRiskResult(
+                experimental_composite_score=90.0,
+                separate_signal_breakdown={"rf_prob": 0.90},
+                production_fusion_enabled=True,
+            )

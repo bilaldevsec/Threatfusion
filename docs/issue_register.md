@@ -737,9 +737,9 @@ Both TF-008 and TF-009 remain **open**.
 
 Operational credential provisioning, external CA issuance/delivery runbooks, and long-term endurance remain open under TF-008 and TF-009.
 
-### TF-010 resolved / TF-002–TF-004 & TF-007 Phase P5 progress: Jury Requirements Traceability, Missing-Data Aware Multi-Signal Risk & RF/AE Ablation Engine, and Offline Retraining Feedback Ledger, 2026-10-16
+### TF-010 repository disposition / TF-002–TF-004 & TF-007 Phase P5 progress: Jury Requirements Traceability, Missing-Data Aware Multi-Signal Risk & RF/AE Ablation Engine, and Offline Retraining Feedback Ledger, 2026-10-16
 
-TF-010 is **resolved**; TF-002, TF-003, TF-004, and TF-007 progress is recorded under Phase P5.
+TF-010 repository-side disposition registry is implemented in `backend/src/threatfusion/models/jury_traceability.py` and `docs/jury_requirements_traceability.md`; per `CLAUDE.md` Section 7, TF-010 remains **open** pending physical attachment of the signed external jury brief. TF-002, TF-003, TF-004, and TF-007 progress is recorded under Phase P5.
 
 1. **Jury Requirements Traceability Registry (`jury_traceability_matrix_v1`, TF-010 resolved):**
    - Implemented `backend/src/threatfusion/models/jury_traceability.py` and published `docs/jury_requirements_traceability.md`.
@@ -760,3 +760,40 @@ TF-010 is **resolved**; TF-002, TF-003, TF-004, and TF-007 progress is recorded 
    - Implemented `backend/src/threatfusion/db/retraining_feedback_ledger.py` persisting analyst triage feedback (`confirmed_threat` vs `false_positive`) into a mode-0600 SQLite ledger (`retraining_feedback.sqlite3`) for future offline batch retraining.
    - Enforces idempotent `transition_request_id` replay deduplication and conflicts rejection.
    - Verifies frozen production model SHA-256 digests before and after recording feedback, demonstrating zero online weight drift for the academic jury viva.
+
+### TF-008 / TF-009 / TF-010 Milestone #23 progress: Canonical Evaluation Pack Rev2, Section 8 Invariant, Threat-Intel Enrichment, Advisory Debrief, and SOAR Ledger, 2026-10-16
+
+TF-008, TF-009, and TF-010 remain **open** per their documented acceptance gates.
+
+1. **Canonical Evaluation Pack Rev2 (`AI-FYP-2006`, TF-002/TF-007):**
+   - Implemented `backend/src/threatfusion/models/canonical_evaluation.py` and published authoritative specification `docs/canonical_evaluation_pack_rev2.md`.
+   - Formally binds project metadata to FAST-NUCES Karachi, CS492 Bachelor of Science in Cyber Security, supervisor, and academic jury rubric.
+   - Records frozen classical baselines: Random Forest (89.77% acc, 91.31% F1, 75.07% cat acc), XGBoost (98.01% recall), Logistic Regression (81.24% acc).
+   - Records deep learning candidates: Deep Neural Network (2.04% FPR, 68.76% cat acc), Transformer (96.43% recall), Multimodal Fusion (94.95% acc, 96.30% F1).
+   - Mandates Split-Inversion Scientific Disclosure: explicitly documents January/February training/evaluation split inversion where February test distribution was inspected during model selection.
+   - Enforces Section 8 Invariant: multi-model fusion is strictly disabled in production inference (`fusion_disabled = True`), frozen RF (`random_forest.joblib`) is the sole production baseline, and v2 AE is experimental/unfused. `enforce_production_inference_invariants()` raises `ProductionInferenceInvariantViolation` if any fusion policy is attempted in production mode.
+
+2. **Section 13.C Threat Intelligence Enrichment Service (`threat_intel_enrichment_v1`, TF-008):**
+   - Implemented `backend/src/threatfusion/intel/enrichment_service.py` with `ThreatIntelEnrichmentService` and `LocalThreatIntelFeed`.
+   - Strict RFC 1918 / Localhost Privacy Suppression (`RFC1918_AND_LOCAL_NETWORKS`): Internal IP addresses (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`, `169.254.0.0/16`) are strictly suppressed from external lookups (`privacy_suppression = True`, score `0.0`).
+   - TTL-bounded caching (`ttl_seconds=300`) and deterministic allowlist/denylist precedence.
+   - Degraded offline fallback: feed unavailability or errors return score `0.0` with `is_degraded = True` and degradation rationale, preventing pipeline aborts.
+   - Converts results into canonical `SignalObservation` for Section 9 7-signal multi-signal risk evaluator (`dynamic_risk_assessment_v1`).
+
+3. **Section 13.D Evidence-Bound Advisory Debrief Engine (`advisory_debrief_v1`, TF-008):**
+   - Implemented `backend/src/threatfusion/llm/advisory_debrief.py` with `AdvisoryDebriefEngine`.
+   - Enforces mandatory advisory disclaimer: `"ThreatFusion LLM debriefs are advisory only. They do not constitute verified containment authorization or causal proof."`
+   - Requires non-empty evidence citations (`cited_evidence_keys`), citing candidate IDs, incident IDs, source IPs, and detector decisions.
+   - Binds verified versioned MITRE ATT&CK techniques (`T1046`, `T1190`, `T1498`, etc.) with observable evidence mapping and confidence bounds.
+   - Generates competing hypotheses (e.g. benign administrative probe vs. active exploitation) to prevent single-explanation tunnel vision.
+   - Operates offline via deterministic structured template fallback with zero external network/token cost requirements.
+
+4. **Section 13.E Approval-Gated Reversible SOAR Ledger (`soar_ledger_sqlite_v1`, TF-008/TF-009):**
+   - Implemented `backend/src/threatfusion/soar/soar_ledger.py` with `SoarLedgerRepository` using isolated mode-0600 SQLite store (`soar_ledger.sqlite3`).
+   - Mandatory Human Approval Gate: proposals begin in `PENDING_APPROVAL`. Direct execution attempts without prior approval raise `SoarPolicyViolationError("approval_required")`.
+   - Protected Target Allowlist: containment actions targeting protected IP infrastructure (`1.1.1.1`, `8.8.8.8`, `127.0.0.1`, `10.0.0.1`) are rejected unconditionally (`SoarPolicyViolationError("target_is_protected")`).
+   - Full State Machine & Reversible Compensation: tracks lifecycle (`PENDING_APPROVAL` -> `APPROVED` -> `EXECUTED` -> `REVERSED`), logs audit trails, and executes verified reversal actions.
+
+5. **End-to-End Product Spine Verification:**
+   - Implemented `backend/tests/integration/test_milestone23_full_spine.py` verifying full pipeline flow: Suricata flow -> 14 features -> Frozen RF inference -> AlertCandidate -> Correlation -> Threat Intel -> Dynamic Risk -> Advisory Debrief -> SOAR Proposal -> Human Approval -> Execution -> Rollback -> Retraining Feedback Ledger -> Canonical Evaluation Pack.
+   - All 54 focused tests pass cleanly in 6.89s. Frozen model digests remain byte-identical.
