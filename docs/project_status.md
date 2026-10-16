@@ -1497,15 +1497,52 @@ TF-010 repository-side disposition registry is implemented in `backend/src/threa
   - Implemented `backend/src/threatfusion/soar/soar_ledger.py` with `SoarLedgerRepository` using isolated mode-0600 SQLite store (`soar_ledger.sqlite3`).
   - Mandatory Human Approval Gate: proposals begin in `PENDING_APPROVAL`. Direct execution attempts without prior approval raise `SoarPolicyViolationError("approval_required")`.
   - Protected Target Allowlist: containment actions targeting protected IP infrastructure (`1.1.1.1`, `8.8.8.8`, `127.0.0.1`, `10.0.0.1`) are rejected unconditionally (`SoarPolicyViolationError("target_is_protected")`).
-  - Full State Machine & Reversible Compensation: tracks lifecycle (`PENDING_APPROVAL` -> `APPROVED` -> `EXECUTED` -> `REVERSED`), logs audit trails, and executes verified reversal actions.
-- **End-to-End Product Spine Verification & Packaging Discovery:**
-  - Updated `backend/tests/unit/test_package_discovery.py` to include `threatfusion.advisory`, `threatfusion.enrichment`, `threatfusion.intel`, `threatfusion.llm`, and `threatfusion.soar` (6 tests pass).
-  - Wired optional Threat-Intel Enrichment, Advisory Debrief Engine, and SOAR Playbook Ledger into `AnalystTlsListener` and `AnalystBrowserTlsListener`, rendering dedicated Threat-Intel, Advisory Debrief, and SOAR sections in `/analyst/alerts/{candidate_id}` HTML.
-  - Extended Slide 14 integration test (`test_slide14_full_post_ingestion_soc_workflow` in `test_slide14_suricata_live_ingestion_path.py`), verifying the entire post-ingestion SOC flow on 10.0.0.4 -> 10.0.0.5: private IP guard annotation, grounded advisory debrief, SOAR recommendation, approval, simulated containment, and rollback.
-  - Verification Gates:
-    - Primary verification suite (10 suites, 90 tests) passes in 28.80s: `test_slide14_suricata_live_ingestion_path.py`, `test_registered_browser_path.py`, `test_human_listener_lifecycle.py`, `test_suricata_flow_adapter.py`, `test_provenance_sources.py`, `test_correlation_engine.py`, `test_multi_signal_risk.py`, `test_threat_intel_enrichment.py`, `test_advisory_and_soar_ledger.py`, `test_jury_traceability_and_feedback.py`.
-    - Companion verification suite (21 tests) passes: `test_milestone23_full_spine.py`, `test_canonical_evaluation.py`, `test_advisory_debrief.py`, `test_soar_ledger.py`, `test_package_discovery.py`.
-    - Code quality clean: `threatfusion-venv/bin/ruff check .` (All checks passed!), `threatfusion-venv/bin/black --check` (All done! 198 files left unchanged), `git diff HEAD --check` (exit 0).
-    - Frozen model SHA-256 digests re-verified exact byte-identical across all 4 models; zero training or online weight drift.
+  - Full State Machine & Reversible Compensation: tracks lifecycle (`pending_approval` -> `approved` -> `executed_simulated` -> `rolled_back`), logs audit trails, and executes verified reversal actions.
+- **Milestone #23 Unification & Clean Commit (`3f32c7f`):**
+  - Removed duplicate Pass-1 modules created by split terminal paste (`intel/`, `llm/`, `soar_ledger.py`, `test_advisory_debrief.py`, `test_soar_ledger.py`).
+  - Preserved canonical Pass-2 packages: `threatfusion.enrichment` (`SourcedThreatIntelEnricher`), `threatfusion.advisory` (`AdvisoryExplanationEngine`), and `threatfusion.soar` (`ApprovalGatedSoarEngine`, `SoarPlaybookRecord`, `SoarAuditEntry`, `SoarPlaybookSqliteRepository`).
+  - Committed Milestone #23 under commit `3f32c7f`.
 
-TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates. All Milestone #23 changes remain unstaged and uncommitted for user review.
+### Milestone #24: Section 13.F Workload Measurement, Evaluation Pack Rev2 (6a36dcd), and Turnkey Two-Track Demo Runner (2026-10-16)
+
+- **Authoritative Evaluation Pack Rev2 (`6a36dcd9af17bf509977bcf966f2ace72644d5b2`, `AI-FYP-2006`):**
+  - Updated `backend/src/threatfusion/models/canonical_evaluation.py` and `docs/canonical_evaluation_pack_rev2.md` to exact September 21, 2026 Evaluation Pack Rev2 figures.
+  - Pinned exact populations: Train 865,480 benign-only, January validation 216,568, February benchmark 1,452,844.
+  - Frozen Random Forest reference: 95.266% precision, 92.818% recall, 94.026% F1, 0.095% FPR on January.
+  - Section 8 Complementarity & Why Fusion Is Disabled: AE OR-fusion yields 96 extra attacks at cost of 1,574 additional false alarms (16.3958 benign FPs/extra attack, 8.831x FP inflation, dropping precision from 95.266% to 69.997%). Enforces `production_fusion_enabled = False`.
+  - Superseded FYP-I deck figures (89.77% RF, 94.95% DL fusion from Final Presentation (1).pptx) preserved exclusively in `LegacyFyp1SupersededSummary`.
+- **Section 13.F Alert-Fatigue Compression & Analyst Workload Measurement Harness (`workload_measurement_v1`):**
+  - Implemented `backend/src/threatfusion/evaluation/workload_measurement.py` with `evaluate_alert_fatigue_compression` and `AnalystWorkloadStudyRepository`.
+  - Layer 1 computes flow-to-alert reduction ratio and alert-to-incident consolidation ratio.
+  - Layer 2 computes exact Section 8 counterfactual false-positive shield on January UNSW population.
+  - Persistent mode-0600 SQLite store (`workload_study.sqlite3`) records `TriageTrialRecord` and computes mean/median triage times, speedup, and accuracy gain.
+  - TF-009 Closure Discipline: `tf_009_closure_eligible` is strictly `False` unless study cohort is `human_analyst_cohort_study` with at least 10 human trials across both conditions, keeping TF-009 honestly open during automated/synthetic testing.
+- **Turnkey Two-Track Jury & Supervisor Demonstration Runner (`full_soc_demo_report_v1`):**
+  - Implemented `run_full_soc_demo(output_dir)` in `backend/src/threatfusion/operations/full_soc_demo.py` and CLI wrapper `scripts/run_full_soc_demo.py`.
+  - Executes Track A (UNSW-NB15 replay proof, rows 1 & 21, Section 8 shield) and Track B (Slide 14 Azure VM Suricata live ingestion full SOC spine) end-to-end.
+  - Generates deterministic JSON and Markdown evidence reports (`full_soc_demo_report.json` and `full_soc_demo_report.md`).
+- **Comprehensive Verification Gate:**
+  - 15 test suites (110 tests) pass cleanly in 39.60s with zero warnings:
+    - `test_full_soc_demo_runner.py`
+    - `test_slide14_suricata_live_ingestion_path.py`
+    - `test_milestone23_full_spine.py`
+    - `test_registered_browser_path.py`
+    - `test_human_listener_lifecycle.py`
+    - `test_canonical_evaluation.py`
+    - `test_workload_measurement.py`
+    - `test_suricata_flow_adapter.py`
+    - `test_provenance_sources.py`
+    - `test_correlation_engine.py`
+    - `test_multi_signal_risk.py`
+    - `test_threat_intel_enrichment.py`
+    - `test_advisory_and_soar_ledger.py`
+    - `test_package_discovery.py`
+    - `test_jury_traceability_and_feedback.py`
+  - Code hygiene: `ruff check` passes with 0 errors, `black --check` passes across all 197 files, git diff clean.
+  - Frozen model SHA-256 digests remain byte-identical; zero training or online drift.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates:
+- **`TF-008` (`open`)**: *Independent Model Benchmark Beyond Inspected January/February UNSW Splits* — January (`216,568` rows) and February (`1,452,844` rows) were both previously inspected during model selection/evaluation; closing `TF-008` requires evaluation on an untouched independent holdout or external dataset benchmark.
+- **`TF-009` (`open`)**: *Measured Reduction of Analyst Workload / Alert Fatigue* — `workload_measurement.py` (`Section 13.F`) provides the counterfactual January FP shield proof (`201` RF FPs vs `1,775` fused FPs = `8.831x`) and the SQLite telemetry recorder (`workload_study.sqlite3`), but closing `TF-009` requires real human-factors / analyst cohort study trials (`study_cohort="human_analyst_cohort_study"`, `min_human_trials >= 10`).
+- **`TF-010` (`open`)**: *External FAST-NUCES FYP-II Jury Rubric & Signed Supervisor/Jury Evaluation Alignment* — internal traceability (`jury_traceability.py`) and Evaluation Pack Rev2 (`AI-FYP-2006`) alignment are wired, but closing `TF-010` requires the official external signed FAST-NUCES jury/supervisor rubric artifact.
+- **`TF-011` (`open`)**: *Real Operational SIEM / Threat-Intelligence Production Source Proof* — `SuricataFlowAdapter` (`Slide 14`) and `SourcedThreatIntelEnricher` (`Section 13.C`) are verified on bounded/recorded flows and local snapshots, but closing `TF-011` requires live operational SIEM / production threat-intelligence source deployment evidence.

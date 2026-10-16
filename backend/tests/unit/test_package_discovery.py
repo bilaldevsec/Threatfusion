@@ -22,6 +22,7 @@ ALL_THREATFUSION_PACKAGES = [
     "threatfusion.datasets.adapters",
     "threatfusion.db",
     "threatfusion.enrichment",
+    "threatfusion.evaluation",
     "threatfusion.features",
     "threatfusion.models",
     "threatfusion.operations",

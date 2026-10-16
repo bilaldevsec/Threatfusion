@@ -106,16 +106,16 @@ Explain decisions in clear language so I can defend the project to my supervisor
 |---|---|
 | Workspace | `/home/muhammad-bilal/projects/threatfusion-gemini` |
 | Branch | `gemini/product-20260924` |
-| Last reported committed HEAD | `f511907` (Milestone #22: `feat(ingestion): extract presentation audit, implement Slide 14 Suricata 14-feature adapter, install CLAUDE.md, and wire full spine`) |
-| Git state | Milestone #23 unstaged/uncommitted for review: Canonical Evaluation Pack Rev2 (`AI-FYP-2006`), Section 8 `fusion_disabled` invariant enforcement, Section 13.C Threat-Intel Enrichment (`ThreatIntelEnrichmentService`), Section 13.D Evidence-Bound Advisory Debrief (`AdvisoryDebriefEngine`), Section 13.E Approval-Gated Reversible SOAR Ledger (`SoarLedgerRepository`), and comprehensive full-spine integration test `backend/tests/integration/test_milestone23_full_spine.py` (54 passed in 6.89s). |
-| Committed product slices | Frozen RF path, persisted alert/analyst state, human mTLS and security audit, read-only browser and CSRF-hardened browser transition triage, registered-input demonstration, factual explanation, provenance-gated dual-window 30s/10m correlation engine, incident persistence, Section 7 lifecycle repair, Phase P3-P4 provenance adapters (`MordorScenarioAdapter`, `AuthorizedLabSensorAdapter`), Section 8 correlation edge-case gates, audited grouping corrections, Phase P5 missing-data risk evaluator and retraining feedback ledger, Slide 1–15 extraction audit, Slide 14 Suricata 14-feature flow adapter, `CLAUDE.md` installation, and 4-DB atomic quiescent snapshot |
+| Last reported committed HEAD | `3f32c7fa080021bf9dc9c8d81589d43eeb92c73a` (Milestone #23: `feat(intel): unify Pass-2 threat intel, advisory explanation, and SOAR ledger packages`) |
+| Git state | Milestone #24 staged/committed: Section 13.F Workload Measurement Harness (`workload_measurement_v1`), Evaluation Pack Rev2 (`AI-FYP-2006`, checkpoint `6a36dcd`), Canonical `TF-008`..`TF-011` definitions, Turnkey Two-Track Demo Runner (`scripts/run_full_soc_demo.py`). |
+| Committed product slices | Frozen RF path, persisted alert/analyst state, human mTLS and security audit, read-only browser and CSRF-hardened browser transition triage, registered-input demonstration, factual explanation, provenance-gated dual-window 30s/10m correlation engine, incident persistence, Section 7 lifecycle repair, Phase P3-P4 provenance adapters (`MordorScenarioAdapter`, `AuthorizedLabSensorAdapter`), Section 8 correlation edge-case gates, audited grouping corrections, Phase P5 missing-data risk evaluator and retraining feedback ledger, Slide 1–15 extraction audit, Slide 14 Suricata 14-feature flow adapter, `CLAUDE.md` installation, 4-DB atomic quiescent snapshot, Section 13.C Threat Intel Enrichment, Section 13.D Advisory Debrief Engine, Section 13.E Approval-Gated Reversible SOAR Ledger, Section 13.F Workload Measurement Harness, and Turnkey Two-Track Demo Runner |
 | Browser observations | Owner reported desktop and 390×844 readability after repairs; full CSRF-protected browser triage state transitions (`new` -> `in_review` -> `closed`/`escalated`) and dual-DB failure semantics verified; full Slide 14 browser flow demonstrated |
 | Active review blocker | Section 7 startup interruption blocker **RESOLVED**: `human_listener_lifecycle.py` catches `BaseException` (`KeyboardInterrupt`), tracks native thread creation, and shuts down cleanly without hanging on unstarted workers (6 isolated watchdog regressions pass). Section 6.3 Dual-SQLite audit failure and retry deduplication verified (503 response, zero duplicate transitions on UUIDv4 replay). Storage backup updated with `incidents.sqlite3` (`incident_sqlite_v1`) support. Phase P5 offline retraining ledger enforces mode-0600 SQLite and verifies frozen model SHA-256 digests before and after recording feedback. Milestone #22 wires `incident_repository` into `HumanListenerLifecycle` and verifies quiescent 4-DB atomic snapshot across `alerts`, `states`, `audit`, and `incidents`. |
-| Reported tests | 315+ tests pass across all unit and integration suites with 0 errors (including 54 focused tests in Milestone #23) |
+| Reported tests | 110 passed across 15 full unit/integration test suites (39.60s); zero warnings, model digests verified identical |
 | Correlation | Provenance-gated dual-window engine (`EntityProvenanceContract`, 30s burst, 10m campaign, 100% critical scenario retention, fail-closed singleton for unverified UNSW, NAT/clock-skew boundary enforcement, candidate deduplication, per-event member justifications, and audited manual grouping corrections) implemented and persisted to `incidents.sqlite3` |
-| RF / AE / candidate | Frozen RF active (`bd2853a6...`); v2 AE experimental and unfused (`c8675d13...`); rate-log1p candidate blocked (`1d02e5bb...`); 7-signal missing-data dynamic risk policy active; Section 8 `fusion_disabled = True` invariant enforced |
-| Open issues | TF-010 repository registry implemented in code, kept **OPEN** per `CLAUDE.md` Section 7 until physical jury rubric attachment; TF-008 and TF-009 remain open (external CA provisioning, live telemetry, and long-term endurance); Phase P5 progress recorded under TF-002–TF-004 and TF-007; Sections 13.C, 13.D, and 13.E implemented |
-| Immediate next action | Independent review of Milestone #23 unstaged changes (Canonical Evaluation Pack Rev2, Threat Intel Enrichment, Advisory Debrief, and SOAR Ledger) |
+| RF / AE / candidate | Frozen RF active (`bd2853a6...`); v2 AE experimental and unfused (`c8675d13...`); rate-log1p candidate blocked (`1d02e5bb...`); 7-signal missing-data dynamic risk policy active; Section 8 `fusion_disabled = True` invariant enforced (8.831x FP inflation shield) |
+| Open issues | **TF-008** (`open`): Independent Model Benchmark Beyond Inspected January/February UNSW Splits; **TF-009** (`open`): Measured Reduction of Analyst Workload / Alert Fatigue (`tf_009_closure_eligible = False` until >=10 human trials); **TF-010** (`open`): External FAST-NUCES FYP-II Jury Rubric & Signed Supervisor/Jury Evaluation Alignment; **TF-011** (`open`): Real Operational SIEM / Threat-Intelligence Production Source Proof |
+| Immediate next action | Milestone #25: Implement the Deterministic Zero-Trust Repository Truth Audit Gate (`repo_truth_audit.py` & `scripts/audit_repo_truth.py`) |
 
 If newer local evidence exists, reconcile this table before implementing. Do not undo later work to match this snapshot.
 
@@ -587,14 +587,18 @@ Do not expand to multi-tenancy, distributed clusters, arbitrary autonomous red-t
 | `backend/tests/integration/test_slide14_suricata_live_ingestion_path.py` | Integration test for Slide 14 Azure VM flow ingestion path |
 | `backend/src/threatfusion/models/canonical_evaluation.py` | Canonical Evaluation Pack Rev2 (AI-FYP-2006) and Section 8 fusion_disabled invariant |
 | `docs/canonical_evaluation_pack_rev2.md` | Complete academic evaluation pack specification for CS492 |
-| `backend/src/threatfusion/intel/enrichment_service.py` | Section 13.C Threat intelligence enrichment service with RFC1918 privacy guard |
-| `backend/src/threatfusion/llm/advisory_debrief.py` | Section 13.D Evidence-bound advisory debrief engine with MITRE ATT&CK annotations |
-| `backend/src/threatfusion/soar/soar_ledger.py` | Section 13.E Approval-gated reversible SOAR ledger with protected allowlist |
+| `backend/src/threatfusion/enrichment/threat_intel.py` | Section 13.C Threat intelligence enrichment with RFC 1918 private-IP guard |
+| `backend/src/threatfusion/advisory/explanation_engine.py` | Section 13.D Evidence-bound advisory explanation engine with anti-hallucination groundedness |
+| `backend/src/threatfusion/soar/playbook_ledger.py` | Section 13.E Approval-gated reversible SOAR ledger with optimistic locking |
+| `backend/src/threatfusion/evaluation/workload_measurement.py` | Section 13.F Alert-fatigue compression and analyst workload measurement harness |
+| `backend/src/threatfusion/operations/full_soc_demo.py` | Turnkey Two-Track Jury & Supervisor demonstration library runner |
+| `scripts/run_full_soc_demo.py` | CLI executable for turnkey two-track demonstration runner |
 | `backend/tests/integration/test_milestone23_full_spine.py` | Comprehensive Milestone #23 end-to-end spine integration test |
-| `backend/tests/unit/test_canonical_evaluation.py` | Unit tests for Canonical Evaluation Pack Rev2 |
-| `backend/tests/unit/test_threat_intel_enrichment.py` | Unit tests for Threat Intel Enrichment Service |
-| `backend/tests/unit/test_advisory_debrief.py` | Unit tests for Advisory Debrief Engine |
-| `backend/tests/unit/test_soar_ledger.py` | Unit tests for SOAR Ledger |
+| `backend/tests/integration/test_full_soc_demo_runner.py` | End-to-end integration test for turnkey two-track SOC demo runner |
+| `backend/tests/unit/test_canonical_evaluation.py` | Unit tests for Evaluation Pack Rev2 (6a36dcd) |
+| `backend/tests/unit/test_workload_measurement.py` | Unit tests for Section 13.F Alert-Fatigue & Analyst Workload Harness |
+| `backend/tests/unit/test_threat_intel_enrichment.py` | Unit tests for Threat Intel Enrichment |
+| `backend/tests/unit/test_advisory_and_soar_ledger.py` | Unit tests for Advisory Explanation & SOAR Playbook Ledger |
 
 Do not assume this is the entire repository. Discover producer/model/source paths by repository search. Read untracked Python files directly: `git diff` and its stat omit them. `AM` and `MM` statuses mean staged and unstaged versions differ.
 
@@ -633,8 +637,8 @@ These hashes and summaries come from supplied user terminal output. Current hist
 | `d71e333` | Provenance-gated dual-window correlation engine and incident persistence (TF-008, Milestone #18) |
 | `a357fc6` | Phase P0/P1/P2 Quality & Blocker Resolution: Section 7 lifecycle startup interruption repair, Section 6.3 dual-SQLite audit failure verification, storage backup incidents support, canonical Gemini master export v2 (Milestone #19) |
 | `7017bd7` | Phase P5: Jury Requirements Traceability Registry (TF-010 resolved), Missing-Data Aware Multi-Signal Risk & RF/AE Ablation Engine (TF-002/TF-003/TF-004), and Offline Retraining Feedback Ledger (TF-007) (Milestone #21) |
-| `f511907` | Milestone #22: Deep Presentation Extraction (Slides 1-15), Slide 14 Suricata 14-Feature Live-Ingestion Pipeline, CLAUDE.md Continuity Installation, and End-to-End Product Spine Verification |
-| Uncommitted | Milestone #23: Canonical Evaluation Pack Rev2 (AI-FYP-2006), Section 8 fusion_disabled invariant, Section 13.C Threat Intel Enrichment, Section 13.D Evidence-Bound Advisory Debrief, Section 13.E Approval-Gated Reversible SOAR Ledger |
+| `3f32c7f` | Milestone #23: Unified Pass-2 threat intel, advisory debrief, and SOAR ledger packages |
+| Staged | Milestone #24: Section 13.F Workload Measurement Harness, Evaluation Pack Rev2 (6a36dcd), Canonical TF-008..TF-011 definitions, Turnkey Two-Track SOC Demo Runner |
 
 ### Lessons from rejected/limited evidence
 
