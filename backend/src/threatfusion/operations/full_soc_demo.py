@@ -523,7 +523,7 @@ Simulated live attacker (`10.0.0.4:54322`) targeting victim web server (`10.0.0.
 [ AlertCandidate Persistence ] ──────> SQLite alerts.sqlite3
           │
           ▼
-[ Incident Correlation Engine ] ─────> 5-minute primary burst correlation
+[ Incident Correlation Engine ] ─────> 30-second burst window (30s) / 10-minute campaign (600s)
           │
           ▼
 [ Sourced Threat-Intel (13.C) ] ─────> RFC 1918 Private IP Guard TRIGGERED (No public leak)

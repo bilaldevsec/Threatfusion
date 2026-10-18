@@ -6,6 +6,12 @@ from threatfusion.evaluation.repo_truth_audit import (
     RepoTruthAuditReport,
     run_repository_truth_audit,
 )
+from threatfusion.evaluation.study_runner import (
+    STUDY_TRIAGE_CASES,
+    StudyTriageCase,
+    run_automated_smoke_study,
+    run_interactive_study,
+)
 from threatfusion.evaluation.workload_measurement import (
     AlertFatigueCompressionReport,
     AnalystWorkloadStudyRepository,
@@ -24,8 +30,12 @@ __all__ = [
     "EXPECTED_CANONICAL_ISSUE_ROWS",
     "QueueCompressionMetrics",
     "RepoTruthAuditReport",
+    "STUDY_TRIAGE_CASES",
+    "StudyTriageCase",
     "TriageTrialRecord",
     "WorkloadStudySummary",
     "evaluate_alert_fatigue_compression",
+    "run_automated_smoke_study",
+    "run_interactive_study",
     "run_repository_truth_audit",
 ]

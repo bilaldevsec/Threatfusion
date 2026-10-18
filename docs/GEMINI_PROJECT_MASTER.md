@@ -1,7 +1,7 @@
 # ThreatFusion — Gemini Project Master
 
 **Owner:** Muhammad Bilal, FAST-NUCES Karachi, BSc Cyber Security.
-**Document revision:** TF-GEMINI-MASTER-2026-10-16-v6.
+**Document revision:** TF-GEMINI-MASTER-2026-10-16-v10.
 **Prepared:** 16 October 2026, Karachi context.
 **Purpose:** One portable project knowledge file for the Gemini “ThreatFusion Engineering Planner” Gem, Antigravity implementer, and Copilot reviewer.
 **Target:** A credible, secure AI-assisted SOC triage product and a reproducible December 2026 project demonstration. Production/enterprise quality is an engineering objective, not a certification or a completed status.
@@ -106,16 +106,16 @@ Explain decisions in clear language so I can defend the project to my supervisor
 |---|---|
 | Workspace | `/home/muhammad-bilal/projects/threatfusion-gemini` |
 | Branch | `gemini/product-20260924` |
-| Last reported committed HEAD | `e9b6f86c2e391b10a9f5d1646738ee6346aa868f` (Milestone #25: `feat(eval): implement deterministic zero-trust repository truth audit gate and harden canonical issue verification`) |
-| Git state | Milestone #26 implemented: Presentation Deck & Academic Defense Harmonization (`scripts/generate_harmonized_defense_deck.py`, `docs/defense_slide_deck_harmonization.md`, and `artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx`). |
-| Committed product slices | Frozen RF path, persisted alert/analyst state, human mTLS and security audit, read-only browser and CSRF-hardened browser transition triage, registered-input demonstration, factual explanation, provenance-gated dual-window 30s/10m correlation engine, incident persistence, Section 7 lifecycle repair, Phase P3-P4 provenance adapters (`MordorScenarioAdapter`, `AuthorizedLabSensorAdapter`), Section 8 correlation edge-case gates, audited grouping corrections, Phase P5 missing-data risk evaluator and retraining feedback ledger, Slide 1–15 extraction audit, Slide 14 Suricata 14-feature flow adapter, `CLAUDE.md` installation, 4-DB atomic quiescent snapshot, Section 13.C Threat Intel Enrichment, Section 13.D Advisory Debrief Engine, Section 13.E Approval-Gated Reversible SOAR Ledger, Section 13.F Workload Measurement Harness, Turnkey Two-Track Demo Runner, Deterministic Zero-Trust Repository Truth Audit Gate, and Academic Presentation Deck Harmonization |
+| Last reported committed HEAD | `98067748622ced67c2ebac40be899c3694f90331` (Milestone #26: `feat(defense): harmonize 15-slide FYP-II defense deck with Evaluation Pack Rev2 (AI-FYP-2006) and add deck verification suite`) |
+| Git state | Milestone #27 implemented (unstaged): Interactive Analyst Workload Study CLI Runner (`study_runner.py`, `run_analyst_workload_study.py`) & Harmonized Defense Report + 3-Speaker Presenter Guide Generators (`generate_harmonized_defense_docs.py`, `presenter_guide_15_slides_rev2.md`, `test_defense_docs_and_study_runner.py`). |
+| Committed product slices | Frozen RF path, persisted alert/analyst state, human mTLS and security audit, read-only browser and CSRF-hardened browser transition triage, registered-input demonstration, factual explanation, provenance-gated dual-window 30s/10m correlation engine, incident persistence, Section 7 lifecycle repair, Phase P3-P4 provenance adapters (`MordorScenarioAdapter`, `AuthorizedLabSensorAdapter`), Section 8 correlation edge-case gates, audited grouping corrections, Phase P5 missing-data risk evaluator and retraining feedback ledger, Slide 1–15 extraction audit, Slide 14 Suricata 14-feature flow adapter, `CLAUDE.md` installation, 4-DB atomic quiescent snapshot, Section 13.C Threat Intel Enrichment, Section 13.D Advisory Debrief Engine, Section 13.E Approval-Gated Reversible SOAR Ledger, Section 13.F Workload Measurement Harness, Turnkey Two-Track Demo Runner, Deterministic Zero-Trust Repository Truth Audit Gate, Academic Presentation Deck Harmonization, Interactive Analyst Workload Study CLI Runner, and Harmonized Defense Report + 3-Speaker Presenter Guide Generators |
 | Browser observations | Owner reported desktop and 390×844 readability after repairs; full CSRF-protected browser triage state transitions (`new` -> `in_review` -> `closed`/`escalated`) and dual-DB failure semantics verified; full Slide 14 browser flow demonstrated |
 | Active review blocker | Section 7 startup interruption blocker **RESOLVED**: `human_listener_lifecycle.py` catches `BaseException` (`KeyboardInterrupt`), tracks native thread creation, and shuts down cleanly without hanging on unstarted workers (6 isolated watchdog regressions pass). Section 6.3 Dual-SQLite audit failure and retry deduplication verified (503 response, zero duplicate transitions on UUIDv4 replay). Storage backup updated with `incidents.sqlite3` (`incident_sqlite_v1`) support. Phase P5 offline retraining ledger enforces mode-0600 SQLite and verifies frozen model SHA-256 digests before and after recording feedback. Milestone #22 wires `incident_repository` into `HumanListenerLifecycle` and verifies quiescent 4-DB atomic snapshot across `alerts`, `states`, `audit`, and `incidents`. |
-| Reported tests | 17 full test suites (125 tests) passing cleanly (43.53s); zero warnings, model digests verified identical; 7/7 zero-trust audit checks pass |
+| Reported tests | 18 full test suites (129 tests) passing cleanly; zero warnings, model digests verified identical; 7/7 zero-trust audit checks pass |
 | Correlation | Provenance-gated dual-window engine (`EntityProvenanceContract`, 30s burst, 10m campaign, 100% critical scenario retention, fail-closed singleton for unverified UNSW, NAT/clock-skew boundary enforcement, candidate deduplication, per-event member justifications, and audited manual grouping corrections) implemented and persisted to `incidents.sqlite3` |
 | RF / AE / candidate | Frozen RF active (`bd2853a6...`); v2 AE experimental and unfused (`c8675d13...`); rate-log1p candidate blocked (`1d02e5bb...`); 7-signal missing-data dynamic risk policy active; Section 8 `fusion_disabled = True` invariant enforced (8.831x FP inflation shield) |
 | Open issues | **TF-008** (`open`): Independent Model Benchmark Beyond Inspected January/February UNSW Splits; **TF-009** (`open`): Measured Reduction of Analyst Workload / Alert Fatigue (`tf_009_closure_eligible = False` until >=10 human trials); **TF-010** (`open`): External FAST-NUCES FYP-II Jury Rubric & Signed Supervisor/Jury Evaluation Alignment; **TF-011** (`open`): Real Operational SIEM / Threat-Intelligence Production Source Proof |
-| Immediate next action | Stage and commit Milestone #26: Presentation Deck & Academic Defense Harmonization |
+| Immediate next action | Stage and commit Milestone #27: Interactive Analyst Workload Study CLI Runner & Harmonized Defense Report + 3-Speaker Presenter Guide Generators |
 
 If newer local evidence exists, reconcile this table before implementing. Do not undo later work to match this snapshot.
 
@@ -605,6 +605,13 @@ Do not expand to multi-tenancy, distributed clusters, arbitrary autonomous red-t
 | `scripts/generate_harmonized_defense_deck.py` | Milestone #26 Defense Presentation Deck Harmonizer (AI-FYP-2006) |
 | `backend/tests/unit/test_defense_deck_harmonization.py` | Unit tests for Milestone #26 Defense Presentation Deck Harmonizer |
 | `docs/defense_slide_deck_harmonization.md` | Academic defense brief and slide-by-slide harmonization report |
+| `backend/src/threatfusion/evaluation/study_runner.py` | Section 13.F Interactive & Scriptable Analyst Workload Study Runner |
+| `scripts/run_analyst_workload_study.py` | CLI executable for Section 13.F analyst workload & triage study |
+| `scripts/generate_harmonized_defense_docs.py` | Harmonized FYP-II final report & 3-speaker presenter guide generator |
+| `docs/presenter_guide_15_slides_rev2.md` | 3-speaker final defense presenter guide across 15 harmonized slides |
+| `backend/tests/unit/test_defense_docs_and_study_runner.py` | Unit tests for defense documentation generator and workload study runner |
+| `artifacts/reports/ThreatFusion_FYP2_Presenter_Guide_Harmonized.docx` | OpenXML 3-speaker presenter guide document (AI-FYP-2006) |
+| `artifacts/reports/ThreatFusion_FYP2_Final_Report_Harmonized.docx` | OpenXML harmonized FYP-II final defense report document (AI-FYP-2006) |
 
 Do not assume this is the entire repository. Discover producer/model/source paths by repository search. Read untracked Python files directly: `git diff` and its stat omit them. `AM` and `MM` statuses mean staged and unstaged versions differ.
 
@@ -645,7 +652,8 @@ These hashes and summaries come from supplied user terminal output. Current hist
 | `7017bd7` | Phase P5: Jury Requirements Traceability Registry (TF-010 open (repository-side traceability helper implemented; external FAST-NUCES jury rubric remains open)), Missing-Data Aware Multi-Signal Risk & RF/AE Ablation Engine (TF-002/TF-003/TF-004), and Offline Retraining Feedback Ledger (TF-007) (Milestone #21) |
 | `3f32c7f` | Milestone #23: Unified Pass-2 threat intel, advisory debrief, and SOAR ledger packages |
 | `e9b6f86` | Milestone #25: Deterministic Zero-Trust Repository Truth Audit Gate (repo_truth_audit.py, audit_repo_truth.py) |
-| Unstaged | Milestone #26: Presentation Deck & Academic Defense Harmonization (generate_harmonized_defense_deck.py, defense_slide_deck_harmonization.md) |
+| `9806774` | Milestone #26: Presentation Deck & Academic Defense Harmonization (generate_harmonized_defense_deck.py, defense_slide_deck_harmonization.md, test_defense_deck_harmonization.py) |
+| Unstaged | Milestone #27: Interactive Analyst Workload Study CLI Runner (Section 13.F) & Harmonized Defense Report + 3-Speaker Presenter Guide Generators (AI-FYP-2006) |
 
 ### Lessons from rejected/limited evidence
 

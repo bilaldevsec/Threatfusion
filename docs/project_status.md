@@ -1598,3 +1598,20 @@ TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptan
   - Linked all claims directly to immutable model SHA-256 hashes and `audit_repo_truth.py` zero-trust receipt.
   - Authored detailed panel and jury talking points for Sir Sameer Faisal and the FAST-NUCES evaluation panel covering model selection, Autoencoder false alarms, Section 8 fusion policy, Slide 14 live ingestion, and open issue integrity.
 TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.
+
+### Milestone #27: Interactive Analyst Workload Study CLI Runner (Section 13.F) & Harmonized Defense Report + 3-Speaker Presenter Guide Generators (2026-10-16)
+
+- **Interactive & Scriptable Analyst Workload Study CLI Runner (`backend/src/threatfusion/evaluation/study_runner.py`, `scripts/run_analyst_workload_study.py`):**
+  - Designed `STUDY_TRIAGE_CASES` containing 10 realistic, provenance-grounded triage scenarios spanning recorded UNSW-NB15 flows and Slide 14 Suricata `eve.json` flows (5 true attacks expecting `escalated` and 5 benign/noise flows expecting `dismissed`/`resolved`).
+  - Implemented comparative presentation views: Condition A (`baseline_raw_alert_only`: raw 14 features and threshold status) vs Condition B (`threatfusion_enriched_advisory_soar`: frozen RF probability, Section 8 non-fused AE context, 30-second burst window (30s) and 10-minute campaign window (600s) correlation status, Section 13.C RFC1918 threat-intel guard, Section 13.D grounded advisory debrief, and Section 13.E approval-gated SOAR recommendation).
+  - Automated Smoke Mode (`--mode smoke` / `run_automated_smoke_study`): evaluates 20 trials tagged with `study_cohort="synthetic_smoke_verification"`, enforcing `tf_009_closure_eligible = False` so automated runs never falsely close `TF-009`.
+  - Interactive Human Analyst Mode (`--mode interactive` / `run_interactive_study`): terminal prompts measuring wall-clock `time_to_first_review_ms` and `time_to_disposition_ms` tagged with `study_cohort="human_analyst_cohort_study"`, saving JSON and Markdown summary reports to a configurable output directory.
+- **Harmonized FYP-II Final Report & 3-Speaker Presenter Guide Generators (`scripts/generate_harmonized_defense_docs.py`):**
+  - Created standalone generator producing `docs/presenter_guide_15_slides_rev2.md` and two valid OpenXML `.docx` documents (`artifacts/reports/ThreatFusion_FYP2_Presenter_Guide_Harmonized.docx` and `artifacts/reports/ThreatFusion_FYP2_Final_Report_Harmonized.docx`) using a pure-Python standard-library `zipfile` builder (zero external dependencies).
+  - Structured 3-speaker presentation choreography across 15 slides: Speaker 1 (Muhammad Bilal 21K-3551: Slides 1–5 + live demo), Speaker 2 (Muhammad Suhaib Shaikh 22K-4302: Slides 6–10 + inverted split retraction), Speaker 3 (Muhammad Hasnain 22K-4718: Slides 11–15 + Section 8 fusion-disabled shield + qualified Slide 14 pipeline + open issue defense).
+  - Pinned exact unrounded Rev2 metrics (`0.1181361214680695`, `212,009`, `313`, `95.266%`, `92.818%`, `94.026%`, `8.8308x`, `16.3958`), qualified Slide 14 badge and software-spine footer, and confirmed ZERO instances of `"VERIFIED & OPERATIONAL"` or `"100% operational"`.
+- **Comprehensive Unit Testing (`backend/tests/unit/test_defense_docs_and_study_runner.py`):**
+  - 4 test cases covering automated smoke study, interactive study with scripted input, OpenXML document generation and invariant validation, and triage case distribution.
+  - All 18 milestone test suites (129 tests) pass cleanly in 45.85s.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.

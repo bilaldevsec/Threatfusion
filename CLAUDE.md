@@ -926,3 +926,19 @@ This file was installed from `~/Downloads/THREATFUSION_CLAUDE_HANDOFF.md` into `
    - **Section 13.C Threat Intelligence Enrichment:** `ThreatIntelEnrichmentService` / `SourcedThreatIntelEnricher` with strict RFC 1918 / loopback / link-local private IP guard (Slide 14 internal IPs 10.0.0.4 and 10.0.0.5 never queried externally), TTL caching, and degraded outage isolation.
    - **Section 13.D Evidence-Bound Advisory Debrief:** `AdvisoryDebriefEngine` / `AdvisoryExplanationEngine` with anti-hallucination citation validation, mandatory advisory disclaimer, versioned MITRE ATT&CK mapping, and deterministic template fallback.
    - **Section 13.E Approval-Gated Reversible SOAR Ledger:** Mode-0600 SQLite store enforcing 5-step lifecycle (`pending_approval` -> `approved` -> `executed_simulated` -> `rolled_back`), protected target allowlist, and audit logging.
+6. **Milestone #24 (Section 13.F Workload Measurement & Two-Track Demo Runner):**
+   - Implemented `workload_measurement.py` for queue compression and January counterfactual false-positive shield (8.831x FP reduction).
+   - Enforced TF-009 discipline: `tf_009_closure_eligible = False` for all non-human or under-sized cohorts.
+   - Built turnkey two-track SOC demo runner (`full_soc_demo.py`, `run_full_soc_demo.py`) executing Track A (UNSW replay) and Track B (Slide 14 Suricata SOC spine).
+7. **Milestone #25 (Deterministic Zero-Trust Repository Truth Audit Gate):**
+   - Implemented `repo_truth_audit.py` and `scripts/audit_repo_truth.py` with 7 cryptographic ground-truth checks, verifying frozen model SHA-256 hashes, exact normalized cell equality for TF-008..TF-011, and module `__file__` origin.
+8. **Milestone #26 (Presentation Deck & Academic Defense Harmonization):**
+   - Harmonized 15-slide defense presentation (`generate_harmonized_defense_deck.py`) with Evaluation Pack Rev2 (`AI-FYP-2006`).
+   - Retracted legacy split inversion numbers (89.77% RF, 94.95% fusion) from active slides.
+   - Qualified Slide 14 badge ("BOUNDED RECORDED/LOCAL INTEGRATION PATH VERIFIED (16/16 TEST GATES); LIVE AZURE/SIEM DEPLOYMENT OPEN (TF-011)") and software-spine footer, eliminating all unqualified claims.
+   - Added `test_defense_deck_harmonization.py` and committed under `9806774`.
+9. **Milestone #27 (Interactive Workload Study CLI Runner & Harmonized Defense Docs):**
+   - Implemented interactive & scriptable analyst workload study runner (`study_runner.py`, `run_analyst_workload_study.py`) with 10 provenance-grounded scenarios across baseline and ThreatFusion conditions.
+   - Built harmonized defense documentation generator (`generate_harmonized_defense_docs.py`) generating `docs/presenter_guide_15_slides_rev2.md`, `ThreatFusion_FYP2_Presenter_Guide_Harmonized.docx`, and `ThreatFusion_FYP2_Final_Report_Harmonized.docx` with zero external dependencies.
+   - Added unit test suite `test_defense_docs_and_study_runner.py` verifying all 18 milestone test suites pass cleanly.
+   - Maintained `TF-008`, `TF-009`, `TF-010`, and `TF-011` strictly **open**.

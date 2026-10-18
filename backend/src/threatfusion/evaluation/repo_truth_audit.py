@@ -633,7 +633,23 @@ def _check_6_functional_probe(expected_src_root: Path) -> CheckResult:
     failures: list[str] = []
 
     try:
+        # Pillar 4: Correlation Engine Dual-Window Invariance (30s burst / 600s campaign)
+        import threatfusion.alerts.correlation_engine as ce_mod
         from threatfusion.alerts.correlation_engine import EntityProvenanceContract
+
+        ok, msg = _verify_module_origin(ce_mod, expected_src_root)
+        if not ok:
+            failures.append(msg)
+        if getattr(ce_mod, "BURST_WINDOW_SECONDS", None) != 30.0:
+            failures.append(
+                f"Pillar 4 BURST_WINDOW_SECONDS mismatch: {getattr(ce_mod, 'BURST_WINDOW_SECONDS', None)} != 30.0"
+            )
+        if getattr(ce_mod, "CAMPAIGN_WINDOW_SECONDS", None) != 600.0:
+            failures.append(
+                f"Pillar 4 CAMPAIGN_WINDOW_SECONDS mismatch: {getattr(ce_mod, 'CAMPAIGN_WINDOW_SECONDS', None)} != 600.0"
+            )
+
+        # Probe 13.C: RFC1918 Private-IP Guard
         from threatfusion.enrichment.threat_intel import SourcedThreatIntelEnricher
         import threatfusion.enrichment.threat_intel as ti_mod
 
@@ -769,7 +785,7 @@ def _check_6_functional_probe(expected_src_root: Path) -> CheckResult:
         failures.append(f"Functional probe failure: {e}")
 
     summary = (
-        "Functional probe verified 13.C RFC1918 guard, 13.D groundedness, 13.E SOAR approval gate, and 13.F FP shield."
+        "Functional probe verified Pillar 4 correlation windows (30s/600s), 13.C RFC1918 guard, 13.D groundedness, 13.E SOAR approval gate, and 13.F FP shield."
         if passed
         else "; ".join(failures)
     )

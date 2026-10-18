@@ -10,6 +10,8 @@ import sys
 import tempfile
 from types import ModuleType
 
+import pytest
+
 from threatfusion.evaluation.repo_truth_audit import (
     EXPECTED_MODEL_DIGESTS,
     REPO_TRUTH_AUDIT_SCHEMA_VERSION,
@@ -314,3 +316,18 @@ class TestRepoTruthAudit:
         assert payload["audit_version"] == REPO_TRUTH_AUDIT_SCHEMA_VERSION
         assert payload["all_checks_passed"] is True
         assert len(payload["checks"]) == 7
+
+    def test_audit_fails_closed_when_correlation_windows_tampered(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tampering with correlation engine BURST_WINDOW_SECONDS or CAMPAIGN_WINDOW_SECONDS fails Check 6."""
+        import threatfusion.alerts.correlation_engine as ce
+
+        monkeypatch.setattr(ce, "BURST_WINDOW_SECONDS", 45.0)
+        report = run_repository_truth_audit()
+        assert report.all_checks_passed is False
+        c6 = [c for c in report.checks if c.check_id == 6][0]
+        assert c6.passed is False
+        assert any(
+            "Pillar 4 BURST_WINDOW_SECONDS mismatch" in f for f in c6.details.get("failures", [])
+        )

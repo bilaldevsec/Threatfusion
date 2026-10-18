@@ -1,10 +1,11 @@
 """Fail-closed, local operator multi-database online backup and atomic restore.
 
 Implements storage snapshot creation, cryptographic verification, and atomic
-offline restore across the three ThreatFusion SQLite databases:
+offline restore across the four ThreatFusion SQLite databases:
 - Retained alerts database (alerts.sqlite3 / alert_candidate_sqlite_v1)
 - Analyst state workflow database (states.sqlite3 / analyst_state_sqlite_v1)
 - Analyst security audit database (audit.sqlite3 / analyst_security_audit_sqlite_v1)
+- Incidents and correlation database (incidents.sqlite3 / incident_sqlite_v1)
 
 Enforces mode-0700 private directories, mode-0600 files, no symlinks, descriptor-
 relative traversal, filesystem locks (flock), SHA-256 manifests, SQLite integrity
@@ -493,7 +494,7 @@ def create_storage_snapshot(
     audit_path: Path | str | None = None,
     incidents_path: Path | str | None = None,
 ) -> dict[str, object]:
-    """Create a consistent online snapshot of all three SQLite databases into snapshot_dir."""
+    """Create a consistent online snapshot of all four SQLite databases into snapshot_dir."""
     target_snapshot_dir, src_alerts, src_states, src_audit, src_incidents = _resolve_paths(
         source,
         destination,

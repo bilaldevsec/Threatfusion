@@ -1156,7 +1156,9 @@ def harmonize_slide_14(slide: Any) -> None:
                 _update_paragraph(p, "INCIDENT CORRELATION", font_size_pt=9.5, bold=True)
             elif "Stored and displayed as a" in t:
                 _update_paragraph(
-                    p, "Dual-window clustering + Grounded LLM Debrief", font_size_pt=14.0
+                    p,
+                    "Dual-window clustering (30s burst / 600s campaign) + Grounded LLM Debrief",
+                    font_size_pt=14.0,
                 )
             elif t == "NORMAL":
                 _update_paragraph(p, "NORMAL (0.001% Prob)", font_size_pt=9.5, bold=True)
