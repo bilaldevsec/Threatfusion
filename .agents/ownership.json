@@ -20,11 +20,16 @@
       "backend/src/threatfusion/evaluation/__init__.py",
       "scripts/audit_repo_truth.py"
     ],
+    "drift_and_supply_chain": [
+      "backend/src/threatfusion/models/drift_and_supply_chain.py",
+      "backend/src/threatfusion/evaluation/independent_holdout_protocol.py"
+    ],
     "defense_deliverables_generators": [
       "scripts/generate_harmonized_defense_deck.py",
       "scripts/generate_harmonized_defense_docs.py"
     ],
     "tests": [
+      "backend/tests/unit/test_drift_supply_chain_and_tf008_protocol.py",
       "backend/tests/unit/test_boundary_and_high_leverage_features.py",
       "backend/tests/unit/test_repo_truth_audit.py",
       "backend/tests/unit/test_workload_measurement.py",
@@ -35,6 +40,7 @@
       "SKILL.md",
       ".agents/skills/threatfusion-master-engineering/SKILL.md",
       ".agents/ownership.json",
+      "docs/tf008_preregistered_evaluation_protocol.md",
       "docs/defense_slide_deck_harmonization.md",
       "docs/presenter_guide_15_slides_rev2.md",
       "docs/project_status.md",

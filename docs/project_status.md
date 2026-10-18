@@ -1700,3 +1700,38 @@ TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptan
   - All test suites passing cleanly, and `scripts/audit_repo_truth.py` confirms ALL 7 ZERO-TRUST CHECKS PASSED with `POST-EXECUTION DECISION VERDICT: GO`.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.
+
+### Milestone #31: 14-Feature PSI Drift & Model Supply-Chain Monitor, Pre-Registered TF-008 Independent Holdout Evaluator with Bootstrap CIs, and Full SOC Demo / Dashboard Integration of AE Queue Ranker & SOAR Hash Chain (2026-10-18)
+
+- **Model Supply-Chain Manifest Verifier (`drift_and_supply_chain.py`):**
+  - Implemented `verify_frozen_model_supply_chain(repo_root: Path) -> dict[str, Any]` and `FrozenModelSupplyChainEntry` verifying all 4 frozen model artifacts on disk against canonical SHA-256 digests and explicit operational roles:
+    - Random Forest: `bd2853a6...` (`primary_production_authority`)
+    - Logistic Regression: `2cf4de66...` (`linear_baseline`)
+    - Autoencoder v2: `c8675d13...` (`secondary_non_blocking_ranker`)
+    - Rate-Log1p Candidate: `1d02e5bb...` (`blocked_candidate`)
+  - Enforced fail-closed security: missing files, symlinks, zero-byte sizes, or SHA-256 mismatches raise `ModelSupplyChainError` or emit `verified=False`.
+- **Read-Only 14-Feature PSI Drift Monitor (`drift_and_supply_chain.py`):**
+  - Implemented `evaluate_14_feature_telemetry_drift` and `FeatureDriftMetric`, `TelemetryDriftReport` using only Python standard library (`math`, `statistics`).
+  - STRICT INVARIANT: strictly read-only diagnostic monitor; never mutates model weights, thresholds, input records, or alert creation.
+  - Enforced presence and finite type of all 14 canonical features: `duration_ms`, `fwd_packets`, `bwd_packets`, `fwd_bytes`, `bwd_bytes`, `packets_per_second`, `bytes_per_second`, `fwd_packet_length_mean`, `bwd_packet_length_mean`, `dst_port`, `protocol_tcp`, `protocol_udp`, `protocol_icmp`, `protocol_other`.
+  - Computed per-feature mean shift Z-score and decile Population Stability Index (PSI) approximation using standard normal cumulative probability differences across 10 baseline decile bins.
+  - Classified overall `drift_status`:
+    - `stable_in_distribution` ($\max(\text{PSI}) < 0.10$)
+    - `moderate_feature_drift_monitor` ($0.10 \le \max(\text{PSI}) < 0.25$)
+    - `severe_out_of_distribution_drift_retraining_review_required` ($\max(\text{PSI}) \ge 0.25$)
+- **Pre-Registered TF-008 Independent Holdout Evaluator with Bootstrap CIs (`independent_holdout_protocol.py` & `docs/tf008_preregistered_evaluation_protocol.md`):**
+  - Blacklisted development-informing splits via `INSPECTED_DEVELOPMENT_DATASET_IDS = ("unsw_nb15_train_865480", "unsw_nb15_january_216568", "unsw_nb15_february_1452844")`.
+  - Any evaluation referencing an inspected split triggers `protocol_violation_inspected_split = True` and `tf_008_closure_eligible = False`.
+  - Implemented `evaluate_independent_holdout_dataset` computing exact confusion counts at frozen 0.5 threshold, precision, recall, F1, FPR, accuracy, and deterministic 95% bootstrap confidence intervals ($B \ge 200$) using seeded PRNG (`random.Random(random_seed)`).
+  - Enforced `tf_008_closure_eligible = False` whenever `is_synthetic_smoke_fixture = True`, `protocol_violation_inspected_split = True`, or sample size $N < 1000$.
+- **Full SOC Demo & Analyst Dashboard Integration (`full_soc_demo.py`, `analyst_dashboard.py`):**
+  - Wired `rank_rf_alerts_for_triage_queue`, `verify_audit_chain_integrity`, and `evaluate_14_feature_telemetry_drift` into Track B of turnkey demonstration runner `run_full_soc_demo`.
+  - Master demo reports (`full_soc_demo_report.json` and `full_soc_demo_report.md`) now verify `soar_audit_chain_verified=True`, entry counts, chain head SHA-256, triage queue priority rank, and 14-feature PSI drift status.
+  - Enhanced `analyst_dashboard.py` alert detail HTML view with `"SOAR Cryptographic Audit Chain: VERIFIED (SHA-256 Hash-Linked)"` badge and `"Non-Fused Queue Priority Rank"` indicator with dedicated dark-theme styling.
+- **Repository Truth Audit Upgrade (`repo_truth_audit.py`):**
+  - Added `threatfusion.models.drift_and_supply_chain` and `threatfusion.evaluation.independent_holdout_protocol` to Check 5 `CANONICAL_MODULES` with origin verification.
+  - Upgraded Check 6 live functional probe to exercise `verify_frozen_model_supply_chain`, `evaluate_14_feature_telemetry_drift`, and `evaluate_independent_holdout_dataset` (asserting `protocol_violation_inspected_split=True` on January validation and `tf_008_closure_eligible=False` on synthetic smoke fixtures).
+- **Unit Test Suite & Verification (`test_drift_supply_chain_and_tf008_protocol.py`):**
+  - 15 comprehensive unit tests covering supply-chain verification and fail-closed security, input validation and 3-tier drift classification, immutability of inputs, holdout evaluation metrics and bootstrap CIs, inspected split rejection, full SOC demo report generation, and dashboard badge rendering.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.

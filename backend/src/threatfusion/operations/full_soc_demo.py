@@ -42,6 +42,8 @@ from threatfusion.models.canonical_evaluation import (
     execute_production_inference_guard,
     is_fusion_enabled,
 )
+from threatfusion.models.drift_and_supply_chain import evaluate_14_feature_telemetry_drift
+from threatfusion.models.multi_signal_risk import rank_rf_alerts_for_triage_queue
 from threatfusion.models.network_inference import (
     APPROVED_MODEL_HASHES,
     APPROVED_UNSW_MANIFEST_HASH,
@@ -371,6 +373,31 @@ def run_full_soc_demo(output_dir: Path | str) -> dict[str, Any]:
 
     soar_audit = track_b_soar_repo.list_audit_entries(soar_action.playbook_id)
 
+    # High-Leverage M30: Cryptographic SOAR Hash Chain Verification
+    chain_ok, chain_msg = track_b_soar_repo.verify_audit_chain_integrity(soar_action.playbook_id)
+    assert chain_ok is True
+    chain_head_sha256 = soar_audit[-1].entry_sha256 if soar_audit else ("0" * 64)
+
+    # High-Leverage M30: Non-Fused AE Queue Priority Ranker
+    triage_alerts_b = [
+        {
+            "candidate_id": cand_id_b,
+            "rf_attack_probability": prob_b,
+            "ae_reconstruction_error": 0.25,
+            "burst_packet_count": (
+                adapted_flow.raw_features["fwd_packets"] + adapted_flow.raw_features["bwd_packets"]
+            ),
+        }
+    ]
+    ranked_triage_queue_b = rank_rf_alerts_for_triage_queue(
+        triage_alerts_b, production_fusion_enabled=False
+    )
+    assert len(ranked_triage_queue_b) == 1
+    assert ranked_triage_queue_b[0]["queue_priority_rank"] == 1
+
+    # Milestone #31: Read-Only 14-Feature PSI Drift Monitor
+    telemetry_drift_b = evaluate_14_feature_telemetry_drift([adapted_flow.features_14])
+
     # B8: Section 13.F Alert-Fatigue Compression Report
     track_b_compression = evaluate_alert_fatigue_compression(
         raw_flow_count=1,
@@ -441,6 +468,11 @@ def run_full_soc_demo(output_dir: Path | str) -> dict[str, Any]:
             "final_state": rolled_back_action.state,
             "audit_trail_events": len(soar_audit),
         },
+        "soar_audit_chain_verified": chain_ok,
+        "soar_audit_chain_entry_count": len(soar_audit),
+        "soar_audit_chain_head_sha256": chain_head_sha256,
+        "triage_queue_ranking": ranked_triage_queue_b,
+        "telemetry_drift_status": telemetry_drift_b.to_dict(),
         "alert_fatigue_compression": track_b_compression.to_dict(),
         "workload_study_summary": study_summary.to_dict(),
     }
@@ -540,6 +572,19 @@ Simulated live attacker (`10.0.0.4:54322`) targeting victim web server (`10.0.0.
 - **Target Entity:** `{soar_action.target_entity}`
 - **Lifecycle Progression:** `pending_approval` $\\rightarrow$ `approved` (by analyst-bilal) $\\rightarrow$ `executed_simulated` $\\rightarrow$ `rolled_back`
 - **Audit Entries Recorded:** `{len(soar_audit)}`
+- **Cryptographic Audit Chain Integrity:** `VERIFIED` (SHA-256 Linked)
+- **Chain Head SHA-256:** `{chain_head_sha256[:16]}...`
+
+### High-Leverage M30 Non-Fused AE Queue Priority Ranking
+- **Alert Candidate ID:** `{ranked_triage_queue_b[0]["candidate_id"]}`
+- **Queue Priority Rank:** `#{ranked_triage_queue_b[0]["queue_priority_rank"]}`
+- **Priority Rationale:** {ranked_triage_queue_b[0]["priority_rationale"]}
+
+### Milestone #31 14-Feature PSI Telemetry Drift Monitor
+- **Drift Evaluation Status:** `{telemetry_drift_b.drift_status}`
+- **Max Population Stability Index (PSI):** `{telemetry_drift_b.max_psi:.6f}`
+- **Evaluated Record Count:** `{telemetry_drift_b.record_count}`
+- **Diagnostic Safety Boundary:** `Read-Only (Zero Mutation to Model Weights, Thresholds, or Alert Authority)`
 
 ---
 

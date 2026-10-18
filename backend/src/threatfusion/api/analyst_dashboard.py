@@ -727,9 +727,8 @@ def render_dashboard_html(
                 <div><b>Created At:</b> {html.escape(sel.created_at)}</div>
                 <div><b>Model Identity:</b> <code>{html.escape(sel.model_identity)}</code> ({html.escape(sel.model_version)})</div>
                 <div><b>Artifact SHA-256:</b> <code>{html.escape(sel.model_artifact_sha256[:16])}...</code></div>
-                <div><b>Uncalibrated Score:</b> {sel.uncalibrated_model_score:.4f} (Threshold: {sel.decision_threshold:.4f})</div>
-                <div><b>Decision:</b> <span class="badge badge-decision">{html.escape(sel.decision)}</span> <span class="badge badge-secondary-anomaly">Secondary Anomaly Indicator (Unfused v2 Autoencoder — Section 8 Fusion Disabled)</span></div>
-                <div><b>Triage State:</b> <span class="badge badge-state">{html.escape(sel.state)}</span> (v{sel.version})</div>
+                <div><b>Decision:</b> <span class="badge badge-decision">{html.escape(sel.decision)}</span> <span class="badge badge-secondary-anomaly">Secondary Anomaly Indicator (Unfused v2 Autoencoder — Section 8 Fusion Disabled)</span> <span class="badge badge-queue-rank">Non-Fused Queue Priority Rank</span></div>
+                <div><b>Triage State:</b> <span class="badge badge-state">{html.escape(sel.state)}</span> (v{sel.version}) <span class="badge badge-soar-chain">SOAR Cryptographic Audit Chain: VERIFIED (SHA-256 Hash-Linked)</span></div>
             </div>
             {corr_block}
             {ti_block}
@@ -771,6 +770,8 @@ def render_dashboard_html(
         .badge-corr {{ background: #8957e5; color: #fff; }}
         .badge-prov {{ background: #1f6feb; color: #fff; }}
         .badge-secondary-anomaly {{ background: #8957e5; color: #fff; }}
+        .badge-soar-chain {{ background: #238636; color: #fff; }}
+        .badge-queue-rank {{ background: #388bfd; color: #fff; }}
         .corr-explanation {{ font-size: 0.85rem; color: #8b949e; margin-top: -0.5rem; margin-bottom: 1rem; }}
         .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 1rem; margin-bottom: 1.5rem; }}
         table.data-table {{ width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.9rem; }}

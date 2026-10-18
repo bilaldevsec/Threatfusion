@@ -83,6 +83,8 @@ CANONICAL_MODULES: tuple[str, ...] = (
     "threatfusion.evaluation.workload_measurement",
     "threatfusion.datasets.adapters.suricata_flow",
     "threatfusion.operations.cloud_live_telemetry",
+    "threatfusion.models.drift_and_supply_chain",
+    "threatfusion.evaluation.independent_holdout_protocol",
 )
 
 GATE_G9_STAGE_1_TO_4_MODULES: tuple[str, ...] = (
@@ -1068,6 +1070,72 @@ def _check_6_functional_probe(expected_src_root: Path) -> CheckResult:
         except Exception as e:
             failures.append(f"Unexpected error when testing ranker fusion guard: {e}")
 
+        # Milestone #31: Model Supply-Chain & 14-Feature PSI Drift Monitor Probe
+        from threatfusion.models.drift_and_supply_chain import (
+            DEFAULT_BASELINE_MEANS,
+            evaluate_14_feature_telemetry_drift,
+            verify_frozen_model_supply_chain,
+        )
+        import threatfusion.models.drift_and_supply_chain as dsc_mod
+
+        ok, msg = _verify_module_origin(dsc_mod, expected_src_root)
+        if not ok:
+            failures.append(msg)
+
+        resolved_repo_root = expected_src_root.resolve().parents[1]
+        supply_res = verify_frozen_model_supply_chain(resolved_repo_root, fail_closed=False)
+        if not supply_res.get("verified"):
+            failures.append(
+                f"M31 verify_frozen_model_supply_chain failed: {supply_res.get('failures')}"
+            )
+
+        drift_rep = evaluate_14_feature_telemetry_drift([DEFAULT_BASELINE_MEANS])
+        if drift_rep.drift_status not in (
+            "stable_in_distribution",
+            "moderate_feature_drift_monitor",
+        ):
+            failures.append(
+                f"M31 unexpected drift status for in-distribution fixture: {drift_rep.drift_status}"
+            )
+
+        # Milestone #31: Pre-Registered TF-008 Independent Holdout Evaluation Probe
+        from threatfusion.evaluation.independent_holdout_protocol import (
+            evaluate_independent_holdout_dataset,
+        )
+        import threatfusion.evaluation.independent_holdout_protocol as ihp_mod
+
+        ok, msg = _verify_module_origin(ihp_mod, expected_src_root)
+        if not ok:
+            failures.append(msg)
+
+        # Confirm protocol_violation_inspected_split=True on "unsw_nb15_january_216568"
+        viol_rep = evaluate_independent_holdout_dataset(
+            dataset_id="unsw_nb15_january_216568",
+            dataset_sha256="a" * 64,
+            y_true=[1, 0] * 10,
+            rf_probabilities=[0.9, 0.1] * 10,
+            is_synthetic_smoke_fixture=False,
+        )
+        if viol_rep.protocol_violation_inspected_split is not True:
+            failures.append(
+                "M31 protocol_violation_inspected_split was not True for unsw_nb15_january_216568"
+            )
+        if viol_rep.tf_008_closure_eligible is not False:
+            failures.append("M31 tf_008_closure_eligible was not False for inspected split")
+
+        # Confirm tf_008_closure_eligible=False on synthetic fixture
+        synth_rep = evaluate_independent_holdout_dataset(
+            dataset_id="cse_cic_ids2018_holdout_probe",
+            dataset_sha256="b" * 64,
+            y_true=[1, 0] * 500,
+            rf_probabilities=[0.8, 0.2] * 500,
+            is_synthetic_smoke_fixture=True,
+        )
+        if synth_rep.tf_008_closure_eligible is not False:
+            failures.append(
+                "M31 tf_008_closure_eligible was not False for is_synthetic_smoke_fixture=True"
+            )
+
         if failures:
             passed = False
     except Exception as e:
@@ -1077,7 +1145,8 @@ def _check_6_functional_probe(expected_src_root: Path) -> CheckResult:
     summary = (
         "Functional probe verified Pillar 4 correlation windows (30s/600s), 13.C RFC1918 guard, "
         "13.D groundedness, 13.E SOAR approval gate & hash-chained audit trail integrity, "
-        "13.F FP shield, M28 resilient Suricata quarantine & budget kill-switch, and M30 AE queue ranker."
+        "13.F FP shield, M28 resilient Suricata quarantine & budget kill-switch, M30 AE queue ranker, "
+        "and M31 model supply-chain, 14-feature PSI drift monitor, and TF-008 holdout protocol."
         if passed
         else "; ".join(failures)
     )
