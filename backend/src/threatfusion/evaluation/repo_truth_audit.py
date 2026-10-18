@@ -76,9 +76,11 @@ FORBIDDEN_SPLIT_PASTE_PATHS: tuple[str, ...] = (
 CANONICAL_MODULES: tuple[str, ...] = (
     "threatfusion.enrichment.threat_intel",
     "threatfusion.advisory.explanation_engine",
+    "threatfusion.advisory.gemini_client",
     "threatfusion.soar.playbook_ledger",
     "threatfusion.evaluation.workload_measurement",
     "threatfusion.datasets.adapters.suricata_flow",
+    "threatfusion.operations.cloud_live_telemetry",
 )
 
 EXPECTED_CANONICAL_ISSUE_ROWS: Mapping[str, tuple[str, ...]] = {
@@ -602,6 +604,13 @@ def _check_5_no_duplicate_package_regression(
             passed = False
             failures.append(f"Forbidden duplicate path still exists on disk: {rel_path}")
 
+    unicorn_sop_path = resolved_root / "design_guidelines" / "soc_unicorn_interface_sop.md"
+    if not unicorn_sop_path.is_file():
+        passed = False
+        failures.append(
+            "Missing required architecture SOP file: design_guidelines/soc_unicorn_interface_sop.md"
+        )
+
     for mod_name in CANONICAL_MODULES:
         try:
             mod = importlib.import_module(mod_name)
@@ -613,7 +622,7 @@ def _check_5_no_duplicate_package_regression(
             failures.append(f"Failed to import canonical module {mod_name}: {e}")
 
     summary = (
-        "Zero split-paste duplicate packages detected; all canonical Pass-2 packages import cleanly."
+        "Zero split-paste duplicate packages detected; all canonical packages (including Gemini advisory client and cloud live telemetry) import cleanly, and SOC Unicorn SOP is verified on disk."
         if passed
         else "; ".join(failures)
     )
@@ -778,6 +787,59 @@ def _check_6_functional_probe(expected_src_root: Path) -> CheckResult:
         if comp.tf_009_closure_eligible is not False:
             failures.append("13.F tf_009_closure_eligible is not False for synthetic cohort")
 
+        # Milestone #28: Live Resilient Suricata Ingestion & Cloud Budget Kill-Switch Probe
+        from threatfusion.operations.cloud_live_telemetry import (
+            evaluate_budget_kill_switch,
+            process_suricata_eve_stream_resilient,
+        )
+        import threatfusion.operations.cloud_live_telemetry as clt_mod
+
+        ok, msg = _verify_module_origin(clt_mod, expected_src_root)
+        if not ok:
+            failures.append(msg)
+
+        valid_eve_flow = json.dumps(
+            {
+                "timestamp": "2026-10-18T10:00:00.000000+00:00",
+                "event_type": "flow",
+                "src_ip": "10.0.0.4",
+                "src_port": 44120,
+                "dest_ip": "10.0.0.5",
+                "dest_port": 80,
+                "proto": "TCP",
+                "flow": {
+                    "pkts_toserver": 15,
+                    "pkts_toclient": 12,
+                    "bytes_toserver": 1250,
+                    "bytes_toclient": 4800,
+                    "start": "2026-10-18T10:00:00.000000+00:00",
+                    "end": "2026-10-18T10:00:01.500000+00:00",
+                },
+            }
+        )
+        corrupted_json_line = '{"event_type": "flow", "corrupted": true, broken'
+
+        probe_stream = [valid_eve_flow, corrupted_json_line]
+        probe_batch = process_suricata_eve_stream_resilient(probe_stream)
+
+        if probe_batch.dead_letter_count != 1:
+            failures.append(f"M28 dead_letter_count mismatch: {probe_batch.dead_letter_count} != 1")
+        if (
+            len(probe_batch.dead_letter_records) != 1
+            or probe_batch.dead_letter_records[0].error_code != "malformed_json_line"
+        ):
+            failures.append("M28 corrupted JSON line was not quarantined into dead_letter_records")
+        if probe_batch.valid_flows_adapted != 1:
+            failures.append(
+                f"M28 valid_flows_adapted mismatch: {probe_batch.valid_flows_adapted} != 1"
+            )
+
+        budget_probe = evaluate_budget_kill_switch(5.0)
+        if budget_probe.get("should_detach_billing") is not True:
+            failures.append(
+                f"M28 evaluate_budget_kill_switch(5.0) should_detach_billing is not True: {budget_probe}"
+            )
+
         if failures:
             passed = False
     except Exception as e:
@@ -785,7 +847,9 @@ def _check_6_functional_probe(expected_src_root: Path) -> CheckResult:
         failures.append(f"Functional probe failure: {e}")
 
     summary = (
-        "Functional probe verified Pillar 4 correlation windows (30s/600s), 13.C RFC1918 guard, 13.D groundedness, 13.E SOAR approval gate, and 13.F FP shield."
+        "Functional probe verified Pillar 4 correlation windows (30s/600s), 13.C RFC1918 guard, "
+        "13.D groundedness, 13.E SOAR approval gate, 13.F FP shield, and M28 resilient Suricata "
+        "quarantine & budget kill-switch."
         if passed
         else "; ".join(failures)
     )

@@ -718,7 +718,7 @@ def render_dashboard_html(
             """
 
         detail_section = f"""
-        <section class="card detail-card">
+        <section class="card detail-card" data-blast-ui-tier="unicorn-progressive-disclosure-v1">
             <h2>Alert Detail &amp; Evidence</h2>
             <div class="evidence-grid">
                 <div><b>Candidate ID:</b> <code>{html.escape(sel.alert_candidate_id)}</code></div>
@@ -728,7 +728,7 @@ def render_dashboard_html(
                 <div><b>Model Identity:</b> <code>{html.escape(sel.model_identity)}</code> ({html.escape(sel.model_version)})</div>
                 <div><b>Artifact SHA-256:</b> <code>{html.escape(sel.model_artifact_sha256[:16])}...</code></div>
                 <div><b>Uncalibrated Score:</b> {sel.uncalibrated_model_score:.4f} (Threshold: {sel.decision_threshold:.4f})</div>
-                <div><b>Decision:</b> <span class="badge badge-decision">{html.escape(sel.decision)}</span></div>
+                <div><b>Decision:</b> <span class="badge badge-decision">{html.escape(sel.decision)}</span> <span class="badge badge-secondary-anomaly">Secondary Anomaly Indicator (Unfused v2 Autoencoder — Section 8 Fusion Disabled)</span></div>
                 <div><b>Triage State:</b> <span class="badge badge-state">{html.escape(sel.state)}</span> (v{sel.version})</div>
             </div>
             {corr_block}
@@ -770,6 +770,7 @@ def render_dashboard_html(
         .badge-terminal {{ background: #8b949e; color: #fff; }}
         .badge-corr {{ background: #8957e5; color: #fff; }}
         .badge-prov {{ background: #1f6feb; color: #fff; }}
+        .badge-secondary-anomaly {{ background: #8957e5; color: #fff; }}
         .corr-explanation {{ font-size: 0.85rem; color: #8b949e; margin-top: -0.5rem; margin-bottom: 1rem; }}
         .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 1rem; margin-bottom: 1.5rem; }}
         table.data-table {{ width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.9rem; }}

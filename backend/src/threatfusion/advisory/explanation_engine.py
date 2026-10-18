@@ -40,6 +40,7 @@ class AdvisoryEvidenceBundle:
     incident_id: str | None = None
     correlation_status: str = "uncorrelatable_missing_entity"
     enrichment_result: ThreatIntelEnrichmentResult | None = None
+    observed_at: str | None = None
 
     def get_allowed_evidence_keys(self) -> set[str]:
         keys = {
@@ -62,6 +63,8 @@ class AdvisoryEvidenceBundle:
             keys.add("enrichment_reason")
             for ip in self.enrichment_result.inspected_entities:
                 keys.add(f"entity:{ip}")
+        if self.observed_at is not None:
+            keys.add("observed_at")
         return keys
 
 

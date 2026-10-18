@@ -331,3 +331,42 @@ class TestRepoTruthAudit:
         assert any(
             "Pillar 4 BURST_WINDOW_SECONDS mismatch" in f for f in c6.details.get("failures", [])
         )
+
+    def test_audit_fails_closed_when_unicorn_sop_missing(self) -> None:
+        """Missing design_guidelines/soc_unicorn_interface_sop.md fails Check 5 closed."""
+        repo_root = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory() as td:
+            fake_root = Path(td)
+            # Create minimal structure without design_guidelines
+            expected_src = repo_root / "backend" / "src"
+            from threatfusion.evaluation.repo_truth_audit import (
+                _check_5_no_duplicate_package_regression,
+            )
+
+            c5 = _check_5_no_duplicate_package_regression(fake_root, expected_src)
+            assert c5.passed is False
+            assert any(
+                "Missing required architecture SOP file: design_guidelines/soc_unicorn_interface_sop.md"
+                in f
+                for f in c5.details.get("failures", [])
+            )
+
+    def test_audit_fails_closed_when_budget_kill_switch_probe_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tampering with evaluate_budget_kill_switch to return False at $5.00 fails Check 6."""
+        import threatfusion.operations.cloud_live_telemetry as clt
+
+        monkeypatch.setattr(
+            clt,
+            "evaluate_budget_kill_switch",
+            lambda spend, policy=None: {"should_detach_billing": False},
+        )
+        report = run_repository_truth_audit()
+        assert report.all_checks_passed is False
+        c6 = [c for c in report.checks if c.check_id == 6][0]
+        assert c6.passed is False
+        assert any(
+            "M28 evaluate_budget_kill_switch(5.0) should_detach_billing is not True" in f
+            for f in c6.details.get("failures", [])
+        )

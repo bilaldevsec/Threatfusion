@@ -104,6 +104,13 @@ def test_authenticated_viewer_can_read_alert_list_and_detail(tmp_path, analyst_c
         assert candidate.alert_candidate_id[:16] in html_view
         assert "Attack" in html_view
         assert "new" in html_view
+        assert 'data-blast-ui-tier="unicorn-progressive-disclosure-v1"' in html_view
+        assert "badge-secondary-anomaly" in html_view
+        assert (
+            "Secondary Anomaly Indicator (Unfused v2 Autoencoder — Section 8 Fusion Disabled)"
+            in html_view
+        )
+        assert ".badge-secondary-anomaly { background: #8957e5; color: #fff; }" in html_view
 
 
 def test_viewing_dashboard_does_not_mutate_analyst_state(tmp_path, analyst_certs):

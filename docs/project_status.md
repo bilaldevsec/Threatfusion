@@ -1615,3 +1615,31 @@ TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptan
   - All 18 milestone test suites (129 tests) pass cleanly in 45.85s.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.
+
+### Milestone #28: 3-Layer Deterministic Architecture SOPs, Unicorn Progressive-Disclosure SOC Interface, Resilient Suricata Ingestion with Dead-Letter Quarantine, $0 Cloud Budget Kill-Switch, and Outage-Isolated Grounded Gemini Advisory Client (2026-10-18)
+
+- **Layer-1 Constitutional Architecture SOPs & Unicorn SOC Design Guidelines (`design_guidelines/soc_unicorn_interface_sop.md`, `docs/blast_3layer_architecture_sop.md`):**
+  - Documented 3-Layer Deterministic Architecture separating Layer 1 (human-authored constitutional SOPs, schemas, evaluation truth packs), Layer 2 (deterministic orchestration, typed contracts, immutable event schemas, zero-hallucination routing), and Layer 3 (atomic deterministic tools in `backend/src/` and `scripts/` where probabilistic LLMs are strictly banned from primary detection, feature extraction, correlation, and SOAR execution).
+  - Defined "Unicorn" SOC Interface Visual Hierarchy and Progressive Disclosure:
+    - Tier 1 (Primary Triage Signal): Frozen Random Forest Verdict Badge (P(Attack) >= 0.5, 95.266% precision, 0.095% FPR) and Dual-Window Incident Consolidation Badge (30.0s burst / 600.0s campaign).
+    - Tier 2 (Secondary Non-Blocking Investigative Context): Unfused v2 Autoencoder Reconstruction Error Badge (`badge-secondary-anomaly`: explicitly marked "Secondary Anomaly Indicator — Production Fusion Disabled per Section 8 16.4:1 FP Shield"), Verified Entity Provenance Badge, and RFC1918/Sourced Threat-Intel Badge.
+    - Tier 3 (Grounded Debrief & Human-Gated Action): Evidence-Bound Advisory Debrief (with cited evidence keys and deterministic template fallback) and Approval-Gated Reversible SOAR Controls (`pending_approval` -> `approved` -> `executed_simulated` -> `rolled_back`).
+  - Enhanced `backend/src/threatfusion/api/analyst_dashboard.py` with `data-blast-ui-tier="unicorn-progressive-disclosure-v1"` and styled secondary anomaly badge.
+
+- **Resilient Suricata Stream Ingestion with Dead-Letter Quarantine & $0 Cloud Budget Kill-Switch (`backend/src/threatfusion/operations/cloud_live_telemetry.py`, `scripts/run_cloud_suricata_forwarder.py`, `docs/google_ai_pro_zero_dollar_cloud_guide.md`):**
+  - Implemented `process_suricata_eve_stream_resilient`: parses Suricata EVE streams, cleanly skips non-flow events (`stats`, `dns`, `http`, `tls`, `alert`), and quarantines corrupted JSON lines and schema-invalid flows into `dead_letter_records` (`DeadLetterQuarantineRecord`) without raising or disrupting valid flow adaptation.
+  - Implemented `CloudBudgetKillSwitchPolicy` and `evaluate_budget_kill_switch`: deterministically triggers `should_detach_billing=True` at $5.00 gross spend and fails closed on negative spend or malformed telemetry, guaranteeing $0 out-of-pocket charges on the $10/month Google AI Pro credit model.
+  - Documented architecture and setup in `docs/google_ai_pro_zero_dollar_cloud_guide.md` and created CLI forwarder script `scripts/run_cloud_suricata_forwarder.py`.
+
+- **Outage-Isolated Grounded Gemini Advisory Client (`backend/src/threatfusion/advisory/gemini_client.py`):**
+  - Implemented `GeminiAdvisoryConfig`, `GeminiAdvisoryUnavailableError`, and `build_grounded_gemini_prompt` using pure Python stdlib (`urllib.request`, `json`, `os`).
+  - Implemented `GeminiAdvisoryCallable` strictly outside the primary detection loop: serializes only verified evidence from `AdvisoryEvidenceBundle`, enforces strict anti-hallucination rules (zero uninspected IPs, exact model version/probability, Section 8 fusion-disabled invariant affirmation, bounded cited keys).
+  - Outage isolation: fails closed to `deterministic_evidence_template` via `AdvisoryExplanationEngine` whenever `GEMINI_API_KEY` is missing, transport times out, or an ungrounded hallucination (e.g. IP `203.0.113.99`) is detected.
+
+- **Zero-Trust Audit Gate Upgrade & Comprehensive Test Verification (`backend/src/threatfusion/evaluation/repo_truth_audit.py`, `backend/tests/unit/test_blast_resilience_and_gemini_advisory.py`):**
+  - Upgraded Check 5 to verify `threatfusion.advisory.gemini_client` and `threatfusion.operations.cloud_live_telemetry` module origin under `backend/src` and assert `design_guidelines/soc_unicorn_interface_sop.md` exists on disk.
+  - Upgraded Check 6 (Live Functional Probe) to verify live resilient Suricata stream dead-letter quarantine and the $5.00 cloud budget kill-switch.
+  - Created `backend/tests/unit/test_blast_resilience_and_gemini_advisory.py` covering stream resilience, budget kill-switch policy thresholds, grounded Gemini advisory generation, anti-hallucination fallback on IP `203.0.113.99`, timeout/missing-key handling, and dashboard HTML progressive-disclosure tier rendering.
+  - All test suites passing cleanly, and `scripts/audit_repo_truth.py` confirms ALL 7 ZERO-TRUST CHECKS PASSED.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.
