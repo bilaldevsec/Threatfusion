@@ -1643,3 +1643,20 @@ TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptan
   - All test suites passing cleanly, and `scripts/audit_repo_truth.py` confirms ALL 7 ZERO-TRUST CHECKS PASSED.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.
+
+### Milestone #29: 9.5/10 B.L.A.S.T. Governance Upgrade (2026-10-18)
+
+- **Whole-Tree Symlink Rejection Gate (`_check_1_workspace_and_git_state` in `repo_truth_audit.py`):**
+  - Upgraded Check 1 to verify `git rev-parse --show-toplevel` resolves to the canonical repository root.
+  - Added whole-tree symlink traversal across `backend`, `scripts`, `docs`, and `design_guidelines` trees (`os.walk(..., followlinks=False)`). Any symlink immediately fails Check 1 closed with `"Unexpected symlink detected in workspace tree: <path>"`.
+- **Programmatic GO/NO-GO Decision Report & Unresolved Risk Ledger (`repo_truth_audit.py`, `scripts/audit_repo_truth.py`):**
+  - Added `decision_verdict: str` ("GO" iff all checks pass and `failed_check_ids == ()`, else "NO-GO"), `failed_check_ids: tuple[str, ...]`, and `unresolved_risks: tuple[str, ...]` to `RepoTruthAuditReport`.
+  - Bound the 4 canonical scientific disclosures (TF-008, TF-009, TF-010, TF-011) directly into the cryptographic truth audit receipt.
+  - Updated CLI runner `scripts/audit_repo_truth.py` to display the explicit scientific risk disclosures and post-execution decision verdict banner (`POST-EXECUTION DECISION VERDICT: GO`).
+- **Test Suite Consolidation (`test_blast_resilience_and_gemini_advisory.py`):**
+  - Merged redundant split test files (`test_advisory_explanation.py`, `test_blast_and_unicorn_sops.py`, `test_cloud_live_telemetry.py`) into one authoritative unit test file `backend/tests/unit/test_blast_resilience_and_gemini_advisory.py` (19 passing unit tests).
+  - Added unit regression tests in `test_repo_truth_audit.py`: `test_repo_truth_audit_rejects_unexpected_symlink_in_backend_tree` (asserts symlink injection triggers NO-GO) and `test_repo_truth_audit_emits_go_verdict_and_unresolved_risks_on_valid_repo` (asserts live GO verdict and 4 risks).
+- **Architecture SOP Documentation (`docs/blast_3layer_architecture_sop.md`):**
+  - Documented the 5 B.L.A.S.T. v2 governance rules: (1) Programmatic workspace & symlink rejection, (2) Exclusive subagent file ownership matrix, (3) Explicit GO/NO-GO decision report, (4) Task-specific behavioural verification, (5) Pre-flight checkpoint & change-control recovery.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.

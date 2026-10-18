@@ -176,3 +176,43 @@ The integrity of the 3-Layer Deterministic Architecture is verified by automated
 | **Internal Data Leakage** | RFC 1918 deterministic bitmask guard | Potential private IP leakage to public LLM APIs |
 | **Containment Action** | Approval-gated, audited, reversible SOAR | Autonomous, unverified script execution |
 | **Failure Recovery** | Deterministic template fallback | Silent hallucination or service failure |
+
+---
+
+## 9. B.L.A.S.T. v2 Governance & Change-Control Rules (Milestone #29 Upgrade)
+
+To ensure enterprise-grade reproducibility and auditability, ThreatFusion enforces the 5 B.L.A.S.T. v2 governance rules across all code generation, agent execution, and release engineering:
+
+### Rule 1: Programmatic Workspace & Whole-Tree Symlink Rejection
+- Audit Check 1 (`_check_1_workspace_and_git_state`) actively verifies that `git rev-parse --show-toplevel` resolves to the exact canonical workspace root (`/home/muhammad-bilal/projects/threatfusion-gemini`).
+- Check 1 recursively traverses `repo_root / "backend"`, `repo_root / "scripts"`, `repo_root / "docs"`, and `repo_root / "design_guidelines" using `os.walk(..., followlinks=False)`. If even a single symlink is detected anywhere in these trees, the audit **fails closed** immediately with:
+  `"Unexpected symlink detected in workspace tree: <path>"`.
+- Symlink-based file aliasing or cross-tree shadowing is strictly banned.
+
+### Rule 2: Exclusive Subagent File Ownership Matrix
+- Multi-agent development requires an explicit, disjoint `EXCLUSIVE_OWNED_FILES` matrix.
+- No two concurrent subagents may modify the same source, test, or documentation file.
+- Any attempt to touch files in `FORBIDDEN_FILES` or outside an agent's allocated partition invalidates the workstream.
+
+### Rule 3: Explicit Programmatic GO / NO-GO Decision Report
+- The audit report dataclass (`RepoTruthAuditReport`) programmatically computes and exposes:
+  - `decision_verdict: str` ("GO" if and only if `all_checks_passed is True` and `len(failed_check_ids) == 0`, else "NO-GO").
+  - `failed_check_ids: tuple[str, ...]` enumerating any failed check.
+  - `unresolved_risks: tuple[str, ...]` permanently binding the 4 canonical scientific disclosures:
+    - **TF-008 (open):** January (216,568 rows) and February (1,452,844 rows) validation populations were previously inspected; performance on unseen external/live traffic is not yet proven.
+    - **TF-009 (open):** Counterfactual FP shield (201 RF FPs vs 1,775 fused FPs) and SQLite study harness are verified, but empirical human analyst cohort trials (>=10 trials) remain required.
+    - **TF-010 (open):** Repository traceability and Rev2 defense deliverables are aligned, awaiting official external signed FAST-NUCES FYP-II jury evaluation rubric.
+    - **TF-011 (open):** Suricata 14-feature adapter and dead-letter quarantine are verified on recorded/loopback streams; live cloud/SIEM field deployment remains open.
+
+### Rule 4: Task-Specific Behavioural Verification
+- Changes are verified through non-mocked functional tests, behavioral probes, and live CLI executions.
+- Unit and integration tests must run in isolated virtual environments (`env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 threatfusion-venv/bin/pytest`).
+- Mock testing is restricted to simulated external cloud APIs (e.g., Gemini REST endpoints) and must rigorously test error modes, timeouts, malformed responses, and anti-hallucination rejection.
+
+### Rule 5: Pre-Flight Checkpoint & Change-Control Recovery
+- Before launching any new milestone:
+  1. Inspect and terminate any orphaned tasks or subagents via `ManageTask` and `ManageSubagents`.
+  2. Remove temporary or scratch verification scripts from disk.
+  3. Ensure prior verified milestones are cleanly committed to git with standard conventional commits.
+  4. Record the clean known-good `git rev-parse HEAD` commit hash as the authoritative baseline.
+  5. Leave ongoing milestone changes unstaged until all validation gates have completed.

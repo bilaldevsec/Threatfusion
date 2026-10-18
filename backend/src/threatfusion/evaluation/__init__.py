@@ -1,6 +1,8 @@
 """ThreatFusion evaluation, alert-fatigue compression, and workload measurement subpackage."""
 
 from threatfusion.evaluation.repo_truth_audit import (
+    CANONICAL_PROJECT_RELEASE_READINESS,
+    CANONICAL_UNRESOLVED_RISKS,
     EXPECTED_CANONICAL_ISSUE_ROWS,
     CheckResult,
     RepoTruthAuditReport,
@@ -25,6 +27,8 @@ from threatfusion.evaluation.workload_measurement import (
 __all__ = [
     "AlertFatigueCompressionReport",
     "AnalystWorkloadStudyRepository",
+    "CANONICAL_PROJECT_RELEASE_READINESS",
+    "CANONICAL_UNRESOLVED_RISKS",
     "CheckResult",
     "CounterfactualFusionShieldMetrics",
     "EXPECTED_CANONICAL_ISSUE_ROWS",

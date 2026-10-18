@@ -48,7 +48,7 @@ def main() -> int:
     else:
         print(report.render_receipt_banner())
 
-    return 0 if report.all_checks_passed else 1
+    return 0 if (report.all_checks_passed and report.repository_integrity_decision == "GO") else 1
 
 
 if __name__ == "__main__":

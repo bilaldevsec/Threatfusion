@@ -1,19 +1,23 @@
-"""Unit tests for Blast-Resilient Ingestion, $0 Cloud Budget Kill-Switch, Gemini Advisory, and Unicorn UI (Milestone #28).
+"""Consolidated authoritative unit tests for B.L.A.S.T. Architecture Hardening (Milestone #28 & #29).
 
 Covers:
 1. Resilient Suricata EVE stream ingestion with mixed corrupted JSON, non-flow events,
-   schema-invalid flows, and valid attack flows without crashing or raising.
-2. CloudBudgetKillSwitchPolicy deterministic behavior ($5.00 shutoff, negative spend fail-closed, $2.50 normal).
-3. Outage-isolated GeminiAdvisoryCallable succeeding on grounded JSON ("verified_local_llm_advisory")
-   and falling back to "deterministic_evidence_template" via AdvisoryExplanationEngine on hallucinated IP
-   ("203.0.113.99"), missing GEMINI_API_KEY, or transport timeout.
-4. Analyst dashboard HTML rendering data-blast-ui-tier="unicorn-progressive-disclosure-v1" and
-   the secondary unfused v2 autoencoder badge.
+   schema-invalid flows, and valid attack flows without crashing or halting stream processing.
+2. Dead-letter quarantine record serialization and max dead-letter cap behavior.
+3. CloudBudgetKillSwitchPolicy deterministic behavior ($5.00 shutoff, negative/NaN/Inf spend fail-closed, $2.50 normal).
+4. CLI execution for run_cloud_suricata_forwarder.py (JSON, text, budget check, file input).
+5. Outage-isolated GeminiAdvisoryCallable defaults, prompt serialization, flow-only empty IPs,
+   grounded generation ("verified_local_llm_advisory"), anti-hallucination rejection of uncited keys
+   and hallucinated IPs ("203.0.113.99"), missing API key, transport timeouts, and detection loop immutability.
+6. Analyst dashboard HTML rendering data-blast-ui-tier="unicorn-progressive-disclosure-v1",
+   secondary unfused v2 autoencoder badge, and on-disk SOP existence for Unicorn SOC and BLAST 3-layer architecture.
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import sys
 from typing import Any
 
 import pytest
@@ -22,7 +26,9 @@ from threatfusion.advisory import (
     AdvisoryEvidenceBundle,
     AdvisoryExplanationEngine,
     GeminiAdvisoryCallable,
+    GeminiAdvisoryConfig,
     GeminiAdvisoryUnavailableError,
+    build_grounded_gemini_prompt,
     verify_explanation_groundedness,
 )
 from threatfusion.api.analyst_dashboard import (
@@ -34,9 +40,18 @@ from threatfusion.api.analyst_dashboard import (
 from threatfusion.enrichment.threat_intel import ThreatIntelEnrichmentResult
 from threatfusion.operations.cloud_live_telemetry import (
     CloudBudgetKillSwitchPolicy,
+    DeadLetterQuarantineRecord,
+    SuricataStreamBatchReport,
     evaluate_budget_kill_switch,
     process_suricata_eve_stream_resilient,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+SCRIPTS_ROOT = REPO_ROOT / "scripts"
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
+
+import run_cloud_suricata_forwarder as forwarder_cli  # noqa: E402
 
 
 def _make_valid_suricata_flow(
@@ -80,7 +95,7 @@ def _make_valid_suricata_flow(
 
 
 class TestBlastResilienceAndCloudBudgetKillSwitch:
-    """Tests for Milestone #28 resilient ingestion and $0 cloud budget kill-switch."""
+    """Tests for resilient ingestion and $0 cloud budget kill-switch."""
 
     def test_stream_ingestion_resilience_and_quarantine_counters(self) -> None:
         """Stream with mixed corrupted JSON, stats/dns events, invalid schemas, and valid flows produces exact counters."""
@@ -148,9 +163,58 @@ class TestBlastResilienceAndCloudBudgetKillSwitch:
             "schema_validation_failed",
         ]
 
+    def test_dead_letter_quarantine_record_and_report_serialization(self) -> None:
+        """Verify DeadLetterQuarantineRecord and SuricataStreamBatchReport dictionary serialization."""
+        record = DeadLetterQuarantineRecord(
+            line_number=42,
+            error_code="schema_validation_failed",
+            error_detail="Invalid destination port",
+            raw_excerpt='{"dest_port": 99999}',
+            recorded_at_utc="2026-10-18T10:00:00.000000+00:00",
+        )
+        d = record.to_dict()
+        assert d["line_number"] == 42
+        assert d["error_code"] == "schema_validation_failed"
+        assert d["raw_excerpt"] == '{"dest_port": 99999}'
+
+        report = SuricataStreamBatchReport(
+            total_lines_read=10,
+            non_flow_events_skipped=3,
+            valid_flows_adapted=5,
+            dead_letter_count=2,
+            dead_letter_records=(record,),
+            adapted_results=(),
+            provenance_verified_count=5,
+        )
+        rd = report.to_dict()
+        assert rd["total_lines_read"] == 10
+        assert rd["valid_flows_adapted"] == 5
+        assert rd["provenance_verified_count"] == 5
+        assert rd["dead_letter_count"] == 2
+        assert len(rd["dead_letter_records"]) == 1
+
+    def test_process_suricata_eve_stream_clock_unsynced_and_cap(self) -> None:
+        """Verify stream processor handles unsynchronized clocks and enforces max_dead_letters cap."""
+        valid_flow = json.dumps(_make_valid_suricata_flow())
+        bad_line = "{bad"
+
+        lines = [bad_line] * 10 + [valid_flow]
+
+        report = process_suricata_eve_stream_resilient(
+            lines,
+            sensor_namespace="test-sensor-02",
+            clock_synced=False,
+            max_dead_letters=3,
+        )
+
+        assert report.total_lines_read == 11
+        assert report.valid_flows_adapted == 1
+        assert report.provenance_verified_count == 0
+        assert report.dead_letter_count == 10
+        assert len(report.dead_letter_records) == 3
+
     def test_cloud_budget_kill_switch_policy_thresholds(self) -> None:
         """CloudBudgetKillSwitchPolicy triggers detach_billing=True at $5.00 and on negative spend, False at $2.50."""
-        # Baseline default policy ($10 credit, $5 hard shutoff)
         policy = CloudBudgetKillSwitchPolicy()
 
         # At $5.00: Must trigger hard shutoff
@@ -186,9 +250,69 @@ class TestBlastResilienceAndCloudBudgetKillSwitch:
         assert res_neg["status"] == "triggered_fail_closed"
         assert "Fail-closed: malformed or negative spend" in res_neg["reason"]
 
+    def test_evaluate_budget_kill_switch_malformed_nan_inf_spend(self) -> None:
+        """Verify fail-closed handling on NaN and Inf spend amounts."""
+        policy = CloudBudgetKillSwitchPolicy()
+
+        res_nan = evaluate_budget_kill_switch(float("nan"), policy)
+        assert res_nan["should_detach_billing"] is True
+        assert res_nan["status"] == "triggered_fail_closed"
+
+        res_inf = evaluate_budget_kill_switch(float("inf"), policy)
+        assert res_inf["should_detach_billing"] is True
+        assert res_inf["status"] == "triggered_fail_closed"
+
+    def test_forwarder_cli_budget_check_json_and_text(self, capsys: pytest.CaptureFixture) -> None:
+        """Verify forwarder CLI --budget-check in JSON and text formats."""
+        code_json = forwarder_cli.main(["--budget-check", "3.00", "--format", "json"])
+        assert code_json == 0
+        captured_json = capsys.readouterr().out
+        data = json.loads(captured_json)
+        assert data["status"] == "success"
+        assert data["budget_kill_switch"]["should_detach_billing"] is False
+        assert data["budget_kill_switch"]["gross_spend_usd"] == 3.0
+
+        code_text = forwarder_cli.main(["--budget-check", "5.25", "--format", "text"])
+        assert code_text == 0
+        captured_text = capsys.readouterr().out
+        assert "ThreatFusion Cloud Suricata EVE Live Telemetry Forwarder Report" in captured_text
+        assert "Should Detach Billing:   True" in captured_text
+        assert "Gross Spend:             $5.25 USD" in captured_text
+
+        code_fail = forwarder_cli.main(["--budget-check", "6.00", "--fail-on-kill-switch"])
+        assert code_fail == 2
+        captured_fail = capsys.readouterr().out
+        data_fail = json.loads(captured_fail)
+        assert data_fail["budget_kill_switch"]["should_detach_billing"] is True
+
+    def test_forwarder_cli_file_input(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+        """Verify forwarder CLI file stream ingestion."""
+        test_file = tmp_path / "suricata_test.json"
+        valid_record = _make_valid_suricata_flow(src_port=55110)
+        test_file.write_text(f"{json.dumps(valid_record)}\n{{invalid_json\n", encoding="utf-8")
+
+        code = forwarder_cli.main(
+            [
+                str(test_file),
+                "--sensor-namespace",
+                "cli-test-sensor",
+                "--format",
+                "json",
+            ]
+        )
+        assert code == 0
+        captured = capsys.readouterr().out
+        res = json.loads(captured)
+        report = res["telemetry_batch_report"]
+        assert report["total_lines_read"] == 2
+        assert report["valid_flows_adapted"] == 1
+        assert report["dead_letter_count"] == 1
+        assert len(report["dead_letter_records"]) == 1
+        assert report["dead_letter_records"][0]["error_code"] == "malformed_json_line"
+
 
 class TestGeminiAdvisoryGroundednessAndOutageIsolation:
-    """Tests for Milestone #28 outage-isolated Gemini Advisory Engine and Anti-Hallucination verification."""
+    """Tests for outage-isolated Gemini Advisory Engine and Anti-Hallucination verification."""
 
     @pytest.fixture
     def bundle_for_advisory(self) -> AdvisoryEvidenceBundle:
@@ -216,6 +340,52 @@ class TestGeminiAdvisoryGroundednessAndOutageIsolation:
             ),
             observed_at="2026-10-18T10:00:00Z",
         )
+
+    def test_gemini_config_defaults_and_endpoint_url(self) -> None:
+        """Verify GeminiAdvisoryConfig default fields and parameterized URL formulation."""
+        config = GeminiAdvisoryConfig()
+        assert config.model_name == "gemini-2.5-flash"
+        assert config.timeout_seconds == 5.0
+        assert config.max_output_tokens == 512
+        assert config.api_key_env_var == "GEMINI_API_KEY"
+
+        url = config.get_endpoint_url("secret_test_key")
+        assert "gemini-2.5-flash" in url
+        assert "key=secret_test_key" in url
+
+    def test_build_grounded_gemini_prompt_serialization(
+        self, bundle_for_advisory: AdvisoryEvidenceBundle
+    ) -> None:
+        """Verify prompt builder embeds only verified bundle attributes with anti-hallucination rules."""
+        prompt = build_grounded_gemini_prompt(bundle_for_advisory)
+
+        assert "alert_cand_m28_01" in prompt
+        assert "rec_suricata_flow_42" in prompt
+        assert "2026-10-18T10:00:00Z" in prompt
+        assert "full-network-random-forest-6d69c72-v1" in prompt
+        assert "0.8850" in prompt
+        assert "10.0.0.4" in prompt
+        assert "10.0.0.5" in prompt
+        assert "NO IP ADDRESS HALLUCINATIONS" in prompt
+        assert "SECTION 8 INVARIANT" in prompt
+        assert "PURE JSON ONLY" in prompt
+
+    def test_build_grounded_gemini_prompt_flow_only_empty_ips(self) -> None:
+        """Verify prompt builder handles flow-only bundles without enrichment cleanly."""
+        flow_only_bundle = AdvisoryEvidenceBundle(
+            candidate_id="alert_candidate_v1:flow_only_01",
+            record_id="rec_unsw_flow_99",
+            rf_model_version="full-network-random-forest-6d69c72-v1",
+            rf_attack_probability=0.7600,
+            rf_threshold=0.50,
+            top_feature_signals={"dur": 0.45, "rate": 22.0},
+            enrichment_result=None,
+        )
+        prompt = build_grounded_gemini_prompt(flow_only_bundle)
+
+        assert "alert_candidate_v1:flow_only_01" in prompt
+        assert '"allowed_ip_entities": []' in prompt
+        assert "Entity provenance unverified; no IP addresses inspected" in prompt
 
     def test_gemini_advisory_succeeds_on_grounded_mock_json(
         self, bundle_for_advisory: AdvisoryEvidenceBundle
@@ -320,6 +490,43 @@ class TestGeminiAdvisoryGroundednessAndOutageIsolation:
         assert safe_exp.groundedness_verified is True
         assert "203.0.113.99" not in safe_exp.correlation_and_enrichment_context
 
+    def test_llm_uncited_evidence_key_rejected_and_falls_back(
+        self, bundle_for_advisory: AdvisoryEvidenceBundle
+    ) -> None:
+        """When an uncited or disallowed evidence key is returned, engine falls back to deterministic template."""
+
+        def invalid_key_transport(endpoint_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+            response_json = {
+                "summary_headline": "Probe detected",
+                "detection_rationale": "Model full-network-random-forest-6d69c72-v1 scored 0.8850.",
+                "complementarity_and_fusion_note": "Authority on Random Forest; fusion is disabled.",
+                "correlation_and_enrichment_context": "Correlation context ok.",
+                "recommended_analyst_checks": ["Check logs"],
+                "cited_evidence_keys": [
+                    "candidate_id",
+                    "unapproved_external_telemetry_source",
+                ],
+            }
+            return {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [{"text": json.dumps(response_json)}],
+                        }
+                    }
+                ]
+            }
+
+        client = GeminiAdvisoryCallable(transport_callable=invalid_key_transport)
+        candidate_exp = client(bundle_for_advisory)
+        assert verify_explanation_groundedness(candidate_exp, bundle_for_advisory) is False
+
+        safe_exp = AdvisoryExplanationEngine.generate_explanation(
+            bundle_for_advisory,
+            optional_llm_callable=client,
+        )
+        assert safe_exp.generation_mode == "deterministic_evidence_template"
+
     def test_gemini_advisory_falls_back_when_api_key_missing(
         self, monkeypatch: pytest.MonkeyPatch, bundle_for_advisory: AdvisoryEvidenceBundle
     ) -> None:
@@ -357,9 +564,33 @@ class TestGeminiAdvisoryGroundednessAndOutageIsolation:
         assert safe_exp.generation_mode == "deterministic_evidence_template"
         assert safe_exp.groundedness_verified is True
 
+    def test_outage_isolation_preserves_detection_loop_integrity(
+        self, bundle_for_advisory: AdvisoryEvidenceBundle
+    ) -> None:
+        """Verifies that whether Gemini succeeds, errors, or hallucinates, primary detection is untouched."""
+        orig_prob = bundle_for_advisory.rf_attack_probability
+        orig_threshold = bundle_for_advisory.rf_threshold
+        orig_candidate_id = bundle_for_advisory.candidate_id
+
+        client = GeminiAdvisoryCallable(
+            transport_callable=lambda u, p: {
+                "candidates": [{"content": {"parts": [{"text": "invalid json"}]}}]
+            }
+        )
+
+        safe_exp = AdvisoryExplanationEngine.generate_explanation(
+            bundle_for_advisory,
+            optional_llm_callable=client,
+        )
+
+        assert safe_exp.generation_mode == "deterministic_evidence_template"
+        assert bundle_for_advisory.rf_attack_probability == orig_prob
+        assert bundle_for_advisory.rf_threshold == orig_threshold
+        assert bundle_for_advisory.candidate_id == orig_candidate_id
+
 
 class TestUnicornSOCInterfaceVisualHierarchy:
-    """Tests for Milestone #28 Unicorn Progressive Disclosure and Section 8 badge in Analyst Dashboard HTML."""
+    """Tests for Unicorn Progressive Disclosure and Section 8 badge in Analyst Dashboard HTML & SOP documentation."""
 
     def test_analyst_dashboard_html_renders_unicorn_tier_and_unfused_ae_badge(self) -> None:
         """Analyst dashboard detail card renders data-blast-ui-tier and secondary unfused AE badge."""
@@ -402,3 +633,45 @@ class TestUnicornSOCInterfaceVisualHierarchy:
 
         # 3. CSS styling for the secondary anomaly badge
         assert ".badge-secondary-anomaly" in html
+
+    def test_soc_unicorn_interface_sop_exists_and_covers_all_tiers(self) -> None:
+        """Verify design_guidelines/soc_unicorn_interface_sop.md exists and specifies the 3-Tier standard."""
+        sop_file = REPO_ROOT / "design_guidelines" / "soc_unicorn_interface_sop.md"
+        assert sop_file.exists(), "design_guidelines/soc_unicorn_interface_sop.md must exist"
+
+        content = sop_file.read_text(encoding="utf-8")
+        assert "SOP-UX-SOC-001" in content
+        assert 'data-blast-ui-tier="unicorn-progressive-disclosure-v1"' in content
+        assert "95.266%" in content
+        assert "0.095%" in content
+        assert "16.3958" in content or "16.4:1" in content
+        assert "full-network-random-forest-6d69c72-v1" in content
+        assert "full-benign-autoencoder-2a51c94-v2" in content
+        assert "badge-secondary-anomaly" in content
+        assert "cited_evidence_keys" in content
+        assert "pending_approval" in content
+        assert "executed_simulated" in content
+        assert "rolled_back" in content
+        assert (
+            "TF-008" in content
+            and "TF-009" in content
+            and "TF-010" in content
+            and "TF-011" in content
+        )
+
+    def test_blast_3layer_architecture_sop_exists_and_documents_all_layers(self) -> None:
+        """Verify docs/blast_3layer_architecture_sop.md exists and documents the 3 deterministic layers."""
+        sop_file = REPO_ROOT / "docs" / "blast_3layer_architecture_sop.md"
+        assert sop_file.exists(), "docs/blast_3layer_architecture_sop.md must exist"
+
+        content = sop_file.read_text(encoding="utf-8")
+        assert "SOP-ARCH-BLAST-001" in content
+        assert "Layer 1: Architecture SOPs & Constitutional Policies" in content
+        assert "Layer 2: Deterministic Pipeline Navigation" in content
+        assert "Layer 3: Atomic Deterministic Tools" in content
+        assert "production_fusion_enabled = False" in content
+        assert "bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9" in content
+        assert "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23" in content
+        assert "cited_evidence_keys" in content
+        assert "Deterministic Template Fallback" in content
+        assert "SuricataFlowAdapter" in content

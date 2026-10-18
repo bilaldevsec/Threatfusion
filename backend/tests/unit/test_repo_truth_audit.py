@@ -13,6 +13,7 @@ from types import ModuleType
 import pytest
 
 from threatfusion.evaluation.repo_truth_audit import (
+    CANONICAL_PROJECT_RELEASE_READINESS,
     EXPECTED_MODEL_DIGESTS,
     REPO_TRUTH_AUDIT_SCHEMA_VERSION,
     _check_2_frozen_model_invariance,
@@ -370,3 +371,144 @@ class TestRepoTruthAudit:
             "M28 evaluate_budget_kill_switch(5.0) should_detach_billing is not True" in f
             for f in c6.details.get("failures", [])
         )
+
+    def test_repo_truth_audit_rejects_unexpected_symlink_in_backend_tree(self) -> None:
+        """Creating an unexpected symlink inside the backend tree causes Check 1 to fail closed and report NO-GO."""
+        with tempfile.TemporaryDirectory() as td:
+            fake_root = Path(td).resolve()
+            # Initialize a minimal git repository
+            subprocess.run(["git", "init"], cwd=fake_root, capture_output=True, check=True)
+            subprocess.run(
+                ["git", "config", "user.name", "Test Auditor"],
+                cwd=fake_root,
+                capture_output=True,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "auditor@example.com"],
+                cwd=fake_root,
+                capture_output=True,
+                check=True,
+            )
+
+            # Create backend/tests/unit directory structure and real file
+            target_dir = fake_root / "backend" / "tests" / "unit"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            real_file = target_dir / "sample.py"
+            real_file.write_text("# dummy\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=fake_root, capture_output=True, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "init"],
+                cwd=fake_root,
+                capture_output=True,
+                check=True,
+            )
+
+            # Create an unexpected symlink inside backend/tests/unit/
+            symlink_path = target_dir / "symlink_sample.py"
+            symlink_path.symlink_to(real_file)
+
+            # Run audit on fake_root
+            report = run_repository_truth_audit(repo_root=fake_root)
+
+            assert report.decision_verdict == "NO-GO"
+            assert report.repository_integrity_decision == "NO-GO"
+            assert report.all_checks_passed is False
+            assert "Check 1" in report.failed_check_ids
+            c1 = [c for c in report.checks if c.check_id == 1][0]
+            assert c1.passed is False
+            assert "Unexpected symlink detected in workspace tree:" in c1.summary
+            assert len(c1.details.get("detected_symlinks", [])) > 0
+            assert any("symlink_sample.py" in s for s in c1.details.get("detected_symlinks", []))
+
+    def test_repo_truth_audit_rejects_symlink_anywhere_in_repo_boundary(self) -> None:
+        """Symlink injection at root-level, inside scripts/, or on repo_root itself triggers repository_integrity_decision == 'NO-GO'."""
+        with tempfile.TemporaryDirectory() as td:
+            fake_root = Path(td).resolve()
+            subprocess.run(["git", "init"], cwd=fake_root, capture_output=True, check=True)
+            subprocess.run(
+                ["git", "config", "user.name", "Test Auditor"],
+                cwd=fake_root,
+                capture_output=True,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "auditor@example.com"],
+                cwd=fake_root,
+                capture_output=True,
+                check=True,
+            )
+
+            # Base files
+            scripts_dir = fake_root / "scripts"
+            scripts_dir.mkdir(parents=True, exist_ok=True)
+            real_script = scripts_dir / "real_script.py"
+            real_script.write_text("# script\n", encoding="utf-8")
+            root_real = fake_root / "root_file.txt"
+            root_real.write_text("root\n", encoding="utf-8")
+
+            subprocess.run(["git", "add", "."], cwd=fake_root, capture_output=True, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "init"],
+                cwd=fake_root,
+                capture_output=True,
+                check=True,
+            )
+
+            # Case A: Symlink in scripts/
+            script_symlink = scripts_dir / "evil_script_symlink.py"
+            script_symlink.symlink_to(real_script)
+            rep_a = run_repository_truth_audit(repo_root=fake_root)
+            assert rep_a.repository_integrity_decision == "NO-GO"
+            assert rep_a.decision_verdict == "NO-GO"
+            assert "Check 1" in rep_a.failed_check_ids
+            c1_a = [c for c in rep_a.checks if c.check_id == 1][0]
+            assert any(
+                "scripts/evil_script_symlink.py" in s
+                for s in c1_a.details.get("detected_symlinks", [])
+            )
+            script_symlink.unlink()
+
+            # Case B: Root-level symlink
+            root_symlink = fake_root / "evil_root_symlink.py"
+            root_symlink.symlink_to(root_real)
+            rep_b = run_repository_truth_audit(repo_root=fake_root)
+            assert rep_b.repository_integrity_decision == "NO-GO"
+            assert rep_b.decision_verdict == "NO-GO"
+            assert "Check 1" in rep_b.failed_check_ids
+            c1_b = [c for c in rep_b.checks if c.check_id == 1][0]
+            assert any(
+                "evil_root_symlink.py" in s for s in c1_b.details.get("detected_symlinks", [])
+            )
+            root_symlink.unlink()
+
+            # Case C: repo_root itself is a symlink
+            symlink_repo_root = Path(td) / "symlink_repo_root"
+            symlink_repo_root.symlink_to(fake_root)
+            rep_c = run_repository_truth_audit(repo_root=symlink_repo_root)
+            assert rep_c.repository_integrity_decision == "NO-GO"
+            assert rep_c.decision_verdict == "NO-GO"
+            assert "Check 1" in rep_c.failed_check_ids
+            c1_c = [c for c in rep_c.checks if c.check_id == 1][0]
+            assert "Repository root is a symlink" in c1_c.summary
+            symlink_repo_root.unlink()
+
+    def test_repo_truth_audit_controlled_valid_fixture_and_scientific_disclosures(
+        self,
+    ) -> None:
+        """Valid repository produces repository_integrity_decision == 'GO', project_release_readiness == BOUNDED_PROTOTYPE_OPEN_EXTERNAL_GATES_TF008_TO_TF011, and 4 unresolved risks."""
+        report = run_repository_truth_audit()
+        assert report.decision_verdict == "GO"
+        assert report.repository_integrity_decision == "GO"
+        assert report.project_release_readiness == CANONICAL_PROJECT_RELEASE_READINESS
+        assert (
+            report.project_release_readiness
+            == "BOUNDED_PROTOTYPE_OPEN_EXTERNAL_GATES_TF008_TO_TF011"
+        )
+        assert report.failed_check_ids == ()
+        assert report.all_checks_passed is True
+        assert len(report.unresolved_risks) == 4
+        assert "TF-008 (open):" in report.unresolved_risks[0]
+        assert "TF-009 (open):" in report.unresolved_risks[1]
+        assert "TF-010 (open):" in report.unresolved_risks[2]
+        assert "TF-011 (open):" in report.unresolved_risks[3]

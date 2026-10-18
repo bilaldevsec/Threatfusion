@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 import hashlib
 import importlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -136,6 +137,16 @@ EXPECTED_CANONICAL_ISSUE_ROWS: Mapping[str, tuple[str, ...]] = {
 }
 
 
+CANONICAL_UNRESOLVED_RISKS: tuple[str, ...] = (
+    "TF-008 (open): January (216,568 rows) and February (1,452,844 rows) validation populations were previously inspected; performance on unseen external/live traffic is not yet proven.",
+    "TF-009 (open): Counterfactual FP shield (201 RF FPs vs 1,775 fused FPs) and SQLite study harness are verified, but empirical human analyst cohort trials (>=10 trials) remain required.",
+    "TF-010 (open): Repository traceability and Rev2 defense deliverables are aligned, awaiting official external signed FAST-NUCES FYP-II jury evaluation rubric.",
+    "TF-011 (open): Suricata 14-feature adapter and dead-letter quarantine are verified on recorded/loopback streams; live cloud/SIEM field deployment remains open.",
+)
+
+CANONICAL_PROJECT_RELEASE_READINESS: str = "BOUNDED_PROTOTYPE_OPEN_EXTERNAL_GATES_TF008_TO_TF011"
+
+
 def _file_sha256(path: Path) -> str:
     """Compute SHA-256 digest of a file in 64 KiB chunks."""
     h = hashlib.sha256()
@@ -203,6 +214,11 @@ class RepoTruthAuditReport:
     checks: list[CheckResult]
     all_checks_passed: bool
     receipt_digest: str
+    decision_verdict: str = "NO-GO"
+    repository_integrity_decision: str = "NO-GO"
+    project_release_readiness: str = CANONICAL_PROJECT_RELEASE_READINESS
+    failed_check_ids: tuple[str, ...] = ()
+    unresolved_risks: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -218,6 +234,11 @@ class RepoTruthAuditReport:
             "checks": [c.to_dict() for c in self.checks],
             "all_checks_passed": self.all_checks_passed,
             "receipt_digest": self.receipt_digest,
+            "decision_verdict": self.decision_verdict,
+            "repository_integrity_decision": self.repository_integrity_decision,
+            "project_release_readiness": self.project_release_readiness,
+            "failed_check_ids": list(self.failed_check_ids),
+            "unresolved_risks": list(self.unresolved_risks),
         }
 
     def render_receipt_banner(self) -> str:
@@ -260,9 +281,23 @@ class RepoTruthAuditReport:
             [
                 "",
                 "-" * 80,
+                "UNRESOLVED RISKS & SCIENTIFIC BOUNDARIES:",
+                "-" * 80,
+            ]
+        )
+        for risk in self.unresolved_risks:
+            lines.append(f" • {risk}")
+
+        lines.extend(
+            [
+                "",
+                "-" * 80,
                 "CRYPTOGRAPHIC GROUND-TRUTH RECEIPT SHA-256:",
                 f"  {self.receipt_digest}",
                 "",
+                f"POST-EXECUTION DECISION VERDICT: {self.decision_verdict}",
+                f"REPOSITORY INTEGRITY DECISION (CODE & INVARIANT CHECKS): {self.repository_integrity_decision}",
+                f"PROJECT RELEASE READINESS (EXTERNAL/EMPIRICAL GATES): {self.project_release_readiness}",
                 f"OVERALL STATUS: {'ALL 7 ZERO-TRUST CHECKS PASSED' if self.all_checks_passed else 'AUDIT FAILED (Discrepancy Detected)'}",
                 "=" * 80,
             ]
@@ -274,13 +309,64 @@ def _check_1_workspace_isolation(
     repo_root: Path,
 ) -> tuple[CheckResult, str, str, bool, dict[str, str], dict[str, str]]:
     """Check 1: Workspace Isolation & Git State Check."""
-    resolved_root = repo_root.resolve()
     passed = True
     issues: list[str] = []
+    detected_symlinks: list[str] = []
+
+    # First verify that repo_root itself is not a symlink
+    if repo_root.is_symlink():
+        passed = False
+        issues.append(f"Repository root is a symlink: {repo_root}")
+        detected_symlinks.append(str(repo_root))
+
+    resolved_root = repo_root.resolve()
 
     if resolved_root != CANONICAL_WORKSPACE_PATH:
         passed = False
         issues.append(f"Workspace path mismatch: {resolved_root} != {CANONICAL_WORKSPACE_PATH}")
+
+    # Subprocess git rev-parse --show-toplevel verification
+    try:
+        toplevel_proc = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=resolved_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        git_toplevel = Path(toplevel_proc.stdout.strip()).resolve()
+        if git_toplevel != resolved_root:
+            passed = False
+            issues.append(f"Git toplevel mismatch: {git_toplevel} != canonical {resolved_root}")
+    except Exception as e:
+        passed = False
+        issues.append(f"Failed to query git toplevel: {e}")
+
+    # Whole-repository boundary symlink scan (excluding explicit environment and cache directories)
+    excluded_dirs = {
+        ".git",
+        "threatfusion-venv",
+        ".venv",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".mypy_cache",
+        "__pycache__",
+        ".agents",
+        ".gemini",
+        ".codex",
+    }
+    for root_dir, dirs, files in os.walk(resolved_root, followlinks=False):
+        dirs[:] = [d for d in dirs if d not in excluded_dirs]
+        for entry in dirs + [f for f in files if f not in excluded_dirs]:
+            p = Path(root_dir) / entry
+            if p.is_symlink():
+                passed = False
+                try:
+                    rel_symlink = p.relative_to(resolved_root)
+                except ValueError:
+                    rel_symlink = p
+                detected_symlinks.append(str(rel_symlink))
+                issues.append(f"Unexpected symlink detected in workspace tree: {rel_symlink}")
 
     branch = "UNKNOWN"
     head_sha = "UNKNOWN"
@@ -359,9 +445,13 @@ def _check_1_workspace_isolation(
             "clean_working_tree": clean_working_tree,
             "modified_tracked_count": len(modified_tracked),
             "untracked_count": len(untracked),
+            "detected_symlinks": detected_symlinks,
         },
     )
     return result, branch, head_sha, clean_working_tree, modified_tracked, untracked
+
+
+_check_1_workspace_and_git_state = _check_1_workspace_isolation
 
 
 def _check_2_frozen_model_invariance(
@@ -990,7 +1080,7 @@ def run_repository_truth_audit(
         # Resolve repo root from this file location: backend/src/threatfusion/evaluation/repo_truth_audit.py -> repo_root
         repo_root = Path(__file__).resolve().parents[4]
     else:
-        repo_root = Path(repo_root).resolve()
+        repo_root = Path(repo_root)
 
     timestamp_utc = datetime.now(UTC).isoformat()
 
@@ -1017,6 +1107,11 @@ def run_repository_truth_audit(
 
     checks = [c1, c2, c3, c4, c5, c6, c7]
     all_passed = all(c.passed for c in checks)
+    failed_check_ids = tuple(f"Check {c.check_id}" for c in checks if not c.passed)
+    decision_verdict = "GO" if (all_passed and len(failed_check_ids) == 0) else "NO-GO"
+    repository_integrity_decision = "GO" if (all_passed and len(failed_check_ids) == 0) else "NO-GO"
+    project_release_readiness = CANONICAL_PROJECT_RELEASE_READINESS
+    unresolved_risks = CANONICAL_UNRESOLVED_RISKS
 
     # Compute deterministic receipt hash over canonical json of report payload
     pre_receipt_payload = {
@@ -1031,6 +1126,11 @@ def run_repository_truth_audit(
         "model_digests": model_digests,
         "checks": [c.to_dict() for c in checks],
         "all_checks_passed": all_passed,
+        "decision_verdict": decision_verdict,
+        "repository_integrity_decision": repository_integrity_decision,
+        "project_release_readiness": project_release_readiness,
+        "failed_check_ids": list(failed_check_ids),
+        "unresolved_risks": list(unresolved_risks),
     }
     canonical_repr = json.dumps(pre_receipt_payload, sort_keys=True, separators=(",", ":"))
     receipt_digest = hashlib.sha256(canonical_repr.encode("utf-8")).hexdigest()
@@ -1048,4 +1148,9 @@ def run_repository_truth_audit(
         checks=checks,
         all_checks_passed=all_passed,
         receipt_digest=receipt_digest,
+        decision_verdict=decision_verdict,
+        repository_integrity_decision=repository_integrity_decision,
+        project_release_readiness=project_release_readiness,
+        failed_check_ids=failed_check_ids,
+        unresolved_risks=unresolved_risks,
     )
