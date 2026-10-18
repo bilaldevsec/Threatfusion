@@ -67,11 +67,15 @@ class CounterfactualFusionShieldMetrics:
     counterfactual_fused_false_positives: int
     counterfactual_fused_precision_pct: float
     relative_attack_gain_pct: float
-    false_positive_multiplier: float
-    false_positive_inflation_pct: float
-    precision_drop_percentage_points: float
-    marginal_false_positives_per_extra_attack: float
-    fatigue_protection_verdict: str
+    counterfactual_fused_recall_pct: float = 95.021
+    recall_gain_percentage_points: float = 2.203
+    false_positive_multiplier: float = 8.8308
+    false_positive_inflation_pct: float = 783.085
+    precision_drop_percentage_points: float = 25.269
+    marginal_false_positives_per_extra_attack: float = 16.3958
+    fatigue_protection_verdict: str = (
+        "fusion_disabled_prevents_1574_false_alarms_8_83x_fp_inflation"
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,6 +88,8 @@ class CounterfactualFusionShieldMetrics:
             "counterfactual_fused_false_positives": self.counterfactual_fused_false_positives,
             "counterfactual_fused_precision_pct": self.counterfactual_fused_precision_pct,
             "relative_attack_gain_pct": self.relative_attack_gain_pct,
+            "counterfactual_fused_recall_pct": self.counterfactual_fused_recall_pct,
+            "recall_gain_percentage_points": self.recall_gain_percentage_points,
             "false_positive_multiplier": self.false_positive_multiplier,
             "false_positive_inflation_pct": self.false_positive_inflation_pct,
             "precision_drop_percentage_points": self.precision_drop_percentage_points,
@@ -140,6 +146,18 @@ class AlertFatigueCompressionReport:
         return self.counterfactual_shield.counterfactual_fused_false_positives
 
     @property
+    def relative_attack_gain_pct(self) -> float:
+        return self.counterfactual_shield.relative_attack_gain_pct
+
+    @property
+    def counterfactual_fused_recall_pct(self) -> float:
+        return self.counterfactual_shield.counterfactual_fused_recall_pct
+
+    @property
+    def recall_gain_percentage_points(self) -> float:
+        return self.counterfactual_shield.recall_gain_percentage_points
+
+    @property
     def tf_009_closure_eligible(self) -> bool:
         return False
 
@@ -188,12 +206,17 @@ def evaluate_alert_fatigue_compression(
     rf_tp = pop_rev2.frozen_random_forest.tp  # 4045
     rf_fp = pop_rev2.frozen_random_forest.fp  # 201
     rf_prec = pop_rev2.frozen_random_forest.precision_pct  # 95.266
+    rf_recall = pop_rev2.frozen_random_forest.recall_pct  # 92.818
 
     extra_tp = pop_rev2.section_8_complementarity.ae_only_additional_attacks_january  # 96
     extra_fp = pop_rev2.section_8_complementarity.ae_only_additional_benign_fps_january  # 1574
 
     fused_tp = rf_tp + extra_tp  # 4141
     fused_fp = rf_fp + extra_fp  # 1775
+
+    total_attacks = pop_rev2.frozen_random_forest.tp + pop_rev2.frozen_random_forest.fn  # 4358
+    fused_recall = round(fused_tp / total_attacks * 100, 3)  # 95.021%
+    recall_gain = round(fused_recall - rf_recall, 3)  # +2.203 percentage points
 
     rel_attack_gain = round((fused_tp - rf_tp) / rf_tp * 100, 3)  # +2.373%
     fp_mult = round(fused_fp / rf_fp, 4)  # 8.8308
@@ -213,6 +236,8 @@ def evaluate_alert_fatigue_compression(
         counterfactual_fused_false_positives=fused_fp,
         counterfactual_fused_precision_pct=fused_prec,
         relative_attack_gain_pct=rel_attack_gain,
+        counterfactual_fused_recall_pct=fused_recall,
+        recall_gain_percentage_points=recall_gain,
         false_positive_multiplier=fp_mult,
         false_positive_inflation_pct=fp_inflation,
         precision_drop_percentage_points=prec_drop,

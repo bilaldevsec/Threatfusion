@@ -577,3 +577,107 @@ def evaluate_detector_ablation(
         verdict=verdict,
         verdict_rationale=rationale,
     )
+
+
+CANONICAL_V2_AE_THRESHOLD: float = 0.1181361214680695
+
+
+def rank_rf_alerts_for_triage_queue(
+    alerts: Sequence[Mapping[str, Any]],
+    *,
+    production_fusion_enabled: bool = False,
+    ae_threshold: float = CANONICAL_V2_AE_THRESHOLD,
+) -> list[dict[str, Any]]:
+    """Prioritize and rank verified Random Forest alerts for the analyst triage queue.
+
+    Enforces Section 8 invariant:
+    - production_fusion_enabled MUST be False. Raises ValueError if True.
+    - Only already-triggered RF alerts (rf_attack_probability >= 0.5) are admitted into
+      the triage queue. Unfused Autoencoder evidence is used solely to rank order existing
+      RF alerts, never promoting an RF-negative flow or increasing the total alert count.
+
+    Ordering criteria (deterministic descending sort):
+    1. Incident burst size (burst_size or flow_count or incident_size, default 1)
+    2. Secondary unfused v2 AE reconstruction error ratio (ae_error / ae_threshold)
+    3. Random Forest attack probability (rf_attack_probability)
+
+    Attaches:
+    - queue_priority_rank (1..N)
+    - ae_anomaly_ratio (float)
+    - priority_rationale (str)
+    """
+    if production_fusion_enabled:
+        raise ValueError(
+            "production_fusion_enabled must remain False per Section 8 of product charter."
+        )
+
+    admitted_alerts: list[dict[str, Any]] = []
+    for alert in alerts:
+        prob = alert.get("rf_attack_probability")
+        if prob is None:
+            prob = alert.get("attack_probability")
+        if prob is None:
+            if alert.get("is_attack") is True:
+                prob = 1.0
+            else:
+                continue
+
+        try:
+            prob_float = float(prob)
+        except (TypeError, ValueError):
+            continue
+
+        if prob_float < 0.5:
+            # RF-negative flows are strictly rejected from the queue
+            continue
+
+        burst_size = alert.get("burst_size")
+        if burst_size is None:
+            burst_size = alert.get("burst_packet_count")
+        if burst_size is None:
+            burst_size = alert.get("flow_count", alert.get("incident_size", 1))
+        try:
+            burst_size_int = int(burst_size)
+        except (TypeError, ValueError):
+            burst_size_int = 1
+
+        ae_err = alert.get("ae_reconstruction_error")
+        if ae_err is None:
+            ae_err = alert.get("ae_error", alert.get("reconstruction_error", 0.0))
+        try:
+            ae_err_float = float(ae_err)
+        except (TypeError, ValueError):
+            ae_err_float = 0.0
+
+        ratio = round(ae_err_float / ae_threshold, 4) if ae_threshold > 0 else 0.0
+
+        item = dict(alert)
+        item["rf_attack_probability"] = prob_float
+        item["burst_size"] = burst_size_int
+        item["ae_reconstruction_error"] = ae_err_float
+        item["ae_anomaly_ratio"] = ratio
+        admitted_alerts.append(item)
+
+    admitted_alerts.sort(
+        key=lambda a: (
+            -a["burst_size"],
+            -a["ae_anomaly_ratio"],
+            -a["rf_attack_probability"],
+            str(a.get("candidate_id", a.get("alert_id", ""))),
+        )
+    )
+
+    ranked: list[dict[str, Any]] = []
+    for rank_idx, a in enumerate(admitted_alerts, start=1):
+        a["queue_priority_rank"] = rank_idx
+        burst = a["burst_size"]
+        ratio = a["ae_anomaly_ratio"]
+        prob = a["rf_attack_probability"]
+        a["priority_rationale"] = (
+            f"Rank #{rank_idx}: Burst Size={burst}, "
+            f"Unfused AE Error Ratio={ratio:.2f}x ({a['ae_reconstruction_error']:.6f}/{ae_threshold:.6f}), "
+            f"RF Prob={prob:.4f}"
+        )
+        ranked.append(a)
+
+    return ranked

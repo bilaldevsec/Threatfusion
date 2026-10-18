@@ -305,7 +305,7 @@ def generate_presenter_guide_markdown() -> str:
   > "Thank you, Suhaib. Slide 11 is the mathematical cornerstone of our defense.
   >
   > If we enable automatic OR-fusion between Random Forest and Autoencoder:
-  > • We gain +96 extra attacks (+2.373% recall gain).
+  > • We gain +96 extra attacks: +2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045).
   > • But we inflict +1,574 additional false alarms—an 8.8308x false-positive inflation.
   > • The marginal penalty is 16.3958 benign false alarms for every single additional attack caught.
   > • Precision collapses by 25.269 percentage points from 95.266% down to 69.997%.
@@ -445,7 +445,10 @@ def generate_final_report_items() -> list[tuple[str, str]]:
             "Body",
             "Section 8 of the ThreatFusion product charter formalizes the mathematical trade-off of multimodal alert fusion:",
         ),
-        ("Bullet", "+96 attacks added (+2.373% relative recall gain)."),
+        (
+            "Bullet",
+            "+96 attacks added: +2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045).",
+        ),
         (
             "Bullet",
             "+1,574 additional false alarms (an 8.8308x false-positive inflation, increasing FPs from 201 to 1,775).",

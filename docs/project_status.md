@@ -1660,3 +1660,43 @@ TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptan
   - Documented the 5 B.L.A.S.T. v2 governance rules: (1) Programmatic workspace & symlink rejection, (2) Exclusive subagent file ownership matrix, (3) Explicit GO/NO-GO decision report, (4) Task-specific behavioural verification, (5) Pre-flight checkpoint & change-control recovery.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.
+
+### Milestone #30: Unified Master Engineering Skill v3.0, Boundary Preflight B0-B5, Recall Labeling Harmonization, Gate G9 AST Check, Tamper-Evident SOAR Hash Chain, and Non-Fused AE Queue Ranker (2026-10-18)
+
+- **Deterministic Boundary Preflight (scripts/boundary_preflight.py & boundary_preflight.py):**
+  - Implemented standalone and importable `boundary_preflight.py` enforcing Protocol 0 deterministic boundary checks B0 through B5 using component-wise realpath containment (`Path(os.path.realpath(p)).is_relative_to(...)`) and negative lookahead `(?![\w\-])` to avoid false triggers on `-gemini`:
+    - B0: Active and protected realpaths strictly non-overlapping.
+    - B1: Current working directory resolves inside active and outside protected.
+    - B2: Workspace contains zero symlinks pointing into protected or escaping active.
+    - B3: Virtual environment (`threatfusion-venv`) contains zero `.pth`, `direct_url.json`, or symlink references to protected.
+    - B4: Git repository metadata (`.git/objects/info/alternates`, `worktrees`, `config`) strictly isolated from protected.
+    - B5: Runtime code and config files (`.py`, `.toml`, `.json`, etc.) contain zero literal references to protected.
+  - Installed portable skill contracts: `SKILL.md` (repo root), `.agents/skills/threatfusion-master-engineering/SKILL.md`, and `.agents/ownership.json`.
+  - Integrated Gate G0 boundary preflight invocation directly into `repo_truth_audit.py` Check 1 (`_check_1_workspace_isolation`).
+- **Mathematical Recall Labeling Harmonization:**
+  - Reconciled mathematical labeling across codebase and academic defense documentation:
+    - Ground truth: January RF recall is 92.818% (4,045 / 4,358).
+    - Counterfactual fusion recall is 95.021% (4,141 / 4,358).
+    - Absolute recall gain is `+2.203 percentage points` (pp).
+    - Relative true positive increase is `+2.373%` (96 additional attacks / 4,045 baseline RF attacks).
+  - Updated `workload_measurement.py` (`CounterfactualFusionShieldMetrics.counterfactual_fused_recall_pct` and `recall_gain_percentage_points`), `canonical_evaluation.py` (`Section8Complementarity`), `scripts/generate_harmonized_defense_deck.py`, `scripts/generate_harmonized_defense_docs.py`, `docs/defense_slide_deck_harmonization.md`, and `docs/presenter_guide_15_slides_rev2.md`.
+  - Re-generated defense artifacts: `ThreatFusion_FYP2_Presenter_Guide_Harmonized.docx` and `ThreatFusion_FYP2_Final_Report_Harmonized.docx`.
+- **Tamper-Evident Hash-Chained SOAR Audit Trail (`playbook_ledger.py`):**
+  - Enhanced `SoarPlaybookSqliteRepository` with cryptographic SHA-256 hash chaining:
+    - Added `prev_entry_sha256` and `entry_sha256` columns to `soar_audit_events` schema with automatic migration.
+    - Established `SOAR_AUDIT_GENESIS_HASH = "0" * 64`.
+    - Computed `compute_soar_audit_entry_hash` linking each audit event cryptographically to the preceding event hash.
+    - Added `verify_audit_chain_integrity(playbook_id=None) -> tuple[bool, str]` verifying full hash chain integrity and detecting direct SQLite tampering, updates, and deletions.
+- **Non-Fused AE Queue Priority Ranker (`multi_signal_risk.py`):**
+  - Implemented `rank_rf_alerts_for_triage_queue` enforcing Section 8 `production_fusion_enabled=False` (raises `ValueError` if `True`).
+  - Admitted only alerts meeting RF threshold (`rf_attack_probability >= 0.5`).
+  - Ordered triage queue deterministically: (1) incident burst size, (2) secondary unfused AE reconstruction error ratio (`ae_error / ae_threshold`), (3) RF attack probability.
+  - Attached `queue_priority_rank` (1..N) and human-readable `priority_rationale`.
+- **Gate G9 AST Detection Pipeline Import-Graph Check (`repo_truth_audit.py`):**
+  - Added `verify_gate_g9_ast_import_graph(src_root)` to statically parse Stage 1 to 4 detection modules (`suricata_flow.py`, `provenance_sources.py`, `producer_inference_worker.py`, `network_inference.py`, `correlation_engine.py`) and verify zero imports of Stage 5 advisory components (`threatfusion.advisory`, `gemini_client`, `explanation_engine`).
+  - Integrated into Check 5 (`_check_5_no_duplicate_package_regression`) and Check 6 live probes.
+- **Unit Test Suite & Zero-Trust Audit Verification:**
+  - Created `backend/tests/unit/test_boundary_and_high_leverage_features.py` with 17 tests covering B0-B5 boundary preflight, recall labeling, SOAR audit hash chain tamper detection, AE queue ranker, and Gate G9 AST detection pipeline isolation.
+  - All test suites passing cleanly, and `scripts/audit_repo_truth.py` confirms ALL 7 ZERO-TRUST CHECKS PASSED with `POST-EXECUTION DECISION VERDICT: GO`.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.

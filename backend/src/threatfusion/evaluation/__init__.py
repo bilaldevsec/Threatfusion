@@ -4,9 +4,12 @@ from threatfusion.evaluation.repo_truth_audit import (
     CANONICAL_PROJECT_RELEASE_READINESS,
     CANONICAL_UNRESOLVED_RISKS,
     EXPECTED_CANONICAL_ISSUE_ROWS,
+    GATE_G9_FORBIDDEN_IMPORT_PATTERNS,
+    GATE_G9_STAGE_1_TO_4_MODULES,
     CheckResult,
     RepoTruthAuditReport,
     run_repository_truth_audit,
+    verify_gate_g9_ast_import_graph,
 )
 from threatfusion.evaluation.study_runner import (
     STUDY_TRIAGE_CASES,
@@ -32,6 +35,8 @@ __all__ = [
     "CheckResult",
     "CounterfactualFusionShieldMetrics",
     "EXPECTED_CANONICAL_ISSUE_ROWS",
+    "GATE_G9_FORBIDDEN_IMPORT_PATTERNS",
+    "GATE_G9_STAGE_1_TO_4_MODULES",
     "QueueCompressionMetrics",
     "RepoTruthAuditReport",
     "STUDY_TRIAGE_CASES",
@@ -42,4 +47,5 @@ __all__ = [
     "run_automated_smoke_study",
     "run_interactive_study",
     "run_repository_truth_audit",
+    "verify_gate_g9_ast_import_graph",
 ]

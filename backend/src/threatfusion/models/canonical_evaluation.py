@@ -210,6 +210,9 @@ class Section8Complementarity:
     ae_only_additional_benign_fps_january: int = 1574
     benign_fps_per_additional_attack: float = 16.395833333333332
     production_fusion_enabled: bool = False
+    relative_attack_gain_pct: float = 2.373
+    counterfactual_fused_recall_pct: float = 95.021
+    recall_gain_percentage_points: float = 2.203
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -217,6 +220,9 @@ class Section8Complementarity:
             "ae_only_additional_benign_fps_january": self.ae_only_additional_benign_fps_january,
             "benign_fps_per_additional_attack": self.benign_fps_per_additional_attack,
             "production_fusion_enabled": self.production_fusion_enabled,
+            "relative_attack_gain_pct": self.relative_attack_gain_pct,
+            "counterfactual_fused_recall_pct": self.counterfactual_fused_recall_pct,
+            "recall_gain_percentage_points": self.recall_gain_percentage_points,
         }
 
 

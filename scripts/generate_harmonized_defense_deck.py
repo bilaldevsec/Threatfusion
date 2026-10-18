@@ -101,7 +101,7 @@ SPEAKER_NOTES_BY_SLIDE: dict[int, str] = {
     ),
     11: (
         "The Core Defense Pillar: Section 8 Fusion Guard (Why Automatic Fusion Is Disabled). "
-        "Mathematical proof: Autoencoder OR-fusion adds +96 attacks (+2.373% recall gain from 92.818% to 95.190% / 95.021%), "
+        "Mathematical proof: Autoencoder OR-fusion adds +96 attacks (+2.203 pp recall gain, 92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045), "
         "but adds +1,574 benign false alarms (1,775 total FPs = 8.8308x inflation). "
         "Marginal penalty: exactly 16.3958 benign false alarms per additional attack detected. "
         "Precision plunges 25.269 percentage points from 95.266% down to 69.997%. "
@@ -913,7 +913,9 @@ def harmonize_slide_11(slide: Any) -> None:
             elif t == "94.95%":
                 _update_paragraph(p, "+96", font_size_pt=27.0, bold=True)
             elif t == "HIGHEST BINARY ACC.":
-                _update_paragraph(p, "ATTACKS ADDED (+2.373% RECALL)", font_size_pt=9.0, bold=True)
+                _update_paragraph(
+                    p, "ATTACKS ADDED (+2.203 pp RECALL / +2.373% TP)", font_size_pt=8.0, bold=True
+                )
             elif t == "75.07%":
                 _update_paragraph(p, "+1,574", font_size_pt=27.0, bold=True)
             elif t == "HIGHEST CATEGORY ACC.":
@@ -1359,7 +1361,7 @@ def _create_synthetic_deck() -> Presentation:
             p_title.text = "CORE DEFENSE PILLAR: Why Automatic Fusion Is Disabled (Section 8)"
             c_tf.text = (
                 "Mathematical proof of alert fatigue trade-off under Section 8 (fusion_disabled = True):\n\n"
-                "• +96 ATTACKS ADDED (+2.373% RECALL GAIN)\n"
+                "• +96 ATTACKS ADDED: +2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)\n"
                 "• +1,574 FALSE ALARMS (8.8308x INFLATION)\n"
                 "• 16.3958 : 1 MARGINAL FALSE ALARM PENALTY\n\n"
                 "SECTION 8 VERDICT: Gaining 96 extra attacks by fusing Autoencoder with Random Forest inflicts 1,574 new false alarms—"

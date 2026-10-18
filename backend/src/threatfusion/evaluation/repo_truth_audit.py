@@ -14,6 +14,7 @@ Guarantees that no AI session can misreport what is actually implemented in the 
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
@@ -83,6 +84,21 @@ CANONICAL_MODULES: tuple[str, ...] = (
     "threatfusion.datasets.adapters.suricata_flow",
     "threatfusion.operations.cloud_live_telemetry",
 )
+
+GATE_G9_STAGE_1_TO_4_MODULES: tuple[str, ...] = (
+    "threatfusion/datasets/adapters/suricata_flow.py",
+    "threatfusion/datasets/adapters/provenance_sources.py",
+    "threatfusion/api/producer_inference_worker.py",
+    "threatfusion/models/network_inference.py",
+    "threatfusion/alerts/correlation_engine.py",
+)
+
+GATE_G9_FORBIDDEN_IMPORT_PATTERNS: tuple[str, ...] = (
+    "threatfusion.advisory",
+    "gemini_client",
+    "explanation_engine",
+)
+
 
 EXPECTED_CANONICAL_ISSUE_ROWS: Mapping[str, tuple[str, ...]] = {
     "TF-008": (
@@ -341,6 +357,23 @@ def _check_1_workspace_isolation(
     except Exception as e:
         passed = False
         issues.append(f"Failed to query git toplevel: {e}")
+
+    # Gate G0: Invoke Boundary Preflight (B0-B5) when auditing the primary workspace
+    if resolved_root == CANONICAL_WORKSPACE_PATH:
+        try:
+            from threatfusion.evaluation.boundary_preflight import run_boundary_preflight
+
+            b_report = run_boundary_preflight(
+                active=resolved_root,
+                venv=resolved_root / "threatfusion-venv",
+            )
+            if not b_report.passed:
+                passed = False
+                for finding in b_report.findings:
+                    issues.append(f"Boundary preflight finding: {finding}")
+        except Exception as e:
+            passed = False
+            issues.append(f"Boundary preflight invocation failed: {e}")
 
     # Whole-repository boundary symlink scan (excluding explicit environment and cache directories)
     excluded_dirs = {
@@ -680,6 +713,55 @@ def _check_4_section_8_fusion_disabled(expected_src_root: Path) -> CheckResult:
     )
 
 
+def verify_gate_g9_ast_import_graph(src_root: Path) -> tuple[bool, list[str]]:
+    """Gate G9: Verify that Stage 1 to 4 detection modules contain zero imports of Stage 5 advisory components."""
+    violations: list[str] = []
+    resolved_src = src_root.resolve()
+
+    for rel_mod in GATE_G9_STAGE_1_TO_4_MODULES:
+        mod_file = resolved_src / rel_mod
+        if not mod_file.is_file():
+            violations.append(f"Gate G9 target file not found: {mod_file}")
+            continue
+
+        try:
+            tree = ast.parse(mod_file.read_text(encoding="utf-8"), filename=str(mod_file))
+        except Exception as exc:
+            violations.append(f"Gate G9 syntax/read error in {rel_mod}: {exc}")
+            continue
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    for forbidden in GATE_G9_FORBIDDEN_IMPORT_PATTERNS:
+                        if forbidden in alias.name:
+                            violations.append(
+                                f"Gate G9 AST violation in {rel_mod}:{node.lineno}: "
+                                f"import '{alias.name}' references forbidden advisory pattern '{forbidden}'"
+                            )
+            elif isinstance(node, ast.ImportFrom):
+                mod_name = node.module or ""
+                mod_matched = False
+                for forbidden in GATE_G9_FORBIDDEN_IMPORT_PATTERNS:
+                    if forbidden in mod_name:
+                        mod_matched = True
+                        violations.append(
+                            f"Gate G9 AST violation in {rel_mod}:{node.lineno}: "
+                            f"from-import '{mod_name}' references forbidden advisory pattern '{forbidden}'"
+                        )
+                if not mod_matched:
+                    for alias in node.names:
+                        imported_sym = f"{mod_name}.{alias.name}" if mod_name else alias.name
+                        for forbidden in GATE_G9_FORBIDDEN_IMPORT_PATTERNS:
+                            if forbidden in imported_sym or alias.name == forbidden:
+                                violations.append(
+                                    f"Gate G9 AST violation in {rel_mod}:{node.lineno}: "
+                                    f"symbol '{imported_sym}' references forbidden advisory pattern '{forbidden}'"
+                                )
+
+    return len(violations) == 0, violations
+
+
 def _check_5_no_duplicate_package_regression(
     repo_root: Path, expected_src_root: Path
 ) -> CheckResult:
@@ -711,8 +793,16 @@ def _check_5_no_duplicate_package_regression(
             passed = False
             failures.append(f"Failed to import canonical module {mod_name}: {e}")
 
+    # Gate G9 AST Import-Graph Check (Fast-path Stage 1-4 decoupled from Stage 5 Advisory)
+    g9_passed, g9_violations = verify_gate_g9_ast_import_graph(expected_src_root)
+    if not g9_passed:
+        passed = False
+        failures.extend(g9_violations)
+
     summary = (
-        "Zero split-paste duplicate packages detected; all canonical packages (including Gemini advisory client and cloud live telemetry) import cleanly, and SOC Unicorn SOP is verified on disk."
+        "Zero split-paste duplicate packages detected; Gate G9 AST import-graph verified "
+        "(Stages 1-4 decoupled from Stage 5 advisory); all canonical packages (including Gemini "
+        "advisory client and cloud live telemetry) import cleanly, and SOC Unicorn SOP is verified on disk."
         if passed
         else "; ".join(failures)
     )
@@ -852,6 +942,11 @@ def _check_6_functional_probe(expected_src_root: Path) -> CheckResult:
                     "13.E Unapproved SOAR action executed without raising SoarStateTransitionError"
                 )
 
+            # High-Leverage: Tamper-Evident Hash-Chained Audit Trail Verification
+            chain_ok, chain_msg = repo.verify_audit_chain_integrity()
+            if not chain_ok:
+                failures.append(f"13.E SOAR audit chain verification failed: {chain_msg}")
+
         # Probe 13.F: Alert-Fatigue & Workload Measurement
         from threatfusion.evaluation.workload_measurement import evaluate_alert_fatigue_compression
         import threatfusion.evaluation.workload_measurement as wm_mod
@@ -930,6 +1025,49 @@ def _check_6_functional_probe(expected_src_root: Path) -> CheckResult:
                 f"M28 evaluate_budget_kill_switch(5.0) should_detach_billing is not True: {budget_probe}"
             )
 
+        # High-Leverage: Non-Fused AE Queue Priority Ranker Probe
+        from threatfusion.models.multi_signal_risk import rank_rf_alerts_for_triage_queue
+
+        sample_alerts = [
+            {
+                "candidate_id": "probe_low_rf",
+                "rf_attack_probability": 0.45,
+                "ae_reconstruction_error": 0.35,
+                "burst_packet_count": 100,
+            },
+            {
+                "candidate_id": "probe_rf_1",
+                "rf_attack_probability": 0.85,
+                "ae_reconstruction_error": 0.20,
+                "burst_packet_count": 25,
+            },
+            {
+                "candidate_id": "probe_rf_2",
+                "rf_attack_probability": 0.90,
+                "ae_reconstruction_error": 0.40,
+                "burst_packet_count": 50,
+            },
+        ]
+        ranked = rank_rf_alerts_for_triage_queue(sample_alerts, production_fusion_enabled=False)
+        if len(ranked) != 2:
+            failures.append(f"AE queue ranker length mismatch: {len(ranked)} != 2")
+        elif ranked[0]["candidate_id"] != "probe_rf_2":
+            failures.append(
+                f"AE queue ranker priority ordering unexpected: {ranked[0]['candidate_id']}"
+            )
+        elif "queue_priority_rank" not in ranked[0] or "priority_rationale" not in ranked[0]:
+            failures.append("AE queue ranker missing queue_priority_rank or priority_rationale")
+
+        try:
+            rank_rf_alerts_for_triage_queue(sample_alerts, production_fusion_enabled=True)
+            failures.append(
+                "rank_rf_alerts_for_triage_queue(production_fusion_enabled=True) did not raise ValueError"
+            )
+        except ValueError:
+            pass  # Expected fail-closed behavior
+        except Exception as e:
+            failures.append(f"Unexpected error when testing ranker fusion guard: {e}")
+
         if failures:
             passed = False
     except Exception as e:
@@ -938,8 +1076,8 @@ def _check_6_functional_probe(expected_src_root: Path) -> CheckResult:
 
     summary = (
         "Functional probe verified Pillar 4 correlation windows (30s/600s), 13.C RFC1918 guard, "
-        "13.D groundedness, 13.E SOAR approval gate, 13.F FP shield, and M28 resilient Suricata "
-        "quarantine & budget kill-switch."
+        "13.D groundedness, 13.E SOAR approval gate & hash-chained audit trail integrity, "
+        "13.F FP shield, M28 resilient Suricata quarantine & budget kill-switch, and M30 AE queue ranker."
         if passed
         else "; ".join(failures)
     )

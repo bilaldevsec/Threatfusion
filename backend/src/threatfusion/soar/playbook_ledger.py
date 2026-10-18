@@ -12,6 +12,7 @@ Enforces Section 13.E of ThreatFusion:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -25,6 +26,37 @@ from typing import Any
 from threatfusion.alerts.correlation_engine import EntityProvenanceContract
 
 SOAR_SCHEMA_VERSION = "soar_ledger_sqlite_v1"
+SOAR_AUDIT_GENESIS_HASH = "0" * 64
+
+
+def compute_soar_audit_entry_hash(
+    *,
+    event_id: str,
+    playbook_id: str,
+    action: str,
+    actor_id: str,
+    old_state: str,
+    new_state: str,
+    reason: str | None,
+    snapshot: str | None,
+    timestamp_utc: str,
+    prev_entry_sha256: str,
+) -> str:
+    """Compute deterministic cryptographic SHA-256 digest for a SOAR audit entry."""
+    payload = {
+        "event_id": event_id,
+        "playbook_id": playbook_id,
+        "action": action,
+        "actor_id": actor_id,
+        "old_state": old_state,
+        "new_state": new_state,
+        "reason": reason,
+        "snapshot": snapshot,
+        "timestamp_utc": timestamp_utc,
+        "prev_entry_sha256": prev_entry_sha256,
+    }
+    canonical_repr = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical_repr.encode("utf-8")).hexdigest()
 
 
 class SoarError(RuntimeError):
@@ -52,6 +84,8 @@ class SoarAuditEntry:
     reason: str | None
     snapshot: str | None
     timestamp_utc: str
+    prev_entry_sha256: str = SOAR_AUDIT_GENESIS_HASH
+    entry_sha256: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -64,6 +98,8 @@ class SoarAuditEntry:
             "reason": self.reason,
             "snapshot": self.snapshot,
             "timestamp_utc": self.timestamp_utc,
+            "prev_entry_sha256": self.prev_entry_sha256,
+            "entry_sha256": self.entry_sha256,
         }
 
 
@@ -150,9 +186,24 @@ class SoarPlaybookSqliteRepository:
                     new_state TEXT NOT NULL,
                     reason TEXT,
                     snapshot TEXT,
-                    timestamp_utc TEXT NOT NULL
+                    timestamp_utc TEXT NOT NULL,
+                    prev_entry_sha256 TEXT NOT NULL,
+                    entry_sha256 TEXT NOT NULL
                 )
                 """)
+            # Migration check: Ensure prev_entry_sha256 and entry_sha256 exist
+            cols_cursor = conn.execute("PRAGMA table_info(soar_audit_events)")
+            cols = {row["name"] for row in cols_cursor.fetchall()}
+            if "prev_entry_sha256" not in cols:
+                conn.execute(
+                    "ALTER TABLE soar_audit_events ADD COLUMN prev_entry_sha256 TEXT NOT NULL DEFAULT '"
+                    + SOAR_AUDIT_GENESIS_HASH
+                    + "'"
+                )
+            if "entry_sha256" not in cols:
+                conn.execute(
+                    "ALTER TABLE soar_audit_events ADD COLUMN entry_sha256 TEXT NOT NULL DEFAULT ''"
+                )
             conn.commit()
 
         # Enforce mode 0600 permissions
@@ -219,16 +270,41 @@ class SoarPlaybookSqliteRepository:
         new_state: str,
         reason: str | None = None,
         snapshot: str | None = None,
-    ) -> None:
+    ) -> SoarAuditEntry:
         event_id = f"soar_audit:{uuid.uuid4().hex}"
         timestamp = datetime.now(UTC).isoformat()
         with self._get_connection() as conn:
+            # Query the latest audit record to establish cryptographic chain link
+            cur = conn.execute(
+                "SELECT entry_sha256 FROM soar_audit_events ORDER BY rowid DESC LIMIT 1"
+            )
+            last_row = cur.fetchone()
+            prev_hash = (
+                last_row["entry_sha256"]
+                if last_row and last_row["entry_sha256"]
+                else SOAR_AUDIT_GENESIS_HASH
+            )
+
+            entry_hash = compute_soar_audit_entry_hash(
+                event_id=event_id,
+                playbook_id=playbook_id,
+                action=action,
+                actor_id=actor_id,
+                old_state=old_state,
+                new_state=new_state,
+                reason=reason,
+                snapshot=snapshot,
+                timestamp_utc=timestamp,
+                prev_entry_sha256=prev_hash,
+            )
+
             conn.execute(
                 """
                 INSERT INTO soar_audit_events (
                     event_id, playbook_id, action, actor_id,
-                    old_state, new_state, reason, snapshot, timestamp_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    old_state, new_state, reason, snapshot, timestamp_utc,
+                    prev_entry_sha256, entry_sha256
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event_id,
@@ -240,9 +316,25 @@ class SoarPlaybookSqliteRepository:
                     reason,
                     snapshot,
                     timestamp,
+                    prev_hash,
+                    entry_hash,
                 ),
             )
             conn.commit()
+
+        return SoarAuditEntry(
+            event_id=event_id,
+            playbook_id=playbook_id,
+            action=action,
+            actor_id=actor_id,
+            old_state=old_state,
+            new_state=new_state,
+            reason=reason,
+            snapshot=snapshot,
+            timestamp_utc=timestamp,
+            prev_entry_sha256=prev_hash,
+            entry_sha256=entry_hash,
+        )
 
     def list_audit_events(self, playbook_id: str) -> list[dict[str, Any]]:
         with self._get_connection() as conn:
@@ -258,20 +350,87 @@ class SoarPlaybookSqliteRepository:
                 "SELECT * FROM soar_audit_events WHERE playbook_id = ? ORDER BY timestamp_utc ASC",
                 (playbook_id,),
             )
-            return [
-                SoarAuditEntry(
-                    event_id=row["event_id"],
-                    playbook_id=row["playbook_id"],
-                    action=row["action"],
-                    actor_id=row["actor_id"],
-                    old_state=row["old_state"],
-                    new_state=row["new_state"],
-                    reason=row["reason"],
-                    snapshot=row["snapshot"],
-                    timestamp_utc=row["timestamp_utc"],
+            return [self._row_to_audit_entry(row) for row in cursor.fetchall()]
+
+    @staticmethod
+    def _row_to_audit_entry(row: sqlite3.Row) -> SoarAuditEntry:
+        col_names = row.keys()
+        prev_h = (
+            row["prev_entry_sha256"]
+            if "prev_entry_sha256" in col_names
+            else SOAR_AUDIT_GENESIS_HASH
+        )
+        entry_h = row["entry_sha256"] if "entry_sha256" in col_names else ""
+        return SoarAuditEntry(
+            event_id=row["event_id"],
+            playbook_id=row["playbook_id"],
+            action=row["action"],
+            actor_id=row["actor_id"],
+            old_state=row["old_state"],
+            new_state=row["new_state"],
+            reason=row["reason"],
+            snapshot=row["snapshot"],
+            timestamp_utc=row["timestamp_utc"],
+            prev_entry_sha256=prev_h,
+            entry_sha256=entry_h,
+        )
+
+    def verify_audit_chain_integrity(self, playbook_id: str | None = None) -> tuple[bool, str]:
+        """Verify the cryptographic hash-chain integrity of SOAR audit events.
+
+        Detects any modified, inserted, or deleted audit rows and fails closed.
+        """
+        with self._get_connection() as conn:
+            if playbook_id is not None:
+                cursor = conn.execute(
+                    "SELECT * FROM soar_audit_events WHERE playbook_id = ? ORDER BY rowid ASC",
+                    (playbook_id,),
                 )
-                for row in cursor.fetchall()
-            ]
+            else:
+                cursor = conn.execute("SELECT * FROM soar_audit_events ORDER BY rowid ASC")
+            rows = cursor.fetchall()
+
+        if not rows:
+            return True, "SOAR audit chain verified: 0 entries (empty ledger)"
+
+        expected_prev = SOAR_AUDIT_GENESIS_HASH
+        for idx, row in enumerate(rows):
+            col_names = row.keys()
+            stored_prev = row["prev_entry_sha256"] if "prev_entry_sha256" in col_names else ""
+            stored_hash = row["entry_sha256"] if "entry_sha256" in col_names else ""
+
+            # In whole-ledger verification, the previous link must match expected_prev
+            if playbook_id is None:
+                if stored_prev != expected_prev:
+                    return (
+                        False,
+                        f"SOAR audit chain broken at row index {idx} (event_id={row['event_id']}): "
+                        f"prev_entry_sha256 '{stored_prev}' != expected '{expected_prev}'",
+                    )
+
+            recomputed = compute_soar_audit_entry_hash(
+                event_id=row["event_id"],
+                playbook_id=row["playbook_id"],
+                action=row["action"],
+                actor_id=row["actor_id"],
+                old_state=row["old_state"],
+                new_state=row["new_state"],
+                reason=row["reason"],
+                snapshot=row["snapshot"],
+                timestamp_utc=row["timestamp_utc"],
+                prev_entry_sha256=stored_prev,
+            )
+            if recomputed != stored_hash:
+                return (
+                    False,
+                    f"SOAR audit chain broken at row index {idx} (event_id={row['event_id']}): "
+                    f"recomputed hash '{recomputed}' != stored entry_sha256 '{stored_hash}'",
+                )
+
+            expected_prev = stored_hash
+
+        scope = f"playbook '{playbook_id}'" if playbook_id else "whole ledger"
+        return True, f"SOAR audit chain verified: {len(rows)} entries valid ({scope})"
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> SoarPlaybookRecord:
