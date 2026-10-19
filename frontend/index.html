@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="ThreatFusion SOC Unicorn Web Console & 5-Minute Real-World Scenario Walkthrough — AI-FYP-2006">
+  <title>ThreatFusion &mdash; SOC Unicorn Web Console (AI-FYP-2006)</title>
+  <!-- 100% Offline / Zero CDN Dependencies / Air-Gapped Master Stylesheet -->
+  <link rel="stylesheet" href="css/soc_unicorn.css">
+</head>
+<body>
+  <div class="soc-shell">
+    <!-- Header -->
+    <header class="soc-header">
+      <div class="brand-block">
+        <div class="brand-icon">TF</div>
+        <div>
+          <span class="brand-title">ThreatFusion SOC Console</span>
+          <span class="brand-subtitle">Unicorn Progressive Disclosure Triage &middot; AI-FYP-2006</span>
+        </div>
+      </div>
+      <div class="header-telemetry">
+        <span class="badge badge-auth">mTLS 1.3 Authenticated</span>
+        <span class="badge badge-role">Role: Triage Lead</span>
+        <span class="badge badge-terminal">Air-Gapped / Zero-CDN</span>
+        <span style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-secondary);" id="liveClock">2026-10-19 22:30:00 UTC</span>
+      </div>
+    </header>
+
+    <!-- Top Metrics Banner — Evaluation Pack Rev2 Pre-Registered Metrics -->
+    <section class="metrics-banner" aria-label="Evaluation Pack Rev2 Baseline Performance">
+      <div class="metric-card">
+        <span class="metric-label">Primary Frozen Random Forest</span>
+        <span class="metric-value" style="color: var(--color-emerald);">95.266% Prec</span>
+        <span class="metric-detail">Recall: 92.818% &middot; F1: 94.026% &middot; FPR: 0.095% (201 FPs / 212,210 benign)</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Section 8 Fusion Lock Rationale</span>
+        <span class="metric-value" style="color: var(--color-amber);">16.4:1 FP Shield</span>
+        <span class="metric-detail">+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045) rejected due to 1,574 extra benign FPs / 8.8308x FP inflation</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Secondary v2 Benign Autoencoder</span>
+        <span class="metric-value" style="color: var(--color-purple);">14&rarr;8&rarr;3&rarr;8&rarr;14</span>
+        <span class="metric-detail">Calibrated Threshold: 0.118136 &middot; Non-Fused Queue Priority Signal</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Dual-Window Correlation &amp; RAG</span>
+        <span class="metric-value" style="color: var(--color-blue);">30.0s / 600.0s</span>
+        <span class="metric-detail">ChromaDB 64-Dim L2 MITRE RAG &middot; MISP RFC1918 Guard &middot; SHA-256 Ledger</span>
+      </div>
+    </section>
+
+    <!-- Main 2-Column Responsive Workspace Grid -->
+    <main class="workspace-grid">
+      <!-- Left Panel: Incident Triage Queue -->
+      <aside class="card" aria-label="Incident Triage Queue">
+        <div class="card-header">
+          <h2 class="card-title">Incident Triage Queue</h2>
+          <span class="badge badge-state" id="queueCountBadge">3 Alerts Loaded</span>
+        </div>
+        
+        <!-- Queue Filter Buttons -->
+        <div class="queue-filter-bar">
+          <button class="filter-btn active" data-filter="all">All Incidents</button>
+          <button class="filter-btn" data-filter="verified">Verified Receipts</button>
+          <button class="filter-btn" data-filter="pending">Pending Approval</button>
+          <button class="filter-btn" data-filter="unavailable">Unavailable</button>
+        </div>
+
+        <!-- Incident Item List Container -->
+        <div class="incident-queue-list" id="incidentQueueList">
+          <!-- Populated by js/soc_dashboard.js -->
+        </div>
+      </aside>
+
+      <!-- Right Panel: Forensic Detail Drawer (3-Tier Progressive Disclosure) -->
+      <section class="card" aria-label="Forensic Evidence Detail" data-blast-ui-tier="unicorn-progressive-disclosure-v1">
+        <div class="card-header">
+          <h2 class="card-title">Forensic Evidence &amp; Progressive Disclosure Drawer</h2>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <span class="badge badge-rf-confidence">Primary Authority: Frozen RF</span>
+            <span class="badge badge-secondary-anomaly">Secondary: v2 Autoencoder</span>
+          </div>
+        </div>
+
+        <div class="forensic-drawer" id="forensicDrawer">
+          <!-- Populated by js/soc_dashboard.js -->
+        </div>
+      </section>
+    </main>
+
+    <!-- Interactive 5-Minute Guided 6-Stage Walkthrough Section -->
+    <section class="walkthrough-panel" aria-label="5-Minute Guided Real-World Scenario Walkthrough">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
+        <div>
+          <h2 style="font-size: 1.2rem; font-weight: 700; color: #fff;">5-Minute Guided Real-World Scenario Walkthrough</h2>
+          <p style="font-size: 0.8rem; color: var(--text-secondary);">
+            Interactive Step-by-Step Defense Rehearsal &middot; From Raw Azure Suricata Ingestion to Human-in-the-Loop SOAR Containment
+          </p>
+        </div>
+        <div class="walkthrough-controls">
+          <button class="btn btn-approve" id="btnWalkthroughPlay">Play 5-Min Walkthrough</button>
+          <button class="btn" style="background:#21262d;color:#fff;border-color:#30363d;" id="btnWalkthroughPrev">&larr; Previous Stage</button>
+          <button class="btn" style="background:#21262d;color:#fff;border-color:#30363d;" id="btnWalkthroughNext">Next Stage &rarr;</button>
+          <button class="btn btn-rollback" id="btnWalkthroughReset">Reset</button>
+        </div>
+      </div>
+
+      <!-- 6-Stage Interactive Timeline Bar -->
+      <div class="walkthrough-timeline" id="walkthroughTimeline">
+        <!-- Populated by js/soc_dashboard.js -->
+      </div>
+
+      <!-- Active Stage Live Verification Display Card -->
+      <div id="walkthroughDisplay">
+        <!-- Populated by js/soc_dashboard.js -->
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="soc-footer">
+      <span>ThreatFusion &mdash; Fast-NUCES FYP-II Master Defense (AI-FYP-2006)</span>
+      <span>Supervisor: Sir Sameer Faisal &middot; Team: 21K-3551, 22K-4302, 22K-4718</span>
+      <span>Strict Scientific Governance: TF-008, TF-009, TF-010, TF-011 Honestly OPEN</span>
+    </footer>
+  </div>
+
+  <!-- Master JavaScript Engine — 100% Air-Gapped -->
+  <script src="js/soc_dashboard.js"></script>
+</body>
+</html>

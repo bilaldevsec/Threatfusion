@@ -983,3 +983,36 @@ def render_dashboard_html(
     {detail_section}
 </body>
 </html>"""
+
+
+def load_frontend_unicorn_bundle(repo_root: Path | None = None) -> dict[str, str]:
+    """Verify and load static SOC Unicorn frontend assets from disk.
+
+    Validates that frontend/index.html, frontend/css/soc_unicorn.css, and
+    frontend/js/soc_dashboard.js exist, are regular non-symlink files, and are non-empty.
+    Returns a dictionary mapping asset names to their decoded text content.
+    """
+    if repo_root is None:
+        resolved_root = Path(__file__).resolve().parents[4]
+    else:
+        resolved_root = Path(repo_root).resolve()
+
+    frontend_dir = resolved_root / "frontend"
+    index_path = frontend_dir / "index.html"
+    css_path = frontend_dir / "css" / "soc_unicorn.css"
+    js_path = frontend_dir / "js" / "soc_dashboard.js"
+
+    for asset_path in (index_path, css_path, js_path):
+        if not asset_path.exists():
+            raise FileNotFoundError(f"Frontend asset missing: {asset_path}")
+        if not asset_path.is_file():
+            raise ValueError(f"Frontend asset is not a regular file: {asset_path}")
+        if asset_path.stat().st_size == 0:
+            raise ValueError(f"Frontend asset is empty: {asset_path}")
+
+    return {
+        "index_html": index_path.read_text(encoding="utf-8"),
+        "css": css_path.read_text(encoding="utf-8"),
+        "js": js_path.read_text(encoding="utf-8"),
+    }
+

@@ -1799,4 +1799,18 @@ TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptan
   - All 17 checks in `test_repo_truth_audit.py` pass; all 22 tests in `test_chromadb_rag_n8n_thehive_misp.py` pass.
   - Zero-trust audit CLI confirms `ALL 7 ZERO-TRUST CHECKS PASSED` with `POST-EXECUTION DECISION VERDICT: GO`.
 
+### Milestone #35: SOC Unicorn Frontend Asset Bundle & Interactive 5-Minute Walkthrough Integration (2026-10-19)
+
+- **Production-Grade Static SOC Unicorn Frontend Bundle (`frontend/`):**
+  - **`frontend/css/soc_unicorn.css`:** Implemented dark-mode glassmorphic styling tokens, responsive 2-column workspace grid, and strict visual hierarchy per `SOP-UX-SOC-001`. Features visually distinct `.badge-rf-confidence` (Primary Decision Authority in emerald) and `.badge-secondary-anomaly` (Secondary Non-Fused v2 Autoencoder Anomaly Signal in amber), alongside `[data-evidence-state="verified"]`, `[data-evidence-state="pending"]`, and `[data-evidence-state="unavailable"]` receipt styling. Zero external CDN dependencies; operates 100% offline in air-gapped lab environments.
+  - **`frontend/js/soc_dashboard.js`:** Built client-side deterministic receipt validator mirroring `analyst_dashboard.py` (enforcing 64-char hex SHA-256 digests, MITRE technique regex `^T\d{4}(\.\d{3})?$`, and non-empty TheHive case ID). Provides incident triage queue filtering (All, Verified, Pending Approval, Unavailable), forensic evidence drawer switching, and Human-in-the-Loop Playbook Approval and Reversible Rollback simulations.
+  - **`frontend/index.html`:** Formatted the comprehensive ThreatFusion SOC Unicorn Web Console & 5-Minute Guided Real-World Scenario Walkthrough displaying exact Evaluation Pack Rev2 metrics: Frozen Random Forest (SHA-256 `bd2853a6...`, 216,568 January validation flows: TP=4,045, FP=201, TN=212,009, FN=313, Precision=95.266%, Recall=92.818%, F1=94.026%, FPR=0.095%), Secondary v2 Benign Autoencoder (SHA-256 `c8675d13...`, bottleneck $14 \to 8 \to 3 \to 8 \to 14$, calibrated threshold `0.1181361214680695`), Section 8 Lock (`production_fusion_enabled = False`; `+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)` rejected due to 1,574 extra benign FPs / 8.8308x FP inflation), 30.0s burst / 600.0s campaign dual-window correlation, MISP RFC1918 Private-IP Guard, ChromaDB 64-dim L2-normalized MITRE RAG, and SHA-256 hash-chained SQLite ledger (`soar.sqlite3`).
+  - **`frontend/README.md`:** Documented air-gapped browser execution via direct file URI, Python stdlib HTTP server, and programmatic backend loading.
+- **Backend Loader & Ownership Registration:**
+  - Added `load_frontend_unicorn_bundle(repo_root=None)` in `backend/src/threatfusion/api/analyst_dashboard.py` to verify and load `index.html`, `soc_unicorn.css`, and `soc_dashboard.js` from disk without modifying existing APIs.
+  - Registered `frontend/index.html`, `frontend/css/soc_unicorn.css`, `frontend/js/soc_dashboard.js`, and `frontend/README.md` in `.agents/ownership.json` under `frontend_unicorn_bundle`.
+- **Unit Test Suite & Verification:**
+  - Added comprehensive frontend asset verification tests in `backend/tests/unit/test_chromadb_rag_n8n_thehive_misp.py`.
+
 TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.
+

@@ -55,6 +55,12 @@
       "docs/project_status.md",
       "docs/GEMINI_PROJECT_MASTER.md",
       "CLAUDE.md"
+    ],
+    "frontend_unicorn_bundle": [
+      "frontend/index.html",
+      "frontend/css/soc_unicorn.css",
+      "frontend/js/soc_dashboard.js",
+      "frontend/README.md"
     ]
   }
 }

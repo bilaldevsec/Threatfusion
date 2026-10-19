@@ -30,6 +30,7 @@ from threatfusion.api.analyst_dashboard import (
     DashboardAlertDetail,
     DashboardAlertQueue,
     DashboardSnapshot,
+    load_frontend_unicorn_bundle,
     render_dashboard_html,
 )
 import http.server
@@ -1174,3 +1175,98 @@ class TestEndToEndSocDemoAndDashboardIntegration:
         )
         assert 'data-evidence-state="verified"' in html_verified
         assert 'data-evidence-state="active"' in html_verified
+
+
+class TestFrontendUnicornAssetBundle:
+    """Tests for Milestone #35 SOC Unicorn Frontend Asset Bundle & Interactive Walkthrough."""
+
+    def test_frontend_assets_exist_and_load_cleanly(self) -> None:
+        """Verify frontend/index.html, css/soc_unicorn.css, js/soc_dashboard.js, and README.md exist and load."""
+        frontend_dir = REPO_ROOT / "frontend"
+        assert frontend_dir.is_dir()
+
+        index_file = frontend_dir / "index.html"
+        css_file = frontend_dir / "css" / "soc_unicorn.css"
+        js_file = frontend_dir / "js" / "soc_dashboard.js"
+        readme_file = frontend_dir / "README.md"
+
+        for f in (index_file, css_file, js_file, readme_file):
+            assert f.is_file(), f"Missing required frontend asset: {f}"
+            assert f.stat().st_size > 200, f"Frontend asset too small or empty: {f}"
+
+        # Verify load_frontend_unicorn_bundle returns all assets
+        bundle = load_frontend_unicorn_bundle(REPO_ROOT)
+        assert isinstance(bundle, dict)
+        assert "index_html" in bundle and len(bundle["index_html"]) > 500
+        assert "css" in bundle and len(bundle["css"]) > 500
+        assert "js" in bundle and len(bundle["js"]) > 500
+
+    def test_frontend_assets_zero_placeholders_and_air_gapped(self) -> None:
+        """Verify frontend assets contain zero ****** placeholders, zero unrendered templates, and zero CDN links."""
+        bundle = load_frontend_unicorn_bundle(REPO_ROOT)
+
+        for name, text in bundle.items():
+            assert "******" not in text, f"Asset '{name}' contains forbidden '******' placeholder"
+            assert "__TODO__" not in text, f"Asset '{name}' contains unfinished '__TODO__' marker"
+
+        # Zero external CDN dependencies in HTML and CSS
+        index_text = bundle["index_html"]
+        assert "cdn." not in index_text
+        assert "http://" not in index_text
+        assert "https://" not in index_text
+        assert "googleapis.com" not in index_text
+        assert "cloudflare.com" not in index_text
+
+        css_text = bundle["css"]
+        assert "@import url(http" not in css_text
+        assert "http://" not in css_text
+        assert "https://" not in css_text
+
+    def test_frontend_badge_separation_and_exact_canonical_recall_comparison(self) -> None:
+        """Verify .badge-rf-confidence and .badge-secondary-anomaly separation and canonical recall string."""
+        bundle = load_frontend_unicorn_bundle(REPO_ROOT)
+        css_text = bundle["css"]
+        html_text = bundle["index_html"]
+        js_text = bundle["js"]
+
+        # 1. CSS defines distinct badge classes
+        assert ".badge-rf-confidence" in css_text
+        assert ".badge-secondary-anomaly" in css_text
+        assert '[data-evidence-state="verified"]' in css_text
+        assert '[data-evidence-state="pending"]' in css_text
+        assert '[data-evidence-state="unavailable"]' in css_text
+
+        # 2. HTML enforces 3-tier progressive disclosure contract
+        assert 'data-blast-ui-tier="unicorn-progressive-disclosure-v1"' in html_text
+        assert "badge-rf-confidence" in html_text
+        assert "badge-secondary-anomaly" in html_text
+
+        # 3. Exact canonical recall comparison string
+        canonical_recall_str = "+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)"
+        assert canonical_recall_str in html_text
+        assert canonical_recall_str in js_text
+
+    def test_frontend_deterministic_receipt_verification_in_js(self) -> None:
+        """Verify client-side js/soc_dashboard.js implements deterministic receipt verifiers and 6-stage walkthrough."""
+        bundle = load_frontend_unicorn_bundle(REPO_ROOT)
+        js_text = bundle["js"]
+
+        # Digest and MITRE regex verifiers
+        assert "SHA256_HEX_REGEX" in js_text
+        assert "MITRE_TECHNIQUE_REGEX" in js_text
+        assert "verifySoarChain" in js_text
+        assert "verifyChromaRagHits" in js_text
+        assert "verifyHiveAndN8nReceipt" in js_text
+
+        # Enforces data-evidence-state="unavailable" when receipts fail
+        assert "'unavailable'" in js_text
+        assert "'verified'" in js_text
+
+        # 6-stage walkthrough scenario definitions
+        assert "Stage 1: Suricata Flow Telemetry & 14-Feature Ingestion" in js_text
+        assert "Stage 2: Frozen Random Forest Fast-Path Inference" in js_text
+        assert "Stage 3: Dual-Window Incident Correlation & Workload Shield" in js_text
+        assert "Stage 4: ChromaDB 64-Dim MITRE Vector RAG & MISP Private-IP Guard" in js_text
+        assert "Stage 5: Evidence-Bound Advisory Debrief & Anti-Hallucination Guard" in js_text
+        assert "Stage 6: Approval-Gated SOAR Ledger & Case Dispatch" in js_text
+
