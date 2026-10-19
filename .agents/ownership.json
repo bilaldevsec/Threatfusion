@@ -28,7 +28,15 @@
       "scripts/generate_harmonized_defense_deck.py",
       "scripts/generate_harmonized_defense_docs.py"
     ],
+    "soc_stack_integration": [
+      "backend/src/threatfusion/advisory/chromadb_mitre_rag.py",
+      "backend/src/threatfusion/soar/n8n_thehive_misp_stack.py",
+      "docker/docker-compose.soc-stack.yml",
+      "docker/n8n/workflows/threatfusion_soar_playbook.json",
+      "scripts/run_misp_and_callback_contract_server.py"
+    ],
     "tests": [
+      "backend/tests/unit/test_chromadb_rag_n8n_thehive_misp.py",
       "backend/tests/unit/test_drift_supply_chain_and_tf008_protocol.py",
       "backend/tests/unit/test_boundary_and_high_leverage_features.py",
       "backend/tests/unit/test_repo_truth_audit.py",
@@ -40,6 +48,7 @@
       "SKILL.md",
       ".agents/skills/threatfusion-master-engineering/SKILL.md",
       ".agents/ownership.json",
+      "docs/stride_threat_model_and_production_readiness.md",
       "docs/tf008_preregistered_evaluation_protocol.md",
       "docs/defense_slide_deck_harmonization.md",
       "docs/presenter_guide_15_slides_rev2.md",

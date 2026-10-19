@@ -106,6 +106,10 @@ def build_grounded_gemini_prompt(bundle: AdvisoryEvidenceBundle) -> str:
         "ae_v2_threshold": bundle.ae_v2_threshold,
         "correlation": correlation_data,
         "threat_intel_enrichment": enrichment_data,
+        "chroma_mitre_rag_hits": [
+            hit.to_dict() if hasattr(hit, "to_dict") else hit
+            for hit in getattr(bundle, "chroma_rag_hits", ())
+        ],
         "allowed_evidence_keys": allowed_keys,
         "allowed_ip_entities": inspected_entities,
     }

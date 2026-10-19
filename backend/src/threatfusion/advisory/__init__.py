@@ -1,5 +1,10 @@
-"""ThreatFusion evidence-bound advisory debrief subpackage."""
-
+from threatfusion.advisory.chromadb_mitre_rag import (
+    CANONICAL_MITRE_AND_PLAYBOOK_CORPUS,
+    ChromaDbMitrePlaybookRag,
+    ChromaRagQueryResult,
+    DeterministicMitreEmbeddingFunction,
+    MitrePlaybookRagDocument,
+)
 from threatfusion.advisory.explanation_engine import (
     AdvisoryEvidenceBundle,
     AdvisoryExplanationEngine,
@@ -18,10 +23,15 @@ __all__ = [
     "AdvisoryEvidenceBundle",
     "AdvisoryExplanationEngine",
     "AdvisoryGroundednessError",
+    "CANONICAL_MITRE_AND_PLAYBOOK_CORPUS",
+    "ChromaDbMitrePlaybookRag",
+    "ChromaRagQueryResult",
+    "DeterministicMitreEmbeddingFunction",
     "EvidenceBoundExplanation",
     "GeminiAdvisoryCallable",
     "GeminiAdvisoryConfig",
     "GeminiAdvisoryUnavailableError",
+    "MitrePlaybookRagDocument",
     "build_grounded_gemini_prompt",
     "verify_explanation_groundedness",
 ]

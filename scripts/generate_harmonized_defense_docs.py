@@ -347,6 +347,8 @@ def generate_presenter_guide_markdown() -> str:
   > 4. Mutual TLS 1.3 listener admitting flows with anti-replay journal deduplication.
   > 5. ThreatFusion Backend executing frozen RF inference, dual-window incident correlation (30-second burst window [30s] / 10-minute campaign window [600s]), advisory debrief, and reversible SOAR.
   >
+  > Expanded modern SOC integration incorporates ChromaDB Semantic RAG over 10 canonical MITRE ATT&CK techniques, MISP threat intelligence with RFC1918 suppression, TheHive v4/v5 case management, and deterministic n8n webhook playbook execution with cryptographic HMAC-SHA256 signatures, server-side ledger state verification, and anti-replay protection.
+  >
   > In accordance with our zero-trust charter, we explicitly distinguish between this verified local/recorded software spine and live cloud field telemetry: live Azure VM / production enterprise SIEM deployment remains an honest, tracked limitation under TF-011."
 
 #### Slide 15: Conclusion, Defense Summary & Open Issue Honesty
@@ -354,6 +356,8 @@ def generate_presenter_guide_markdown() -> str:
 - **Subtitle:** *Questions & Academic Defense*
 - **Script (Muhammad Hasnain):**
   > "In conclusion, ThreatFusion proves that machine learning can solve SOC alert fatigue when bounded by scientific discipline.
+  >
+  > Our architecture is comprehensively hardened with ChromaDB Semantic Vector RAG over MITRE ATT&CK, ledger-backed n8n/TheHive/MISP stack integration, continuous 14-feature PSI telemetry drift monitoring, frozen model supply-chain verification, and a comprehensive STRIDE threat model across all 8 pipeline stages.
   >
   > In strict accordance with our repository truth audit gate, four issues remain honestly OPEN:
   > • TF-008 (open): Independent holdout benchmark beyond inspected Jan/Feb splits (e.g. CIC-IDS2017).
@@ -511,6 +515,11 @@ def generate_final_report_items() -> list[tuple[str, str]]:
         (
             "Bullet",
             "TF-011 (open): Real Operational SIEM / Threat-Intelligence Production Source Proof.",
+        ),
+        ("Heading 2", "6.3 STRIDE Threat Modeling & Production Readiness"),
+        (
+            "Body",
+            "The platform implements a formal STRIDE threat model across all 8 pipeline stages (documented in docs/stride_threat_model_and_production_readiness.md), verifying fail-closed secrets, bridge network isolation, HMAC-SHA256 request authentication, server-side ledger state validation, and tamper-evident hash-chained audit ledgers.",
         ),
         ("Heading 1", "7. Conclusion"),
         (

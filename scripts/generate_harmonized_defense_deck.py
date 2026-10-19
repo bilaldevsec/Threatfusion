@@ -131,13 +131,18 @@ SPEAKER_NOTES_BY_SLIDE: dict[int, str] = {
         "Stage 1 Attacker VM (10.0.0.4) safe probes -> Stage 2 Victim VM (10.0.0.5) Suricata capture -> "
         "Stage 3 SuricataFlowAdapter (14 features) -> Stage 4 Registered Producer (mTLS 1.3 + replay journal) -> "
         "Stage 5 ThreatFusion Backend (Frozen RF 0.095% FPR, RFC1918 guard, Grounded Debrief, Reversible SOAR). "
+        "Expanded SOC integration incorporates ChromaDB Semantic RAG (10 canonical MITRE techniques), "
+        "MISP threat intelligence with RFC1918 suppression, TheHive v4/v5 case management, and "
+        "n8n webhook execution with HMAC-SHA256 signatures and ledger-backed verification. "
         "Demo probabilities: Row 1 Normal (0.001%), Row 21 Attack (82.5% -> 1 alert)."
     ),
     15: (
         "Conclusion & Academic Defense Summary: "
         "ThreatFusion (AI-FYP-2006) resolves alert fatigue through high-precision machine learning, mathematical fusion gating, "
-        "and modern SOC engineering. Built on Evaluation Pack Rev2 (6a36dcd). Open issues TF-008, TF-009, TF-010, and TF-011 "
-        "remain honestly open until their documented external acceptance gates are met."
+        "and modern SOC engineering. Built on Evaluation Pack Rev2 (6a36dcd). Architecture incorporates "
+        "ChromaDB semantic vector RAG over MITRE ATT&CK, ledger-backed n8n/TheHive/MISP stack integration, "
+        "14-feature PSI telemetry drift monitoring, model supply-chain verification, and a comprehensive STRIDE threat model. "
+        "Open issues TF-008, TF-009, TF-010, and TF-011 remain honestly open until their documented external acceptance gates are met."
     ),
 }
 

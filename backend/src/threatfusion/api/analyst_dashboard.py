@@ -117,6 +117,10 @@ class DashboardAlertDetail:
     threat_intel_enrichment: dict[str, object] | None = None
     advisory_explanation: dict[str, object] | None = None
     soar_recommendations: tuple[object, ...] | None = None
+    soar_audit_chain_verified: bool = False
+    soar_audit_chain_head_sha256: str | None = None
+    thehive_case_record: dict[str, object] | None = None
+    n8n_playbook_receipt: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,6 +344,22 @@ def _parse_detail(payload: dict[str, object]) -> DashboardAlertDetail:
         soar_recommendations=(
             tuple(payload.get("soar_recommendations"))  # type: ignore[arg-type]
             if isinstance(payload.get("soar_recommendations"), (list, tuple))
+            else None
+        ),
+        soar_audit_chain_verified=bool(payload.get("soar_audit_chain_verified", False)),
+        soar_audit_chain_head_sha256=(
+            str(payload.get("soar_audit_chain_head_sha256"))
+            if payload.get("soar_audit_chain_head_sha256") is not None
+            else None
+        ),
+        thehive_case_record=(
+            payload.get("thehive_case_record")
+            if isinstance(payload.get("thehive_case_record"), dict)
+            else None
+        ),
+        n8n_playbook_receipt=(
+            payload.get("n8n_playbook_receipt")
+            if isinstance(payload.get("n8n_playbook_receipt"), dict)
             else None
         ),
     )
@@ -717,6 +737,136 @@ def render_dashboard_html(
             </table>
             """
 
+        # Finding #5: Strict Cryptographic & Schema Validation for Badges
+        # 1. SOAR Cryptographic Audit Chain Validation
+        valid_soar_chain = False
+        if sel.soar_audit_chain_verified is True and sel.soar_audit_chain_head_sha256:
+            if re.fullmatch(r"[0-9a-fA-F]{64}", sel.soar_audit_chain_head_sha256):
+                valid_soar_chain = True
+        elif sel.soar_recommendations and len(sel.soar_recommendations) > 0:
+            entries_valid = True
+            for r in sel.soar_recommendations:
+                if not isinstance(r, dict):
+                    entries_valid = False
+                    break
+                h = (
+                    r.get("entry_hash")
+                    or r.get("audit_hash")
+                    or r.get("sha256")
+                    or r.get("entry_sha256")
+                )
+                if not h or not isinstance(h, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", h):
+                    entries_valid = False
+                    break
+            if entries_valid:
+                valid_soar_chain = True
+
+        if valid_soar_chain:
+            soar_chain_badge = (
+                '<span class="badge badge-soar-chain" data-evidence-state="verified">'
+                "SOAR Cryptographic Audit Chain: VERIFIED (SHA-256 Hash-Linked)</span>"
+            )
+        else:
+            soar_chain_badge = (
+                '<span class="badge badge-soar-chain" data-evidence-state="unavailable">'
+                "SOAR Cryptographic Audit Chain: Not Attached / No SOAR Playbook Recorded</span>"
+            )
+
+        # 2. ChromaDB Semantic RAG Validation
+        valid_rag_hits = False
+        if sel.advisory_explanation and isinstance(sel.advisory_explanation, dict):
+            hits_cand = (
+                sel.advisory_explanation.get("mitre_rag_hits")
+                or sel.advisory_explanation.get("chromadb_mitre_rag_hits")
+                or sel.advisory_explanation.get("rag_hits")
+            )
+            if hits_cand and isinstance(hits_cand, (list, tuple)) and len(hits_cand) > 0:
+                hits_ok = True
+                for hit in hits_cand:
+                    if not isinstance(hit, dict):
+                        hits_ok = False
+                        break
+                    tid = str(hit.get("technique_id", "")).strip()
+                    pbid = str(hit.get("playbook_id", "")).strip()
+                    sim = hit.get("cosine_similarity", hit.get("similarity", hit.get("score")))
+                    if not re.fullmatch(r"^T\d{4}(\.\d{3})?$", tid):
+                        hits_ok = False
+                        break
+                    if not pbid:
+                        hits_ok = False
+                        break
+                    if (
+                        not isinstance(sim, (int, float))
+                        or isinstance(sim, bool)
+                        or not (0.0 <= float(sim) <= 1.0)
+                    ):
+                        hits_ok = False
+                        break
+                if hits_ok:
+                    valid_rag_hits = True
+
+        if valid_rag_hits:
+            chroma_rag_badge = (
+                '<span class="badge badge-chroma-rag" data-evidence-state="active">'
+                "ChromaDB Semantic RAG: MITRE ATT&amp;CK &amp; Playbook Assistant</span>"
+            )
+        else:
+            chroma_rag_badge = (
+                '<span class="badge badge-chroma-rag" data-evidence-state="unavailable">'
+                "ChromaDB Semantic RAG: Not Attached / Pending Advisory Evaluation</span>"
+            )
+
+        # 3. n8n Deterministic Playbook & TheHive Case Status Validation
+        valid_dispatch = False
+        has_hive = False
+        has_n8n = False
+        if sel.thehive_case_record and isinstance(sel.thehive_case_record, dict):
+            cid = str(sel.thehive_case_record.get("case_id", ""))
+            if cid.startswith("case_"):
+                has_hive = True
+        if sel.n8n_playbook_receipt and isinstance(sel.n8n_playbook_receipt, dict):
+            eid = str(sel.n8n_playbook_receipt.get("execution_id", ""))
+            sig = str(sel.n8n_playbook_receipt.get("signature_sha256", ""))
+            if eid.startswith("exec_") and re.fullmatch(r"[0-9a-fA-F]{64}", sig):
+                has_n8n = True
+        if has_hive and has_n8n:
+            valid_dispatch = True
+        elif sel.soar_recommendations:
+            for rec in sel.soar_recommendations:
+                if isinstance(rec, dict):
+                    r_hive = rec.get("thehive_case_record")
+                    r_n8n = rec.get("n8n_playbook_receipt")
+                    if isinstance(r_hive, dict) and isinstance(r_n8n, dict):
+                        cid = str(r_hive.get("case_id", ""))
+                        eid = str(r_n8n.get("execution_id", ""))
+                        sig = str(r_n8n.get("signature_sha256", ""))
+                        if (
+                            cid.startswith("case_")
+                            and eid.startswith("exec_")
+                            and re.fullmatch(r"[0-9a-fA-F]{64}", sig)
+                        ):
+                            valid_dispatch = True
+                            break
+
+        if valid_dispatch:
+            n8n_hive_badge = (
+                '<span class="badge badge-n8n-hive" data-evidence-state="active">'
+                "n8n Deterministic Playbook &amp; TheHive Case Status: Dispatched / Live Case Created</span>"
+            )
+        else:
+            n8n_hive_badge = (
+                '<span class="badge badge-n8n-hive" data-evidence-state="unavailable">'
+                "n8n Deterministic Playbook &amp; TheHive Case Status: Pending Analyst Approval / Not Dispatched</span>"
+            )
+
+        # 4. Strictly separate model signal badges (Primary RF Confidence vs Secondary Non-Fused AE)
+        rf_prob = sel.uncalibrated_model_score
+        rf_badge = f'<span class="badge badge-rf-confidence">Primary Authority: Frozen Random Forest Confidence ({rf_prob * 100:.2f}%)</span>'
+        ae_badge = (
+            '<span class="badge badge-secondary-anomaly" title="Secondary Anomaly Indicator (Unfused v2 Autoencoder — Section 8 Fusion Disabled)">'
+            "Secondary Non-Fused Queue Priority Signal: v2 Autoencoder — Section 8 Fusion Disabled</span>"
+        )
+
         detail_section = f"""
         <section class="card detail-card" data-blast-ui-tier="unicorn-progressive-disclosure-v1">
             <h2>Alert Detail &amp; Evidence</h2>
@@ -727,8 +877,8 @@ def render_dashboard_html(
                 <div><b>Created At:</b> {html.escape(sel.created_at)}</div>
                 <div><b>Model Identity:</b> <code>{html.escape(sel.model_identity)}</code> ({html.escape(sel.model_version)})</div>
                 <div><b>Artifact SHA-256:</b> <code>{html.escape(sel.model_artifact_sha256[:16])}...</code></div>
-                <div><b>Decision:</b> <span class="badge badge-decision">{html.escape(sel.decision)}</span> <span class="badge badge-secondary-anomaly">Secondary Anomaly Indicator (Unfused v2 Autoencoder — Section 8 Fusion Disabled)</span> <span class="badge badge-queue-rank">Non-Fused Queue Priority Rank</span></div>
-                <div><b>Triage State:</b> <span class="badge badge-state">{html.escape(sel.state)}</span> (v{sel.version}) <span class="badge badge-soar-chain">SOAR Cryptographic Audit Chain: VERIFIED (SHA-256 Hash-Linked)</span></div>
+                <div><b>Decision:</b> <span class="badge badge-decision">{html.escape(sel.decision)}</span> {rf_badge} {ae_badge} <span class="badge badge-queue-rank">Non-Fused Queue Priority Rank</span></div>
+                <div><b>Triage State:</b> <span class="badge badge-state">{html.escape(sel.state)}</span> (v{sel.version}) {soar_chain_badge} {chroma_rag_badge} {n8n_hive_badge}</div>
             </div>
             {corr_block}
             {ti_block}
@@ -770,8 +920,13 @@ def render_dashboard_html(
         .badge-corr {{ background: #8957e5; color: #fff; }}
         .badge-prov {{ background: #1f6feb; color: #fff; }}
         .badge-secondary-anomaly {{ background: #8957e5; color: #fff; }}
+        .badge-rf-confidence {{ background: #238636; color: #fff; }}
         .badge-soar-chain {{ background: #238636; color: #fff; }}
         .badge-queue-rank {{ background: #388bfd; color: #fff; }}
+        .badge-confidence {{ background: #d29922; color: #000; }}
+        .badge-chroma-rag {{ background: #bf4b8a; color: #fff; }}
+        .badge-n8n-hive {{ background: #f0883e; color: #000; }}
+        .badge[data-evidence-state="unavailable"] {{ background: #484f58; color: #c9d1d9; opacity: 0.85; }}
         .corr-explanation {{ font-size: 0.85rem; color: #8b949e; margin-top: -0.5rem; margin-bottom: 1rem; }}
         .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 1rem; margin-bottom: 1.5rem; }}
         table.data-table {{ width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.9rem; }}

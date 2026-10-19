@@ -85,6 +85,8 @@ CANONICAL_MODULES: tuple[str, ...] = (
     "threatfusion.operations.cloud_live_telemetry",
     "threatfusion.models.drift_and_supply_chain",
     "threatfusion.evaluation.independent_holdout_protocol",
+    "threatfusion.advisory.chromadb_mitre_rag",
+    "threatfusion.soar.n8n_thehive_misp_stack",
 )
 
 GATE_G9_STAGE_1_TO_4_MODULES: tuple[str, ...] = (
@@ -785,6 +787,26 @@ def _check_5_no_duplicate_package_regression(
             "Missing required architecture SOP file: design_guidelines/soc_unicorn_interface_sop.md"
         )
 
+    n8n_workflow_path = (
+        resolved_root / "docker" / "n8n" / "workflows" / "threatfusion_soar_playbook.json"
+    )
+    if not n8n_workflow_path.is_file():
+        passed = False
+        failures.append(
+            "Missing required n8n workflow file: docker/n8n/workflows/threatfusion_soar_playbook.json"
+        )
+    else:
+        try:
+            wf_data = json.loads(n8n_workflow_path.read_text(encoding="utf-8"))
+            if "nodes" not in wf_data or not isinstance(wf_data["nodes"], list):
+                passed = False
+                failures.append(
+                    "docker/n8n/workflows/threatfusion_soar_playbook.json missing 'nodes' list"
+                )
+        except Exception as e:
+            passed = False
+            failures.append(f"Failed to parse n8n workflow JSON: {e}")
+
     for mod_name in CANONICAL_MODULES:
         try:
             mod = importlib.import_module(mod_name)
@@ -804,7 +826,8 @@ def _check_5_no_duplicate_package_regression(
     summary = (
         "Zero split-paste duplicate packages detected; Gate G9 AST import-graph verified "
         "(Stages 1-4 decoupled from Stage 5 advisory); all canonical packages (including Gemini "
-        "advisory client and cloud live telemetry) import cleanly, and SOC Unicorn SOP is verified on disk."
+        "advisory client, ChromaDB RAG, and n8n/TheHive/MISP SOAR stack) import cleanly; "
+        "SOC Unicorn SOP and n8n workflow JSON verified on disk."
         if passed
         else "; ".join(failures)
     )
@@ -1136,6 +1159,236 @@ def _check_6_functional_probe(expected_src_root: Path) -> CheckResult:
                 "M31 tf_008_closure_eligible was not False for is_synthetic_smoke_fixture=True"
             )
 
+        # Milestone #32: ChromaDB Semantic RAG, MISP RFC1918 Guard & Fallback, TheHive & n8n SOAR Gate Probes
+        import threatfusion.advisory.chromadb_mitre_rag as rag_mod
+        from threatfusion.advisory.chromadb_mitre_rag import ChromaDbMitrePlaybookRag
+        import threatfusion.soar.n8n_thehive_misp_stack as soar_stack_mod
+        from threatfusion.soar.n8n_thehive_misp_stack import (
+            MispDeterministicClient,
+            N8nDeterministicPlaybookClient,
+            TheHiveDeterministicClient,
+        )
+
+        ok, msg = _verify_module_origin(rag_mod, expected_src_root)
+        if not ok:
+            failures.append(msg)
+        ok, msg = _verify_module_origin(soar_stack_mod, expected_src_root)
+        if not ok:
+            failures.append(msg)
+
+        with tempfile.TemporaryDirectory() as td_m32:
+            m32_dir = Path(td_m32)
+            # 1. Probe ChromaDB RAG
+            rag_probe = ChromaDbMitrePlaybookRag(m32_dir / "probe_chroma.sqlite3")
+            rag_probe_hits = rag_probe.query_semantic_rag(
+                "web application SQL injection vulnerability port 80", top_k=2
+            )
+            if len(rag_probe_hits) != 2:
+                failures.append(
+                    f"M32 ChromaDB RAG query length mismatch: {len(rag_probe_hits)} != 2"
+                )
+            elif not rag_probe_hits[0].technique_id:
+                failures.append("M32 ChromaDB RAG hit missing technique_id")
+
+            # 2. Probe MISP Client RFC1918 Private IP Guard & Verified Fallback Snapshot
+            misp_probe = MispDeterministicClient(
+                outbox_db_path=m32_dir / "probe_soar_outbox.sqlite3"
+            )
+            misp_ip_probe = misp_probe.query_indicator("10.0.0.4", indicator_type="ip-src")
+            if (
+                not misp_ip_probe.private_ip_guard_triggered
+                or misp_ip_probe.query_mode != "rfc1918_guard_suppressed"
+            ):
+                failures.append("M32 MISP RFC1918 private-IP guard failed to suppress 10.0.0.4")
+            misp_hash_probe = misp_probe.query_indicator(
+                "44d88612fea8a8f36de82e1278abb02f", indicator_type="md5"
+            )
+            if not misp_hash_probe.matched or "malware:eicar" not in misp_hash_probe.tags:
+                failures.append("M32 MISP query on EICAR hash failed to match canonical snapshot")
+
+            # 3. Probe TheHive & n8n Mandatory Approval & Hash-Chain Guards
+            soar_probe_repo = SoarPlaybookSqliteRepository(m32_dir / "probe_soar_ledger.sqlite3")
+            soar_probe_engine = ApprovalGatedSoarEngine(soar_probe_repo)
+            soar_probe_recs = soar_probe_engine.recommend_actions_for_alert(
+                "cand_m32_probe", contract
+            )
+            unapproved_soar_rec = soar_probe_recs[0]
+
+            hive_probe = TheHiveDeterministicClient(
+                outbox_db_path=m32_dir / "probe_soar_outbox.sqlite3"
+            )
+            # Verify N8nDeterministicPlaybookClient rejects short/missing secret
+            try:
+                N8nDeterministicPlaybookClient(secret_key="short")
+                failures.append("M32 N8nDeterministicPlaybookClient accepted <16 char secret")
+            except ValueError:
+                pass
+
+            n8n_probe = N8nDeterministicPlaybookClient(
+                secret_key="audit_probe_hmac_secret_2026_secure",
+                outbox_db_path=m32_dir / "probe_soar_outbox.sqlite3",
+            )
+
+            # Unapproved records MUST raise SoarStateTransitionError
+            try:
+                hive_probe.create_case_from_soar(
+                    soar_record=unapproved_soar_rec,
+                    soar_repo=soar_probe_repo,
+                    rf_confidence_pct=92.5,
+                )
+                failures.append("M32 TheHive client failed to reject unapproved SOAR record")
+            except SoarStateTransitionError:
+                pass
+
+            try:
+                n8n_probe.trigger_soar_playbook(
+                    soar_record=unapproved_soar_rec,
+                    soar_repo=soar_probe_repo,
+                    rf_confidence_pct=92.5,
+                )
+                failures.append("M32 n8n client failed to reject unapproved SOAR record")
+            except SoarStateTransitionError:
+                pass
+
+            # Once approved, dispatch/queueing succeeds
+            approved_soar_rec = soar_probe_engine.decide_recommendation(
+                playbook_id=unapproved_soar_rec.playbook_id,
+                actor_id="analyst-bilal",
+                decision="approve",
+                reason="Probe approval",
+                expected_version=1,
+            )
+            hive_case = hive_probe.create_case_from_soar(
+                soar_record=approved_soar_rec,
+                soar_repo=soar_probe_repo,
+                rf_confidence_pct=92.5,
+            )
+            if not hive_case.case_id.startswith("case_"):
+                failures.append("M32 TheHive case creation returned invalid case_id")
+
+            n8n_receipt = n8n_probe.trigger_soar_playbook(
+                soar_record=approved_soar_rec,
+                soar_repo=soar_probe_repo,
+                rf_confidence_pct=92.5,
+            )
+            if (
+                not n8n_receipt.execution_id.startswith("exec_")
+                or len(n8n_receipt.signature_sha256) != 64
+            ):
+                failures.append(
+                    "M32 n8n webhook receipt returned invalid execution_id or HMAC signature"
+                )
+
+            # 4. Probe Hardened n8n Workflow JSON & Docker Compose Invariants
+            wf_file = (
+                resolved_repo_root
+                / "docker"
+                / "n8n"
+                / "workflows"
+                / "threatfusion_soar_playbook.json"
+            )
+            if not wf_file.exists():
+                failures.append(f"M32 Workflow JSON file missing: {wf_file}")
+            else:
+                wf_data = json.loads(wf_file.read_text(encoding="utf-8"))
+                wf_nodes = wf_data.get("nodes", [])
+                code_node = next(
+                    (
+                        n
+                        for n in wf_nodes
+                        if n.get("name") == "Verify HMAC-SHA256 & Idempotency Envelope"
+                    ),
+                    None,
+                )
+                if not code_node:
+                    failures.append(
+                        "M32 Workflow JSON missing 'Verify HMAC-SHA256 & Idempotency Envelope' Code node"
+                    )
+                else:
+                    js_code = code_node.get("parameters", {}).get("jsCode", "")
+                    if (
+                        "x-threatfusion-signature-256" not in js_code
+                        or "x-idempotency-key" not in js_code
+                    ):
+                        failures.append(
+                            "M32 Workflow Code node missing signature or idempotency validation"
+                        )
+
+                # Invariant: Zero 127.0.0.1 inside container nodes, uses DNS hostnames
+                wf_text = wf_file.read_text(encoding="utf-8")
+                if "127.0.0.1" in wf_text:
+                    failures.append(
+                        "M32 Workflow JSON contains forbidden 127.0.0.1 URL inside container nodes"
+                    )
+                if "******" in wf_text:
+                    failures.append("M32 Workflow JSON contains forbidden '******' placeholder")
+                if (
+                    "http://misp-connector:8080" not in wf_text
+                    or "http://thehive:9000" not in wf_text
+                    or "http://threatfusion-callback:8443" not in wf_text
+                ):
+                    failures.append(
+                        "M32 Workflow JSON missing required container service DNS hostnames"
+                    )
+
+            compose_file = resolved_repo_root / "docker" / "docker-compose.soc-stack.yml"
+            if not compose_file.exists():
+                failures.append(f"M32 Docker compose file missing: {compose_file}")
+            else:
+                c_text = compose_file.read_text(encoding="utf-8")
+                if ":latest" in c_text:
+                    failures.append("M32 Docker compose file contains unpinned ':latest' image tag")
+                if "N8N_BASIC_AUTH_ACTIVE=true" not in c_text:
+                    failures.append("M32 Docker compose file missing N8N_BASIC_AUTH_ACTIVE=true")
+                if "${THREATFUSION_SOAR_HMAC_SECRET:?required}" not in c_text:
+                    failures.append(
+                        "M32 Docker compose file missing fail-closed THREATFUSION_SOAR_HMAC_SECRET reference"
+                    )
+                if "${THREATFUSION_THEHIVE_API_KEY:?required}" not in c_text:
+                    failures.append(
+                        "M32 Docker compose file missing fail-closed THREATFUSION_THEHIVE_API_KEY reference"
+                    )
+                if "threatfusion-callback:" not in c_text:
+                    failures.append(
+                        "M32 Docker compose file missing threatfusion-callback service definition"
+                    )
+
+            # 5. Probe STRIDE Threat Model & Production Readiness Document
+            stride_doc = (
+                resolved_repo_root / "docs" / "stride_threat_model_and_production_readiness.md"
+            )
+            if not stride_doc.exists() or stride_doc.stat().st_size < 500:
+                failures.append(
+                    f"STRIDE Threat Model and Production Readiness document missing or incomplete: {stride_doc}"
+                )
+
+            # 6. Probe Contract Server Ledger Verification Guard (Fabricated Signed Approval Rejected)
+            contract_server_file = (
+                resolved_repo_root / "scripts" / "run_misp_and_callback_contract_server.py"
+            )
+            if not contract_server_file.exists():
+                failures.append(f"Contract server script missing: {contract_server_file}")
+            else:
+                import importlib.util
+
+                spec = importlib.util.spec_from_file_location(
+                    "contract_server_audit_probe", contract_server_file
+                )
+                if spec and spec.loader:
+                    contract_mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(contract_mod)
+                    get_soar_fn = getattr(contract_mod, "_get_soar_record_and_verify_chain", None)
+                    if get_soar_fn:
+                        fab_ok, _, _ = get_soar_fn(
+                            m32_dir / "probe_soar_ledger.sqlite3", "pb_fabricated_999"
+                        )
+                        if fab_ok:
+                            failures.append(
+                                "Contract server ledger verification accepted non-existent fabricated playbook"
+                            )
+                    else:
+                        failures.append("Contract server missing _get_soar_record_and_verify_chain")
+
         if failures:
             passed = False
     except Exception as e:
@@ -1146,7 +1399,9 @@ def _check_6_functional_probe(expected_src_root: Path) -> CheckResult:
         "Functional probe verified Pillar 4 correlation windows (30s/600s), 13.C RFC1918 guard, "
         "13.D groundedness, 13.E SOAR approval gate & hash-chained audit trail integrity, "
         "13.F FP shield, M28 resilient Suricata quarantine & budget kill-switch, M30 AE queue ranker, "
-        "and M31 model supply-chain, 14-feature PSI drift monitor, and TF-008 holdout protocol."
+        "M31 model supply-chain, 14-feature PSI drift monitor, TF-008 holdout protocol, "
+        "M32 ChromaDB RAG, MISP private-IP guard, TheHive/n8n approval-gated dispatch, "
+        "contract server ledger verification, and STRIDE threat model."
         if passed
         else "; ".join(failures)
     )

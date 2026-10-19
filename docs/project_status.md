@@ -1733,5 +1733,70 @@ TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptan
   - Upgraded Check 6 live functional probe to exercise `verify_frozen_model_supply_chain`, `evaluate_14_feature_telemetry_drift`, and `evaluate_independent_holdout_dataset` (asserting `protocol_violation_inspected_split=True` on January validation and `tf_008_closure_eligible=False` on synthetic smoke fixtures).
 - **Unit Test Suite & Verification (`test_drift_supply_chain_and_tf008_protocol.py`):**
   - 15 comprehensive unit tests covering supply-chain verification and fail-closed security, input validation and 3-tier drift classification, immutability of inputs, holdout evaluation metrics and bootstrap CIs, inspected split rejection, full SOC demo report generation, and dashboard badge rendering.
+TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.
+
+### Milestone #32: Full Master-Plan SOC Stack Integration — ChromaDB Semantic Vector RAG, Deterministic n8n Playbook Webhook Engine, TheHive Case Management, MISP Private-IP Guarded IOC Client, Docker Compose SOC Stack, and Turnkey SOC Pipeline Integration (2026-10-18)
+
+- **ChromaDB Semantic Vector RAG over MITRE ATT&CK & Incident Playbooks (`chromadb_mitre_rag.py`):**
+  - Implemented `MitrePlaybookRagDocument`, `ChromaRagQueryResult`, and authoritative `CANONICAL_MITRE_AND_PLAYBOOK_CORPUS` containing 10 enterprise techniques (T1046, T1190, T1498, T1071.001, T1595, T1110, T1041, T1021, T1059, T1133) and structured SOC playbooks.
+  - Implemented `DeterministicMitreEmbeddingFunction` generating 64-dimensional L2-normalized dense float vector embeddings from domain tokens and trigrams deterministically without external weights or network calls.
+  - Implemented `ChromaDbMitrePlaybookRag` operating a persistent SQLite dense vector store (`chromadb_vectors.sqlite3`) with mode 0600 file security, cosine similarity ranking, and `query_semantic_rag_for_bundle` deriving targeted domain queries from `AdvisoryEvidenceBundle`.
+  - Enforced strict assistant-only isolation: RAG recommendations are strictly advisory, never mutating model weights or alert decision thresholds. Stages 1-4 maintain zero imports of advisory modules (Gate G9 AST verified).
+- **Deterministic n8n, TheHive, and MISP SOC Stack Clients (`n8n_thehive_misp_stack.py`):**
+  - **MISP Threat Intelligence Client (`MispDeterministicClient`):** Queries MISP indicator endpoints with RFC1918 Private-IP Guard. Any query targeting internal/lab subnets (e.g., 10.0.0.4, 10.0.0.5) is strictly suppressed from external egress (`query_mode="rfc1918_guard_suppressed"`, `private_ip_guard_triggered=True`). Verified fallback snapshot matches known threat indicators (e.g., EICAR, Mirai) deterministically.
+  - **TheHive Case Management Client (`TheHiveDeterministicClient`):** Formats and dispatches TheHive v4/v5 case records containing correlated `incident_id`, RF confidence score (%), non-fused AE queue rank, MISP IOC tags, and ChromaDB MITRE tags. Enforces mandatory SOAR approval gate and cryptographic hash chain verification (raising `SoarStateTransitionError` on unapproved records or tampered chains).
+  - **Deterministic n8n Playbook Webhook Client (`N8nDeterministicPlaybookClient`):** Generates HMAC-SHA256 signed webhook triggers with idempotency keys (`idem_<playbook_id>_<version>`). Fails closed (raising `SoarStateTransitionError`) unless SOAR action is explicitly approved by a human analyst and cryptographic audit chain is verified.
+  - **Durable SQLite Outbox:** Created `n8n_thehive_misp_outbox.sqlite3` with mode 0600 permissions, ensuring auditable persistence and reliable offline queueing.
+- **Docker Compose SOC Stack & n8n Workflow JSON (`docker/docker-compose.soc-stack.yml`, `docker/n8n/workflows/threatfusion_soar_playbook.json`):**
+  - Designed local containerized orchestration binding `n8n` (5678), `thehive` (9000), `chromadb` (8000), and `misp-connector` strictly to `127.0.0.1`.
+  - Configured 5-node deterministic n8n workflow JSON: (1) Webhook Trigger, (2) Verify Approval & SHA-256 Audit Chain Gate, (3) Query MISP Threat Intelligence, (4) Auto-Create Case in TheHive, (5) Security Operations Callback.
+- **Turnkey SOC Demo & Analyst Dashboard Integration (`full_soc_demo.py`, `analyst_dashboard.py`):**
+  - Wired ChromaDB RAG, MISP, TheHive, and n8n clients directly into Track B of `run_full_soc_demo`.
+  - Master demo reports (`full_soc_demo_report.json` and `full_soc_demo_report.md`) now verify `chromadb_mitre_rag_hits`, `misp_hash_and_ioc_lookup`, `thehive_case_record`, and `n8n_playbook_receipt`.
+  - Added dedicated UI badges to `analyst_dashboard.py`:
+    - `"ChromaDB Semantic RAG: MITRE ATT&CK & Playbook Assistant"`
+    - `"n8n Deterministic Playbook & TheHive Case Status"`
+    - `"Prioritized Alert Confidence Score (Frozen RF Primary + Secondary v2 AE)"`
+    with CSS styling `.badge-confidence`, `.badge-chroma-rag`, and `.badge-n8n-hive`.
+- **Zero-Trust Repository Truth Audit Upgrade (`repo_truth_audit.py`):**
+  - Added `threatfusion.advisory.chromadb_mitre_rag` and `threatfusion.soar.n8n_thehive_misp_stack` to Check 5 `CANONICAL_MODULES`.
+  - Check 5 verifies `docker/n8n/workflows/threatfusion_soar_playbook.json` is valid on disk.
+  - Check 6 live functional probe verifies ChromaDB RAG cosine similarity retrieval, MISP RFC1918 guard on 10.0.0.4, and TheHive/n8n approval-gated fail-closed security.
+- **Unit Test Suite & Verification (`test_chromadb_rag_n8n_thehive_misp.py`):**
+  - 19 comprehensive unit tests covering ChromaDB vector RAG, embedding L2 normalization, MISP private IP guard and snapshot fallback, TheHive case creation and approval gates, n8n HMAC-SHA256 signatures, n8n workflow JSON structure, docker-compose configuration, full SOC demo execution, and analyst dashboard rendering.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.
+
+### Milestone #33–#34: Master-Plan SOC Stack Hardening, Ledger-Backed Contract Verification, Strict Dashboard Evidence Validation, STRIDE Threat Model, and Defense Deliverable Harmonization (2026-10-19)
+
+- **Remediation of Copilot Security & Reliability Findings #1 & #2 (`threatfusion_soar_playbook.json`):**
+  - Inserted deterministic Cryptographic HMAC-SHA256, Idempotency, and Ledger State Verification Code Node ("Verify HMAC-SHA256 & Idempotency Envelope", type `n8n-nodes-base.code`) immediately after the Webhook Trigger and before the Approval Gate IF node.
+  - The node validates `x-threatfusion-signature-256`, `x-idempotency-key`, and `THREATFUSION_SOAR_HMAC_SECRET` (failing closed if missing), computes expected HMAC-SHA256 digest, checks key formatting, and forwards signed verification to `http://threatfusion-callback:8443/api/v1/soar/verify-state` to verify server-side ledger state.
+  - Replaced all `127.0.0.1` container URLs with Docker Compose service DNS hostnames: `http://misp-connector:8080/attributes/restSearch`, `http://thehive:9000/api/v1/case`, and `http://threatfusion-callback:8443/api/v1/soar/callback`.
+- **Remediation of Copilot Finding #3 (`run_misp_and_callback_contract_server.py`, `docker-compose.soc-stack.yml`, `n8n_thehive_misp_stack.py`):**
+  - Created standalone authenticated contract server `scripts/run_misp_and_callback_contract_server.py` using Python stdlib:
+    - `POST /api/v1/soar/verify-state`: Verifies HMAC-SHA256 signature, validates idempotency key syntax, prevents replay attacks (HTTP 409), opens server-side `SoarPlaybookSqliteRepository` to ensure playbook exists, candidate ID matches, state is `approved` or `executed_simulated`, and hash-chain audit trail is cryptographically verified via `verify_audit_chain_integrity()[0]`. Fails closed with HTTP 403 on unapproved or fabricated playbooks.
+    - `POST /api/v1/soar/callback`: Verifies HMAC-SHA256 signature and idempotency key (HTTP 403 on invalid signature, HTTP 409 on replay), verifies playbook in ledger, records callback with SHA-256 receipt.
+    - `POST /attributes/restSearch`: Authenticates `Authorization` header against `THREATFUSION_MISP_API_KEY` (>=16 chars) using `hmac.compare_digest` (HTTP 401 on failure), returns deterministic MISP attributes for hashes/IPs, and enforces RFC1918 Private IP Guard (HTTP 422 Unprocessable Entity on internal IPs 10.0.0.4/10.0.0.5).
+    - `GET /healthz`: Returns HTTP 200 `{"status": "ok"}`.
+  - Updated `docker/docker-compose.soc-stack.yml`: Pinned exact image tags (`n8nio/n8n:1.68.0`, `strangebee/thehive:5.2.10`, `chromadb/chroma:0.5.20`, `python:3.11.10-slim`), eliminated all `******` placeholders, enforced fail-closed environment variables (`${THREATFUSION_THEHIVE_API_KEY:?required}`, etc.), mounted backend code, and configured `misp-connector` and `threatfusion-callback` services.
+  - Removed predictable fallback secret in `n8n_thehive_misp_stack.py`, requiring non-empty secret >= 16 chars.
+- **Remediation of Copilot Finding #4 (`n8n_thehive_misp_stack.py`):**
+  - Replaced broad `except Exception:` blocks around external transport calls with specific expected transport exceptions (`urllib.error.URLError`, `TimeoutError`, `ConnectionError`, `OSError`, `ValueError`, `json.JSONDecodeError`) and recorded sanitized error reasons.
+  - Prohibited catching and discarding `sqlite3.Error` / `OSError` in SQLite persistence methods (`_record_outbox_event`), ensuring storage failures propagate and never return fake success receipts.
+- **Remediation of Copilot Finding #5 (`analyst_dashboard.py`):**
+  - Implemented strict schema and digest validation on dashboard evidence badges:
+    - `"SOAR Cryptographic Audit Chain"` renders `VERIFIED (SHA-256 Hash-Linked)` only when `soar_audit_chain_verified == True` and `soar_audit_chain_head_sha256` matches 64-char hex format `[0-9a-fA-F]{64}`; otherwise renders `data-evidence-state="unavailable"`.
+    - `"ChromaDB Semantic RAG"` renders active MITRE techniques only when each hit contains valid technique ID matching `^T\d{4}(\.\d{3})?$`, non-empty `playbook_id`, and `cosine_similarity` in `[0.0, 1.0]`; loose unverified dictionaries fail closed to `data-evidence-state="unavailable"`.
+    - `"n8n Deterministic Playbook & TheHive Case Status"` validates receipt/case digests matching 64-char hex or UUID formats; unverified evidence renders as `Not Attached / Dispatched on Approval Gate`.
+- **Comprehensive STRIDE Threat Model (`docs/stride_threat_model_and_production_readiness.md`):**
+  - Authored detailed STRIDE security analysis across all 8 pipeline stages: (1) Suricata Telemetry Ingestion, (2) Classical ML Fast-Path Inference, (3) Dual-Window Graph Incident Correlation, (4) ChromaDB Vector RAG, (5) Gemini Advisory Explanation, (6) Approval-Gated SOAR Ledger, (7) n8n / TheHive / MISP Integrations, (8) Human Analyst mTLS Dashboard.
+  - Mapped specific mitigations, invariant gates, fail-closed semantics, and production readiness criteria.
+- **Harmonized Academic Defense Deliverables:**
+  - Regenerated defense artifacts: `ThreatFusion_FYP2_Final_Defense_Harmonized.pptx`, `ThreatFusion_FYP2_Presenter_Guide_Harmonized.docx`, `ThreatFusion_FYP2_Final_Report_Harmonized.docx`, and updated `docs/presenter_guide_15_slides_rev2.md` to reflect RAG, n8n/TheHive/MISP, drift monitoring, supply-chain verification, and STRIDE security posture.
+- **Zero-Trust Repository Truth Audit Upgrade & Test Verification:**
+  - Check 6 in `repo_truth_audit.py` upgraded to verify zero `******` placeholders, fail-closed compose variables, existence of STRIDE threat model, and functional live contract server ledger verification via dynamic module loading.
+  - All 17 checks in `test_repo_truth_audit.py` pass; all 22 tests in `test_chromadb_rag_n8n_thehive_misp.py` pass.
+  - Zero-trust audit CLI confirms `ALL 7 ZERO-TRUST CHECKS PASSED` with `POST-EXECUTION DECISION VERDICT: GO`.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.

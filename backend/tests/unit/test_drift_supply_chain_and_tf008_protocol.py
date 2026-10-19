@@ -530,6 +530,8 @@ def test_analyst_dashboard_renders_soar_audit_chain_badge_and_queue_rank() -> No
         updated_by=None,
         last_transition_id=None,
         history=(),
+        soar_audit_chain_verified=True,
+        soar_audit_chain_head_sha256="a" * 64,
     )
 
     queue = DashboardAlertQueue(items=(), total_loaded=0, limit=10, offset=0)
@@ -537,10 +539,42 @@ def test_analyst_dashboard_renders_soar_audit_chain_badge_and_queue_rank() -> No
 
     html = render_dashboard_html(snapshot)
 
-    # 1. SOAR Cryptographic Audit Chain Badge
+    # 1. SOAR Cryptographic Audit Chain Badge (Verified)
     assert "badge-soar-chain" in html
     assert "SOAR Cryptographic Audit Chain: VERIFIED (SHA-256 Hash-Linked)" in html
 
     # 2. Non-Fused Queue Priority Rank Indicator
     assert "badge-queue-rank" in html
     assert "Non-Fused Queue Priority Rank" in html
+
+    # 3. Unattached / Unverified SOAR Chain fallback check
+    detail_unattached = DashboardAlertDetail(
+        alert_candidate_id="alert_cand_m31_unicorn_02",
+        source_event_id="src_event_unicorn_02",
+        observed_at="2026-10-18T10:00:00Z",
+        created_at="2026-10-18T10:00:01Z",
+        source_representation_identity="azure.victim_vm.suricata.eve_flow.v1",
+        feature_contract_identity="network_behavior_v1",
+        model_identity="network_random_forest",
+        model_version="full-network-random-forest-6d69c72-v1",
+        model_artifact_sha256="bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9",
+        uncalibrated_model_score=0.9125,
+        decision_threshold=0.50,
+        decision_policy_version="rf_baseline_v1",
+        decision="attack",
+        state="new",
+        version=0,
+        updated_at=None,
+        updated_by=None,
+        last_transition_id=None,
+        history=(),
+        soar_audit_chain_verified=False,
+    )
+    html_unattached = render_dashboard_html(
+        DashboardSnapshot(queue=queue, selected=detail_unattached, status="active")
+    )
+    assert "badge-soar-chain" in html_unattached
+    assert (
+        "SOAR Cryptographic Audit Chain: Not Attached / No SOAR Playbook Recorded"
+        in html_unattached
+    )

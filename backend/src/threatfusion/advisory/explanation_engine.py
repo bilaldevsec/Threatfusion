@@ -41,6 +41,7 @@ class AdvisoryEvidenceBundle:
     correlation_status: str = "uncorrelatable_missing_entity"
     enrichment_result: ThreatIntelEnrichmentResult | None = None
     observed_at: str | None = None
+    chroma_rag_hits: tuple[Any, ...] = ()
 
     def get_allowed_evidence_keys(self) -> set[str]:
         keys = {
@@ -65,6 +66,19 @@ class AdvisoryEvidenceBundle:
                 keys.add(f"entity:{ip}")
         if self.observed_at is not None:
             keys.add("observed_at")
+        if self.chroma_rag_hits:
+            keys.add("chroma_rag_hits")
+            for hit in self.chroma_rag_hits:
+                tid = getattr(hit, "technique_id", None) or (
+                    hit.get("technique_id") if isinstance(hit, dict) else None
+                )
+                pbid = getattr(hit, "playbook_id", None) or (
+                    hit.get("playbook_id") if isinstance(hit, dict) else None
+                )
+                if tid:
+                    keys.add(f"mitre:{tid}")
+                if pbid:
+                    keys.add(f"playbook:{pbid}")
         return keys
 
 
@@ -82,6 +96,7 @@ class EvidenceBoundExplanation:
     recommended_analyst_checks: tuple[str, ...]
     cited_evidence_keys: tuple[str, ...]
     groundedness_verified: bool
+    mitre_rag_hits: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -95,6 +110,7 @@ class EvidenceBoundExplanation:
             "recommended_analyst_checks": list(self.recommended_analyst_checks),
             "cited_evidence_keys": list(self.cited_evidence_keys),
             "groundedness_verified": self.groundedness_verified,
+            "mitre_rag_hits": list(self.mitre_rag_hits),
         }
 
 
@@ -240,11 +256,11 @@ class AdvisoryExplanationEngine:
 
         correlation_context = " ".join(context_parts)
 
-        checks = (
+        checks_list = [
             "Verify network segment and sensor provenance on upstream tap.",
             "Review surrounding flow events within the 30-second burst window.",
             "Assess potential benign administrative activity before initiating containment.",
-        )
+        ]
 
         cited_keys = [
             "candidate_id",
@@ -265,6 +281,41 @@ class AdvisoryExplanationEngine:
             for ip in bundle.enrichment_result.inspected_entities:
                 cited_keys.append(f"entity:{ip}")
 
+        if bundle.chroma_rag_hits:
+            top_hit = bundle.chroma_rag_hits[0]
+            tid = getattr(top_hit, "technique_id", None) or (
+                top_hit.get("technique_id") if isinstance(top_hit, dict) else None
+            )
+            tname = getattr(top_hit, "technique_name", "") or (
+                top_hit.get("technique_name", "") if isinstance(top_hit, dict) else ""
+            )
+            pbid = getattr(top_hit, "playbook_id", None) or (
+                top_hit.get("playbook_id") if isinstance(top_hit, dict) else None
+            )
+            steps = getattr(top_hit, "deterministic_playbook_steps", ()) or (
+                top_hit.get("deterministic_playbook_steps", ()) if isinstance(top_hit, dict) else ()
+            )
+            first_step = steps[0] if steps else "Review matching technique playbook."
+            checks_list.insert(
+                0,
+                f"ChromaDB Semantic Playbook ({tid} - {tname}): {first_step}",
+            )
+            cited_keys.append("chroma_rag_hits")
+            if tid:
+                cited_keys.append(f"mitre:{tid}")
+            if pbid:
+                cited_keys.append(f"playbook:{pbid}")
+
+        checks = tuple(checks_list)
+
+        rag_hits_dicts = (
+            tuple(
+                hit.to_dict() if hasattr(hit, "to_dict") else hit for hit in bundle.chroma_rag_hits
+            )
+            if bundle.chroma_rag_hits
+            else ()
+        )
+
         return EvidenceBoundExplanation(
             candidate_id=bundle.candidate_id,
             generation_mode="deterministic_evidence_template",
@@ -276,4 +327,5 @@ class AdvisoryExplanationEngine:
             recommended_analyst_checks=checks,
             cited_evidence_keys=tuple(cited_keys),
             groundedness_verified=True,
+            mitre_rag_hits=rag_hits_dicts,
         )

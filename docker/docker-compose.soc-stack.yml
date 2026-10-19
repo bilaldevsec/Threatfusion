@@ -1,0 +1,122 @@
+version: "3.8"
+
+networks:
+  threatfusion_soc_net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
+
+services:
+  chromadb:
+    image: chromadb/chroma:0.5.20
+    container_name: threatfusion_chromadb
+    environment:
+      - IS_PERSISTENT=TRUE
+      - PERSIST_DIRECTORY=/chroma/chroma
+      - ANONYMIZED_TELEMETRY=FALSE
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data/chromadb:/chroma/chroma
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - threatfusion_soc_net
+
+  misp-connector:
+    image: python:3.11.10-slim
+    container_name: threatfusion_misp_connector
+    command: python /app/scripts/run_misp_and_callback_contract_server.py --port 8080 --bind 0.0.0.0
+    environment:
+      - THREATFUSION_MISP_API_KEY=${THREATFUSION_MISP_API_KEY:?required}
+      - THREATFUSION_SOAR_HMAC_SECRET=${THREATFUSION_SOAR_HMAC_SECRET:?required}
+      - PYTHONPATH=/app/backend/src
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ../scripts:/app/scripts:ro
+      - ../backend/src:/app/backend/src:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - threatfusion_soc_net
+
+  threatfusion-callback:
+    image: python:3.11.10-slim
+    container_name: threatfusion_callback
+    command: python /app/scripts/run_misp_and_callback_contract_server.py --port 8443 --bind 0.0.0.0 --soar-db-path /app/data/soar.sqlite3
+    environment:
+      - THREATFUSION_SOAR_HMAC_SECRET=${THREATFUSION_SOAR_HMAC_SECRET:?required}
+      - THREATFUSION_SOAR_LEDGER_DB_PATH=${THREATFUSION_SOAR_LEDGER_DB_PATH:-/app/data/soar.sqlite3}
+      - PYTHONPATH=/app/backend/src
+    ports:
+      - "127.0.0.1:8443:8443"
+    volumes:
+      - ../scripts:/app/scripts:ro
+      - ../backend/src:/app/backend/src:ro
+      - ../data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8443/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - threatfusion_soc_net
+
+  thehive:
+    image: strangebee/thehive:5.2.10
+    container_name: threatfusion_thehive
+    environment:
+      - APPLICATION_SECRET=${THREATFUSION_THEHIVE_SECRET:?required}
+      - THREATFUSION_THEHIVE_API_KEY=${THREATFUSION_THEHIVE_API_KEY:?required}
+    ports:
+      - "127.0.0.1:9000:9000"
+    depends_on:
+      - misp-connector
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/api/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - threatfusion_soc_net
+
+  n8n:
+    image: n8nio/n8n:1.68.0
+    container_name: threatfusion_n8n
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${THREATFUSION_N8N_USER:?required}
+      - N8N_BASIC_AUTH_PASSWORD=${THREATFUSION_N8N_PASSWORD:?required}
+      - THREATFUSION_SOAR_HMAC_SECRET=${THREATFUSION_SOAR_HMAC_SECRET:?required}
+      - THREATFUSION_THEHIVE_API_KEY=${THREATFUSION_THEHIVE_API_KEY:?required}
+      - THREATFUSION_MISP_API_KEY=${THREATFUSION_MISP_API_KEY:?required}
+      - N8N_HOST=127.0.0.1
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://127.0.0.1:5678/
+      - GENERIC_TIMEZONE=UTC
+    ports:
+      - "127.0.0.1:5678:5678"
+    volumes:
+      - ./n8n/workflows:/data/workflows:ro
+    depends_on:
+      - chromadb
+      - thehive
+      - misp-connector
+      - threatfusion-callback
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5678/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - threatfusion_soc_net

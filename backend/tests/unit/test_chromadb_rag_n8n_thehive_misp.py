@@ -1,0 +1,1176 @@
+"""Unit tests for Milestone #32 SOC Stack Integration.
+
+Covers:
+1. ChromaDB Semantic Vector RAG over MITRE ATT&CK & Playbooks (chromadb_mitre_rag.py).
+2. Deterministic MISP Threat Intelligence Client & RFC 1918 Guard (n8n_thehive_misp_stack.py).
+3. TheHive Case Management Client with SOAR Gate Enforcements.
+4. n8n Deterministic Webhook Playbook Client with HMAC-SHA256 Signatures.
+5. Docker Compose & n8n Workflow JSON Artifact Verification.
+6. End-to-End SOC Demo & Analyst Dashboard Integration.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import stat
+
+import pytest
+
+from threatfusion.advisory.chromadb_mitre_rag import (
+    CANONICAL_MITRE_AND_PLAYBOOK_CORPUS,
+    ChromaDbMitrePlaybookRag,
+    ChromaRagQueryResult,
+    DeterministicMitreEmbeddingFunction,
+    MitrePlaybookRagDocument,
+)
+from threatfusion.advisory.explanation_engine import AdvisoryEvidenceBundle
+from threatfusion.alerts.correlation_engine import EntityProvenanceContract
+from threatfusion.api.analyst_dashboard import (
+    DashboardAlertDetail,
+    DashboardAlertQueue,
+    DashboardSnapshot,
+    render_dashboard_html,
+)
+import http.server
+import sqlite3
+import threading
+import urllib.error
+import urllib.request
+
+from scripts.run_misp_and_callback_contract_server import (
+    MispAndCallbackContractHandler,
+    is_rfc1918_or_loopback_ip as contract_is_rfc1918,
+    verify_hmac_signature,
+)
+from threatfusion.operations.full_soc_demo import run_full_soc_demo
+from threatfusion.soar.n8n_thehive_misp_stack import (
+    MispDeterministicClient,
+    N8nDeterministicPlaybookClient,
+    TheHiveDeterministicClient,
+    is_rfc1918_or_loopback_ip,
+)
+from threatfusion.soar.playbook_ledger import (
+    ApprovalGatedSoarEngine,
+    SoarPlaybookSqliteRepository,
+    SoarStateTransitionError,
+)
+
+TEST_SOAR_HMAC_SECRET = "threatfusion_soc_test_secret_key_v1"
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+class TestChromaDbMitreRag:
+    """Tests for ChromaDB Semantic Vector RAG over MITRE ATT&CK & Playbooks."""
+
+    def test_mitre_corpus_and_document_structure(self) -> None:
+        """Verify canonical corpus has 10 enterprise techniques and valid structure."""
+        assert len(CANONICAL_MITRE_AND_PLAYBOOK_CORPUS) == 10
+        expected_techniques = {
+            "T1046",
+            "T1190",
+            "T1498",
+            "T1071.001",
+            "T1595",
+            "T1110",
+            "T1041",
+            "T1021",
+            "T1059",
+            "T1133",
+        }
+        actual_techniques = {doc.technique_id for doc in CANONICAL_MITRE_AND_PLAYBOOK_CORPUS}
+        assert actual_techniques == expected_techniques
+
+        for doc in CANONICAL_MITRE_AND_PLAYBOOK_CORPUS:
+            assert isinstance(doc, MitrePlaybookRagDocument)
+            assert doc.doc_id.startswith("mitre_doc_")
+            assert len(doc.technique_name) > 0
+            assert len(doc.tactic) > 0
+            assert len(doc.description) > 20
+            assert doc.playbook_id.startswith("pb-")
+            assert len(doc.deterministic_playbook_steps) >= 3
+            assert doc.mitre_version == "15.1"
+
+            d = doc.to_dict()
+            assert d["technique_id"] == doc.technique_id
+            assert d["playbook_id"] == doc.playbook_id
+            assert isinstance(d["deterministic_playbook_steps"], list)
+
+    def test_deterministic_mitre_embedding_function(self) -> None:
+        """Verify embedding function computes 64-dim L2-normalized dense vectors deterministically."""
+        embed_fn = DeterministicMitreEmbeddingFunction()
+
+        vec1 = embed_fn.embed_text("Exploit Public-Facing Application HTTP port 80 vulnerability")
+        vec2 = embed_fn.embed_text("Exploit Public-Facing Application HTTP port 80 vulnerability")
+        vec_diff = embed_fn.embed_text("Denial of Service volumetric SYN flood attack")
+
+        assert len(vec1) == 64
+        assert len(vec2) == 64
+        assert len(vec_diff) == 64
+
+        # Deterministic identical output
+        assert vec1 == vec2
+        assert vec1 != vec_diff
+
+        # L2-normalization: magnitude must equal 1.0 +/- 1e-4
+        norm1 = sum(x * x for x in vec1) ** 0.5
+        norm_diff = sum(x * x for x in vec_diff) ** 0.5
+        assert pytest.approx(norm1, abs=1e-4) == 1.0
+        assert pytest.approx(norm_diff, abs=1e-4) == 1.0
+
+    def test_chromadb_rag_store_initialization_and_mode_0600(self, tmp_path: Path) -> None:
+        """Verify SQLite vector store creates collections, seeds corpus, and sets mode 0600."""
+        db_file = tmp_path / "chromadb_vectors.sqlite3"
+        rag = ChromaDbMitrePlaybookRag(db_file)
+
+        assert db_file.exists()
+        file_stat = db_file.stat()
+        file_mode = stat.S_IMODE(file_stat.st_mode)
+        assert file_mode & stat.S_IRUSR
+        assert file_mode & stat.S_IWUSR
+
+        # Verify collection count
+        with rag._get_connection() as conn:
+            cur = conn.execute("SELECT COUNT(*) AS cnt FROM chroma_embeddings")
+            count = cur.fetchone()["cnt"]
+            assert count == 10
+
+    def test_chromadb_rag_semantic_queries(self, tmp_path: Path) -> None:
+        """Verify semantic vector queries return ranked hits by cosine similarity."""
+        db_file = tmp_path / "chromadb_vectors.sqlite3"
+        rag = ChromaDbMitrePlaybookRag(db_file)
+
+        # Query 1: Network Service Scanning probe
+        scan_hits = rag.query_semantic_rag(
+            "network service discovery active scanning probe sweep reconnaissance", top_k=3
+        )
+        assert len(scan_hits) == 3
+        top_scan = scan_hits[0]
+        assert isinstance(top_scan, ChromaRagQueryResult)
+        assert top_scan.rank == 1
+        assert top_scan.technique_id in ("T1046", "T1595")
+        assert top_scan.cosine_similarity > 0.0
+        assert top_scan.distance >= 0.0
+        # Results must be sorted ascending by distance
+        assert scan_hits[0].distance <= scan_hits[1].distance <= scan_hits[2].distance
+
+        # Query 2: Exfiltration over C2
+        exfil_hits = rag.query_semantic_rag(
+            "exfiltration over command and control covert channel data theft", top_k=2
+        )
+        assert len(exfil_hits) == 2
+        assert exfil_hits[0].technique_id == "T1041"
+
+    def test_chromadb_rag_query_for_evidence_bundle(self, tmp_path: Path) -> None:
+        """Verify query_semantic_rag_for_bundle extracts signals from AdvisoryEvidenceBundle."""
+        db_file = tmp_path / "chromadb_vectors.sqlite3"
+        rag = ChromaDbMitrePlaybookRag(db_file)
+
+        bundle = AdvisoryEvidenceBundle(
+            candidate_id="cand_test_bundle",
+            record_id="rec_test_01",
+            rf_model_version="full-network-random-forest-6d69c72-v1",
+            rf_attack_probability=0.88,
+            rf_threshold=0.50,
+            top_feature_signals={
+                "dst_port": 80,
+                "fwd_packets": 25,
+                "bwd_packets": 1,
+                "bytes_per_second": 12000.0,
+            },
+            incident_id="inc_test_01",
+            correlation_status="corr_burst_5tuple_30s_v1",
+        )
+
+        hits = rag.query_semantic_rag_for_bundle(bundle, top_k=3)
+        assert len(hits) == 3
+        technique_ids = [h.technique_id for h in hits]
+        # Should match web exploit or active scan
+        assert any(t in ("T1190", "T1046", "T1595") for t in technique_ids)
+
+
+class TestMispDeterministicClient:
+    """Tests for MISP deterministic indicator lookup and RFC 1918 Private IP Guard."""
+
+    def test_is_rfc1918_or_loopback_ip(self) -> None:
+        """Verify RFC 1918, loopback, and link-local address detector."""
+        # Private / loopback IPv4
+        assert is_rfc1918_or_loopback_ip("10.0.0.4") is True
+        assert is_rfc1918_or_loopback_ip("10.0.0.5") is True
+        assert is_rfc1918_or_loopback_ip("192.168.1.100") is True
+        assert is_rfc1918_or_loopback_ip("172.16.5.20") is True
+        assert is_rfc1918_or_loopback_ip("127.0.0.1") is True
+        assert is_rfc1918_or_loopback_ip("169.254.10.10") is True
+
+        # Private / loopback IPv6
+        assert is_rfc1918_or_loopback_ip("::1") is True
+        assert is_rfc1918_or_loopback_ip("fc00::1") is True
+        assert is_rfc1918_or_loopback_ip("fe80::1") is True
+
+        # Public IPv4 / invalid strings
+        assert is_rfc1918_or_loopback_ip("8.8.8.8") is False
+        assert is_rfc1918_or_loopback_ip("1.1.1.1") is False
+        assert is_rfc1918_or_loopback_ip("93.184.216.34") is False
+        assert is_rfc1918_or_loopback_ip("142.250.190.46") is False
+        assert is_rfc1918_or_loopback_ip("not_an_ip") is False
+        assert is_rfc1918_or_loopback_ip("") is False
+
+    def test_misp_client_rfc1918_guard(self, tmp_path: Path) -> None:
+        """Verify private IP addresses are suppressed from external lookup."""
+        outbox_db = tmp_path / "misp_outbox.sqlite3"
+        client = MispDeterministicClient(outbox_db_path=outbox_db)
+
+        res = client.query_indicator("10.0.0.4", indicator_type="ip-dst")
+        assert res.private_ip_guard_triggered is True
+        assert res.query_mode == "rfc1918_guard_suppressed"
+        assert res.matched is False
+        assert "rfc1918_private_ip_suppressed" in res.tags
+
+    def test_misp_client_known_hash_fallback(self, tmp_path: Path) -> None:
+        """Verify known malware hashes match the canonical verified snapshot."""
+        outbox_db = tmp_path / "misp_outbox.sqlite3"
+        client = MispDeterministicClient(outbox_db_path=outbox_db)
+
+        # EICAR MD5
+        res_eicar = client.query_indicator("44d88612fea8a8f36de82e1278abb02f", indicator_type="md5")
+        assert res_eicar.matched is True
+        assert res_eicar.threat_level == "high"
+        assert "malware:eicar" in res_eicar.tags
+        assert res_eicar.query_mode in ("verified_snapshot_fallback", "rest_api")
+
+        # Mirai SHA256
+        res_mirai = client.query_indicator(
+            "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
+            indicator_type="sha256",
+        )
+        assert res_mirai.matched is True
+        assert "malware:mirai" in res_mirai.tags
+
+    def test_misp_client_unknown_indicator(self, tmp_path: Path) -> None:
+        """Verify unknown public indicator returns clean non-match."""
+        outbox_db = tmp_path / "misp_outbox.sqlite3"
+        client = MispDeterministicClient(outbox_db_path=outbox_db)
+
+        res = client.query_indicator("99.88.77.66", indicator_type="ip-dst")
+        assert res.matched is False
+        assert res.threat_level == "undefined"
+        assert len(res.tags) == 0
+
+    def test_misp_outbox_persistence_and_mode_0600(self, tmp_path: Path) -> None:
+        """Verify queries are logged into the SQLite outbox with mode 0600."""
+        outbox_db = tmp_path / "misp_outbox.sqlite3"
+        client = MispDeterministicClient(outbox_db_path=outbox_db)
+
+        client.query_indicator("10.0.0.5", indicator_type="ip-dst")
+        client.query_indicator("44d88612fea8a8f36de82e1278abb02f", indicator_type="md5")
+
+        assert outbox_db.exists()
+        file_stat = outbox_db.stat()
+        file_mode = stat.S_IMODE(file_stat.st_mode)
+        assert file_mode & stat.S_IRUSR
+        assert file_mode & stat.S_IWUSR
+
+
+class TestTheHiveDeterministicClient:
+    """Tests for TheHive Case Management Client with SOAR Gates."""
+
+    def test_thehive_client_enforces_mandatory_soar_approval(self, tmp_path: Path) -> None:
+        """Verify unapproved SOAR records raise SoarStateTransitionError."""
+        soar_db = tmp_path / "soar.sqlite3"
+        repo = SoarPlaybookSqliteRepository(soar_db)
+        engine = ApprovalGatedSoarEngine(repo)
+
+        contract = EntityProvenanceContract(
+            entity_namespace_id="test",
+            clock_synchronized=True,
+            src_entity_id="10.0.0.4",
+            dst_entity_id="10.0.0.5",
+            protocol="tcp",
+            service_or_port="80",
+        )
+        recs = engine.recommend_actions_for_alert("cand_hive_unapproved", contract)
+        unapproved = recs[0]
+
+        client = TheHiveDeterministicClient(outbox_db_path=tmp_path / "hive_outbox.sqlite3")
+        with pytest.raises(SoarStateTransitionError) as exc_info:
+            client.create_case_from_soar(
+                soar_record=unapproved,
+                soar_repo=repo,
+                rf_confidence_pct=85.0,
+            )
+        assert "must be approved or executed_simulated" in str(exc_info.value)
+
+    def test_thehive_client_enforces_audit_hash_chain_integrity(self, tmp_path: Path) -> None:
+        """Verify tampered cryptographic audit chain raises SoarStateTransitionError."""
+        soar_db = tmp_path / "soar.sqlite3"
+        repo = SoarPlaybookSqliteRepository(soar_db)
+        engine = ApprovalGatedSoarEngine(repo)
+
+        contract = EntityProvenanceContract(
+            entity_namespace_id="test",
+            clock_synchronized=True,
+            src_entity_id="10.0.0.4",
+            dst_entity_id="10.0.0.5",
+            protocol="tcp",
+            service_or_port="80",
+        )
+        recs = engine.recommend_actions_for_alert("cand_hive_tamper", contract)
+        approved = engine.decide_recommendation(
+            playbook_id=recs[0].playbook_id,
+            actor_id="analyst-bilal",
+            decision="approve",
+            reason="Approved",
+            expected_version=1,
+        )
+
+        # Tamper with audit trail directly
+        with repo._get_connection() as conn:
+            conn.execute(
+                "UPDATE soar_audit_events SET reason = 'TAMPERED REASON' WHERE playbook_id = ?",
+                (approved.playbook_id,),
+            )
+
+        client = TheHiveDeterministicClient(outbox_db_path=tmp_path / "hive_outbox.sqlite3")
+        with pytest.raises(SoarStateTransitionError) as exc_info:
+            client.create_case_from_soar(
+                soar_record=approved,
+                soar_repo=repo,
+                rf_confidence_pct=85.0,
+            )
+        assert "cryptographic SOAR audit hash chain integrity failed" in str(exc_info.value)
+
+    def test_thehive_client_create_case_success(self, tmp_path: Path) -> None:
+        """Verify approved SOAR record successfully creates TheHiveCaseRecord and outbox entry."""
+        soar_db = tmp_path / "soar.sqlite3"
+        repo = SoarPlaybookSqliteRepository(soar_db)
+        engine = ApprovalGatedSoarEngine(repo)
+
+        contract = EntityProvenanceContract(
+            entity_namespace_id="test",
+            clock_synchronized=True,
+            src_entity_id="10.0.0.4",
+            dst_entity_id="10.0.0.5",
+            protocol="tcp",
+            service_or_port="80",
+        )
+        recs = engine.recommend_actions_for_alert("cand_hive_valid", contract)
+        approved = engine.decide_recommendation(
+            playbook_id=recs[0].playbook_id,
+            actor_id="analyst-bilal",
+            decision="approve",
+            reason="Approved valid containment",
+            expected_version=1,
+        )
+
+        outbox_db = tmp_path / "hive_outbox.sqlite3"
+        client = TheHiveDeterministicClient(outbox_db_path=outbox_db)
+
+        case = client.create_case_from_soar(
+            soar_record=approved,
+            soar_repo=repo,
+            rf_confidence_pct=91.5,
+            queue_priority_rank=1,
+            incident_id="inc_hive_01",
+            mitre_tags=["T1046", "T1190"],
+            misp_tags=["malware:eicar"],
+        )
+
+        assert case.case_id.startswith("case_cand_hive_valid")
+        assert case.status in ("created_live", "queued_offline")
+        assert case.severity == 3  # >= 80% confidence
+        assert "mitre:T1046" in case.tags
+        assert "misp:malware:eicar" in case.tags
+        assert len(case.observables) == 2
+
+
+class TestN8nDeterministicPlaybookClient:
+    """Tests for n8n Webhook Playbook Client with HMAC-SHA256 and SOAR Gates."""
+
+    def test_n8n_client_enforces_mandatory_soar_approval(self, tmp_path: Path) -> None:
+        """Verify unapproved SOAR records raise SoarStateTransitionError."""
+        soar_db = tmp_path / "soar.sqlite3"
+        repo = SoarPlaybookSqliteRepository(soar_db)
+        engine = ApprovalGatedSoarEngine(repo)
+
+        contract = EntityProvenanceContract(
+            entity_namespace_id="test",
+            clock_synchronized=True,
+            src_entity_id="10.0.0.4",
+            dst_entity_id="10.0.0.5",
+            protocol="tcp",
+            service_or_port="80",
+        )
+        recs = engine.recommend_actions_for_alert("cand_n8n_unapproved", contract)
+        unapproved = recs[0]
+
+        client = N8nDeterministicPlaybookClient(
+            secret_key=TEST_SOAR_HMAC_SECRET, outbox_db_path=tmp_path / "n8n_outbox.sqlite3"
+        )
+        with pytest.raises(SoarStateTransitionError) as exc_info:
+            client.trigger_soar_playbook(
+                soar_record=unapproved,
+                soar_repo=repo,
+                rf_confidence_pct=88.0,
+            )
+        assert "must be approved or executed_simulated" in str(exc_info.value)
+
+    def test_n8n_client_trigger_playbook_success(self, tmp_path: Path) -> None:
+        """Verify approved SOAR record generates HMAC-SHA256 signed execution receipt."""
+        soar_db = tmp_path / "soar.sqlite3"
+        repo = SoarPlaybookSqliteRepository(soar_db)
+        engine = ApprovalGatedSoarEngine(repo)
+
+        contract = EntityProvenanceContract(
+            entity_namespace_id="test",
+            clock_synchronized=True,
+            src_entity_id="10.0.0.4",
+            dst_entity_id="10.0.0.5",
+            protocol="tcp",
+            service_or_port="80",
+        )
+        recs = engine.recommend_actions_for_alert("cand_n8n_valid", contract)
+        approved = engine.decide_recommendation(
+            playbook_id=recs[0].playbook_id,
+            actor_id="analyst-bilal",
+            decision="approve",
+            reason="Approved valid playbook",
+            expected_version=1,
+        )
+
+        outbox_db = tmp_path / "n8n_outbox.sqlite3"
+        client = N8nDeterministicPlaybookClient(
+            secret_key=TEST_SOAR_HMAC_SECRET, outbox_db_path=outbox_db
+        )
+
+        receipt = client.trigger_soar_playbook(
+            soar_record=approved,
+            soar_repo=repo,
+            rf_confidence_pct=88.5,
+            queue_priority_rank=1,
+            incident_id="inc_n8n_01",
+            thehive_case_id="case_12345",
+            mitre_technique_id="T1046",
+        )
+
+        assert receipt.execution_id.startswith("exec_")
+        assert receipt.status in ("dispatched_live", "queued_durable_outbox")
+        assert len(receipt.signature_sha256) == 64
+        assert receipt.idempotency_key == f"idem_{approved.playbook_id}_2"
+        assert receipt.payload["mitre_technique_id"] == "T1046"
+        assert receipt.payload["audit_chain_verified"] is True
+
+    def test_n8n_client_rejects_empty_or_short_hmac_secret(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Verify N8nDeterministicPlaybookClient raises ValueError on missing/empty/short secret."""
+        monkeypatch.delenv("THREATFUSION_SOAR_HMAC_SECRET", raising=False)
+
+        # Empty secret
+        with pytest.raises(ValueError, match="at least 16 characters"):
+            N8nDeterministicPlaybookClient(secret_key="")
+
+        # Whitespace only
+        with pytest.raises(ValueError, match="at least 16 characters"):
+            N8nDeterministicPlaybookClient(secret_key="    ")
+
+        # Too short (< 16 characters)
+        with pytest.raises(ValueError, match="at least 16 characters"):
+            N8nDeterministicPlaybookClient(secret_key="short_secret_12")
+
+        # Missing entirely without env var
+        with pytest.raises(ValueError, match="at least 16 characters"):
+            N8nDeterministicPlaybookClient()
+
+        # Valid via env var
+        monkeypatch.setenv("THREATFUSION_SOAR_HMAC_SECRET", "valid_secret_via_env_16chars")
+        client_env = N8nDeterministicPlaybookClient()
+        assert client_env.secret_key == "valid_secret_via_env_16chars"
+
+    def test_n8n_client_propagates_sqlite_error_on_outbox_failure(self, tmp_path: Path) -> None:
+        """Verify N8nDeterministicPlaybookClient propagates sqlite3.Error on corrupted outbox DB."""
+        bad_db = tmp_path / "corrupted_outbox.sqlite3"
+        bad_db.write_bytes(b"not a valid sqlite database header padding" * 20)
+
+        with pytest.raises(sqlite3.Error):
+            N8nDeterministicPlaybookClient(
+                secret_key=TEST_SOAR_HMAC_SECRET,
+                outbox_db_path=bad_db,
+            )
+
+
+class TestDockerStackAndN8nWorkflow:
+    """Tests for Docker Compose SOC Stack and n8n Workflow JSON Artifacts."""
+
+    def test_n8n_workflow_json_structure(self) -> None:
+        """Verify threatfusion_soar_playbook.json contains Code verification node and DNS hostnames."""
+        wf_path = REPO_ROOT / "docker" / "n8n" / "workflows" / "threatfusion_soar_playbook.json"
+        assert wf_path.is_file(), f"Workflow file not found: {wf_path}"
+
+        raw_text = wf_path.read_text(encoding="utf-8")
+        data = json.loads(raw_text)
+        assert data["name"] == "ThreatFusion Autonomous SOAR Incident Response Playbook"
+        assert "nodes" in data
+        assert len(data["nodes"]) == 6
+
+        node_names = [n["name"] for n in data["nodes"]]
+        assert any("Webhook Trigger" in name for name in node_names)
+        assert "Verify HMAC-SHA256 & Idempotency Envelope" in node_names
+        assert any("Verify Approval" in name for name in node_names)
+        assert any("Query MISP" in name for name in node_names)
+        assert any("TheHive" in name for name in node_names)
+        assert any("Notify" in name or "Callback" in name for name in node_names)
+
+        # Invariant (a): Code node checks headers and uses container DNS hostnames
+        code_node = next(
+            n for n in data["nodes"] if n["name"] == "Verify HMAC-SHA256 & Idempotency Envelope"
+        )
+        assert code_node["type"] == "n8n-nodes-base.code"
+        js_code = code_node["parameters"]["jsCode"]
+        assert "x-threatfusion-signature-256" in js_code
+        assert "x-idempotency-key" in js_code
+        assert "THREATFUSION_SOAR_HMAC_SECRET" in js_code
+        assert "http://threatfusion-callback:8443/api/v1/soar/verify-state" in js_code
+
+        # Invariant (a): Zero 127.0.0.1 inside container nodes, all mapped to service DNS
+        assert "127.0.0.1" not in raw_text
+        assert "http://misp-connector:8080/attributes/restSearch" in raw_text
+        assert "http://thehive:9000/api/v1/case" in raw_text
+        assert "http://threatfusion-callback:8443/api/v1/soar/callback" in raw_text
+
+    def test_docker_compose_soc_stack_file(self) -> None:
+        """Verify docker-compose.soc-stack.yml defines pinned versions, fail-closed secrets, and callback."""
+        compose_path = REPO_ROOT / "docker" / "docker-compose.soc-stack.yml"
+        assert compose_path.is_file(), f"Docker compose file not found: {compose_path}"
+
+        content = compose_path.read_text(encoding="utf-8")
+        # Invariant (b): zero :latest tags
+        assert ":latest" not in content
+
+        # Invariant (b): pinned exact versions
+        assert "n8nio/n8n:1.68.0" in content
+        assert "strangebee/thehive:5.2.10" in content
+        assert "chromadb/chroma:0.5.20" in content
+        assert "python:3.11.10-slim" in content
+
+        # Invariant (b): N8N_BASIC_AUTH_ACTIVE=true and fail-closed secrets
+        assert "N8N_BASIC_AUTH_ACTIVE=true" in content
+        assert "${THREATFUSION_N8N_USER:?required}" in content
+        assert "${THREATFUSION_N8N_PASSWORD:?required}" in content
+        assert "${THREATFUSION_THEHIVE_SECRET:?required}" in content
+        assert "${THREATFUSION_SOAR_HMAC_SECRET:?required}" in content
+        assert "${THREATFUSION_MISP_API_KEY:?required}" in content
+
+        # Invariant (b): defines threatfusion-callback service and binds to 127.0.0.1
+        assert "threatfusion-callback:" in content
+        assert "127.0.0.1:8443:8443" in content
+        assert "127.0.0.1:8080:8080" in content
+        assert "127.0.0.1:9000:9000" in content
+        assert "127.0.0.1:5678:5678" in content
+        assert "127.0.0.1:8000:8000" in content
+
+
+class TestMispAndCallbackContractServer:
+    """Tests for scripts/run_misp_and_callback_contract_server.py request handler logic."""
+
+    def test_contract_server_request_handler_logic(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Verify contract server serves restSearch with RFC1918 guard, verify-state, and callback."""
+        test_misp_key = "threatfusion_soc_test_misp_key_2026_secure"
+        monkeypatch.setenv("THREATFUSION_SOAR_HMAC_SECRET", TEST_SOAR_HMAC_SECRET)
+        monkeypatch.setenv("THREATFUSION_MISP_API_KEY", test_misp_key)
+
+        db_path = tmp_path / "test_soar_ledger.sqlite3"
+        soar_repo = SoarPlaybookSqliteRepository(db_path)
+        soar_engine = ApprovalGatedSoarEngine(soar_repo)
+
+        # Configure handler class attributes and clear caches
+        MispAndCallbackContractHandler.soar_db_path = str(db_path)
+        MispAndCallbackContractHandler.misp_api_key = test_misp_key
+        MispAndCallbackContractHandler.seen_verify_idempotency_keys.clear()
+        MispAndCallbackContractHandler.seen_callback_idempotency_keys.clear()
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), MispAndCallbackContractHandler)
+        port = server.server_port
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        base_url = f"http://127.0.0.1:{port}"
+
+        # Helper function unit checks
+        assert contract_is_rfc1918("10.0.0.4") is True
+        assert contract_is_rfc1918("8.8.8.8") is False
+        assert verify_hmac_signature(b'{"test": 1}', "bad_sig", TEST_SOAR_HMAC_SECRET) is False
+
+        try:
+            # 1. GET /healthz
+            req_health = urllib.request.Request(f"{base_url}/healthz")
+            with urllib.request.urlopen(req_health, timeout=2.0) as resp:
+                assert resp.status == 200
+                data = json.loads(resp.read().decode("utf-8"))
+                assert data["status"] == "ok"
+
+            # 2. POST /attributes/restSearch without Authorization -> 401
+            req_no_auth = urllib.request.Request(
+                f"{base_url}/attributes/restSearch",
+                data=json.dumps({"value": "8.8.8.8"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(req_no_auth, timeout=2.0)
+            assert exc_info.value.code == 401
+
+            # 2b. POST /attributes/restSearch with wrong Authorization -> 401
+            req_wrong_auth = urllib.request.Request(
+                f"{base_url}/attributes/restSearch",
+                data=json.dumps({"value": "8.8.8.8"}).encode("utf-8"),
+                headers={
+                    "Authorization": "wrong_misp_key_value",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(req_wrong_auth, timeout=2.0)
+            assert exc_info.value.code == 401
+
+            # 3. POST /attributes/restSearch with RFC1918 Private IP -> 422
+            req_private_ip = urllib.request.Request(
+                f"{base_url}/attributes/restSearch",
+                data=json.dumps({"value": "10.0.0.4", "type": "ip-dst"}).encode("utf-8"),
+                headers={"Authorization": test_misp_key, "Content-Type": "application/json"},
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(req_private_ip, timeout=2.0)
+            assert exc_info.value.code == 422
+
+            # 4. POST /attributes/restSearch with valid malware hash -> 200 with MISP Attributes
+            req_misp_hash = urllib.request.Request(
+                f"{base_url}/attributes/restSearch",
+                data=json.dumps(
+                    {"value": "44d88612fea8a8f36de82e1278abb02f", "type": "md5"}
+                ).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {test_misp_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req_misp_hash, timeout=2.0) as resp:
+                assert resp.status == 200
+                data = json.loads(resp.read().decode("utf-8"))
+                attrs = data.get("response", {}).get("Attribute", [])
+                assert len(attrs) == 1
+                assert attrs[0]["event_id"] == "misp_evt_eicar_01"
+
+            # 5. Seed a real SOAR playbook in the SQLite ledger
+            contract_prov = EntityProvenanceContract(
+                entity_namespace_id="test_m32",
+                clock_synchronized=True,
+                src_entity_id="10.0.0.4",
+                dst_entity_id="10.0.0.5",
+                protocol="tcp",
+                service_or_port="80",
+            )
+            recs = soar_engine.recommend_actions_for_alert("cand_srv_test", contract_prov)
+            test_pb_id = recs[0].playbook_id
+            assert recs[0].state == "pending_approval"
+
+            import hashlib as hashlib_mod
+            import hmac as hmac_mod
+
+            # 5a. Signed verify-state for fabricated playbook_id -> 403 Forbidden!
+            fab_payload = {
+                "candidate_id": "cand_srv_test",
+                "playbook_id": "pb-fabricated-999",
+                "soar_state": "approved",
+                "audit_chain_verified": True,
+            }
+            fab_bytes = json.dumps(fab_payload, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+            fab_sig = hmac_mod.new(
+                TEST_SOAR_HMAC_SECRET.encode("utf-8"), fab_bytes, hashlib_mod.sha256
+            ).hexdigest()
+            req_fab = urllib.request.Request(
+                f"{base_url}/api/v1/soar/verify-state",
+                data=fab_bytes,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-ThreatFusion-Signature-256": fab_sig,
+                    "X-Idempotency-Key": "idem_pb-fabricated-999_1",
+                },
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(req_fab, timeout=2.0)
+            assert exc_info.value.code == 403
+
+            # 5b. Signed verify-state for real playbook still in pending_approval -> 403 Forbidden!
+            pending_payload = {
+                "candidate_id": "cand_srv_test",
+                "playbook_id": test_pb_id,
+                "soar_state": "approved",
+                "audit_chain_verified": True,
+            }
+            pending_bytes = json.dumps(
+                pending_payload, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            pending_sig = hmac_mod.new(
+                TEST_SOAR_HMAC_SECRET.encode("utf-8"), pending_bytes, hashlib_mod.sha256
+            ).hexdigest()
+            req_pending = urllib.request.Request(
+                f"{base_url}/api/v1/soar/verify-state",
+                data=pending_bytes,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-ThreatFusion-Signature-256": pending_sig,
+                    "X-Idempotency-Key": f"idem_{test_pb_id}_1",
+                },
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(req_pending, timeout=2.0)
+            assert exc_info.value.code == 403
+
+            # 5c. Approve the playbook in SQLite ledger
+            approved_rec = soar_engine.decide_recommendation(
+                test_pb_id,
+                actor_id="analyst-bilal",
+                decision="approve",
+                reason="Legitimate probe containment",
+                expected_version=1,
+            )
+            assert approved_rec.state == "approved"
+            assert approved_rec.version == 2
+
+            approved_payload = {
+                "candidate_id": "cand_srv_test",
+                "playbook_id": test_pb_id,
+                "soar_state": "approved",
+                "audit_chain_verified": True,
+            }
+            approved_bytes = json.dumps(
+                approved_payload, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            approved_sig = hmac_mod.new(
+                TEST_SOAR_HMAC_SECRET.encode("utf-8"), approved_bytes, hashlib_mod.sha256
+            ).hexdigest()
+
+            # 5d. Bad signature on approved playbook -> 403 Forbidden!
+            req_bad_sig = urllib.request.Request(
+                f"{base_url}/api/v1/soar/verify-state",
+                data=approved_bytes,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-ThreatFusion-Signature-256": "0" * 64,
+                    "X-Idempotency-Key": f"idem_{test_pb_id}_2",
+                },
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(req_bad_sig, timeout=2.0)
+            assert exc_info.value.code == 403
+
+            # 5e. Valid signature and approved ledger record -> 200 OK!
+            req_good_sig = urllib.request.Request(
+                f"{base_url}/api/v1/soar/verify-state",
+                data=approved_bytes,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-ThreatFusion-Signature-256": approved_sig,
+                    "X-Idempotency-Key": f"idem_{test_pb_id}_2",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req_good_sig, timeout=2.0) as resp:
+                assert resp.status == 200
+                data = json.loads(resp.read().decode("utf-8"))
+                assert data["state_verified"] is True
+                assert data["verified"] is True
+                assert data["idempotency_key"] == f"idem_{test_pb_id}_2"
+
+            # 5f. Replay same idempotency key -> 409 Conflict!
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(req_good_sig, timeout=2.0)
+            assert exc_info.value.code == 409
+
+            # 6. POST /api/v1/soar/callback
+            cb_payload = {
+                "execution_id": "exec_01",
+                "playbook_id": test_pb_id,
+                "candidate_id": "cand_srv_test",
+                "n8n_status": "completed",
+            }
+            cb_bytes = json.dumps(cb_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            cb_sig = hmac_mod.new(
+                TEST_SOAR_HMAC_SECRET.encode("utf-8"), cb_bytes, hashlib_mod.sha256
+            ).hexdigest()
+
+            # 6a. Unsigned callback -> 403 Forbidden!
+            req_unsigned_cb = urllib.request.Request(
+                f"{base_url}/api/v1/soar/callback",
+                data=cb_bytes,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(req_unsigned_cb, timeout=2.0)
+            assert exc_info.value.code == 403
+
+            # 6b. Callback with bad signature -> 403 Forbidden!
+            req_bad_cb_sig = urllib.request.Request(
+                f"{base_url}/api/v1/soar/callback",
+                data=cb_bytes,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-ThreatFusion-Signature-256": "f" * 64,
+                    "X-Idempotency-Key": f"idem_{test_pb_id}_2_cb",
+                },
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(req_bad_cb_sig, timeout=2.0)
+            assert exc_info.value.code == 403
+
+            # 6c. Valid signed callback -> 200 OK!
+            req_good_cb = urllib.request.Request(
+                f"{base_url}/api/v1/soar/callback",
+                data=cb_bytes,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-ThreatFusion-Signature-256": cb_sig,
+                    "X-Idempotency-Key": f"idem_{test_pb_id}_2_cb",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req_good_cb, timeout=2.0) as resp:
+                assert resp.status == 200
+                data = json.loads(resp.read().decode("utf-8"))
+                assert data["callback_recorded"] is True
+
+            # 6d. Replay callback idempotency key -> 409 Conflict!
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(req_good_cb, timeout=2.0)
+            assert exc_info.value.code == 409
+
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_callback_fails_closed_when_soar_db_path_is_none_or_playbook_missing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Verify POST /api/v1/soar/callback unconditionally fails closed on None db_path or missing/empty playbook_id."""
+        monkeypatch.setenv("THREATFUSION_SOAR_HMAC_SECRET", TEST_SOAR_HMAC_SECRET)
+
+        db_path = tmp_path / "test_callback_gate_ledger.sqlite3"
+        soar_repo = SoarPlaybookSqliteRepository(db_path)
+        soar_engine = ApprovalGatedSoarEngine(soar_repo)
+
+        # Seed an approved record in the test ledger
+        contract_prov = EntityProvenanceContract(
+            entity_namespace_id="test_m32",
+            clock_synchronized=True,
+            src_entity_id="10.0.0.4",
+            dst_entity_id="10.0.0.5",
+            protocol="tcp",
+            service_or_port="80",
+        )
+        recs = soar_engine.recommend_actions_for_alert("cand_cb_test", contract_prov)
+        valid_pb_id = recs[0].playbook_id
+        soar_engine.decide_recommendation(
+            valid_pb_id,
+            actor_id="analyst-bilal",
+            decision="approve",
+            reason="Approved valid containment",
+            expected_version=1,
+        )
+
+        orig_db_path = MispAndCallbackContractHandler.soar_db_path
+        MispAndCallbackContractHandler.soar_db_path = str(db_path)
+        MispAndCallbackContractHandler.seen_callback_idempotency_keys.clear()
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), MispAndCallbackContractHandler)
+        port = server.server_port
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        base_url = f"http://127.0.0.1:{port}"
+
+        import hashlib as hashlib_mod
+        import hmac as hmac_mod
+
+        try:
+            # (a) Set soar_db_path = None, send valid HMAC-signed callback with fabricated playbook_id -> 403 Forbidden
+            MispAndCallbackContractHandler.soar_db_path = None
+
+            fab_payload = {
+                "playbook_id": "fabricated",
+                "candidate_id": "fake",
+                "n8n_status": "completed",
+            }
+            fab_bytes = json.dumps(fab_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            fab_sig = hmac_mod.new(
+                TEST_SOAR_HMAC_SECRET.encode("utf-8"), fab_bytes, hashlib_mod.sha256
+            ).hexdigest()
+
+            req_fab = urllib.request.Request(
+                f"{base_url}/api/v1/soar/callback",
+                data=fab_bytes,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-ThreatFusion-Signature-256": fab_sig,
+                    "X-Idempotency-Key": "idem_cb_probe_none_db_01",
+                },
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(req_fab, timeout=2.0)
+            assert exc_info.value.code == 403
+            err_data = json.loads(exc_info.value.read().decode("utf-8"))
+            assert err_data.get("callback_recorded") is False
+
+            # (b) Restore soar_db_path to configured db_path, send valid HMAC-signed callback with empty playbook_id -> 403 Forbidden
+            MispAndCallbackContractHandler.soar_db_path = str(db_path)
+
+            empty_pb_payload = {
+                "playbook_id": "",
+                "candidate_id": "cand_cb_test",
+                "n8n_status": "completed",
+            }
+            empty_pb_bytes = json.dumps(
+                empty_pb_payload, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            empty_pb_sig = hmac_mod.new(
+                TEST_SOAR_HMAC_SECRET.encode("utf-8"), empty_pb_bytes, hashlib_mod.sha256
+            ).hexdigest()
+
+            req_empty_pb = urllib.request.Request(
+                f"{base_url}/api/v1/soar/callback",
+                data=empty_pb_bytes,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-ThreatFusion-Signature-256": empty_pb_sig,
+                    "X-Idempotency-Key": "idem_cb_probe_empty_pb_02",
+                },
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(req_empty_pb, timeout=2.0)
+            assert exc_info.value.code == 403
+            err_data_empty = json.loads(exc_info.value.read().decode("utf-8"))
+            assert err_data_empty.get("callback_recorded") is False
+
+        finally:
+            MispAndCallbackContractHandler.soar_db_path = orig_db_path
+            server.shutdown()
+            server.server_close()
+
+
+class TestEndToEndSocDemoAndDashboardIntegration:
+    """Tests for Turnkey SOC Demo and Analyst Dashboard Integration."""
+
+    def test_full_soc_demo_incorporates_chromadb_misp_thehive_n8n(self, tmp_path: Path) -> None:
+        """Verify run_full_soc_demo incorporates all Milestone #32 components."""
+        report = run_full_soc_demo(tmp_path)
+
+        track_b = report["track_b_azure_live_spine"]
+        assert "chromadb_mitre_rag_hits" in track_b
+        assert len(track_b["chromadb_mitre_rag_hits"]) == 3
+        assert "misp_hash_and_ioc_lookup" in track_b
+        assert (
+            track_b["misp_hash_and_ioc_lookup"]["dest_ip_query"]["private_ip_guard_triggered"]
+            is True
+        )
+        assert track_b["misp_hash_and_ioc_lookup"]["sample_malware_hash_query"]["matched"] is True
+
+        assert "thehive_case_record" in track_b
+        assert track_b["thehive_case_record"]["case_id"].startswith("case_")
+
+        assert "n8n_playbook_receipt" in track_b
+        assert track_b["n8n_playbook_receipt"]["execution_id"].startswith("exec_")
+        assert len(track_b["n8n_playbook_receipt"]["signature_sha256"]) == 64
+
+        # Verify Markdown report file
+        md_file = tmp_path / "full_soc_demo_report.md"
+        assert md_file.exists()
+        md_text = md_file.read_text(encoding="utf-8")
+        assert "### Milestone #32 ChromaDB Semantic Vector RAG" in md_text
+        assert "### Milestone #32 MISP Threat Intelligence & IOC Lookups" in md_text
+        assert "### Milestone #32 TheHive v4/v5 Incident Case Record" in md_text
+        assert "### Milestone #32 Deterministic n8n SOAR Webhook Execution Receipt" in md_text
+
+    def test_analyst_dashboard_renders_m32_badges(self) -> None:
+        """Verify render_dashboard_html renders evidence-bound M32 badges conditionally."""
+        # Case A: Alert with NO attached SOAR/RAG evidence -> renders data-evidence-state="unavailable"
+        detail_unattached = DashboardAlertDetail(
+            alert_candidate_id="alert_cand_m32_test_01",
+            source_event_id="src_event_m32_01",
+            observed_at="2026-10-18T10:00:00Z",
+            created_at="2026-10-18T10:00:01Z",
+            source_representation_identity="azure.victim_vm.suricata.eve_flow.v1",
+            feature_contract_identity="network_behavior_v1",
+            model_identity="network_random_forest",
+            model_version="full-network-random-forest-6d69c72-v1",
+            model_artifact_sha256="bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9",
+            uncalibrated_model_score=0.9125,
+            decision_threshold=0.50,
+            decision_policy_version="rf_baseline_v1",
+            decision="attack",
+            state="new",
+            version=0,
+            updated_at=None,
+            updated_by=None,
+            last_transition_id=None,
+            history=(),
+            soar_recommendations=None,
+            advisory_explanation=None,
+        )
+        queue = DashboardAlertQueue(items=(), total_loaded=0, limit=10, offset=0)
+        snapshot = DashboardSnapshot(queue=queue, selected=detail_unattached, status="active")
+
+        html_unattached = render_dashboard_html(snapshot)
+
+        # Invariant (e): renders data-evidence-state="unavailable" and pending/not-attached labels
+        assert 'data-evidence-state="unavailable"' in html_unattached
+        assert (
+            "SOAR Cryptographic Audit Chain: Not Attached / No SOAR Playbook Recorded"
+            in html_unattached
+        )
+        assert (
+            "ChromaDB Semantic RAG: Not Attached / Pending Advisory Evaluation" in html_unattached
+        )
+        assert (
+            "n8n Deterministic Playbook &amp; TheHive Case Status: Pending Analyst Approval / Not Dispatched"
+            in html_unattached
+        )
+
+        # Invariant (e): strictly separate model badges, no combined confidence badge
+        assert "badge-rf-confidence" in html_unattached
+        assert "Primary Authority: Frozen Random Forest Confidence (91.25%)" in html_unattached
+        assert "badge-secondary-anomaly" in html_unattached
+        assert (
+            "Secondary Non-Fused Queue Priority Signal: v2 Autoencoder — Section 8 Fusion Disabled"
+            in html_unattached
+        )
+        assert "Prioritized Alert Confidence Score" not in html_unattached
+
+        # Case B: Alert with LOOSE / UNVERIFIED dicts (no valid hashes, no valid RAG hits, no receipts)
+        detail_loose = DashboardAlertDetail(
+            alert_candidate_id="alert_cand_m32_test_loose",
+            source_event_id="src_event_m32_loose",
+            observed_at="2026-10-18T10:00:00Z",
+            created_at="2026-10-18T10:00:01Z",
+            source_representation_identity="azure.victim_vm.suricata.eve_flow.v1",
+            feature_contract_identity="network_behavior_v1",
+            model_identity="network_random_forest",
+            model_version="full-network-random-forest-6d69c72-v1",
+            model_artifact_sha256="bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9",
+            uncalibrated_model_score=0.8850,
+            decision_threshold=0.50,
+            decision_policy_version="rf_baseline_v1",
+            decision="attack",
+            state="in_review",
+            version=1,
+            updated_at=None,
+            updated_by=None,
+            last_transition_id=None,
+            history=(),
+            soar_recommendations=(
+                {
+                    "playbook_id": "pb-isolate-01",
+                    "action_type": "quarantine_host",
+                    "target_entity": "10.0.0.5",
+                    "state": "approved",
+                    # Missing entry_hash / audit_hash
+                },
+            ),
+            advisory_explanation={
+                "summary_headline": "Loose advisory dict without valid hits",
+                "detection_rationale": "High burst rate",
+                "cited_evidence_keys": ["candidate_id"],
+                "mitre_rag_hits": [],  # Empty hits
+            },
+            soar_audit_chain_verified=False,
+            soar_audit_chain_head_sha256=None,
+            thehive_case_record=None,
+            n8n_playbook_receipt=None,
+        )
+        snapshot_loose = DashboardSnapshot(queue=queue, selected=detail_loose, status="active")
+        html_loose = render_dashboard_html(snapshot_loose)
+
+        # Loose dicts must FAIL CLOSED to unavailable
+        assert 'data-evidence-state="unavailable"' in html_loose
+        assert (
+            "SOAR Cryptographic Audit Chain: Not Attached / No SOAR Playbook Recorded" in html_loose
+        )
+        assert "ChromaDB Semantic RAG: Not Attached / Pending Advisory Evaluation" in html_loose
+        assert (
+            "n8n Deterministic Playbook &amp; TheHive Case Status: Pending Analyst Approval / Not Dispatched"
+            in html_loose
+        )
+
+        # Case C: Alert WITH fully verified SOAR chain, RAG hits, TheHive case, and n8n receipt
+        detail_verified = DashboardAlertDetail(
+            alert_candidate_id="alert_cand_m32_test_02",
+            source_event_id="src_event_m32_02",
+            observed_at="2026-10-18T10:00:00Z",
+            created_at="2026-10-18T10:00:01Z",
+            source_representation_identity="azure.victim_vm.suricata.eve_flow.v1",
+            feature_contract_identity="network_behavior_v1",
+            model_identity="network_random_forest",
+            model_version="full-network-random-forest-6d69c72-v1",
+            model_artifact_sha256="bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9",
+            uncalibrated_model_score=0.8850,
+            decision_threshold=0.50,
+            decision_policy_version="rf_baseline_v1",
+            decision="attack",
+            state="in_review",
+            version=1,
+            updated_at=None,
+            updated_by=None,
+            last_transition_id=None,
+            history=(),
+            soar_recommendations=(
+                {
+                    "playbook_id": "pb-isolate-01",
+                    "action_type": "quarantine_host",
+                    "target_entity": "10.0.0.5",
+                    "state": "approved",
+                    "entry_hash": "a" * 64,
+                },
+            ),
+            advisory_explanation={
+                "summary_headline": "Active scanner reconnaissance detected",
+                "detection_rationale": "High burst rate on port 80",
+                "cited_evidence_keys": ["candidate_id"],
+                "mitre_rag_hits": [
+                    {
+                        "technique_id": "T1046",
+                        "playbook_id": "pb-isolate-01",
+                        "cosine_similarity": 0.88,
+                    }
+                ],
+            },
+            soar_audit_chain_verified=True,
+            soar_audit_chain_head_sha256="a" * 64,
+            thehive_case_record={"case_id": "case_12345"},
+            n8n_playbook_receipt={"execution_id": "exec_12345", "signature_sha256": "b" * 64},
+        )
+        snapshot_verified = DashboardSnapshot(
+            queue=queue, selected=detail_verified, status="active"
+        )
+        html_verified = render_dashboard_html(snapshot_verified)
+
+        assert "SOAR Cryptographic Audit Chain: VERIFIED (SHA-256 Hash-Linked)" in html_verified
+        assert "ChromaDB Semantic RAG: MITRE ATT&amp;CK &amp; Playbook Assistant" in html_verified
+        assert (
+            "n8n Deterministic Playbook &amp; TheHive Case Status: Dispatched / Live Case Created"
+            in html_verified
+        )
+        assert 'data-evidence-state="verified"' in html_verified
+        assert 'data-evidence-state="active"' in html_verified

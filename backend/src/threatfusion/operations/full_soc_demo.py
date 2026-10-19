@@ -11,9 +11,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
+import os
 from pathlib import Path
 from typing import Any
 
+from threatfusion.advisory.chromadb_mitre_rag import ChromaDbMitrePlaybookRag
 from threatfusion.advisory.explanation_engine import (
     AdvisoryEvidenceBundle,
     AdvisoryExplanationEngine,
@@ -60,6 +62,11 @@ from threatfusion.schemas.alert_candidate import (
     AlertCandidate,
     derive_alert_candidate_id,
     derive_source_event_id,
+)
+from threatfusion.soar.n8n_thehive_misp_stack import (
+    MispDeterministicClient,
+    N8nDeterministicPlaybookClient,
+    TheHiveDeterministicClient,
 )
 from threatfusion.soar.playbook_ledger import (
     ApprovalGatedSoarEngine,
@@ -298,7 +305,24 @@ def run_full_soc_demo(output_dir: Path | str) -> dict[str, Any]:
     assert "10.0.0.4" in enrich_res_b.internal_lab_annotations
     assert "10.0.0.5" in enrich_res_b.internal_lab_annotations
 
-    # B6: Evidence-Bound Advisory Debrief Engine
+    # B6: Evidence-Bound Advisory Debrief Engine with ChromaDB Semantic RAG
+    chroma_db_file = out_path / "chromadb_vectors.sqlite3"
+    rag_engine = ChromaDbMitrePlaybookRag(chroma_db_file)
+    rag_bundle_draft = AdvisoryEvidenceBundle(
+        candidate_id=cand_id_b,
+        record_id=adapted_flow.source_event_id,
+        rf_model_version="full-network-random-forest-6d69c72-v1",
+        rf_attack_probability=prob_b,
+        rf_threshold=0.50,
+        top_feature_signals=adapted_flow.features_14,
+        ae_v2_reconstruction_error=None,
+        incident_id=incident_b.incident_id,
+        correlation_status="corr_burst_5tuple_30s_v1",
+        enrichment_result=enrich_res_b,
+    )
+    rag_hits = rag_engine.query_semantic_rag_for_bundle(rag_bundle_draft, top_k=3)
+    assert len(rag_hits) == 3
+
     bundle_b = AdvisoryEvidenceBundle(
         candidate_id=cand_id_b,
         record_id=adapted_flow.source_event_id,
@@ -310,6 +334,7 @@ def run_full_soc_demo(output_dir: Path | str) -> dict[str, Any]:
         incident_id=incident_b.incident_id,
         correlation_status="corr_burst_5tuple_30s_v1",
         enrichment_result=enrich_res_b,
+        chroma_rag_hits=rag_hits,
     )
     explanation_b = AdvisoryExplanationEngine.generate_explanation(bundle_b)
     assert explanation_b.advisory_only_non_authoritative is True
@@ -398,6 +423,54 @@ def run_full_soc_demo(output_dir: Path | str) -> dict[str, Any]:
     # Milestone #31: Read-Only 14-Feature PSI Drift Monitor
     telemetry_drift_b = evaluate_14_feature_telemetry_drift([adapted_flow.features_14])
 
+    # Milestone #32: Deterministic MISP Indicator Lookups (with RFC1918 Private-IP Guard)
+    soar_outbox_db = out_path / "n8n_thehive_misp_outbox.sqlite3"
+    misp_client = MispDeterministicClient(outbox_db_path=soar_outbox_db)
+    dest_ip_str = str(adapted_flow.flow.dst_ip)
+    misp_dest_ip_res = misp_client.query_indicator(dest_ip_str, indicator_type="ip-dst")
+    assert misp_dest_ip_res.private_ip_guard_triggered is True
+    assert misp_dest_ip_res.query_mode == "rfc1918_guard_suppressed"
+
+    misp_hash_res = misp_client.query_indicator(
+        "44d88612fea8a8f36de82e1278abb02f", indicator_type="md5"
+    )
+    assert misp_hash_res.matched is True
+    assert "malware:eicar" in misp_hash_res.tags
+
+    # Milestone #32: Deterministic TheHive Case Creation (Approval-Gated)
+    thehive_client = TheHiveDeterministicClient(outbox_db_path=soar_outbox_db)
+    thehive_case = thehive_client.create_case_from_soar(
+        soar_record=approved_action,
+        soar_repo=track_b_soar_repo,
+        rf_confidence_pct=prob_b * 100.0,
+        queue_priority_rank=ranked_triage_queue_b[0]["queue_priority_rank"],
+        incident_id=incident_b.incident_id,
+        mitre_tags=[hit.technique_id for hit in rag_hits],
+        misp_tags=list(misp_hash_res.tags),
+    )
+    assert thehive_case.case_id.startswith("case_")
+    assert thehive_case.status in ("created_live", "queued_offline")
+
+    # Milestone #32: Deterministic n8n Playbook Webhook Trigger (HMAC-SHA256 Signed & Gated)
+    soar_hmac_secret = os.environ.get(
+        "THREATFUSION_SOAR_HMAC_SECRET", "threatfusion_soc_demo_hmac_secret_2026"
+    )
+    n8n_client = N8nDeterministicPlaybookClient(
+        secret_key=soar_hmac_secret, outbox_db_path=soar_outbox_db
+    )
+    n8n_receipt = n8n_client.trigger_soar_playbook(
+        soar_record=approved_action,
+        soar_repo=track_b_soar_repo,
+        rf_confidence_pct=prob_b * 100.0,
+        queue_priority_rank=ranked_triage_queue_b[0]["queue_priority_rank"],
+        incident_id=incident_b.incident_id,
+        thehive_case_id=thehive_case.case_id,
+        mitre_technique_id=rag_hits[0].technique_id,
+    )
+    assert n8n_receipt.execution_id.startswith("exec_")
+    assert n8n_receipt.status in ("dispatched_live", "queued_durable_outbox")
+    assert len(n8n_receipt.signature_sha256) == 64
+
     # B8: Section 13.F Alert-Fatigue Compression Report
     track_b_compression = evaluate_alert_fatigue_compression(
         raw_flow_count=1,
@@ -473,6 +546,13 @@ def run_full_soc_demo(output_dir: Path | str) -> dict[str, Any]:
         "soar_audit_chain_head_sha256": chain_head_sha256,
         "triage_queue_ranking": ranked_triage_queue_b,
         "telemetry_drift_status": telemetry_drift_b.to_dict(),
+        "chromadb_mitre_rag_hits": [hit.to_dict() for hit in rag_hits],
+        "misp_hash_and_ioc_lookup": {
+            "dest_ip_query": misp_dest_ip_res.to_dict(),
+            "sample_malware_hash_query": misp_hash_res.to_dict(),
+        },
+        "thehive_case_record": thehive_case.to_dict(),
+        "n8n_playbook_receipt": n8n_receipt.to_dict(),
         "alert_fatigue_compression": track_b_compression.to_dict(),
         "workload_study_summary": study_summary.to_dict(),
     }
@@ -585,6 +665,28 @@ Simulated live attacker (`10.0.0.4:54322`) targeting victim web server (`10.0.0.
 - **Max Population Stability Index (PSI):** `{telemetry_drift_b.max_psi:.6f}`
 - **Evaluated Record Count:** `{telemetry_drift_b.record_count}`
 - **Diagnostic Safety Boundary:** `Read-Only (Zero Mutation to Model Weights, Thresholds, or Alert Authority)`
+
+### Milestone #32 ChromaDB Semantic Vector RAG over MITRE ATT&CK & Playbooks
+- **Top Ranked Technique:** `{rag_hits[0].technique_id} - {rag_hits[0].technique_name}` (Tactic: `{rag_hits[0].tactic}`)
+- **Cosine Similarity:** `{rag_hits[0].cosine_similarity:.4f}` (Distance: `{rag_hits[0].distance:.4f}`)
+- **Associated Deterministic Playbook:** `{rag_hits[0].playbook_id}`
+- **First Playbook Action Step:** {rag_hits[0].deterministic_playbook_steps[0] if rag_hits[0].deterministic_playbook_steps else "N/A"}
+
+### Milestone #32 MISP Threat Intelligence & IOC Lookups
+- **Destination IP (`{dest_ip_str}`):** RFC 1918 Private-IP Guard TRIGGERED (`{misp_dest_ip_res.query_mode}`)
+- **Sample Malware Hash (`44d88612fea8a8f36de82e1278abb02f`):** Matched = `{misp_hash_res.matched}`, Tags = `{", ".join(misp_hash_res.tags)}`
+
+### Milestone #32 TheHive v4/v5 Incident Case Record
+- **Case ID:** `{thehive_case.case_id}`
+- **Case Title:** `{thehive_case.title}`
+- **Case Severity:** `{thehive_case.severity}` (TLP: `{thehive_case.tlp}`, PAP: `{thehive_case.pap}`)
+- **Dispatch Status:** `{thehive_case.status}`
+
+### Milestone #32 Deterministic n8n SOAR Webhook Execution Receipt
+- **Execution ID:** `{n8n_receipt.execution_id}`
+- **Dispatch Status:** `{n8n_receipt.status}`
+- **Idempotency Key:** `{n8n_receipt.idempotency_key}`
+- **HMAC-SHA256 Signature:** `{n8n_receipt.signature_sha256[:16]}...`
 
 ---
 
