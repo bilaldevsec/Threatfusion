@@ -914,7 +914,9 @@ class TestMispAndCallbackContractServer:
                 "candidate_id": "fake",
                 "n8n_status": "completed",
             }
-            fab_bytes = json.dumps(fab_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            fab_bytes = json.dumps(fab_payload, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
             fab_sig = hmac_mod.new(
                 TEST_SOAR_HMAC_SECRET.encode("utf-8"), fab_bytes, hashlib_mod.sha256
             ).hexdigest()
@@ -1242,7 +1244,9 @@ class TestFrontendUnicornAssetBundle:
         assert "badge-secondary-anomaly" in html_text
 
         # 3. Exact canonical recall comparison string
-        canonical_recall_str = "+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)"
+        canonical_recall_str = (
+            "+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)"
+        )
         assert canonical_recall_str in html_text
         assert canonical_recall_str in js_text
 
@@ -1270,3 +1274,635 @@ class TestFrontendUnicornAssetBundle:
         assert "Stage 5: Evidence-Bound Advisory Debrief & Anti-Hallucination Guard" in js_text
         assert "Stage 6: Approval-Gated SOAR Ledger & Case Dispatch" in js_text
 
+
+class TestMilestone36ArchitecturalElevation:
+    """Automated verification tests for Mega-Milestone #36 Architectural Elevation."""
+
+    def test_mtti_mttr_intervals_and_operational_velocity_contract(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Verify deterministic calculation of MTTI and MTTR intervals, DB persistence, and contract server endpoint."""
+        from threatfusion.alerts.correlation_engine import IncidentRecord, IncidentSqliteRepository
+        from threatfusion.correlation.incident_correlation import (
+            MTTI_MANUAL_BASELINE_SECONDS,
+            MTTR_MANUAL_BASELINE_SECONDS,
+            build_operational_velocity_report,
+            compute_mtti,
+            compute_mttr,
+            record_mtti_telemetry,
+        )
+
+        # 1. Mathematical calculation of MTTI without clock drift
+        t_ingest = 1729350000.000000
+        t_rag = 1729350001.250555
+        mtti = compute_mtti(t_ingest, t_rag)
+        assert mtti == 1.250555
+        assert compute_mtti(t_ingest, t_ingest - 10.0) == 0.0  # Safe non-negative
+
+        # 2. Mathematical calculation of MTTR without clock drift
+        t_queued = 1729350100.000000
+        t_verified = 1729350104.500123
+        mttr = compute_mttr(t_queued, t_verified)
+        assert mttr == 4.500123
+        assert compute_mttr(t_queued, t_queued - 5.0) == 0.0  # Safe non-negative
+
+        from datetime import UTC, datetime
+
+        # 3. SQLite Persistence in IncidentSqliteRepository
+        inc_db = tmp_path / "test_incidents.sqlite3"
+        inc_repo = IncidentSqliteRepository(inc_db)
+        inc_rec = IncidentRecord(
+            schema_version="incident_record_v1",
+            incident_id="inc_m36_test_01",
+            correlation_mode="burst_correlated",
+            window_type="30.0s_burst",
+            correlation_rule_id="corr_burst_5tuple_30s_v1",
+            entity_namespace_id="test_m36",
+            constituent_alert_ids=("cand_01", "cand_02"),
+            constituent_alert_count=2,
+            max_probability_score=0.945,
+            escalated_decision="Attack",
+            earliest_observed_at=datetime.fromtimestamp(t_ingest, tz=UTC).isoformat(),
+            latest_observed_at=datetime.fromtimestamp(t_rag, tz=UTC).isoformat(),
+            provenance_status="verified_entity_bearing",
+            created_at=datetime.now(UTC).isoformat(),
+            t_flow_ingest=t_ingest,
+            t_rag_grounded=t_rag,
+            t_investigation=mtti,
+        )
+        inc_repo.insert(inc_rec)
+        timings = inc_repo.list_incident_timings()
+        assert len(timings) == 1
+        assert timings[0]["incident_id"] == "inc_m36_test_01"
+        assert timings[0]["t_investigation"] == 1.250555
+        recorded_inv = record_mtti_telemetry(inc_repo, "inc_m36_test_01", t_ingest, t_rag)
+        assert recorded_inv == 1.250555
+
+        # 4. SQLite Persistence in SoarPlaybookSqliteRepository
+        soar_db = tmp_path / "test_soar.sqlite3"
+        soar_repo = SoarPlaybookSqliteRepository(soar_db)
+        soar_engine = ApprovalGatedSoarEngine(soar_repo)
+        prov = EntityProvenanceContract(
+            entity_namespace_id="test_m36",
+            clock_synchronized=True,
+            src_entity_id="10.0.0.4",
+            dst_entity_id="10.0.0.5",
+            protocol="tcp",
+            service_or_port="80",
+        )
+        recs = soar_engine.recommend_actions_for_alert("cand_01", prov)
+        pb_id = recs[0].playbook_id
+        soar_engine.decide_recommendation(
+            pb_id,
+            actor_id="analyst-bilal",
+            decision="approve",
+            reason="containment",
+            expected_version=1,
+        )
+        t_resp = soar_repo.record_callback_verification(
+            playbook_id=pb_id,
+            t_callback_verified=t_verified,
+            t_approval_queued=t_queued,
+        )
+        assert t_resp == 4.500123
+        resp_timings = soar_repo.list_response_timings()
+        assert len(resp_timings) == 1
+        assert resp_timings[0]["t_response"] == 4.500123
+
+        # 5. Build OperationalVelocityReport
+        report = build_operational_velocity_report(
+            incident_timings=timings,
+            response_timings=resp_timings,
+        )
+        assert report.schema_version == "operational_velocity_v1"
+        assert report.mtti_seconds_mean == 1.250555
+        assert report.mtti_manual_baseline_seconds == MTTI_MANUAL_BASELINE_SECONDS
+        assert report.mtti_speedup_ratio > 800.0
+        assert report.mttr_seconds_mean == 4.500123
+        assert report.mttr_manual_baseline_seconds == MTTR_MANUAL_BASELINE_SECONDS
+        assert report.mttr_speedup_ratio > 500.0
+        assert len(report.per_incident_timings) == 1
+        assert "noise_reduction_funnel" in report.to_dict()
+
+        # 6. Contract Server Endpoint Verification
+        monkeypatch.setenv("THREATFUSION_SOAR_HMAC_SECRET", TEST_SOAR_HMAC_SECRET)
+        monkeypatch.setenv("THREATFUSION_SOAR_LEDGER_DB_PATH", str(soar_db))
+        monkeypatch.setenv("THREATFUSION_INCIDENTS_DB_PATH", str(inc_db))
+
+        MispAndCallbackContractHandler.soar_db_path = str(soar_db)
+        MispAndCallbackContractHandler.seen_verify_idempotency_keys.clear()
+        MispAndCallbackContractHandler.seen_callback_idempotency_keys.clear()
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), MispAndCallbackContractHandler)
+        port = server.server_port
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base_url = f"http://127.0.0.1:{port}"
+
+        try:
+            # 6a. GET / serves frontend index.html
+            req_index = urllib.request.Request(f"{base_url}/")
+            with urllib.request.urlopen(req_index, timeout=2.0) as resp:
+                assert resp.status == 200
+                assert "text/html" in resp.headers.get("Content-Type", "")
+                html_body = resp.read().decode("utf-8")
+                assert "ThreatFusion SOC Console" in html_body
+                assert "velocityRibbon" in html_body
+
+            # 6b. GET /css/soc_unicorn.css serves CSS
+            req_css = urllib.request.Request(f"{base_url}/css/soc_unicorn.css")
+            with urllib.request.urlopen(req_css, timeout=2.0) as resp:
+                assert resp.status == 200
+                assert "text/css" in resp.headers.get("Content-Type", "")
+
+            # 6c. GET /js/soc_dashboard.js serves JS
+            req_js = urllib.request.Request(f"{base_url}/js/soc_dashboard.js")
+            with urllib.request.urlopen(req_js, timeout=2.0) as resp:
+                assert resp.status == 200
+                assert "application/javascript" in resp.headers.get("Content-Type", "")
+
+            # 6d. GET /api/v1/metrics/operational-velocity returns deterministic JSON
+            req_vel = urllib.request.Request(f"{base_url}/api/v1/metrics/operational-velocity")
+            with urllib.request.urlopen(req_vel, timeout=2.0) as resp:
+                assert resp.status == 200
+                vel_data = json.loads(resp.read().decode("utf-8"))
+                assert vel_data["schema_version"] == "operational_velocity_v1"
+                assert vel_data["mtti_seconds_mean"] == 1.250555
+                assert vel_data["mttr_seconds_mean"] == 4.500123
+                assert vel_data["mtti_speedup_ratio"] > 800.0
+                assert vel_data["mttr_speedup_ratio"] > 500.0
+                assert "noise_reduction_funnel" in vel_data
+
+            # 6e. POST /api/v1/soar/callback computes t_response in receipt
+            import hashlib as hlib
+            import hmac as hmod
+
+            cb_payload = {
+                "playbook_id": pb_id,
+                "candidate_id": "cand_01",
+                "t_approval_queued": t_queued,
+                "t_callback_verified": t_verified + 1.0,
+            }
+            cb_bytes = json.dumps(cb_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            cb_sig = hmod.new(
+                TEST_SOAR_HMAC_SECRET.encode("utf-8"), cb_bytes, hlib.sha256
+            ).hexdigest()
+            req_cb = urllib.request.Request(
+                f"{base_url}/api/v1/soar/callback",
+                data=cb_bytes,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-ThreatFusion-Signature-256": cb_sig,
+                    "X-Idempotency-Key": f"idem_{pb_id}_cb_m36",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req_cb, timeout=2.0) as resp:
+                assert resp.status == 200
+                cb_data = json.loads(resp.read().decode("utf-8"))
+                assert cb_data["callback_recorded"] is True
+                assert cb_data["t_response"] == 5.500123
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_alert_noise_reduction_funnel_and_compression_ratio(self) -> None:
+        """Verify 4-Tier Alert Noise Compression Funnel counter math and compression ratio."""
+        from threatfusion.api.analyst_dashboard import compute_alert_noise_reduction_funnel
+
+        # 1. Benchmark population (January 2026: 216,568 flows -> 4,358 -> 24 -> 8)
+        funnel = compute_alert_noise_reduction_funnel(
+            tier1_raw_flows_ingested=216568,
+            tier2_triage_queue_candidates=4358,
+            tier3_correlated_incidents=24,
+            tier4_actionable_soar_playbooks=8,
+        )
+        assert funnel.tier1_raw_flows_ingested == 216568
+        assert funnel.tier2_triage_queue_candidates == 4358
+        assert funnel.tier3_correlated_incidents == 24
+        assert funnel.tier4_actionable_soar_playbooks == 8
+        # Formula: round((1.0 - (24 / 216568)) * 100.0, 4) == 99.9889
+        expected_ratio = round((1.0 - (24.0 / 216568.0)) * 100.0, 4)
+        assert funnel.noise_compression_ratio_pct == expected_ratio
+        assert funnel.noise_compression_ratio_pct == 99.9889
+
+        # 2. Multi-flow burst condition (e.g. 5,000 flows -> 250 -> 10 -> 4)
+        burst_funnel = compute_alert_noise_reduction_funnel(
+            tier1_raw_flows_ingested=5000,
+            tier2_triage_queue_candidates=250,
+            tier3_correlated_incidents=10,
+            tier4_actionable_soar_playbooks=4,
+        )
+        expected_burst_ratio = round((1.0 - (10.0 / 5000.0)) * 100.0, 4)
+        assert burst_funnel.noise_compression_ratio_pct == expected_burst_ratio
+        assert burst_funnel.noise_compression_ratio_pct == 99.8000
+
+        # 3. Edge-case zero flows handled safely (clamped to max(1, tier1))
+        zero_funnel = compute_alert_noise_reduction_funnel(
+            tier1_raw_flows_ingested=0,
+            tier2_triage_queue_candidates=0,
+            tier3_correlated_incidents=0,
+            tier4_actionable_soar_playbooks=0,
+        )
+        assert zero_funnel.tier1_raw_flows_ingested == 0
+        assert zero_funnel.noise_compression_ratio_pct == 100.0
+
+        # 4. Negative values raise ValueError
+        with pytest.raises(ValueError, match="cannot be negative"):
+            compute_alert_noise_reduction_funnel(tier1_raw_flows_ingested=-1)
+
+    def test_four_block_investigation_anatomy_groundedness_and_fail_closed_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        """Verify 4-Block Investigation Anatomy fail-closed groundedness, entity provenance, and dashboard rendering."""
+        from threatfusion.advisory.explanation_engine import (
+            AdvisoryEvidenceBundle,
+            build_four_block_investigation_anatomy,
+        )
+        from threatfusion.api.analyst_dashboard import (
+            DashboardAlertDetail,
+            DashboardAlertQueue,
+            DashboardSnapshot,
+            render_dashboard_html,
+        )
+        from threatfusion.soar.n8n_thehive_misp_stack import TheHiveDeterministicClient
+        from threatfusion.soar.playbook_ledger import (
+            ApprovalGatedSoarEngine,
+            SoarPlaybookSqliteRepository,
+        )
+
+        bundle = AdvisoryEvidenceBundle(
+            candidate_id="cand_m36_anatomy",
+            record_id="rec_m36_01",
+            rf_model_version="full-network-random-forest-6d69c72-v1",
+            rf_attack_probability=0.9450,
+            rf_threshold=0.50,
+            top_feature_signals={"sbytes": 2450.0, "rate": 180.5},
+            observed_at="2026-10-20T12:00:00Z",
+        )
+        prov = EntityProvenanceContract(
+            entity_namespace_id="test_m36",
+            clock_synchronized=True,
+            src_entity_id="10.0.0.4",
+            dst_entity_id="10.0.0.5",
+            protocol="tcp",
+            service_or_port="80",
+        )
+
+        # 1. Case A: Valid Grounded Anatomy Generation
+        anatomy = build_four_block_investigation_anatomy(
+            bundle,
+            provenance=prov,
+            candidate_explanation="Frozen Random Forest identified high volumetric rate attack targeting host 10.0.0.5.",
+            candidate_affected_assets=["10.0.0.4", "10.0.0.5"],
+            window_type="30.0s_burst",
+            correlated_flow_count=5,
+            technique_id="T1071.001",
+            tactic_name="Command and Control",
+            cosine_similarity=0.942,
+            playbook_id="pb-isolate-01",
+            playbook_state="approved",
+            audit_chain_valid=True,
+            hmac_signature_verified=True,
+        )
+
+        # Block 1 Executive Summary assertions
+        assert anatomy.block_1_executive_summary.risk_level == "CRITICAL"
+        assert anatomy.block_1_executive_summary.rf_probability == 0.9450
+        assert (
+            anatomy.block_1_executive_summary.recall_gain_badge
+            == "+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)"
+        )
+        assert anatomy.block_1_executive_summary.affected_network_assets == ("10.0.0.4", "10.0.0.5")
+
+        # Block 2 Attack Timeline assertions
+        assert anatomy.block_2_attack_timeline.window_type == "30.0s_burst"
+        assert anatomy.block_2_attack_timeline.correlated_flow_count == 5
+
+        # Block 3 MITRE Mapping assertions
+        assert anatomy.block_3_mitre_mapping.technique_id == "T1071.001"
+        assert anatomy.block_3_mitre_mapping.tactic_name == "Command and Control"
+        assert anatomy.block_3_mitre_mapping.cosine_similarity == 0.942
+
+        # Block 4 SOAR Status assertions
+        assert anatomy.block_4_cryptographic_soar_status.playbook_id == "pb-isolate-01"
+        assert anatomy.block_4_cryptographic_soar_status.playbook_state == "approved"
+        assert anatomy.block_4_cryptographic_soar_status.audit_chain_valid is True
+        assert anatomy.block_4_cryptographic_soar_status.hmac_signature_verified is True
+
+        # 2. Case B: Fail-Closed Behavior on Hallucinated Entities and MITRE IDs
+        hallucinated_anatomy = build_four_block_investigation_anatomy(
+            bundle,
+            provenance=prov,
+            candidate_explanation="Malicious probe from ungrounded external IP 198.51.100.99 with technique T9999.",
+            candidate_affected_assets=["198.51.100.99"],  # Hallucinated IP
+            technique_id="T9999",  # Hallucinated technique ID
+        )
+
+        # Hallucinated IP rejected -> falls back closed to grounded allowed IPs
+        assert (
+            "198.51.100.99"
+            not in hallucinated_anatomy.block_1_executive_summary.affected_network_assets
+        )
+        assert set(hallucinated_anatomy.block_1_executive_summary.affected_network_assets) == {
+            "10.0.0.4",
+            "10.0.0.5",
+        }
+
+        # Hallucinated MITRE ID rejected -> falls back closed to canonical indexed technique
+        assert hallucinated_anatomy.block_3_mitre_mapping.technique_id != "T9999"
+        assert hallucinated_anatomy.block_3_mitre_mapping.technique_id == "T1071.001"
+
+        # 3. Case C: TheHive Case Integration attaches 4-block anatomy
+        soar_db = tmp_path / "test_soar_hive.sqlite3"
+        soar_repo = SoarPlaybookSqliteRepository(soar_db)
+        soar_engine = ApprovalGatedSoarEngine(soar_repo)
+        recs = soar_engine.recommend_actions_for_alert("cand_m36_hive", prov)
+        pb_id = recs[0].playbook_id
+        soar_engine.decide_recommendation(
+            pb_id,
+            actor_id="analyst-bilal",
+            decision="approve",
+            reason="containment",
+            expected_version=1,
+        )
+        approved_rec = soar_repo.get_record(pb_id)
+
+        hive_client = TheHiveDeterministicClient(
+            thehive_url="http://thehive.internal:9000",
+            api_key="test_hive_key",
+            outbox_db_path=tmp_path / "hive_outbox.sqlite3",
+        )
+        case_rec = hive_client.create_case_from_soar(
+            soar_record=approved_rec,
+            soar_repo=soar_repo,
+            rf_confidence_pct=94.5,
+        )
+        assert case_rec.case_id.startswith("case_")
+        assert "4-Block Investigation Anatomy" in case_rec.description
+        assert "Block 1 (Executive Summary):" in case_rec.description
+        assert "Block 2 (Attack Timeline):" in case_rec.description
+        assert "Block 3 (MITRE Mapping):" in case_rec.description
+        assert "Block 4 (Cryptographic SOAR Status):" in case_rec.description
+
+        # 4. Case D: Dashboard HTML rendering contains data-anatomy-block="1", "2", "3", "4"
+        detail = DashboardAlertDetail(
+            alert_candidate_id="cand_m36_html",
+            source_event_id="src_01",
+            observed_at="2026-10-20T12:00:00Z",
+            created_at="2026-10-20T12:00:01Z",
+            source_representation_identity="azure.suricata",
+            feature_contract_identity="network_behavior_v1",
+            model_identity="network_random_forest",
+            model_version="full-network-random-forest-6d69c72-v1",
+            model_artifact_sha256="bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9",
+            uncalibrated_model_score=0.9250,
+            decision_threshold=0.50,
+            decision_policy_version="rf_baseline_v1",
+            decision="attack",
+            state="in_review",
+            version=1,
+            updated_at=None,
+            updated_by=None,
+            last_transition_id=None,
+            history=(),
+        )
+        queue = DashboardAlertQueue(items=(), total_loaded=0, limit=10, offset=0)
+        snap = DashboardSnapshot(queue=queue, selected=detail, status="active")
+        rendered_html = render_dashboard_html(snap)
+        assert 'data-anatomy-block="1"' in rendered_html
+        assert 'data-anatomy-block="2"' in rendered_html
+        assert 'data-anatomy-block="3"' in rendered_html
+        assert 'data-anatomy-block="4"' in rendered_html
+        assert (
+            "+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)"
+            in rendered_html
+        )
+
+    def test_operational_velocity_decomposition_and_toil_savings(self) -> None:
+        """Verify Dropzone/Prophet-style Operational Velocity Decomposition (TTD + TTA + TTI = Conclusion)."""
+        from threatfusion.correlation import (
+            DEFAULT_TTA_MEAN_MS,
+            DEFAULT_TTD_MEAN_MS,
+            DEFAULT_VELOCITY_FORMULA,
+            MANUAL_L1_TRIAGE_BASELINE_SECONDS,
+            build_operational_velocity_report,
+        )
+
+        # 1. Default report calculation
+        rep = build_operational_velocity_report()
+        assert rep.ttd_mean_ms == DEFAULT_TTD_MEAN_MS
+        assert rep.tta_mean_ms == DEFAULT_TTA_MEAN_MS
+        assert rep.tti_mean_seconds == 1.25
+        assert rep.total_time_to_conclusion_seconds == 1.281
+        assert rep.velocity_formula == DEFAULT_VELOCITY_FORMULA
+        assert rep.manual_l1_triage_baseline_seconds == MANUAL_L1_TRIAGE_BASELINE_SECONDS
+        assert rep.analyst_toil_saved_seconds == 898.719
+        assert rep.analyst_toil_saved_pct == 99.8577
+
+        # 2. Check serialized dictionary structure
+        d = rep.to_dict()
+        assert "velocity_decomposition" in d
+        decomp = d["velocity_decomposition"]
+        assert decomp["ttd_mean_ms"] == 18.4
+        assert decomp["tta_mean_ms"] == 12.6
+        assert decomp["tti_mean_seconds"] == 1.25
+        assert decomp["total_time_to_conclusion_seconds"] == 1.281
+        assert decomp["velocity_formula"] == DEFAULT_VELOCITY_FORMULA
+        assert decomp["manual_l1_triage_baseline_seconds"] == 900.0
+        assert decomp["analyst_toil_saved_seconds"] == 898.719
+        assert decomp["analyst_toil_saved_pct"] == 99.8577
+
+        # 3. Custom telemetry overrides
+        custom_inc = [{"incident_id": "inc_1", "t_investigation": 0.850}]
+        custom_rep = build_operational_velocity_report(
+            incident_timings=custom_inc,
+            ttd_mean_ms=10.0,
+            tta_mean_ms=5.0,
+            manual_l1_triage_baseline_seconds=900.0,
+        )
+        assert custom_rep.ttd_mean_ms == 10.0
+        assert custom_rep.tta_mean_ms == 5.0
+        assert custom_rep.tti_mean_seconds == 0.850
+        # total = (10/1000) + (5/1000) + 0.850 = 0.010 + 0.005 + 0.850 = 0.865
+        assert custom_rep.total_time_to_conclusion_seconds == 0.865
+        assert custom_rep.analyst_toil_saved_seconds == 899.135
+        expected_pct = round((1.0 - (0.865 / 900.0)) * 100.0, 4)
+        assert custom_rep.analyst_toil_saved_pct == expected_pct
+
+    def test_verify_frontend_asset_bundle_enterprise_palette_and_dom_markers(
+        self, tmp_path: Path
+    ) -> None:
+        """Verify static asset bundle audit confirms Enterprise Dark-Slate tokens and DOM hooks."""
+        import re
+        from threatfusion.api.analyst_dashboard import verify_frontend_asset_bundle
+
+        # 1. Active repository bundle audit
+        result = verify_frontend_asset_bundle()
+        assert result["verified"] is True
+        assert result["assets"] == ["css", "index_html", "js"]
+        assert len(result["sha256"]) == 3
+        for k in ("css", "index_html", "js"):
+            assert re.fullmatch(r"^[0-9a-f]{64}$", result["sha256"][k])
+
+        backend_code = Path("backend/src/threatfusion/api/analyst_dashboard.py").read_text(encoding="utf-8")
+        assert "data-copy-hash" in backend_code
+
+        # 2. Defective bundle missing required markers raises ValueError
+        bad_dir = tmp_path / "bad_frontend_repo"
+        bad_fe = bad_dir / "frontend"
+        bad_fe.mkdir(parents=True)
+        (bad_fe / "index.html").write_text("<html><body>Empty</body></html>", encoding="utf-8")
+        (bad_fe / "css").mkdir()
+        (bad_fe / "css" / "soc_unicorn.css").write_text("body { color: white; }", encoding="utf-8")
+        (bad_fe / "js").mkdir()
+        (bad_fe / "js" / "soc_dashboard.js").write_text("console.log('hi');", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="Required frontend asset marker missing"):
+            verify_frontend_asset_bundle(bad_dir)
+
+    def test_five_tab_investigation_inspector_and_cryptographic_fail_closed(self) -> None:
+        """Verify 5-Tab Investigation Inspector generation and cryptographic fail-closed validation."""
+        from threatfusion.api.analyst_dashboard import (
+            TriageQueueCardView,
+            build_five_tab_investigation_inspector,
+        )
+
+        valid_receipt = {
+            "execution_id": "exec_n8n_test_01",
+            "signature_sha256": "44d88612fea8a8f36de82e1278abb02f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d",
+        }
+        valid_chain = (
+            {
+                "entry_hash": "GENESIS_BLOCK_00000000000000000000000000000000000000000000000000000000",
+                "prev_hash": "GENESIS_BLOCK_00000000000000000000000000000000000000000000000000000000",
+            },
+            {
+                "entry_hash": "44d88612fea8a8f36de82e1278abb02f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d",
+                "prev_hash": "GENESIS_BLOCK_00000000000000000000000000000000000000000000000000000000",
+            },
+        )
+
+        # 1. Valid verified card
+        card_valid = TriageQueueCardView(
+            campaign_id="camp_m37_valid",
+            alert_candidate_id="cand_m37_01",
+            source_ip="10.0.0.4",
+            dest_ip="10.0.0.5",
+            technique_id="T1071.001",
+            soar_receipt=valid_receipt,
+            audit_chain=valid_chain,
+            explanation="Deterministic Frozen Random Forest detected Web Protocols on host 10.0.0.5.",
+        )
+        inspector = build_five_tab_investigation_inspector(card_valid)
+        assert inspector["evidence_state"] == "verified"
+        assert inspector["tab_1_executive_summary"]["evidence_state"] == "verified"
+        assert inspector["tab_1_executive_summary"]["asset_exposure"] == "RFC1918 Internal"
+        assert inspector["tab_3_mitre_and_playbook"]["evidence_state"] == "verified"
+        assert inspector["tab_3_mitre_and_playbook"]["technique_id"] == "T1071.001"
+        assert inspector["tab_4_evidence_locker"]["frozen_rf_precision"] == "95.266%"
+        assert inspector["tab_5_soar_audit_changelog"]["evidence_state"] == "verified"
+        assert inspector["tab_5_soar_audit_changelog"]["copy_hash_attr"] == "data-copy-hash"
+        assert "data-copy-hash" in inspector["tab_5_soar_audit_changelog"]["html"]
+
+        # 2. Forged SOAR receipt fails closed
+        card_forged_receipt = TriageQueueCardView(
+            campaign_id="camp_m37_forged",
+            alert_candidate_id="cand_m37_02",
+            source_ip="10.0.0.4",
+            dest_ip="10.0.0.5",
+            soar_receipt={"execution_id": "exec_fake", "signature_sha256": "not-a-valid-sha256-hash"},
+            audit_chain=valid_chain,
+        )
+        insp_forged = build_five_tab_investigation_inspector(card_forged_receipt)
+        assert insp_forged["tab_5_soar_audit_changelog"]["evidence_state"] == "unavailable"
+        assert insp_forged["evidence_state"] == "unavailable"
+
+        # 3. Ungrounded / Hallucinated explanation fails closed
+        card_hallucinated = TriageQueueCardView(
+            campaign_id="camp_m37_hallucinated",
+            alert_candidate_id="cand_m37_03",
+            source_ip="10.0.0.4",
+            dest_ip="10.0.0.5",
+            soar_receipt=valid_receipt,
+            audit_chain=valid_chain,
+            explanation="Attack originating from ungrounded external IP 198.51.100.99 with unauthorized backdoor.",
+        )
+        insp_hallucinated = build_five_tab_investigation_inspector(card_hallucinated)
+        assert insp_hallucinated["tab_1_executive_summary"]["evidence_state"] == "unavailable"
+        assert insp_hallucinated["evidence_state"] == "unavailable"
+
+    def test_analyst_dashboard_html_renders_investor_grade_ui_ux_layers(self) -> None:
+        """Verify render_dashboard_html renders Enterprise Dark-Slate tokens, Layer 1, 2, and 3 markers."""
+        from threatfusion.api.analyst_dashboard import (
+            DashboardAlertDetail,
+            DashboardAlertQueue,
+            DashboardSnapshot,
+            render_dashboard_html,
+        )
+
+        detail = DashboardAlertDetail(
+            alert_candidate_id="cand_m37_render_01",
+            source_event_id="src_event_01",
+            observed_at="2026-10-20T12:00:00Z",
+            created_at="2026-10-20T12:00:01Z",
+            source_representation_identity="azure.suricata",
+            feature_contract_identity="network_behavior_v1",
+            model_identity="network_random_forest",
+            model_version="full-network-random-forest-6d69c72-v1",
+            model_artifact_sha256="bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9",
+            uncalibrated_model_score=0.9527,
+            decision_threshold=0.50,
+            decision_policy_version="rf_baseline_v1",
+            decision="attack",
+            state="in_review",
+            version=1,
+            updated_at=None,
+            updated_by=None,
+            last_transition_id=None,
+            history=(),
+        )
+        queue = DashboardAlertQueue(items=(), total_loaded=0, limit=10, offset=0)
+        snap = DashboardSnapshot(queue=queue, selected=detail, status="active")
+
+        html = render_dashboard_html(snap)
+
+        # Enterprise Dark-Slate design tokens
+        assert "#090D16" in html
+        assert "#111827" in html
+
+        # Layer 1 Hero Strip hooks
+        assert 'data-layer="hero-investor-hook"' in html
+        assert "99%+ Alert Noise Eliminated" in html
+        assert "TTD (Time to Detect, ms) + TTA (Time to Acknowledge, ms) + TTI (Time to Investigate, s) = Total Time to Conclusion" in html
+        assert "900.0s" in html
+        assert "mTLS 1.3 Active" in html
+        assert "Model Weights Frozen &amp; Verified" in html
+        assert "SOAR Audit Ledger: Intact" in html
+
+        # Layer 2 Architecture Ribbon hooks
+        assert 'data-layer="architecture-ribbon"' in html
+        assert 'data-pipeline-stage="1"' in html
+        assert 'data-pipeline-stage="2"' in html
+        assert 'data-pipeline-stage="3"' in html
+        assert 'data-pipeline-stage="4"' in html
+        assert 'data-pipeline-stage="5"' in html
+        assert 'data-pipeline-stage="6"' in html
+
+        # Layer 3 Split Workspace & 5-Tab Inspector hooks
+        assert 'data-layer="split-investigation-workspace"' in html
+        assert 'data-inspector-tab="1"' in html
+        assert 'data-inspector-tab="2"' in html
+        assert 'data-inspector-tab="3"' in html
+        assert 'data-inspector-tab="4"' in html
+        assert 'data-inspector-tab="5"' in html
+        assert 'data-anatomy-block="1"' in html
+        assert 'data-anatomy-block="2"' in html
+        assert 'data-anatomy-block="3"' in html
+        assert 'data-anatomy-block="4"' in html
+
+        # Click-to-copy hash parity and attributes
+        assert "data-copy-hash" in html
+        assert 'title="Click to copy SHA-256 digest"' in html
+        assert "navigator.clipboard.writeText" in html
+        assert "data-copy-hash" in Path("backend/src/threatfusion/api/analyst_dashboard.py").read_text(encoding="utf-8")

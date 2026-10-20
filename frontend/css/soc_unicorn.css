@@ -5,17 +5,19 @@
    ========================================================================== */
 
 :root {
-  /* Color Palette — Primary Dark-Mode Tokens */
-  --bg-canvas: #090d16;
+  /* Enterprise Dark-Slate Palette Tokens (Mega-Milestone #37) */
+  --bg-obsidian: #090D16;
+  --bg-card: #111827;
+  --bg-card-slate: #111827;
+  --bg-canvas: #090D16;
   --bg-surface: #0f141c;
-  --bg-card: rgba(22, 27, 34, 0.82);
   --bg-card-hover: rgba(30, 37, 48, 0.92);
   --bg-inset: #05080f;
   --bg-overlay: rgba(9, 13, 22, 0.85);
 
   /* Glassmorphism Tokens */
-  --glass-blur: blur(14px);
-  --glass-border: 1px solid rgba(48, 54, 61, 0.7);
+  --glass-blur: blur(12px);
+  --glass-border: 1px solid rgba(255, 255, 255, 0.08);
   --glass-border-focus: 1px solid rgba(88, 166, 255, 0.8);
   --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
 
@@ -27,24 +29,24 @@
   --text-code: #79c0ff;
 
   /* Accent & Semantic Status Colors */
-  --color-emerald: #10b981;
+  --color-emerald: #10B981;
   --color-emerald-bg: #238636;
-  --color-amber: #f59e0b;
+  --color-cyan: #06B6D4;
+  --color-amber: #F59E0B;
   --color-amber-bg: #9e6a03;
-  --color-red: #f85149;
+  --color-red: #EF4444;
   --color-red-bg: #da3633;
   --color-purple: #bc8cff;
   --color-purple-bg: #8957e5;
   --color-blue: #58a6ff;
   --color-blue-bg: #1f6feb;
-  --color-cyan: #39c5cf;
   --color-magenta: #d2a8ff;
   --color-orange: #ffa657;
   --color-slate-bg: #484f58;
 
-  /* Font Stacks — Local Standard System Fonts Only (Zero Network CDNs) */
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  /* Font Stacks — Local Standard System Fonts with Inter & JetBrains Mono */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 
   /* Layout Dimensions */
   --radius-sm: 4px;
@@ -724,4 +726,567 @@ a:hover {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 0.5rem;
+}
+
+/* ==========================================================================
+   Milestone #36: Operational Velocity Ribbon & Noise Reduction Funnel
+   ========================================================================== */
+
+.velocity-ribbon {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.velocity-card {
+  background: var(--bg-card);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid rgba(88, 166, 255, 0.25);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  box-shadow: var(--glass-shadow);
+  transition: transform var(--transition-fast), border-color var(--transition-fast);
+}
+
+.velocity-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(88, 166, 255, 0.6);
+}
+
+.velocity-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  letter-spacing: 0.05em;
+}
+
+.velocity-value {
+  font-size: 1.35rem;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  color: #58a6ff;
+}
+
+.velocity-detail {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+/* 4-Tier Funnel Styles */
+.funnel-container {
+  background: var(--bg-card);
+  backdrop-filter: var(--glass-blur);
+  border: var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+  box-shadow: var(--glass-shadow);
+}
+
+.funnel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.funnel-grid {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.funnel-card {
+  flex: 1;
+  min-width: 170px;
+  background: rgba(15, 20, 28, 0.85);
+  border: 1px solid rgba(48, 54, 61, 0.8);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 0.9rem;
+  transition: border-color var(--transition-fast);
+}
+
+.funnel-card:hover {
+  border-color: rgba(88, 166, 255, 0.6);
+}
+
+.funnel-card.tier-1 { border-left: 3px solid #58a6ff; }
+.funnel-card.tier-2 { border-left: 3px solid #bc8cff; }
+.funnel-card.tier-3 { border-left: 3px solid #f59e0b; }
+.funnel-card.tier-4 { border-left: 3px solid #10b981; }
+
+.funnel-tier-num {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.funnel-count {
+  font-size: 1.25rem;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  margin: 0.15rem 0;
+}
+
+.funnel-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #58a6ff;
+}
+
+.funnel-desc {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  margin-top: 0.2rem;
+  line-height: 1.3;
+}
+
+.funnel-arrow {
+  font-size: 1.2rem;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+/* Standardized 4-Block Investigation Anatomy */
+.anatomy-card {
+  margin-top: 1rem;
+  border: 1px solid rgba(88, 166, 255, 0.4);
+}
+
+.anatomy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.anatomy-block {
+  background: rgba(15, 20, 28, 0.9);
+  border: 1px solid rgba(48, 54, 61, 0.8);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.anatomy-block[data-anatomy-block="1"] { border-top: 2px solid #58a6ff; }
+.anatomy-block[data-anatomy-block="2"] { border-top: 2px solid #bc8cff; }
+.anatomy-block[data-anatomy-block="3"] { border-top: 2px solid #f59e0b; }
+.anatomy-block[data-anatomy-block="4"] { border-top: 2px solid #10b981; }
+
+.anatomy-block h4 {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #58a6ff;
+  margin: 0 0 0.25rem 0;
+}
+
+/* Studio & Range Layouts */
+.studio-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1.25rem;
+  margin-top: 1.5rem;
+}
+
+.topology-view {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  padding: 1rem 0;
+  gap: 0.75rem;
+}
+
+.topo-node {
+  background: rgba(15, 20, 28, 0.95);
+  border: 1px solid rgba(48, 54, 61, 0.8);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 1rem;
+  text-align: center;
+  min-width: 140px;
+}
+
+.topo-node.attacker { border-color: rgba(248, 81, 73, 0.5); }
+.topo-node.victim { border-color: rgba(16, 185, 129, 0.5); }
+
+.topo-icon {
+  font-size: 1.2rem;
+  margin-bottom: 0.25rem;
+}
+
+.topo-name {
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+
+.topo-ip {
+  margin: 0.2rem 0;
+}
+
+.topo-role {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.topo-link {
+  flex: 1;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  position: relative;
+}
+
+.topo-link-speed {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+}
+
+.topo-link-line {
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, #f85149, #10b981);
+}
+
+.topo-packet-dot {
+  width: 8px;
+  height: 8px;
+  background: #58a6ff;
+  border-radius: 50%;
+  box-shadow: 0 0 8px #58a6ff;
+}
+
+/* Workflow Studio */
+.workflow-studio {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  overflow-x: auto;
+  padding: 0.75rem 0;
+}
+
+.wf-node {
+  background: rgba(15, 20, 28, 0.9);
+  border: 1px solid rgba(88, 166, 255, 0.35);
+  border-radius: var(--radius-sm);
+  padding: 0.45rem 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.wf-badge {
+  background: #1f6feb;
+  color: #fff;
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+}
+
+.wf-connector {
+  color: var(--text-muted);
+  user-select: none;
+}
+
+/* Explorer & Connector */
+.corpus-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.corpus-pills code {
+  font-size: 0.75rem;
+  background: rgba(88, 166, 255, 0.1);
+  border-color: rgba(88, 166, 255, 0.3);
+}
+
+.connector-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.connector-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.8rem;
+}
+
+.connector-label {
+  color: var(--text-secondary);
+}
+
+/* ==========================================================================
+   Mega-Milestone #37: Executive & Investor-Grade UI/UX Architecture
+   Obsidian Canvas: #090D16 | Slate Glass Cards: #111827
+   ========================================================================== */
+
+/* Layer 1: Top Hero Strip */
+[data-layer="hero-investor-hook"],
+.hero-investor-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.hero-investor-card {
+  background: #111827;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-lg);
+  padding: 1.2rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+  transition: transform var(--transition-fast), border-color var(--transition-fast);
+}
+
+.hero-investor-card:hover {
+  border-color: rgba(88, 166, 255, 0.4);
+  transform: translateY(-2px);
+}
+
+.hero-badge-headline {
+  display: inline-block;
+  padding: 0.35rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: rgba(16, 185, 129, 0.15);
+  color: #10B981;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.velocity-formula-bar {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: #06B6D4;
+  background: rgba(6, 182, 212, 0.08);
+  border: 1px solid rgba(6, 182, 212, 0.25);
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-sm);
+  margin: 0.5rem 0;
+}
+
+.shield-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.shield-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.25rem 0.6rem;
+  border-radius: 4px;
+  background: rgba(17, 24, 39, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+}
+
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10B981;
+  box-shadow: 0 0 8px #10B981;
+  animation: pulse-glow 2s infinite;
+}
+
+@keyframes pulse-glow {
+  0% { transform: scale(0.95); opacity: 0.7; }
+  50% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0.7; }
+}
+
+/* Layer 2: 6-Stage Architecture Ribbon */
+[data-layer="architecture-ribbon"],
+.architecture-ribbon-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  background: #111827;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-lg);
+  padding: 0.85rem 1.25rem;
+  margin-bottom: 1.25rem;
+  overflow-x: auto;
+}
+
+[data-pipeline-stage] {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.85rem;
+  background: rgba(9, 13, 22, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  transition: all var(--transition-fast);
+}
+
+[data-pipeline-stage]:hover {
+  border-color: rgba(88, 166, 255, 0.5);
+  background: rgba(30, 37, 48, 0.85);
+}
+
+.stage-num-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #1f6feb;
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.arch-ribbon-arrow {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  user-select: none;
+}
+
+/* Layer 3: Main Split-Pane Workspace */
+[data-layer="split-investigation-workspace"],
+.split-investigation-workspace {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  gap: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+@media (max-width: 1100px) {
+  [data-layer="split-investigation-workspace"],
+  .split-investigation-workspace {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 5-Tab Investigation Inspector */
+.inspector-tab-nav {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: 1rem;
+  overflow-x: auto;
+}
+
+.inspector-tab-btn {
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.6rem 1rem;
+  font-size: 0.86rem;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.inspector-tab-btn:hover {
+  color: var(--text-primary);
+}
+
+.inspector-tab-btn.active {
+  color: #58a6ff;
+  border-bottom-color: #58a6ff;
+  background: rgba(88, 166, 255, 0.05);
+}
+
+[data-inspector-tab] {
+  display: none;
+}
+
+[data-inspector-tab].active {
+  display: block;
+  animation: fadeIn 0.2s ease-in;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 4-Block Case Anatomy Cards inside Workspace */
+[data-anatomy-block] {
+  background: #111827;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  margin-bottom: 0.85rem;
+}
+
+[data-anatomy-block="1"] { border-left: 3px solid #10B981; }
+[data-anatomy-block="2"] { border-left: 3px solid #06B6D4; }
+[data-anatomy-block="3"] { border-left: 3px solid #bc8cff; }
+[data-anatomy-block="4"] { border-left: 3px solid #F59E0B; }
+
+/* Click to Copy Hash Tooltip */
+[data-copy-hash] {
+  position: relative;
+  cursor: pointer;
+  border-bottom: 1px dashed rgba(88, 166, 255, 0.4);
+}
+
+[data-copy-hash]:hover::after {
+  content: attr(data-copy-tooltip);
+  position: absolute;
+  bottom: 125%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #111827;
+  color: #e6edf3;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
 }

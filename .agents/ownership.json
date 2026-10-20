@@ -61,6 +61,10 @@
       "frontend/css/soc_unicorn.css",
       "frontend/js/soc_dashboard.js",
       "frontend/README.md"
+    ],
+    "operational_velocity_engine": [
+      "backend/src/threatfusion/correlation/__init__.py",
+      "backend/src/threatfusion/correlation/incident_correlation.py"
     ]
   }
 }

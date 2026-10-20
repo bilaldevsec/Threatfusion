@@ -18,6 +18,7 @@ ALL_THREATFUSION_PACKAGES = [
     "threatfusion.alerts",
     "threatfusion.api",
     "threatfusion.config",
+    "threatfusion.correlation",
     "threatfusion.datasets",
     "threatfusion.datasets.adapters",
     "threatfusion.db",

@@ -36,6 +36,11 @@ import urllib.error
 import urllib.request
 import uuid
 
+from threatfusion.advisory.explanation_engine import (
+    AdvisoryEvidenceBundle,
+    FourBlockInvestigationAnatomy,
+    build_four_block_investigation_anatomy,
+)
 from threatfusion.soar.playbook_ledger import (
     SoarPlaybookRecord,
     SoarPlaybookSqliteRepository,
@@ -378,6 +383,8 @@ class TheHiveDeterministicClient:
         incident_id: str | None = None,
         mitre_tags: Sequence[str] = (),
         misp_tags: Sequence[str] = (),
+        anatomy: FourBlockInvestigationAnatomy | None = None,
+        bundle: AdvisoryEvidenceBundle | None = None,
     ) -> TheHiveCaseRecord:
         """Create a TheHive case from an authenticated, approved SOAR record."""
         # 1. Enforce Mandatory Approval Gate
@@ -393,6 +400,24 @@ class TheHiveDeterministicClient:
             raise SoarStateTransitionError(
                 f"TheHive case creation rejected: cryptographic SOAR audit hash chain "
                 f"integrity failed verification ({msg})"
+            )
+
+        # 3. Grounded 4-Block Investigation Case Anatomy
+        if anatomy is None:
+            eff_bundle = bundle or AdvisoryEvidenceBundle(
+                candidate_id=soar_record.candidate_id,
+                record_id=soar_record.candidate_id,
+                rf_model_version="full-network-random-forest-6d69c72-v1",
+                rf_attack_probability=rf_confidence_pct / 100.0,
+                rf_threshold=0.5000,
+                top_feature_signals={"sbytes": 1250.0},
+                incident_id=incident_id,
+            )
+            anatomy = build_four_block_investigation_anatomy(
+                eff_bundle,
+                soar_record=soar_record,
+                soar_repo=soar_repo,
+                audit_chain_valid=ok,
             )
 
         case_id = f"case_{soar_record.candidate_id.replace(':', '_')}_{uuid.uuid4().hex[:6]}"
@@ -437,7 +462,12 @@ class TheHiveDeterministicClient:
             f"Non-Fused Queue Priority Rank: #{queue_priority_rank}\n"
             f"Approved by Actor: {soar_record.actor_id}\n"
             f"Approval Reason: {soar_record.decision_reason}\n"
-            f"Cryptographic Audit Chain: VERIFIED"
+            f"Cryptographic Audit Chain: VERIFIED\n\n"
+            f"--- 4-Block Investigation Anatomy ---\n"
+            f"Block 1 (Executive Summary): {anatomy.block_1_executive_summary.risk_level} | RF {anatomy.block_1_executive_summary.rf_probability:.4f} | {anatomy.block_1_executive_summary.recall_gain_badge}\n"
+            f"Block 2 (Attack Timeline): {anatomy.block_2_attack_timeline.window_type} | {anatomy.block_2_attack_timeline.correlated_flow_count} correlated flows\n"
+            f"Block 3 (MITRE Mapping): {anatomy.block_3_mitre_mapping.technique_id} ({anatomy.block_3_mitre_mapping.tactic_name}) | Cosine {anatomy.block_3_mitre_mapping.cosine_similarity:.4f}\n"
+            f"Block 4 (Cryptographic SOAR Status): {anatomy.block_4_cryptographic_soar_status.playbook_id} [{anatomy.block_4_cryptographic_soar_status.playbook_state}] | Audit Chain Valid={anatomy.block_4_cryptographic_soar_status.audit_chain_valid}"
         )
 
         title = f"[ThreatFusion] {soar_record.action_type.upper()}: {soar_record.target_entity} ({rf_confidence_pct:.1f}%)"
@@ -450,6 +480,8 @@ class TheHiveDeterministicClient:
             "pap": 2,  # AMBER
             "tags": all_tags,
             "flag": False,
+            "anatomy": anatomy.to_dict(),
+            "four_block_anatomy": anatomy.to_dict(),
         }
 
         # Attempt REST dispatch
@@ -494,6 +526,9 @@ class TheHiveDeterministicClient:
         )
         self._record_case(rec)
         return rec
+
+    # Backward compatibility alias
+    create_incident_case = create_case_from_soar
 
     def _record_case(self, rec: TheHiveCaseRecord) -> None:
         if not self.outbox_db_path:

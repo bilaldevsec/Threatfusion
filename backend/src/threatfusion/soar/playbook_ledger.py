@@ -120,6 +120,9 @@ class SoarPlaybookRecord:
     rollback_reason: str | None
     created_at_utc: str
     updated_at_utc: str
+    t_approval_queued: float | None = None
+    t_callback_verified: float | None = None
+    t_response: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -140,6 +143,9 @@ class SoarPlaybookRecord:
             "rollback_reason": self.rollback_reason,
             "created_at_utc": self.created_at_utc,
             "updated_at_utc": self.updated_at_utc,
+            "t_approval_queued": self.t_approval_queued,
+            "t_callback_verified": self.t_callback_verified,
+            "t_response": self.t_response,
         }
 
 
@@ -173,7 +179,10 @@ class SoarPlaybookSqliteRepository:
                     execution_evidence TEXT,
                     rollback_reason TEXT,
                     created_at_utc TEXT NOT NULL,
-                    updated_at_utc TEXT NOT NULL
+                    updated_at_utc TEXT NOT NULL,
+                    t_approval_queued REAL,
+                    t_callback_verified REAL,
+                    t_response REAL
                 )
                 """)
             conn.execute("""
@@ -204,6 +213,19 @@ class SoarPlaybookSqliteRepository:
                 conn.execute(
                     "ALTER TABLE soar_audit_events ADD COLUMN entry_sha256 TEXT NOT NULL DEFAULT ''"
                 )
+
+            # Migration check: Ensure timing columns exist in soar_playbook_records
+            cols_pb_cursor = conn.execute("PRAGMA table_info(soar_playbook_records)")
+            cols_pb = {row["name"] for row in cols_pb_cursor.fetchall()}
+            if "t_approval_queued" not in cols_pb:
+                conn.execute("ALTER TABLE soar_playbook_records ADD COLUMN t_approval_queued REAL")
+            if "t_callback_verified" not in cols_pb:
+                conn.execute(
+                    "ALTER TABLE soar_playbook_records ADD COLUMN t_callback_verified REAL"
+                )
+            if "t_response" not in cols_pb:
+                conn.execute("ALTER TABLE soar_playbook_records ADD COLUMN t_response REAL")
+
             conn.commit()
 
         # Enforce mode 0600 permissions
@@ -220,8 +242,9 @@ class SoarPlaybookSqliteRepository:
                     playbook_id, candidate_id, action_type, target_entity,
                     state, version, actor_id, decision_reason,
                     pre_action_snapshot, execution_evidence, rollback_reason,
-                    created_at_utc, updated_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at_utc, updated_at_utc,
+                    t_approval_queued, t_callback_verified, t_response
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.playbook_id,
@@ -237,6 +260,9 @@ class SoarPlaybookSqliteRepository:
                     record.rollback_reason,
                     record.created_at_utc,
                     record.updated_at_utc,
+                    record.t_approval_queued,
+                    record.t_callback_verified,
+                    record.t_response,
                 ),
             )
             conn.commit()
@@ -434,6 +460,7 @@ class SoarPlaybookSqliteRepository:
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> SoarPlaybookRecord:
+        keys = row.keys()
         return SoarPlaybookRecord(
             playbook_id=row["playbook_id"],
             candidate_id=row["candidate_id"],
@@ -448,7 +475,74 @@ class SoarPlaybookSqliteRepository:
             rollback_reason=row["rollback_reason"],
             created_at_utc=row["created_at_utc"],
             updated_at_utc=row["updated_at_utc"],
+            t_approval_queued=row["t_approval_queued"] if "t_approval_queued" in keys else None,
+            t_callback_verified=(
+                row["t_callback_verified"] if "t_callback_verified" in keys else None
+            ),
+            t_response=row["t_response"] if "t_response" in keys else None,
         )
+
+    def record_callback_verification(
+        self,
+        playbook_id: str,
+        t_callback_verified: float,
+        t_approval_queued: float | None = None,
+    ) -> float:
+        """Record deterministic MTTR callback verification and compute response duration."""
+        record = self.get_record(playbook_id)
+        if record is None:
+            raise SoarStateTransitionError(f"Playbook '{playbook_id}' not found")
+
+        approval_time = (
+            t_approval_queued
+            if t_approval_queued is not None
+            else (
+                record.t_approval_queued
+                if record.t_approval_queued is not None
+                else datetime.fromisoformat(
+                    record.created_at_utc.replace("Z", "+00:00")
+                ).timestamp()
+            )
+        )
+        t_resp = round(max(0.0, float(t_callback_verified) - float(approval_time)), 6)
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE soar_playbook_records
+                SET t_approval_queued = ?, t_callback_verified = ?, t_response = ?, updated_at_utc = ?
+                WHERE playbook_id = ?
+                """,
+                (
+                    approval_time,
+                    float(t_callback_verified),
+                    t_resp,
+                    datetime.now(UTC).isoformat(),
+                    playbook_id,
+                ),
+            )
+            conn.commit()
+        return t_resp
+
+    def list_response_timings(self) -> list[dict[str, Any]]:
+        """Return all recorded MTTR intervals."""
+        with self._get_connection() as conn:
+            cursor = conn.execute("""
+                SELECT playbook_id, candidate_id, state, t_approval_queued, t_callback_verified, t_response
+                FROM soar_playbook_records
+                WHERE t_response IS NOT NULL
+                ORDER BY created_at_utc ASC
+                """)
+            return [
+                {
+                    "playbook_id": r["playbook_id"],
+                    "candidate_id": r["candidate_id"],
+                    "state": r["state"],
+                    "t_approval_queued": r["t_approval_queued"],
+                    "t_callback_verified": r["t_callback_verified"],
+                    "t_response": r["t_response"],
+                }
+                for r in cursor.fetchall()
+            ]
 
 
 class ApprovalGatedSoarEngine:
@@ -461,9 +555,13 @@ class ApprovalGatedSoarEngine:
         self,
         candidate_id: str,
         provenance: EntityProvenanceContract | None,
+        *,
+        t_approval_queued: float | None = None,
     ) -> list[SoarPlaybookRecord]:
         """Step 1 — Recommendation: creates durable records in pending_approval (never auto-executed)."""
-        now_str = datetime.now(UTC).isoformat()
+        now_dt = datetime.now(UTC)
+        now_str = now_dt.isoformat()
+        queued_epoch = t_approval_queued if t_approval_queued is not None else now_dt.timestamp()
         records: list[SoarPlaybookRecord] = []
 
         if provenance is not None and provenance.is_verified():
@@ -485,6 +583,7 @@ class ApprovalGatedSoarEngine:
                         rollback_reason=None,
                         created_at_utc=now_str,
                         updated_at_utc=now_str,
+                        t_approval_queued=queued_epoch,
                     )
                 )
 
@@ -505,6 +604,7 @@ class ApprovalGatedSoarEngine:
                     rollback_reason=None,
                     created_at_utc=now_str,
                     updated_at_utc=now_str,
+                    t_approval_queued=queued_epoch,
                 )
             )
         else:
@@ -524,6 +624,7 @@ class ApprovalGatedSoarEngine:
                     rollback_reason=None,
                     created_at_utc=now_str,
                     updated_at_utc=now_str,
+                    t_approval_queued=queued_epoch,
                 )
             )
 
@@ -590,6 +691,9 @@ class ApprovalGatedSoarEngine:
             rollback_reason=record.rollback_reason,
             created_at_utc=record.created_at_utc,
             updated_at_utc=now_str,
+            t_approval_queued=record.t_approval_queued,
+            t_callback_verified=record.t_callback_verified,
+            t_response=record.t_response,
         )
 
         self.repository.save_record(updated)
@@ -663,6 +767,9 @@ class ApprovalGatedSoarEngine:
             rollback_reason=record.rollback_reason,
             created_at_utc=record.created_at_utc,
             updated_at_utc=now_str,
+            t_approval_queued=record.t_approval_queued,
+            t_callback_verified=record.t_callback_verified,
+            t_response=record.t_response,
         )
 
         self.repository.save_record(updated)
@@ -723,6 +830,9 @@ class ApprovalGatedSoarEngine:
             rollback_reason=rollback_reason,
             created_at_utc=record.created_at_utc,
             updated_at_utc=now_str,
+            t_approval_queued=record.t_approval_queued,
+            t_callback_verified=record.t_callback_verified,
+            t_response=record.t_response,
         )
 
         self.repository.save_record(updated)

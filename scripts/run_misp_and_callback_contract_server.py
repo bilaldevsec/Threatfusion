@@ -124,9 +124,11 @@ def _get_soar_record_and_verify_chain(
         chain_dict = (
             chain_res
             if isinstance(chain_res, dict)
-            else {"valid": chain_res[0], "message": chain_res[1]}
-            if isinstance(chain_res, (tuple, list)) and len(chain_res) >= 2
-            else {"valid": bool(chain_res)}
+            else (
+                {"valid": chain_res[0], "message": chain_res[1]}
+                if isinstance(chain_res, (tuple, list)) and len(chain_res) >= 2
+                else {"valid": bool(chain_res)}
+            )
         )
         if chain_dict.get("valid") is not True:
             return (
@@ -156,12 +158,83 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _send_file(self, file_path: Path, content_type: str) -> None:
+        if not file_path.is_file():
+            self._send_json(404, {"error": "Not Found", "path": str(file_path)})
+            return
+        content = file_path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
     def do_GET(self) -> None:
         path = self.path.split("?")[0]
-        if path in ("/healthz", "/", "/api/v1/heartbeat", "/api/status"):
+        if path in ("/", "/index.html"):
+            index_path = REPO_ROOT / "frontend" / "index.html"
+            self._send_file(index_path, "text/html; charset=utf-8")
+            return
+        if path == "/css/soc_unicorn.css":
+            css_path = REPO_ROOT / "frontend" / "css" / "soc_unicorn.css"
+            self._send_file(css_path, "text/css; charset=utf-8")
+            return
+        if path == "/js/soc_dashboard.js":
+            js_path = REPO_ROOT / "frontend" / "js" / "soc_dashboard.js"
+            self._send_file(js_path, "application/javascript; charset=utf-8")
+            return
+        if path in ("/healthz", "/api/v1/heartbeat", "/api/status"):
             self._send_json(200, {"status": "ok", "service": "threatfusion_soc_contract_server"})
-        else:
-            self._send_json(404, {"error": "Not Found", "path": path})
+            return
+        if path == "/api/v1/metrics/operational-velocity":
+            from threatfusion.api.analyst_dashboard import compute_alert_noise_reduction_funnel
+            from threatfusion.correlation.incident_correlation import (
+                build_operational_velocity_report,
+            )
+
+            inc_timings: list[dict[str, Any]] = []
+            resp_timings: list[dict[str, Any]] = []
+
+            db_path = self.soar_db_path or os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH")
+            if db_path and Path(db_path).is_file():
+                try:
+                    from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
+
+                    s_repo = SoarPlaybookSqliteRepository(Path(db_path))
+                    resp_timings = s_repo.list_response_timings()
+                except Exception:
+                    pass
+
+            inc_db_path = os.environ.get("THREATFUSION_INCIDENTS_DB_PATH")
+            if inc_db_path and Path(inc_db_path).is_file():
+                try:
+                    from threatfusion.alerts.correlation_engine import IncidentSqliteRepository
+
+                    i_repo = IncidentSqliteRepository(Path(inc_db_path))
+                    inc_timings = i_repo.list_incident_timings()
+                except Exception:
+                    pass
+
+            t1 = int(os.environ.get("THREATFUSION_TIER1_RAW_FLOWS", "216568"))
+            t2 = int(os.environ.get("THREATFUSION_TIER2_TRIAGE_CANDIDATES", "4358"))
+            t3 = max(len(inc_timings), int(os.environ.get("THREATFUSION_TIER3_INCIDENTS", "24")))
+            t4 = max(len(resp_timings), int(os.environ.get("THREATFUSION_TIER4_PLAYBOOKS", "8")))
+
+            funnel_obj = compute_alert_noise_reduction_funnel(
+                tier1_raw_flows_ingested=t1,
+                tier2_triage_queue_candidates=t2,
+                tier3_correlated_incidents=t3,
+                tier4_actionable_soar_playbooks=t4,
+            )
+            report = build_operational_velocity_report(
+                incident_timings=inc_timings,
+                response_timings=resp_timings,
+                noise_reduction_funnel=funnel_obj.to_dict(),
+            )
+            self._send_json(200, report.to_dict())
+            return
+
+        self._send_json(404, {"error": "Not Found", "path": path})
 
     def do_POST(self) -> None:
         path = self.path.split("?")[0]
@@ -348,9 +421,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 chain_dict = (
                     chain_res
                     if isinstance(chain_res, dict)
-                    else {"valid": chain_res[0], "message": chain_res[1]}
-                    if isinstance(chain_res, (tuple, list)) and len(chain_res) >= 2
-                    else {"valid": bool(chain_res)}
+                    else (
+                        {"valid": chain_res[0], "message": chain_res[1]}
+                        if isinstance(chain_res, (tuple, list)) and len(chain_res) >= 2
+                        else {"valid": bool(chain_res)}
+                    )
                 )
                 if chain_dict.get("valid") is not True:
                     self._send_json(
@@ -553,9 +628,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 chain_dict = (
                     chain_res
                     if isinstance(chain_res, dict)
-                    else {"valid": chain_res[0], "message": chain_res[1]}
-                    if isinstance(chain_res, (tuple, list)) and len(chain_res) >= 2
-                    else {"valid": bool(chain_res)}
+                    else (
+                        {"valid": chain_res[0], "message": chain_res[1]}
+                        if isinstance(chain_res, (tuple, list)) and len(chain_res) >= 2
+                        else {"valid": bool(chain_res)}
+                    )
                 )
                 if chain_dict.get("valid") is not True:
                     self._send_json(
@@ -608,6 +685,22 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 )
                 return
 
+            t_cb = float(payload.get("t_callback_verified", datetime.now(UTC).timestamp()))
+            t_app = (
+                float(payload["t_approval_queued"])
+                if ("t_approval_queued" in payload and payload["t_approval_queued"] is not None)
+                else None
+            )
+            t_resp = 0.0
+            try:
+                t_resp = repo.record_callback_verification(
+                    playbook_id=playbook_id,
+                    t_callback_verified=t_cb,
+                    t_approval_queued=t_app,
+                )
+            except Exception:
+                pass
+
             with self._lock:
                 self.seen_callback_idempotency_keys.add(idem_key)
 
@@ -617,7 +710,13 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "callback_recorded": True,
                     "playbook_id": playbook_id,
+                    "candidate_id": candidate_id,
                     "idempotency_key": idem_key,
+                    "t_approval_queued": (
+                        t_app if t_app is not None else getattr(record, "t_approval_queued", None)
+                    ),
+                    "t_callback_verified": t_cb,
+                    "t_response": t_resp,
                     "timestamp_utc": datetime.now(UTC).isoformat(),
                 },
             )

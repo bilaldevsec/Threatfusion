@@ -222,6 +222,9 @@ class IncidentRecord:
     provenance_status: str
     created_at: str
     member_justifications: Mapping[str, MemberJustification] = field(default_factory=dict)
+    t_flow_ingest: float | None = None
+    t_rag_grounded: float | None = None
+    t_investigation: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -759,6 +762,23 @@ def correlate_alert_candidates(
     return IncidentCorrelationResult(incidents=incidents_tuple, summary=summary)
 
 
+class IncidentCorrelationEngine:
+    """Enterprise Incident Correlation Engine wrapping dual-window correlation."""
+
+    def __init__(self, repo: IncidentSqliteRepository | None = None) -> None:
+        self.repo = repo
+
+    def correlate(
+        self,
+        alerts: Sequence[AlertCandidate | CorrelatableAlert],
+        provenance_map: Mapping[str, EntityProvenanceContract] | None = None,
+    ) -> IncidentCorrelationResult:
+        res = correlate_alert_candidates(alerts, provenance_map=provenance_map)
+        if self.repo is not None and res.incidents:
+            self.repo.insert_many(res.incidents)
+        return res
+
+
 # --- SQLite Repository for Incident Persistence & Audited Corrections ---
 
 _CREATE_INCIDENTS_METADATA = """
@@ -782,7 +802,10 @@ CREATE TABLE IF NOT EXISTS incidents (
     earliest_observed_at TEXT NOT NULL,
     latest_observed_at TEXT NOT NULL,
     provenance_status TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    t_flow_ingest REAL,
+    t_rag_grounded REAL,
+    t_investigation REAL
 ) STRICT;
 """
 
@@ -886,6 +909,16 @@ class IncidentSqliteRepository:
                             "ALTER TABLE incident_constituent_alerts ADD COLUMN member_justification TEXT NOT NULL DEFAULT '{}';"
                         )
 
+                    cols_inc = {
+                        c[1] for c in conn.execute("PRAGMA table_info(incidents);").fetchall()
+                    }
+                    if "t_flow_ingest" not in cols_inc:
+                        conn.execute("ALTER TABLE incidents ADD COLUMN t_flow_ingest REAL;")
+                    if "t_rag_grounded" not in cols_inc:
+                        conn.execute("ALTER TABLE incidents ADD COLUMN t_rag_grounded REAL;")
+                    if "t_investigation" not in cols_inc:
+                        conn.execute("ALTER TABLE incidents ADD COLUMN t_investigation REAL;")
+
                     conn.execute(_CREATE_CORRECTIONS_TABLE)
                     conn.execute(_CREATE_CORRECTIONS_INDEX)
                     conn.execute(f"PRAGMA user_version = {INCIDENT_REPOSITORY_SCHEMA_VERSION};")
@@ -935,8 +968,9 @@ class IncidentSqliteRepository:
                         schema_version, incident_id, correlation_mode, window_type,
                         correlation_rule_id, entity_namespace_id, constituent_alert_count,
                         max_probability_score, escalated_decision, earliest_observed_at,
-                        latest_observed_at, provenance_status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                        latest_observed_at, provenance_status, created_at,
+                        t_flow_ingest, t_rag_grounded, t_investigation
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     (
                         incident.schema_version,
@@ -952,6 +986,9 @@ class IncidentSqliteRepository:
                         incident.latest_observed_at,
                         incident.provenance_status,
                         incident.created_at,
+                        incident.t_flow_ingest,
+                        incident.t_rag_grounded,
+                        incident.t_investigation,
                     ),
                 )
                 for aid in incident.constituent_alert_ids:
@@ -986,8 +1023,9 @@ class IncidentSqliteRepository:
                             schema_version, incident_id, correlation_mode, window_type,
                             correlation_rule_id, entity_namespace_id, constituent_alert_count,
                             max_probability_score, escalated_decision, earliest_observed_at,
-                            latest_observed_at, provenance_status, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                            latest_observed_at, provenance_status, created_at,
+                            t_flow_ingest, t_rag_grounded, t_investigation
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                         """,
                         (
                             inc.schema_version,
@@ -1003,6 +1041,9 @@ class IncidentSqliteRepository:
                             inc.latest_observed_at,
                             inc.provenance_status,
                             inc.created_at,
+                            inc.t_flow_ingest,
+                            inc.t_rag_grounded,
+                            inc.t_investigation,
                         ),
                     )
                     for aid in inc.constituent_alert_ids:
@@ -1028,7 +1069,8 @@ class IncidentSqliteRepository:
                     schema_version, incident_id, correlation_mode, window_type,
                     correlation_rule_id, entity_namespace_id, constituent_alert_count,
                     max_probability_score, escalated_decision, earliest_observed_at,
-                    latest_observed_at, provenance_status, created_at
+                    latest_observed_at, provenance_status, created_at,
+                    t_flow_ingest, t_rag_grounded, t_investigation
                 FROM incidents WHERE incident_id = ?;
                 """,
                 (incident_id,),
@@ -1067,6 +1109,9 @@ class IncidentSqliteRepository:
                 provenance_status=row[11],
                 created_at=row[12],
                 member_justifications=justs,
+                t_flow_ingest=row[13] if len(row) > 13 else None,
+                t_rag_grounded=row[14] if len(row) > 14 else None,
+                t_investigation=row[15] if len(row) > 15 else None,
             )
         finally:
             conn.close()
@@ -1080,7 +1125,8 @@ class IncidentSqliteRepository:
                 SELECT i.schema_version, i.incident_id, i.correlation_mode, i.window_type,
                        i.correlation_rule_id, i.entity_namespace_id, i.constituent_alert_count,
                        i.max_probability_score, i.escalated_decision, i.earliest_observed_at,
-                       i.latest_observed_at, i.provenance_status, i.created_at
+                       i.latest_observed_at, i.provenance_status, i.created_at,
+                       i.t_flow_ingest, i.t_rag_grounded, i.t_investigation
                 FROM incidents i
                 JOIN incident_constituent_alerts ica ON i.incident_id = ica.incident_id
                 WHERE ica.alert_candidate_id = ?;
@@ -1122,7 +1168,60 @@ class IncidentSqliteRepository:
                 provenance_status=row[11],
                 created_at=row[12],
                 member_justifications=justs,
+                t_flow_ingest=row[13] if len(row) > 13 else None,
+                t_rag_grounded=row[14] if len(row) > 14 else None,
+                t_investigation=row[15] if len(row) > 15 else None,
             )
+        finally:
+            conn.close()
+
+    def record_investigation_telemetry(
+        self,
+        incident_id: str,
+        t_flow_ingest: float,
+        t_rag_grounded: float,
+        t_investigation: float | None = None,
+    ) -> float:
+        """Record deterministic MTTI telemetry timestamps for an incident."""
+        calc_investigation = (
+            round(max(0.0, float(t_rag_grounded) - float(t_flow_ingest)), 6)
+            if t_investigation is None
+            else float(t_investigation)
+        )
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE incidents
+                    SET t_flow_ingest = ?, t_rag_grounded = ?, t_investigation = ?
+                    WHERE incident_id = ?;
+                    """,
+                    (float(t_flow_ingest), float(t_rag_grounded), calc_investigation, incident_id),
+                )
+        finally:
+            conn.close()
+        return calc_investigation
+
+    def list_incident_timings(self) -> list[dict[str, Any]]:
+        """Return list of recorded incident MTTI intervals without clock drift."""
+        conn = self._connect()
+        try:
+            rows = conn.execute("""
+                SELECT incident_id, t_flow_ingest, t_rag_grounded, t_investigation
+                FROM incidents
+                WHERE t_investigation IS NOT NULL
+                ORDER BY created_at ASC;
+                """).fetchall()
+            return [
+                {
+                    "incident_id": r[0],
+                    "t_flow_ingest": r[1],
+                    "t_rag_grounded": r[2],
+                    "t_investigation": r[3],
+                }
+                for r in rows
+            ]
         finally:
             conn.close()
 
