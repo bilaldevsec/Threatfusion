@@ -7,6 +7,7 @@ analyst states, and formats structured dashboard representations.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import hashlib
 import html
 import json
@@ -116,40 +117,144 @@ def _is_verified_receipt_dict(receipt: Any) -> bool:
     return True
 
 
+def _is_hex64(value: str) -> bool:
+    return bool(re.fullmatch(r"[0-9a-fA-F]{64}", value))
+
+
+def _is_genesis_anchor(value: str) -> bool:
+    return value == ("0" * 64) or value.startswith("GENESIS")
+
+
 def verify_audit_chain_integrity(entries: Any) -> bool:
-    """Verify cryptographic audit hash chain integrity across ledger entries."""
+    """Verify cryptographic audit hash chain integrity across ledger entries.
+
+    Entry 0 must carry a genesis anchor or a 64-hex parent snapshot anchor.
+    Every later entry must set prev_entry_sha256 to the previous entry hash.
+    """
     if not entries:
         return False
     if not isinstance(entries, (list, tuple)):
         return False
-    prev_hash: str | None = None
-    for r in entries:
-        if not isinstance(r, dict):
+    previous_entry_hash: str | None = None
+    for index, record in enumerate(entries):
+        if not isinstance(record, dict):
             return False
-        h = (
-            r.get("entry_hash")
-            or r.get("audit_hash")
-            or r.get("sha256")
-            or r.get("entry_sha256")
-            or r.get("hash_chain_sha256")
+        entry_hash = (
+            record.get("entry_hash")
+            or record.get("audit_hash")
+            or record.get("sha256")
+            or record.get("entry_sha256")
+            or record.get("hash_chain_sha256")
         )
-        if not h or not isinstance(h, str):
+        if not entry_hash or not isinstance(entry_hash, str):
             return False
-        h_clean = h.strip()
-        if not (re.fullmatch(r"[0-9a-fA-F]{64}", h_clean) or h_clean.startswith("GENESIS")):
+        entry_clean = entry_hash.strip()
+        if not (_is_hex64(entry_clean) or entry_clean.startswith("GENESIS")):
             return False
-        p = r.get("prev_hash") or r.get("prev_entry_sha256")
-        if p and prev_hash is not None:
-            p_clean = str(p).strip()
-            if not (
-                p_clean == prev_hash
-                or p_clean == "0" * 64
-                or p_clean.startswith("GENESIS")
-                or re.fullmatch(r"[0-9a-fA-F]{64}", p_clean)
-            ):
+        previous = record.get("prev_hash") or record.get("prev_entry_sha256")
+        if previous is None:
+            return False
+        previous_clean = str(previous).strip()
+        if index == 0:
+            if not (_is_genesis_anchor(previous_clean) or _is_hex64(previous_clean)):
                 return False
-        prev_hash = h_clean
+        elif previous_entry_hash is None or previous_clean != previous_entry_hash:
+            return False
+        previous_entry_hash = entry_clean
     return True
+
+
+def classify_soar_operator_state(
+    *,
+    playbook_state: str | None = None,
+    receipt: dict[str, Any] | None = None,
+    audit_entries: Any = None,
+    transport_error: str | None = None,
+    outbox_status: str | None = None,
+) -> str:
+    """Return one of the four analyst-visible SOAR states.
+
+    dispatched_live requires a verified receipt and a linked audit chain.
+    A transport error or durable outbox status stays queued.
+    """
+    if outbox_status == "queued_durable_outbox" or (
+        transport_error is not None and str(transport_error).strip() != ""
+    ):
+        return "queued_durable_outbox"
+    chain_ok = bool(audit_entries) and verify_audit_chain_integrity(audit_entries)
+    receipt_ok = isinstance(receipt, dict) and _is_verified_receipt_dict(receipt)
+    if receipt_ok and chain_ok:
+        return "dispatched_live"
+    normalized = (playbook_state or "").strip()
+    if normalized in {"approved", "approved_local", "executed_simulated"}:
+        return "approved_local"
+    return "pending_approval"
+
+
+def build_unified_incident_timeline(
+    *,
+    flow_members: Sequence[Mapping[str, Any]] | None = None,
+    analyst_transitions: Sequence[Mapping[str, Any]] | None = None,
+    soar_ledger_entries: Sequence[Mapping[str, Any]] | None = None,
+    relationship_key: str | None = None,
+) -> dict[str, Any]:
+    """Merge correlated flows, analyst transitions, and hash-chained SOAR rows on one clock."""
+    events: list[dict[str, Any]] = []
+
+    for member in flow_members or ():
+        member_key = member.get("matched_relationship_key")
+        if relationship_key and member_key and str(member_key) != relationship_key:
+            continue
+        observed_at = str(member.get("observed_at") or member.get("timestamp_utc") or "")
+        events.append(
+            {
+                "kind": "flow_member",
+                "observed_at": observed_at,
+                "matched_relationship_key": None if member_key is None else str(member_key),
+                "alert_candidate_id": member.get("alert_candidate_id"),
+                "summary": "Correlated flow member",
+            }
+        )
+
+    for transition in analyst_transitions or ():
+        observed_at = str(
+            transition.get("observed_at")
+            or transition.get("timestamp_utc")
+            or transition.get("created_at")
+            or ""
+        )
+        events.append(
+            {
+                "kind": "analyst_transition",
+                "observed_at": observed_at,
+                "from_state": transition.get("from_state") or transition.get("old_state"),
+                "to_state": transition.get("to_state") or transition.get("new_state"),
+                "actor_id": transition.get("actor_id"),
+                "summary": "Analyst state transition",
+            }
+        )
+
+    for entry in soar_ledger_entries or ():
+        observed_at = str(entry.get("timestamp_utc") or entry.get("observed_at") or "")
+        events.append(
+            {
+                "kind": "soar_ledger",
+                "observed_at": observed_at,
+                "prev_entry_sha256": entry.get("prev_entry_sha256") or entry.get("prev_hash"),
+                "entry_sha256": entry.get("entry_sha256") or entry.get("entry_hash"),
+                "playbook_id": entry.get("playbook_id"),
+                "new_state": entry.get("new_state") or entry.get("state"),
+                "summary": "Hash-chained SOAR ledger entry",
+            }
+        )
+
+    events.sort(key=lambda item: (item.get("observed_at") or "", item.get("kind") or ""))
+    return {
+        "schema_version": "unified_incident_timeline_v1",
+        "relationship_key": relationship_key,
+        "event_count": len(events),
+        "events": events,
+    }
 
 
 def _is_rfc1918(ip_str: str) -> bool:
@@ -303,9 +408,11 @@ def build_five_tab_investigation_inspector(
     else:
         exp_summary = f"Deterministic Frozen Random Forest detected {tech_name} on host {dst_ip}."
 
-    # MITRE regex
+    # MITRE regex. Invalid identifiers stay fail-closed and are not rewritten.
     mitre_ok = bool(re.fullmatch(r"^T\d{4}(\.\d{3})?$", tech_id))
-    active_tech_id = tech_id if mitre_ok else "T1071.001"
+    active_tech_id = tech_id
+    if not mitre_ok:
+        grounded_ok = False
 
     # SOAR receipt validation
     soar_verified = False
@@ -342,7 +449,7 @@ def build_five_tab_investigation_inspector(
                 <h4>Block 1: Executive Summary</h4>
                 <div><b>Synthesis:</b> {html.escape(exp_summary if grounded_ok else 'Ungrounded explanation rejected')}</div>
                 <div><b>Exposure:</b> <span class="badge" data-evidence-state="{tab1_state}">{html.escape(exposure_badge)}</span></div>
-                <div><b>Affected Assets:</b> {f'<code data-copy-hash="{html.escape(src_ip)}" title="Click to copy SHA-256 digest">{html.escape(src_ip)}</code> &rarr; <code data-copy-hash="{html.escape(dst_ip)}" title="Click to copy SHA-256 digest">{html.escape(dst_ip)}</code>' if grounded_ok else 'None (Ungrounded)'}</div>
+                <div><b>Affected Assets:</b> {f'<code data-copy-value="{html.escape(src_ip)}" title="Click to copy identifier">{html.escape(src_ip)}</code> &rarr; <code data-copy-value="{html.escape(dst_ip)}" title="Click to copy identifier">{html.escape(dst_ip)}</code>' if grounded_ok else 'None (Ungrounded)'}</div>
             </div>
         </div>""",
     }
@@ -379,7 +486,7 @@ def build_five_tab_investigation_inspector(
         "html": f"""<div class="inspector-tab-pane" data-inspector-tab="3">
             <div class="card" data-anatomy-block="3">
                 <h4>Block 3: MITRE ATT&amp;CK Mapping</h4>
-                <div><b>Technique:</b> <code data-copy-hash="{html.escape(active_tech_id)}" title="Click to copy SHA-256 digest">{html.escape(active_tech_id)}</code></div>
+                <div><b>Technique:</b> <code data-copy-value="{html.escape(active_tech_id)}" title="Click to copy identifier">{html.escape(active_tech_id)}</code></div>
                 <div><b>Tactic:</b> {html.escape(tactic)}</div>
                 <div><b>Cosine Similarity:</b> 0.9420</div>
             </div>
@@ -426,6 +533,12 @@ def build_five_tab_investigation_inspector(
         )
         or "GENESIS_BLOCK_00000000000000000000000000000000000000000000000000000000"
     )
+    ledger_copy_attr = "data-copy-hash" if _is_hex64(str(entry_sha256).strip()) else "data-copy-value"
+    ledger_copy_title = (
+        "Click to copy SHA-256 digest"
+        if ledger_copy_attr == "data-copy-hash"
+        else "Click to copy identifier"
+    )
 
     tab_5 = {
         "title": "Cryptographic SOAR Audit Changelog",
@@ -442,8 +555,8 @@ def build_five_tab_investigation_inspector(
                 <h4>Block 4: Cryptographic SOAR Status</h4>
                 <div><b>Audit Chain:</b> <span class="badge" data-evidence-state="{tab5_state}">{'Chain Valid' if audit_chain_valid else 'Chain Unavailable'}</span></div>
                 <div><b>HMAC Receipt:</b> <span class="badge" data-evidence-state="{tab5_state}">{'Verified' if soar_verified else 'Unavailable / Pending'}</span></div>
-                <div><b>TheHive Case:</b> <code data-copy-hash="{html.escape(str(thehive_case_id))}" title="Click to copy SHA-256 digest">{html.escape(str(thehive_case_id))}</code></div>
-                <div><b>Ledger Head Hash:</b> <code data-copy-hash="{html.escape(str(entry_sha256))}" title="Click to copy SHA-256 digest">{html.escape(str(entry_sha256)[:16])}...</code></div>
+                <div><b>TheHive Case:</b> <code data-copy-value="{html.escape(str(thehive_case_id))}" title="Click to copy identifier">{html.escape(str(thehive_case_id))}</code></div>
+                <div><b>Ledger Head Hash:</b> <code {ledger_copy_attr}="{html.escape(str(entry_sha256))}" title="{ledger_copy_title}">{html.escape(str(entry_sha256)[:16])}...</code></div>
             </div>
         </div>""",
     }
@@ -463,6 +576,7 @@ def build_five_tab_investigation_inspector(
         "tab_4_evidence_locker": tab_4,
         "tab_5_soar_audit_changelog": tab_5,
         "evidence_state": overall_state,
+        "grounded": grounded_ok,
         "html": combined_html,
     }
 
@@ -999,6 +1113,7 @@ def render_dashboard_html(
     actor_role: str = "viewer",
     csrf_token: str | None = None,
     transition_request_id: str | None = None,
+    velocity_report: Any | None = None,
 ) -> str:
     """Render a clean, sanitized HTML presentation of the authenticated dashboard snapshot."""
     if snapshot is None or isinstance(snapshot, (list, tuple)):
@@ -1136,11 +1251,16 @@ def render_dashboard_html(
                 if lab_annos
                 else "None"
             )
+            query_mode = str(ti.get("query_mode", ""))
+            misp_source = ""
+            if query_mode == "verified_snapshot_fallback":
+                misp_source = "<div><b>MISP Source:</b> Local Verified Snapshot Fallback</div>"
             ti_block = f"""
             <h3>Threat-Intel &amp; Provenance</h3>
             <div class="evidence-grid">
                 <div><b>Status:</b> <span class="badge badge-prov">{status}</span></div>
                 <div><b>Private IP Guard:</b> {guard}</div>
+                {misp_source}
                 <div><b>Inspected Entities:</b> <code>{inspected}</code></div>
                 <div><b>External Lookup:</b> {html.escape(str(ti.get("external_lookup_performed", False)))}</div>
                 <div><b>Lab Annotations:</b> {lab_anno_str}</div>
@@ -1307,6 +1427,31 @@ def render_dashboard_html(
                 '<span class="badge badge-n8n-hive" data-evidence-state="unavailable">'
                 "n8n Deterministic Playbook &amp; TheHive Case Status: Pending Analyst Approval / Not Dispatched</span>"
             )
+        rec_state = None
+        transport_error = None
+        outbox_status = None
+        if sel.soar_recommendations:
+            first_rec = next((row for row in sel.soar_recommendations if isinstance(row, dict)), None)
+            if isinstance(first_rec, dict):
+                rec_state = str(first_rec.get("state") or "")
+                raw_error = first_rec.get("transport_error")
+                transport_error = None if raw_error is None else str(raw_error)
+                raw_outbox = first_rec.get("outbox_status") or first_rec.get("dispatch_status")
+                outbox_status = None if raw_outbox is None else str(raw_outbox)
+        receipt_for_state = (
+            sel.n8n_playbook_receipt if isinstance(sel.n8n_playbook_receipt, dict) else None
+        )
+        operator_state = classify_soar_operator_state(
+            playbook_state=rec_state or sel.state,
+            receipt=receipt_for_state,
+            audit_entries=getattr(sel, "soar_audit_chain_entries", None),
+            transport_error=transport_error,
+            outbox_status=outbox_status,
+        )
+        n8n_hive_badge += (
+            f'<span class="badge" data-soar-operator-state="{html.escape(operator_state)}">'
+            f"{html.escape(operator_state)}</span>"
+        )
 
         # 4. Strictly separate model signal badges (Primary RF Confidence vs Secondary Non-Fused AE)
         rf_prob = sel.uncalibrated_model_score
@@ -1452,6 +1597,34 @@ def render_dashboard_html(
         </section>
         """
 
+    from threatfusion.models.drift_and_supply_chain import (
+        FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY,
+        verify_frozen_model_supply_chain,
+    )
+
+    rf_registry_digest = FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY["random_forest"]["expected_sha256"]
+    model_evidence_state = "unavailable"
+    try:
+        supply_chain = verify_frozen_model_supply_chain(
+            Path(__file__).resolve().parents[4],
+            fail_closed=False,
+        )
+        if supply_chain.get("verified") is True:
+            model_evidence_state = "verified"
+    except Exception:
+        model_evidence_state = "unavailable"
+    if velocity_report is None:
+        velocity_source_label = "Reference Benchmark (Inspected January Split)"
+    else:
+        velocity_payload = (
+            velocity_report.to_dict() if hasattr(velocity_report, "to_dict") else dict(velocity_report)
+        )
+        velocity_source_label = (
+            "Live Measured Run"
+            if velocity_payload.get("telemetry_source") == "live_measured"
+            else "Reference Benchmark (Inspected January Split)"
+        )
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1532,6 +1705,7 @@ def render_dashboard_html(
                 <span class="badge" style="background:rgba(16,185,129,0.15);color:#10b981;border:1px solid rgba(16,185,129,0.4);font-weight:800;">99%+ Alert Noise Eliminated</span>
             </div>
             <div style="font-size:1.35rem;font-weight:800;color:#10b981;margin:0.25rem 0;">99.9889% Ratio</div>
+            <div style="font-size:0.75rem;color:#8b949e;" id="velocitySourceLabel">{velocity_source_label}</div>
             <div style="font-size:0.75rem;color:#8b949e;">216,568 Raw Flows &rarr; 4,358 RF Candidates &rarr; 24 Correlated Campaigns &rarr; 8 Actionable Playbooks</div>
             <div style="font-size:0.72rem;color:#6e7681;margin-top:0.25rem;font-family:'JetBrains Mono',monospace;">Raw Flows Ingested &rarr; RF Gatekeeper (95.266% Prec, 0.095% FPR) &rarr; v2 Autoencoder Ranked (+2.203 pp Recall) &rarr; Stitched Campaigns (30s/600s Correlation)</div>
         </div>
@@ -1554,12 +1728,12 @@ def render_dashboard_html(
             </div>
             <div style="display:flex;gap:0.35rem;flex-wrap:wrap;margin-top:0.35rem;">
                 <span class="badge" data-evidence-state="verified">mTLS 1.3 Active</span>
-                <span class="badge" data-evidence-state="verified" data-copy-hash="bd2853a6fc1dd1d2fd0fddeac4fd77fb1ef5b0d62abfb03fa6c5bc0bb47d0a63" title="Click to copy SHA-256 digest">Model Weights Frozen &amp; Verified</span>
+                <span class="badge" data-evidence-state="{model_evidence_state}" data-copy-hash="{rf_registry_digest}" title="Click to copy SHA-256 digest">Model Weights Frozen &amp; Verified</span>
                 <span class="badge" data-evidence-state="verified">14-Feature PSI Drift Monitor: Nominal</span>
-                <span class="badge" data-evidence-state="verified" data-copy-hash="GENESIS_BLOCK_00000000000000000000000000000000000000000000000000000000" title="Click to copy SHA-256 digest">SOAR Audit Ledger: Intact</span>
+                <span class="badge" data-evidence-state="verified" data-copy-hash="{"0" * 64}" title="Click to copy SHA-256 digest">SOAR Audit Ledger: Intact</span>
             </div>
             <div style="font-size:0.75rem;color:#8b949e;margin-top:0.35rem;">
-                Strict Empirical Lock: Gate G9 Decoupled &middot; 4 Frozen Artifacts Verified (<code data-copy-hash="bd2853a6fc1dd1d2fd0fddeac4fd77fb1ef5b0d62abfb03fa6c5bc0bb47d0a63" title="Click to copy SHA-256 digest">bd2853a...</code>)
+                Strict Empirical Lock: Gate G9 Decoupled &middot; 4 Frozen Artifacts Verified (<code data-copy-hash="{rf_registry_digest}" title="Click to copy SHA-256 digest">{rf_registry_digest[:8]}...</code>)
             </div>
         </div>
     </section>
@@ -1604,9 +1778,9 @@ def render_dashboard_html(
     </main>
     <script>
     document.addEventListener('click', function(e) {{
-        var el = e.target.closest('[data-copy-hash]');
+        var el = e.target.closest('[data-copy-hash], [data-copy-value]');
         if (el) {{
-            var val = el.getAttribute('data-copy-hash');
+            var val = el.getAttribute('data-copy-hash') || el.getAttribute('data-copy-value');
             if (val && navigator.clipboard && navigator.clipboard.writeText) {{
                 navigator.clipboard.writeText(val).catch(function() {{}});
             }}
@@ -1724,6 +1898,8 @@ __all__ = [
     "DashboardTransitionRecord",
     "TriageQueueCardView",
     "build_five_tab_investigation_inspector",
+    "build_unified_incident_timeline",
+    "classify_soar_operator_state",
     "compute_alert_noise_reduction_funnel",
     "load_frontend_unicorn_bundle",
     "render_dashboard_html",

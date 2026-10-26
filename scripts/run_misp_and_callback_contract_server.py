@@ -30,6 +30,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import sys
 import threading
 from typing import Any
@@ -39,6 +40,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_SRC = REPO_ROOT / "backend" / "src"
 if BACKEND_SRC.exists() and str(BACKEND_SRC) not in sys.path:
     sys.path.insert(0, str(BACKEND_SRC))
+
+MAX_POST_BODY_BYTES = 1048576
 
 CANONICAL_INDICATORS: dict[str, dict[str, Any]] = {
     "44d88612fea8a8f36de82e1278abb02f": {
@@ -150,6 +153,97 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
     seen_callback_idempotency_keys: set[str] = set()
     _lock: threading.Lock = threading.Lock()
 
+    def _soar_db_file(self) -> str | None:
+        return self.soar_db_path or os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH")
+
+    def _idempotency_memory(self, scope: str) -> set[str]:
+        if scope == "verify":
+            return self.seen_verify_idempotency_keys
+        return self.seen_callback_idempotency_keys
+
+    def _idempotency_is_replay(self, scope: str, key: str) -> bool:
+        if key in self._idempotency_memory(scope):
+            return True
+        db_path = self._soar_db_file()
+        if not db_path or not Path(db_path).is_file():
+            return False
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=5.0, isolation_level=None)
+            try:
+                conn.execute("PRAGMA busy_timeout = 5000")
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS contract_idempotency_keys (
+                        scope TEXT NOT NULL,
+                        idempotency_key TEXT NOT NULL,
+                        recorded_at_utc TEXT NOT NULL,
+                        PRIMARY KEY (scope, idempotency_key)
+                    )
+                    """
+                )
+                row = conn.execute(
+                    "SELECT 1 FROM contract_idempotency_keys WHERE scope = ? AND idempotency_key = ?",
+                    (scope, key),
+                ).fetchone()
+                return row is not None
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return False
+
+    def _idempotency_commit(self, scope: str, key: str) -> None:
+        self._idempotency_memory(scope).add(key)
+        db_path = self._soar_db_file()
+        if not db_path:
+            return
+        try:
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(db_path), timeout=5.0, isolation_level=None)
+            try:
+                conn.execute("PRAGMA busy_timeout = 5000")
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS contract_idempotency_keys (
+                        scope TEXT NOT NULL,
+                        idempotency_key TEXT NOT NULL,
+                        recorded_at_utc TEXT NOT NULL,
+                        PRIMARY KEY (scope, idempotency_key)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO contract_idempotency_keys (
+                        scope, idempotency_key, recorded_at_utc
+                    ) VALUES (?, ?, ?)
+                    """,
+                    (scope, key, datetime.now(UTC).isoformat()),
+                )
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return
+
+    def _rejected_content_length(self) -> bool:
+        raw = self.headers.get("Content-Length")
+        if raw is None or str(raw).strip() == "":
+            self._send_json(400, {"error": "content_length_required"})
+            return True
+        try:
+            length = int(str(raw).strip())
+        except ValueError:
+            self._send_json(400, {"error": "content_length_invalid"})
+            return True
+        if length < 0:
+            self._send_json(400, {"error": "content_length_invalid"})
+            return True
+        if length > MAX_POST_BODY_BYTES:
+            self._send_json(413, {"error": "payload_too_large"})
+            return True
+        return False
+
     def _send_json(self, status_code: int, data: dict[str, Any]) -> None:
         payload = json.dumps(data, indent=2).encode("utf-8")
         self.send_response(status_code)
@@ -238,7 +332,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = self.path.split("?")[0]
-        content_length = int(self.headers.get("Content-Length", 0))
+        if self._rejected_content_length():
+            return
+        content_length = int(str(self.headers.get("Content-Length")).strip())
         body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
 
         # 1. MISP Rest Search Endpoint
@@ -360,7 +456,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 return
 
             with self._lock:
-                if idem_key in self.seen_verify_idempotency_keys:
+                if self._idempotency_is_replay("verify", idem_key):
                     self._send_json(
                         409,
                         {
@@ -489,7 +585,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 return
 
             with self._lock:
-                self.seen_verify_idempotency_keys.add(idem_key)
+                self._idempotency_commit("verify", idem_key)
 
             self._send_json(
                 200,
@@ -569,7 +665,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 return
 
             with self._lock:
-                if idem_key in self.seen_callback_idempotency_keys:
+                if self._idempotency_is_replay("callback", idem_key):
                     self._send_json(
                         409,
                         {
@@ -702,7 +798,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 pass
 
             with self._lock:
-                self.seen_callback_idempotency_keys.add(idem_key)
+                self._idempotency_commit("callback", idem_key)
 
             self._send_json(
                 200,
@@ -729,8 +825,36 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         return
 
 
+def build_argument_parser() -> argparse.ArgumentParser:
+    """Build the contract-server CLI. ``--host`` is an alias of ``--bind``."""
+    parser = argparse.ArgumentParser(
+        description="ThreatFusion MISP Connector & Callback Contract Server"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("PORT", "8080")),
+        help="Port to listen on (default: 8080 or PORT env var)",
+    )
+    parser.add_argument(
+        "--bind",
+        "--host",
+        dest="bind",
+        type=str,
+        default="127.0.0.1",
+        help="Address to bind to (default: 127.0.0.1). --host is an alias of --bind.",
+    )
+    parser.add_argument(
+        "--soar-db-path",
+        type=str,
+        default=os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH"),
+        help="Path to SQLite SOAR ledger database",
+    )
+    return parser
+
+
 def run_server(
-    bind_addr: str = "0.0.0.0", port: int = 8080, soar_db_path: str | None = None
+    bind_addr: str = "127.0.0.1", port: int = 8080, soar_db_path: str | None = None
 ) -> None:
     """Run the contract HTTP server synchronously."""
     effective_db = soar_db_path or os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH")
@@ -747,28 +871,7 @@ def run_server(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="ThreatFusion MISP Connector & Callback Contract Server"
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=int(os.environ.get("PORT", "8080")),
-        help="Port to listen on (default: 8080 or PORT env var)",
-    )
-    parser.add_argument(
-        "--bind",
-        type=str,
-        default="0.0.0.0",
-        help="Address to bind to (default: 0.0.0.0)",
-    )
-    parser.add_argument(
-        "--soar-db-path",
-        type=str,
-        default=os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH"),
-        help="Path to SQLite SOAR ledger database",
-    )
-    args = parser.parse_args()
+    args = build_argument_parser().parse_args()
     run_server(bind_addr=args.bind, port=args.port, soar_db_path=args.soar_db_path)
     return 0
 

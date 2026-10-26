@@ -36,7 +36,7 @@ from threatfusion.schemas.alert_candidate import AlertCandidate
 BURST_WINDOW_SECONDS = 30.0
 CAMPAIGN_WINDOW_SECONDS = 600.0
 MAX_ALLOWABLE_CLOCK_SKEW_SECONDS = 5.0
-SQLITE_BUSY_TIMEOUT_MS = 500
+SQLITE_BUSY_TIMEOUT_MS = 5000
 
 INCIDENT_SCHEMA_VERSION = "incident_record_v1"
 ALERT_REDUCTION_SCHEMA_VERSION = "alert_reduction_summary_v1"
@@ -855,6 +855,7 @@ class IncidentSqliteRepository:
         )
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS};")
+        conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
     def _init_db(self) -> None:

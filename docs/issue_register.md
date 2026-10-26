@@ -889,3 +889,7 @@ TF-008, TF-009, TF-010, and TF-011 remain strictly **open** per their documented
    - Upgraded `frontend/css/soc_unicorn.css`, `frontend/index.html`, `frontend/js/soc_dashboard.js`, and `render_dashboard_html()` with Enterprise Dark-Slate styling (`#090D16`, `#111827`, blur(12px) glass cards, `Inter` and `JetBrains Mono` fonts).
    - Added Layer 1 Hero Strip with bold **"99%+ Alert Noise Eliminated"** badge, Layer 2 6-Stage Ribbon with operational pulses, Layer 3 Workspace with 5-tab inspector and 4-block anatomy, interactive tab switching, click-to-copy hash tooltips, and dynamic `/api/v1/metrics/operational-velocity` updates.
    - All 40 unit and discovery tests pass; Gate G9 AST checks and Protocol 0 Boundary Preflight (B0-B5) verified clean.
+
+### Mega-Milestone #38 fail-closed evidence and contract durability, 2026-10-26
+
+RFC-38.1 through RFC-38.5 add registry-digest rendering, linked hash-chain checks, a `reference_benchmark` versus `live_measured` velocity label, `--host` as an alias of `--bind`, a 1 MiB POST cap, durable idempotency keys, SQLite WAL, a unified incident timeline, and four visible SOAR states. These changes do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.

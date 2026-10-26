@@ -32,7 +32,7 @@ from threatfusion.schemas.analyst_state import (
 
 ANALYST_REPOSITORY_SCHEMA_VERSION = 1
 ANALYST_REPOSITORY_SCHEMA_IDENTITY = "analyst_state_sqlite_v1"
-SQLITE_BUSY_TIMEOUT_MS = 500
+SQLITE_BUSY_TIMEOUT_MS = 5000
 
 _CREATE_METADATA = """
 CREATE TABLE repository_metadata (
@@ -209,6 +209,7 @@ class AnalystStateRepository:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+            connection.execute("PRAGMA journal_mode=WAL")
             return connection
         except sqlite3.Error:
             raise AnalystStateError("database_unavailable") from None

@@ -466,11 +466,76 @@
           if (formulaEl && decomp.velocity_formula) {
             formulaEl.textContent = decomp.velocity_formula;
           }
+          const sourceEl = document.getElementById('velocitySourceLabel');
+          const telemetrySource = data.telemetry_source || decomp.telemetry_source;
+          if (sourceEl) {
+            sourceEl.textContent = telemetrySource === 'live_measured'
+              ? 'Live Measured Run'
+              : 'Reference Benchmark (Inspected January Split)';
+          }
         }
       }
     } catch (e) {
       // Deterministic air-gapped fallback
     }
+  }
+
+  function buildUnifiedIncidentTimeline(input) {
+    const spec = input || {};
+    const relationshipKey = spec.relationshipKey || spec.relationship_key || null;
+    const events = [];
+    (spec.flowMembers || spec.flow_members || []).forEach((member) => {
+      const memberKey = member.matched_relationship_key || member.matchedRelationshipKey || null;
+      if (relationshipKey && memberKey && memberKey !== relationshipKey) return;
+      events.push({
+        kind: 'flow_member',
+        observed_at: member.observed_at || member.observedAt || '',
+        matched_relationship_key: memberKey,
+        summary: 'Correlated flow member'
+      });
+    });
+    (spec.analystTransitions || spec.analyst_transitions || []).forEach((transition) => {
+      events.push({
+        kind: 'analyst_transition',
+        observed_at: transition.observed_at || transition.timestamp_utc || '',
+        summary: 'Analyst state transition'
+      });
+    });
+    (spec.soarLedgerEntries || spec.soar_ledger_entries || []).forEach((entry) => {
+      events.push({
+        kind: 'soar_ledger',
+        observed_at: entry.timestamp_utc || entry.observed_at || '',
+        prev_entry_sha256: entry.prev_entry_sha256 || entry.prev_hash || null,
+        entry_sha256: entry.entry_sha256 || entry.entry_hash || null,
+        summary: 'Hash-chained SOAR ledger entry'
+      });
+    });
+    events.sort((left, right) => String(left.observed_at).localeCompare(String(right.observed_at)));
+    return {
+      schema_version: 'unified_incident_timeline_v1',
+      relationship_key: relationshipKey,
+      event_count: events.length,
+      events: events
+    };
+  }
+
+  function classifySoarDispatchState(record) {
+    const item = record || {};
+    const transportError = item.transport_error || item.transportError || '';
+    const outboxStatus = item.outbox_status || item.outboxStatus || '';
+    if (outboxStatus === 'queued_durable_outbox' || String(transportError).trim() !== '') {
+      return 'queued_durable_outbox';
+    }
+    const chainOk = verifySoarChain(item.soarAuditChainVerified, item.soarAuditChainHeadSha256);
+    const hiveOk = verifyHiveAndN8nReceipt(item.thehiveCaseRecord, item.n8nPlaybookReceipt);
+    if (chainOk && hiveOk && item.playbookState !== 'pending_approval') {
+      return 'dispatched_live';
+    }
+    const state = item.playbookState || (item.soarRecord && item.soarRecord.state) || '';
+    if (state === 'approved' || state === 'approved_local' || state === 'executed_simulated') {
+      return 'approved_local';
+    }
+    return 'pending_approval';
   }
 
   function initApp() {
@@ -958,9 +1023,9 @@
     });
 
     // Click-to-copy hash / IP tooltips
-    document.querySelectorAll('[data-copy-hash]').forEach(el => {
+    document.querySelectorAll('[data-copy-hash], [data-copy-value]').forEach(el => {
       el.addEventListener('click', () => {
-        const val = el.getAttribute('data-copy-hash');
+        const val = el.getAttribute('data-copy-hash') || el.getAttribute('data-copy-value');
         if (val && navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(val).catch(() => {});
         }

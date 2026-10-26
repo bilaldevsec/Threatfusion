@@ -1,0 +1,13 @@
+---
+description: ThreatFusion (AI-FYP-2006) Constitutional Architecture, Security & Scientific Invariants
+globs:
+alwaysApply: true
+---
+# ThreatFusion Master Engineering Constitution
+1. WORKSPACE ISOLATION: Operate EXCLUSIVELY inside `/home/muhammad-bilal/projects/threatfusion-gemini` (branch `gemini/product-20260924`). NEVER read, touch, or reference `/home/muhammad-bilal/projects/threatfusion`.
+2. ISOLATED PYTHON EXECUTION (TF-015): Run all Python/pytest commands via `env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 threatfusion-venv/bin/...`.
+3. GATE G9 (DETERMINISTIC STAGES 1-4): Zero imports of `threatfusion.advisory`, `gemini_client`, or `chromadb` in Stages 1-4.
+4. SECTION 8 & FROZEN MODELS: Keep `production_fusion_enabled = False`. Never modify the 4 frozen model digests (`bd2853a6...`, `2cf4de66...`, `c8675d13...`, `1d02e5bb...`). Frozen RF is sole alert authority; v2 AE is secondary triage ranker.
+5. FAIL-CLOSED UI & SOAR LEDGER: Validate `verify_explanation_groundedness()`, `verify_audit_chain_integrity()`, and `_is_verified_receipt_dict()` before rendering `data-evidence-state="verified"`. Keep `data-copy-hash` parity.
+6. HONEST OPEN GATES: Keep `TF-008`, `TF-009`, `TF-010`, and `TF-011` strictly `open`.
+7. MANDATORY VERIFICATION GATES: `git diff --check`, pytest, `scripts/boundary_preflight.py`, and `scripts/audit_repo_truth.py`.

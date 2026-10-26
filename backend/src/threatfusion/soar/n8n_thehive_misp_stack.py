@@ -47,6 +47,18 @@ from threatfusion.soar.playbook_ledger import (
     SoarStateTransitionError,
 )
 
+
+def _connect_durable_sqlite(db_path: Path) -> sqlite3.Connection:
+    """Open a product SQLite file with a 5s busy timeout and WAL journaling."""
+    conn = sqlite3.connect(str(db_path), timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")
+    previous_isolation = conn.isolation_level
+    conn.isolation_level = None
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.isolation_level = previous_isolation
+    return conn
+
 SOAR_STACK_SCHEMA_VERSION = "soar_stack_outbox_sqlite_v1"
 DEFAULT_N8N_WEBHOOK_URL = "http://127.0.0.1:5678"
 DEFAULT_THEHIVE_URL = "http://127.0.0.1:9000"
@@ -150,7 +162,7 @@ class MispDeterministicClient:
     def _init_outbox(self) -> None:
         if not self.outbox_db_path:
             return
-        with sqlite3.connect(str(self.outbox_db_path), timeout=5.0) as conn:
+        with _connect_durable_sqlite(self.outbox_db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS misp_queries (
                     query_id TEXT PRIMARY KEY,
@@ -277,7 +289,7 @@ class MispDeterministicClient:
         if not self.outbox_db_path:
             return
         qid = f"misp_q_{uuid.uuid4().hex[:12]}"
-        with sqlite3.connect(str(self.outbox_db_path), timeout=5.0) as conn:
+        with _connect_durable_sqlite(self.outbox_db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO misp_queries (
@@ -355,7 +367,7 @@ class TheHiveDeterministicClient:
     def _init_outbox(self) -> None:
         if not self.outbox_db_path:
             return
-        with sqlite3.connect(str(self.outbox_db_path), timeout=5.0) as conn:
+        with _connect_durable_sqlite(self.outbox_db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS thehive_cases (
                     case_id TEXT PRIMARY KEY,
@@ -533,7 +545,7 @@ class TheHiveDeterministicClient:
     def _record_case(self, rec: TheHiveCaseRecord) -> None:
         if not self.outbox_db_path:
             return
-        with sqlite3.connect(str(self.outbox_db_path), timeout=5.0) as conn:
+        with _connect_durable_sqlite(self.outbox_db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO thehive_cases (
@@ -628,7 +640,7 @@ class N8nDeterministicPlaybookClient:
     def _init_outbox(self) -> None:
         if not self.outbox_db_path:
             return
-        with sqlite3.connect(str(self.outbox_db_path), timeout=5.0) as conn:
+        with _connect_durable_sqlite(self.outbox_db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS n8n_executions (
                     execution_id TEXT PRIMARY KEY,
@@ -753,7 +765,7 @@ class N8nDeterministicPlaybookClient:
     def _record_execution(self, rec: N8nPlaybookExecutionReceipt) -> None:
         if not self.outbox_db_path:
             return
-        with sqlite3.connect(str(self.outbox_db_path), timeout=5.0) as conn:
+        with _connect_durable_sqlite(self.outbox_db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO n8n_executions (

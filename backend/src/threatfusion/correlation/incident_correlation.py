@@ -135,6 +135,8 @@ class OperationalVelocityReport:
                 "manual_l1_triage_baseline_seconds": self.manual_l1_triage_baseline_seconds,
                 "analyst_toil_saved_seconds": self.analyst_toil_saved_seconds,
                 "analyst_toil_saved_pct": self.analyst_toil_saved_pct,
+                "telemetry_source": "reference_benchmark",
+                "evidence_state": "reference_benchmark",
             }
         )
         return {
@@ -156,6 +158,8 @@ class OperationalVelocityReport:
             "per_incident_timings": list(self.per_incident_timings),
             "noise_reduction_funnel": dict(self.noise_reduction_funnel),
             "velocity_decomposition": decomp,
+            "telemetry_source": decomp.get("telemetry_source", "reference_benchmark"),
+            "evidence_state": decomp.get("evidence_state", "reference_benchmark"),
         }
 
 
@@ -167,6 +171,7 @@ def build_operational_velocity_report(
     ttd_mean_ms: float | None = None,
     tta_mean_ms: float | None = None,
     manual_l1_triage_baseline_seconds: float = MANUAL_L1_TRIAGE_BASELINE_SECONDS,
+    strict_measured_only: bool = False,
 ) -> OperationalVelocityReport:
     """Build a deterministic OperationalVelocityReport with speedup ratios, funnel, and velocity decomposition."""
     inc_timings = incident_timings or []
@@ -209,6 +214,17 @@ def build_operational_velocity_report(
         4,
     )
 
+    has_measured_timings = bool(mtti_vals or mttr_vals)
+    if has_measured_timings:
+        telemetry_source = "live_measured"
+        evidence_state = "verified"
+    elif strict_measured_only:
+        telemetry_source = "reference_benchmark"
+        evidence_state = "unavailable"
+    else:
+        telemetry_source = "reference_benchmark"
+        evidence_state = "reference_benchmark"
+
     velocity_decomp = {
         "ttd_mean_ms": ttd_val,
         "tta_mean_ms": tta_val,
@@ -218,6 +234,8 @@ def build_operational_velocity_report(
         "manual_l1_triage_baseline_seconds": manual_l1_triage_baseline_seconds,
         "analyst_toil_saved_seconds": toil_saved_sec,
         "analyst_toil_saved_pct": toil_saved_pct,
+        "telemetry_source": telemetry_source,
+        "evidence_state": evidence_state,
     }
 
     # Merge per_incident_timings

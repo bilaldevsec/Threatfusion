@@ -1273,6 +1273,12 @@ a:hover {
   border-bottom: 1px dashed rgba(88, 166, 255, 0.4);
 }
 
+[data-copy-value] {
+  position: relative;
+  cursor: pointer;
+  border-bottom: 1px dashed rgba(88, 166, 255, 0.4);
+}
+
 [data-copy-hash]:hover::after {
   content: attr(data-copy-tooltip);
   position: absolute;

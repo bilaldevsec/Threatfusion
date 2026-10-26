@@ -101,6 +101,7 @@ GATE_G9_FORBIDDEN_IMPORT_PATTERNS: tuple[str, ...] = (
     "threatfusion.advisory",
     "gemini_client",
     "explanation_engine",
+    "chromadb",
 )
 
 

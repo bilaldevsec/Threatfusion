@@ -1906,3 +1906,368 @@ class TestMilestone36ArchitecturalElevation:
         assert 'title="Click to copy SHA-256 digest"' in html
         assert "navigator.clipboard.writeText" in html
         assert "data-copy-hash" in Path("backend/src/threatfusion/api/analyst_dashboard.py").read_text(encoding="utf-8")
+
+
+class TestMegaMilestone38FailClosedEvidence:
+    """RFC-38.1 through RFC-38.5 regressions. Existing numeric and badge contracts stay intact."""
+
+    def test_registry_digest_chain_link_and_gate_g9_chromadb(self) -> None:
+        from threatfusion.api.analyst_dashboard import (
+            DashboardAlertDetail,
+            DashboardAlertQueue,
+            DashboardSnapshot,
+            TriageQueueCardView,
+            build_five_tab_investigation_inspector,
+            render_dashboard_html,
+            verify_audit_chain_integrity,
+        )
+        from threatfusion.evaluation.repo_truth_audit import (
+            GATE_G9_FORBIDDEN_IMPORT_PATTERNS,
+            verify_gate_g9_ast_import_graph,
+        )
+        from threatfusion.models.drift_and_supply_chain import FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY
+        from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
+
+        registry = FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY["random_forest"]["expected_sha256"]
+        assert registry == "bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9"
+        assert "chromadb" in GATE_G9_FORBIDDEN_IMPORT_PATTERNS
+        g9_ok, g9_violations = verify_gate_g9_ast_import_graph(REPO_ROOT / "backend" / "src")
+        assert g9_ok, g9_violations
+
+        detail = DashboardAlertDetail(
+            alert_candidate_id="cand_m38_digest",
+            source_event_id="src_m38",
+            observed_at="2026-10-26T00:00:00Z",
+            created_at="2026-10-26T00:00:01Z",
+            source_representation_identity="recorded",
+            feature_contract_identity="network_behavior_v1",
+            model_identity="network_random_forest",
+            model_version="full-network-random-forest-6d69c72-v1",
+            model_artifact_sha256=registry,
+            uncalibrated_model_score=0.95,
+            decision_threshold=0.50,
+            decision_policy_version="rf_baseline_v1",
+            decision="attack",
+            state="new",
+            version=0,
+            updated_at=None,
+            updated_by=None,
+            last_transition_id=None,
+            history=(),
+        )
+        html = render_dashboard_html(
+            DashboardSnapshot(
+                queue=DashboardAlertQueue(items=(), total_loaded=0, limit=10, offset=0),
+                selected=detail,
+                status="active",
+            )
+        )
+        assert registry in html
+        assert "bd2853a6fc1dd1d2fd0fddeac4fd77fb1ef5b0d62abfb03fa6c5bc0bb47d0a63" not in html
+        assert "Reference Benchmark (Inspected January Split)" in html
+        assert "99%+ Alert Noise Eliminated" in html
+
+        linked = (
+            {"entry_sha256": "a" * 64, "prev_entry_sha256": "0" * 64},
+            {"entry_sha256": "b" * 64, "prev_entry_sha256": "a" * 64},
+        )
+        broken = (
+            {"entry_sha256": "a" * 64, "prev_entry_sha256": "0" * 64},
+            {"entry_sha256": "b" * 64, "prev_entry_sha256": "c" * 64},
+        )
+        assert verify_audit_chain_integrity(linked) is True
+        assert verify_audit_chain_integrity(broken) is False
+
+        card = TriageQueueCardView(
+            campaign_id="camp_m38",
+            alert_candidate_id="cand_m38_mitre",
+            technique_id="INVALID_MITRE_999",
+            soar_receipt={
+                "execution_id": "exec_n8n_test_01",
+                "signature_sha256": "44d88612fea8a8f36de82e1278abb02f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d",
+            },
+            audit_chain=linked,
+            explanation="Deterministic Frozen Random Forest detected Web Protocols on host 10.0.0.5.",
+        )
+        inspector = build_five_tab_investigation_inspector(card)
+        assert inspector["tab_3_mitre_and_playbook"]["technique_id"] == "INVALID_MITRE_999"
+        assert inspector["tab_3_mitre_and_playbook"]["evidence_state"] == "unavailable"
+        assert inspector["grounded"] is False
+        assert inspector["evidence_state"] == "unavailable"
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = SoarPlaybookSqliteRepository(Path(td) / "soar.sqlite3")
+            empty_ok, empty_msg = repo.verify_audit_chain_integrity(require_non_empty=True)
+            assert empty_ok is False
+            assert empty_msg == "empty ledger"
+            legacy_ok, legacy_msg = repo.verify_audit_chain_integrity()
+            assert legacy_ok is True
+            assert "verified: 0 entries" in legacy_msg
+
+    def test_velocity_telemetry_source_and_strict_measured_only(self) -> None:
+        from threatfusion.correlation.incident_correlation import build_operational_velocity_report
+
+        reference = build_operational_velocity_report()
+        assert reference.ttd_mean_ms == 18.4
+        assert reference.tta_mean_ms == 12.6
+        assert reference.tti_mean_seconds == 1.25
+        assert reference.total_time_to_conclusion_seconds == 1.281
+        assert reference.analyst_toil_saved_pct == 99.8577
+        reference_dict = reference.to_dict()
+        assert reference_dict["telemetry_source"] == "reference_benchmark"
+        assert reference_dict["evidence_state"] == "reference_benchmark"
+        assert reference_dict["velocity_decomposition"]["telemetry_source"] == "reference_benchmark"
+
+        strict = build_operational_velocity_report(strict_measured_only=True)
+        strict_dict = strict.to_dict()
+        assert strict_dict["telemetry_source"] == "reference_benchmark"
+        assert strict_dict["evidence_state"] == "unavailable"
+        assert strict_dict["velocity_decomposition"]["evidence_state"] == "unavailable"
+        assert strict.ttd_mean_ms == 18.4
+
+        measured = build_operational_velocity_report(
+            incident_timings=[{"incident_id": "inc_live", "t_investigation": 2.0}]
+        )
+        measured_dict = measured.to_dict()
+        assert measured_dict["telemetry_source"] == "live_measured"
+        assert measured_dict["evidence_state"] == "verified"
+
+    def test_host_alias_body_cap_idempotency_restart_and_wal(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import hashlib as hashlib_mod
+        import hmac as hmac_mod
+        import socket
+
+        from threatfusion.alerts.correlation_engine import IncidentSqliteRepository
+        from threatfusion.db.alert_repository import AlertCandidateRepository
+        from threatfusion.operations.cloud_live_telemetry import process_suricata_eve_stream_resilient
+        from threatfusion.soar.playbook_ledger import (
+            ApprovalGatedSoarEngine,
+            SoarPlaybookSqliteRepository,
+        )
+        from scripts.run_misp_and_callback_contract_server import (
+            MAX_POST_BODY_BYTES,
+            MispAndCallbackContractHandler,
+            build_argument_parser,
+        )
+
+        parser = build_argument_parser()
+        assert parser.parse_args(["--host", "127.0.0.1"]).bind == "127.0.0.1"
+        assert parser.parse_args(["--bind", "0.0.0.0"]).bind == "0.0.0.0"
+        assert parser.parse_args([]).bind == "127.0.0.1"
+        assert MAX_POST_BODY_BYTES == 1048576
+        compose = (REPO_ROOT / "docker" / "docker-compose.soc-stack.yml").read_text(encoding="utf-8")
+        assert "--bind 0.0.0.0" in compose
+
+        alerts = AlertCandidateRepository(tmp_path / "alerts.sqlite3")
+        with alerts._connect() as conn:
+            assert str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal"
+            assert int(conn.execute("PRAGMA busy_timeout").fetchone()[0]) == 5000
+        incidents = IncidentSqliteRepository(tmp_path / "incidents.sqlite3")
+        with incidents._connect() as conn:
+            assert str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() == "wal"
+
+        dead_db = tmp_path / "dead_letters.sqlite3"
+        dead_report = process_suricata_eve_stream_resilient(
+            ["{not-json\n"],
+            dead_letter_db_path=dead_db,
+        )
+        assert dead_report.dead_letter_count == 1
+        with sqlite3.connect(dead_db) as conn:
+            stored = conn.execute("SELECT COUNT(*) FROM suricata_dead_letters").fetchone()[0]
+        assert stored == 1
+
+        monkeypatch.setenv("THREATFUSION_SOAR_HMAC_SECRET", TEST_SOAR_HMAC_SECRET)
+        db_path = tmp_path / "idem_soar.sqlite3"
+        engine = ApprovalGatedSoarEngine(SoarPlaybookSqliteRepository(db_path))
+        recs = engine.recommend_actions_for_alert(
+            "cand_m38_idem",
+            EntityProvenanceContract(
+                entity_namespace_id="m38",
+                clock_synchronized=True,
+                src_entity_id="10.0.0.4",
+                dst_entity_id="10.0.0.5",
+                protocol="tcp",
+                service_or_port="80",
+            ),
+        )
+        playbook_id = recs[0].playbook_id
+        engine.decide_recommendation(
+            playbook_id,
+            actor_id="analyst-bilal",
+            decision="approve",
+            reason="milestone 38 replay",
+            expected_version=1,
+        )
+        payload = {
+            "candidate_id": "cand_m38_idem",
+            "playbook_id": playbook_id,
+            "soar_state": "approved",
+            "audit_chain_verified": True,
+        }
+        body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        signature = hmac_mod.new(
+            TEST_SOAR_HMAC_SECRET.encode("utf-8"), body, hashlib_mod.sha256
+        ).hexdigest()
+        idem_key = f"idem_{playbook_id}_2"
+
+        def _serve() -> tuple[http.server.HTTPServer, int]:
+            MispAndCallbackContractHandler.soar_db_path = str(db_path)
+            MispAndCallbackContractHandler.misp_api_key = "threatfusion_soc_test_misp_key_2026_secure"
+            MispAndCallbackContractHandler.seen_verify_idempotency_keys.clear()
+            MispAndCallbackContractHandler.seen_callback_idempotency_keys.clear()
+            server = http.server.HTTPServer(("127.0.0.1", 0), MispAndCallbackContractHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            return server, server.server_port
+
+        server, port = _serve()
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/v1/soar/verify-state",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-ThreatFusion-Signature-256": signature,
+                    "X-Idempotency-Key": idem_key,
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=2.0) as response:
+                assert response.status == 200
+
+            def _read_http(sock: socket.socket) -> bytes:
+                chunks = [sock.recv(1024)]
+                sock.settimeout(0.5)
+                while True:
+                    try:
+                        more = sock.recv(1024)
+                    except TimeoutError:
+                        break
+                    if not more:
+                        break
+                    chunks.append(more)
+                return b"".join(chunks)
+
+            with socket.create_connection(("127.0.0.1", port), timeout=2.0) as sock:
+                sock.sendall(
+                    b"POST /attributes/restSearch HTTP/1.1\r\n"
+                    b"Host: 127.0.0.1\r\n"
+                    b"Content-Length: 1048577\r\n"
+                    b"\r\n"
+                )
+                raw = _read_http(sock)
+            assert b"413" in raw
+            assert b"payload_too_large" in raw
+
+            with socket.create_connection(("127.0.0.1", port), timeout=2.0) as sock:
+                sock.sendall(
+                    b"POST /attributes/restSearch HTTP/1.1\r\n"
+                    b"Host: 127.0.0.1\r\n"
+                    b"Content-Length: -1\r\n"
+                    b"\r\n"
+                )
+                raw_negative = _read_http(sock)
+            assert b"400" in raw_negative
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        restarted, restarted_port = _serve()
+        try:
+            replay = urllib.request.Request(
+                f"http://127.0.0.1:{restarted_port}/api/v1/soar/verify-state",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-ThreatFusion-Signature-256": signature,
+                    "X-Idempotency-Key": idem_key,
+                },
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(replay, timeout=2.0)
+            assert exc_info.value.code == 409
+        finally:
+            restarted.shutdown()
+            restarted.server_close()
+
+    def test_unified_timeline_and_four_soar_states(self) -> None:
+        from threatfusion.api.analyst_dashboard import (
+            build_unified_incident_timeline,
+            classify_soar_operator_state,
+        )
+
+        timeline = build_unified_incident_timeline(
+            relationship_key="rel-1",
+            flow_members=(
+                {
+                    "observed_at": "2026-10-26T00:00:02Z",
+                    "matched_relationship_key": "rel-1",
+                    "alert_candidate_id": "flow-a",
+                },
+                {
+                    "observed_at": "2026-10-26T00:00:01Z",
+                    "matched_relationship_key": "other",
+                    "alert_candidate_id": "flow-b",
+                },
+            ),
+            analyst_transitions=(
+                {
+                    "observed_at": "2026-10-26T00:00:03Z",
+                    "from_state": "new",
+                    "to_state": "in_review",
+                    "actor_id": "analyst-bilal",
+                },
+            ),
+            soar_ledger_entries=(
+                {
+                    "timestamp_utc": "2026-10-26T00:00:04Z",
+                    "prev_entry_sha256": "0" * 64,
+                    "entry_sha256": "ab" * 32,
+                    "playbook_id": "pb-1",
+                    "new_state": "approved",
+                },
+            ),
+        )
+        assert timeline["event_count"] == 3
+        assert [event["kind"] for event in timeline["events"]] == [
+            "flow_member",
+            "analyst_transition",
+            "soar_ledger",
+        ]
+        assert timeline["events"][2]["prev_entry_sha256"] == "0" * 64
+
+        receipt = {
+            "execution_id": "exec_live_01",
+            "signature_sha256": "d" * 64,
+        }
+        chain = (
+            {"entry_sha256": "a" * 64, "prev_entry_sha256": "0" * 64},
+            {"entry_sha256": "b" * 64, "prev_entry_sha256": "a" * 64},
+        )
+        assert classify_soar_operator_state() == "pending_approval"
+        assert classify_soar_operator_state(playbook_state="approved") == "approved_local"
+        assert (
+            classify_soar_operator_state(playbook_state="approved", transport_error="timed out")
+            == "queued_durable_outbox"
+        )
+        assert (
+            classify_soar_operator_state(
+                playbook_state="approved",
+                receipt=receipt,
+                audit_entries=chain,
+            )
+            == "dispatched_live"
+        )
+        bundle = load_frontend_unicorn_bundle(REPO_ROOT)
+        assert "Local Verified Snapshot Fallback" in bundle["index_html"]
+        assert "buildUnifiedIncidentTimeline" in bundle["js"]
+        assert "pending_approval" in bundle["index_html"]
+        assert "queued_durable_outbox" in bundle["index_html"]
+        assert "dispatched_live" in bundle["index_html"]
+        assert 'title="Click to copy identifier"' in bundle["index_html"]
+        assert "data-copy-hash" in bundle["index_html"]

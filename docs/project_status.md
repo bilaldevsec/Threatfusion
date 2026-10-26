@@ -1875,3 +1875,12 @@ TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptan
   - Gate G9 AST import-graph verified: Stages 1-4 strictly decoupled from advisory/LLM.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptance gates.
+
+### Milestone #38: Fail-closed evidence, measured velocity labels, contract-server durability, and one case clock (2026-10-26)
+
+- Supply-chain hero copy uses the frozen Random Forest registry digest `bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9` from `verify_frozen_model_supply_chain()`. Dashboard hash-link checks require each entry after the first to continue the previous entry hash. Invalid MITRE identifiers stay unavailable and are not rewritten to `T1071.001`. Gate G9 forbidden imports include `chromadb`. `SoarPlaybookSqliteRepository.verify_audit_chain_integrity(..., require_non_empty=False)` still accepts an empty ledger; `require_non_empty=True` returns `(False, "empty ledger")`, and a playbook filter walks the global chain first.
+- `build_operational_velocity_report(strict_measured_only=False)` keeps the January reference numbers (`ttd_mean_ms=18.4`, `tta_mean_ms=12.6`, `tti_mean_seconds=1.25`, `analyst_toil_saved_pct=99.8577`) and labels them `telemetry_source=reference_benchmark`. `strict_measured_only=True` with no timings sets `evidence_state=unavailable`. Measured timings set `telemetry_source=live_measured`. Heroes label the default funnel as `Reference Benchmark (Inspected January Split)`.
+- The contract server accepts `--host` as an alias of `--bind` (default `127.0.0.1`). Compose still passes `--bind 0.0.0.0`. POST bodies above 1 MiB return HTTP 413 `payload_too_large`. Idempotency keys persist in the SOAR SQLite file and replay as HTTP 409 after a process restart. Product SQLite connections for alerts, analyst state, incidents, the SOAR ledger, Chroma RAG, and the n8n/MISP outbox use `busy_timeout=5000` and `journal_mode=WAL`. Suricata dead letters can be written to a bounded SQLite table.
+- `build_unified_incident_timeline()` merges relationship-key flow members, analyst transitions, and hash-chained SOAR rows. Operator state is one of `pending_approval`, `approved_local`, `queued_durable_outbox`, or `dispatched_live` (the last only when the receipt and the linked chain both verify). MISP `verified_snapshot_fallback` is labeled `Local Verified Snapshot Fallback`. SHA-256 copy controls use `data-copy-hash`; IP and MITRE identifiers use `data-copy-value`.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.

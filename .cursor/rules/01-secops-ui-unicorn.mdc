@@ -1,0 +1,9 @@
+---
+description: Executive & Investor-Grade SecOps UI/UX Standards
+globs: frontend/**/*, backend/src/threatfusion/api/analyst_dashboard.py
+alwaysApply: false
+---
+# SecOps UI/UX Design System Rules
+1. Maintain 100% DOM parity between `backend/src/threatfusion/api/analyst_dashboard.py` and `frontend/index.html`, `soc_unicorn.css`, and `soc_dashboard.js`.
+2. Preserve `#090D16` obsidian canvas, `#111827` slate glass cards, and `data-copy-hash` click-to-copy SHA-256 tooltips.
+3. Verify `verify_frontend_asset_bundle()['verified'] == True` after every change.

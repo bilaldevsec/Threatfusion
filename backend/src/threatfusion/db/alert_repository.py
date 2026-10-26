@@ -15,7 +15,7 @@ ALERT_REPOSITORY_SCHEMA_VERSION = 1
 ALERT_REPOSITORY_SCHEMA_IDENTITY = "alert_candidate_sqlite_v1"
 MAX_ALERT_LIST_LIMIT = 100
 MAX_ALERT_LIST_OFFSET = 1_000_000
-SQLITE_BUSY_TIMEOUT_MS = 500
+SQLITE_BUSY_TIMEOUT_MS = 5000
 MODEL_SCORE_RETRY_ABS_TOLERANCE = 1e-15
 
 _COLUMNS = tuple(field.name for field in fields(AlertCandidate))
@@ -147,7 +147,8 @@ class AlertCandidateRepository:
             )
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute("PRAGMA busy_timeout = 500")
+            connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+            connection.execute("PRAGMA journal_mode=WAL")
             return connection
         except sqlite3.Error:
             raise AlertPersistenceError("database_unavailable") from None

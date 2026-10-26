@@ -161,6 +161,11 @@ class SoarPlaybookSqliteRepository:
         conn = sqlite3.connect(str(self.db_path), timeout=5.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 5000")
+        previous_isolation = conn.isolation_level
+        conn.isolation_level = None
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.isolation_level = previous_isolation
         return conn
 
     def _init_db(self) -> None:
@@ -401,38 +406,39 @@ class SoarPlaybookSqliteRepository:
             entry_sha256=entry_h,
         )
 
-    def verify_audit_chain_integrity(self, playbook_id: str | None = None) -> tuple[bool, str]:
+    def verify_audit_chain_integrity(
+        self,
+        playbook_id: str | None = None,
+        *,
+        require_non_empty: bool = False,
+    ) -> tuple[bool, str]:
         """Verify the cryptographic hash-chain integrity of SOAR audit events.
 
-        Detects any modified, inserted, or deleted audit rows and fails closed.
+        The full ledger link is always checked first. A playbook_id argument then
+        filters that already-valid chain. require_non_empty=False preserves the
+        empty-ledger success result used by existing initialization tests.
         """
         with self._get_connection() as conn:
-            if playbook_id is not None:
-                cursor = conn.execute(
-                    "SELECT * FROM soar_audit_events WHERE playbook_id = ? ORDER BY rowid ASC",
-                    (playbook_id,),
-                )
-            else:
-                cursor = conn.execute("SELECT * FROM soar_audit_events ORDER BY rowid ASC")
-            rows = cursor.fetchall()
+            cursor = conn.execute("SELECT * FROM soar_audit_events ORDER BY rowid ASC")
+            all_rows = cursor.fetchall()
 
-        if not rows:
+        if not all_rows:
+            if require_non_empty:
+                return False, "empty ledger"
             return True, "SOAR audit chain verified: 0 entries (empty ledger)"
 
         expected_prev = SOAR_AUDIT_GENESIS_HASH
-        for idx, row in enumerate(rows):
+        for idx, row in enumerate(all_rows):
             col_names = row.keys()
             stored_prev = row["prev_entry_sha256"] if "prev_entry_sha256" in col_names else ""
             stored_hash = row["entry_sha256"] if "entry_sha256" in col_names else ""
 
-            # In whole-ledger verification, the previous link must match expected_prev
-            if playbook_id is None:
-                if stored_prev != expected_prev:
-                    return (
-                        False,
-                        f"SOAR audit chain broken at row index {idx} (event_id={row['event_id']}): "
-                        f"prev_entry_sha256 '{stored_prev}' != expected '{expected_prev}'",
-                    )
+            if stored_prev != expected_prev:
+                return (
+                    False,
+                    f"SOAR audit chain broken at row index {idx} (event_id={row['event_id']}): "
+                    f"prev_entry_sha256 '{stored_prev}' != expected '{expected_prev}'",
+                )
 
             recomputed = compute_soar_audit_entry_hash(
                 event_id=row["event_id"],
@@ -455,8 +461,18 @@ class SoarPlaybookSqliteRepository:
 
             expected_prev = stored_hash
 
-        scope = f"playbook '{playbook_id}'" if playbook_id else "whole ledger"
-        return True, f"SOAR audit chain verified: {len(rows)} entries valid ({scope})"
+        if playbook_id is not None:
+            rows = [row for row in all_rows if row["playbook_id"] == playbook_id]
+            if not rows:
+                if require_non_empty:
+                    return False, "empty ledger"
+                return True, f"SOAR audit chain verified: 0 entries (playbook '{playbook_id}')"
+            return (
+                True,
+                f"SOAR audit chain verified: {len(rows)} entries valid (playbook '{playbook_id}')",
+            )
+
+        return True, f"SOAR audit chain verified: {len(all_rows)} entries valid (whole ledger)"
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> SoarPlaybookRecord:

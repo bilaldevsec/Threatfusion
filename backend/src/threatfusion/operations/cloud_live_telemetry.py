@@ -12,6 +12,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 import math
+import os
+from pathlib import Path
+import sqlite3
+import stat
 from typing import Any
 
 from threatfusion.datasets.adapters.base import SourceRowValidationError
@@ -65,12 +69,59 @@ class SuricataStreamBatchReport:
         }
 
 
+def _persist_dead_letter_records(
+    db_path: Path | str,
+    records: list[DeadLetterQuarantineRecord],
+) -> None:
+    """Append bounded dead-letter rows to a mode-0600 SQLite quarantine table."""
+    path = Path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=5.0, isolation_level=None)
+    try:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS suricata_dead_letters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                line_number INTEGER NOT NULL,
+                error_code TEXT NOT NULL,
+                error_detail TEXT NOT NULL,
+                raw_excerpt TEXT NOT NULL,
+                recorded_at_utc TEXT NOT NULL
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO suricata_dead_letters (
+                line_number, error_code, error_detail, raw_excerpt, recorded_at_utc
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    record.line_number,
+                    record.error_code,
+                    record.error_detail,
+                    record.raw_excerpt,
+                    record.recorded_at_utc,
+                )
+                for record in records
+            ],
+        )
+    finally:
+        conn.close()
+    if path.exists():
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+
+
 def process_suricata_eve_stream_resilient(
     lines: Iterable[str],
     *,
     sensor_namespace: str = "azure-suricata-edge-01",
     clock_synced: bool = True,
     max_dead_letters: int = 1000,
+    dead_letter_db_path: Path | str | None = None,
 ) -> SuricataStreamBatchReport:
     """Process a stream of Suricata eve.json lines with dead-letter resilience.
 
@@ -181,6 +232,9 @@ def process_suricata_eve_stream_resilient(
                         recorded_at_utc=datetime.now(UTC).isoformat(),
                     )
                 )
+
+    if dead_letter_db_path is not None and dead_letter_records:
+        _persist_dead_letter_records(dead_letter_db_path, dead_letter_records)
 
     return SuricataStreamBatchReport(
         total_lines_read=total_lines_read,
