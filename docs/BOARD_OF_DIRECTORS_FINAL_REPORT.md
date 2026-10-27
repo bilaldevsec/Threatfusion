@@ -53,7 +53,7 @@ Commands were run on 2026-10-27 from `/home/muhammad-bilal/projects/threatfusion
 | `scripts/audit_repo_truth.py` | 7/7 PASS. Verdict GO. Receipt `acd1878050f14a35b1f8ffadf55ba4e0576fc2fda76c1698185e608e304664a9`. |
 | `pytest backend/tests/unit` | 1232 passed, 6 skipped, 3 failed. |
 
-The audit names this checkout branch `cursor/live-analyst-console-211f` at `24be1c9b23e2657c6aa11dc7d7ded67526ca1dcc`. Check 2 matched all four frozen digests. Check 4 kept `production_fusion_enabled` false. Check 7 kept TF-008 through TF-011 open.
+Those commands were run at `24be1c9b23e2657c6aa11dc7d7ded67526ca1dcc` on branch `cursor/live-analyst-console-211f`, before this documentation paragraph. Check 2 matched all four frozen digests. Check 4 kept `production_fusion_enabled` false. Check 7 kept TF-008 through TF-011 open.
 
 The three unit failures:
 
