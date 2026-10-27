@@ -404,6 +404,13 @@ def test_live_product_launcher_starts_one_process() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert script.startswith("#!/usr/bin/env bash\n")
     assert "run_misp_and_callback_contract_server.py" in script
+    assert "--dry-run" in script
+    assert "--smoke" in script
+    assert "THREATFUSION_SOAR_LEDGER_DB_PATH" in script
+    assert "already in use" in script
     assert "production_fusion_enabled = True" not in script
-    assert "+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)" in readme
+    assert (
+        "+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)"
+        in readme
+    )
     assert "TF-008, TF-009, TF-010, and TF-011 remain open." in readme

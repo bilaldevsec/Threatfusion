@@ -23,7 +23,9 @@ Stitch runs `IncidentCorrelationEngine` on stored Attack rows. Two rows that sha
 
 Acknowledge, Escalate, and Dismiss persist a triage row. Export Shift Handoff calls `verify_explanation_groundedness()` and keeps block 3 `unavailable` when no technique was retrieved. A brief that names an address outside the evidence bundle is not verified.
 
-`scripts/run_live_product.sh` starts the page and the contract endpoints as one process on `127.0.0.1:8766`. The root README states the architecture, the Section 8 comparison (`+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)`; fusion stays off because those 96 true positives cost 1,574 extra false positives), and the same quickstart. The lab HMAC and MISP defaults are not production credentials.
+`scripts/run_live_product.sh` starts the page and the contract endpoints as one process on `127.0.0.1:8766`. Before it binds, it checks that the port is free, the virtualenv interpreter exists, the console files exist, and the lab HMAC and MISP values are at least 16 characters. A failed check prints `error:` and leaves no listener. After the process is up, the launcher waits for HTTP 200 from `GET /` and from `GET /healthz`. Ctrl-C and `SIGTERM` stop that process and release the port. `--dry-run` prints the plan without binding. `--smoke` checks both responses and the release. The launcher sets `THREATFUSION_SOAR_LEDGER_DB_PATH` to the live SOAR file beside the console database so approval, verify-state, and the callback share one ledger when the variable was unset. The root README states the architecture, the Section 8 comparison (`+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)`; those 96 true positives cost 1,574 extra false positives, 16.3958 false alarms per extra attack, fused precision 69.997%), and the same quickstart. The lab HMAC and MISP defaults are not production credentials.
+
+Open pull requests #2, #3, and #4 are not in this branch. Dispatch on this branch uses the ledger path the launcher now sets. Stitch still runs when the analyst calls `POST /api/v1/live/correlate`; ingest and replay do not stitch by themselves. Acknowledge, Escalate, and Dismiss store a triage row, and the handoff stays grounded with block 3 `unavailable` when no technique was retrieved. The unmerged requests add the server fallback for an unset ledger, automatic stitch, the member timeline tab, and triage history inside the handoff packet.
 
 A browser check on 2026-10-27 replayed those five vectors. The frozen Random Forest scored four Benign and one Attack (54.3%). Approve then showed `SOAR Chain: VERIFIED (SHA-256 Linked)` for playbook `soar:dcb1e6213c6b`, with receipt prefix `be30bcf02a8cf50e` and ledger state `approved`. The other four rows stayed pending.
 
@@ -37,17 +39,17 @@ A browser check on 2026-10-27 replayed those five vectors. The frozen Random For
 
 ## Live demo walkthrough
 
-1. Run `scripts/run_live_product.sh`.
-2. Open `http://127.0.0.1:8766`.
+1. Run `scripts/run_live_product.sh --dry-run`, then `scripts/run_live_product.sh`.
+2. Open `http://127.0.0.1:8766`. Confirm `/healthz` returns `{"status": "ok"}`.
 3. Choose Replay Benchmark Attack Burst. The frozen Random Forest scores the five recorded vectors. The 2026-10-27 browser check scored four Benign and one Attack at 54.3%.
 4. Approve the Attack row. The drawer shows `SOAR Chain: VERIFIED (SHA-256 Linked)` and the 64-hex receipt.
-5. Choose Dispatch signed callback. The drawer shows the HMAC prefix, the case id, and the callback MTTR.
-6. Choose Stitch verified windows after two Attack rows share a verified entity key inside 30 seconds. The timeline lists both members.
-7. Choose Check private IP guard. The status line reports HTTP 422 for `10.0.0.4`.
+5. Choose Dispatch signed callback on an approved row. The status line shows the HMAC prefix, the callback MTTR, and that host containment was not executed. That call reaches verify-state only because the launcher set the shared ledger path.
+6. Choose Stitch verified windows after two Attack rows share a verified entity key inside 30 seconds. The status line reports the incident count, the largest stitch, and the timeline event count. Ingest and replay do not stitch on their own on this branch.
+7. Choose Check private IP guard. The client reports that `10.0.0.4` was refused before any external lookup when the response is HTTP 422.
 8. Choose Acknowledge, Escalate, or Dismiss. The triage state is stored on that flow.
 9. Choose Export Shift Handoff / 4-Block Incident Report. The packet is returned only when the brief is grounded.
 
-Stop the process when the walkthrough is finished. The launcher binds only to `127.0.0.1`.
+Stop the process with Ctrl-C when the walkthrough is finished. The launcher binds only to `127.0.0.1` and shuts the child down on `SIGTERM` as well.
 
 ## Gates for this slice
 

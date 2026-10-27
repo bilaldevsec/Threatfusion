@@ -30,6 +30,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import sqlite3
 import sys
 import threading
@@ -1087,7 +1088,20 @@ def run_server(
     if effective_db:
         MispAndCallbackContractHandler.soar_db_path = effective_db
     server_address = (bind_addr, port)
-    httpd = ThreadingHTTPServer(server_address, MispAndCallbackContractHandler)
+    try:
+        httpd = ThreadingHTTPServer(server_address, MispAndCallbackContractHandler)
+    except OSError as exc:
+        detail = exc.strerror or exc.__class__.__name__
+        print(
+            f"[ThreatFusion] Cannot bind {bind_addr}:{port}: {detail}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+
+    def _stop(_signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _stop)
     print(f"[ThreatFusion] SOC Contract Server listening on {bind_addr}:{port}")
     try:
         httpd.serve_forever()
