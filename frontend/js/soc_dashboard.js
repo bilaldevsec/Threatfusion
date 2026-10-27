@@ -640,10 +640,25 @@
     const chainOk = verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256);
     const ragOk = verifyChromaRagHits(inc.chromaRagHits);
     const hiveOk = verifyHiveAndN8nReceipt(inc.thehiveCaseRecord, inc.n8nPlaybookReceipt);
+    const signedLocalCallback = inc.live === true
+      && typeof inc.callbackSignature === 'string'
+      && SHA256_HEX_REGEX.test(inc.callbackSignature)
+      && typeof inc.thehiveCaseId === 'string'
+      && inc.thehiveCaseId.indexOf('case_') === 0
+      && Number.isFinite(Number(inc.mttrSeconds));
 
     const chainState = chainOk ? 'verified' : 'unavailable';
     const ragState = ragOk ? 'verified' : 'unavailable';
-    const hiveState = hiveOk ? 'verified' : (inc.soarRecord && inc.soarRecord.state === 'pending_approval' ? 'pending' : 'unavailable');
+    const hiveState = (hiveOk || signedLocalCallback) ? 'verified' : (inc.soarRecord && inc.soarRecord.state === 'pending_approval' ? 'pending' : 'unavailable');
+    const hiveLabel = signedLocalCallback
+      ? ('TheHive Case: ' + inc.thehiveCaseId)
+      : (hiveOk ? 'TheHive Case: DISPATCHED' : (inc.soarRecord && inc.soarRecord.state === 'pending_approval' ? 'TheHive Case: PENDING APPROVAL' : 'TheHive Case: UNAVAILABLE'));
+    const techniqueId = ragOk ? inc.chromaRagHits[0].technique_id : (inc.live ? 'unavailable' : 'T1046');
+    const tacticName = ragOk ? inc.chromaRagHits[0].technique_name : (inc.live ? 'unavailable' : 'Network Service Discovery');
+    const cosineText = ragOk ? inc.chromaRagHits[0].cosine_similarity.toFixed(4) : (inc.live ? 'unavailable' : '0.9120');
+    const recordedCaseId = signedLocalCallback
+      ? inc.thehiveCaseId
+      : ((inc.thehiveCaseRecord && inc.thehiveCaseRecord.case_id) || 'not recorded');
 
     // Build Forensic Drawer HTML
     drawerEl.innerHTML = `
@@ -704,7 +719,9 @@
             <span class="evidence-cell-val">
               ${inc.threatIntel.privateIpGuardTriggered
                 ? '<span class="badge" data-evidence-state="verified">TRIGGERED: RFC1918 Private IP Suppressed</span>'
-                : '<span class="badge badge-auth">PUBLIC IP: External TI Looked Up</span>'
+                : (inc.live
+                  ? '<span class="badge" data-evidence-state="unavailable">No MISP lookup on this flow</span>'
+                  : '<span class="badge badge-auth">PUBLIC IP: External TI Looked Up</span>')
               }
             </span>
           </div>
@@ -730,7 +747,7 @@
               ${ragOk ? `ChromaDB RAG: ${inc.chromaRagHits.length} Hits Verified` : 'ChromaDB RAG: UNAVAILABLE'}
             </span>
             <span class="badge badge-n8n-hive" data-evidence-state="${hiveState}">
-              ${hiveOk ? 'TheHive Case: DISPATCHED' : (inc.soarRecord && inc.soarRecord.state === 'pending_approval' ? 'TheHive Case: PENDING APPROVAL' : 'TheHive Case: UNAVAILABLE')}
+              ${hiveLabel}
             </span>
           </div>
         </div>
@@ -791,7 +808,7 @@
       <div class="tier-section anatomy-card" data-blast-ui-tier="unicorn-progressive-disclosure-v1">
         <div class="tier-header">
           <span class="tier-1-title" style="color: #58a6ff;">Standardized 4-Block Investigation Case Anatomy</span>
-          <span class="badge" data-evidence-state="verified">4-Block Verified</span>
+          <span class="badge" data-evidence-state="${inc.live ? (signedLocalCallback ? 'verified' : 'pending') : 'verified'}">${inc.live ? (signedLocalCallback ? 'Signed callback recorded' : 'Awaiting callback') : '4-Block Verified'}</span>
         </div>
         <div class="anatomy-grid">
           <!-- Block 1: Executive Summary -->
@@ -810,17 +827,17 @@
             <div><b>Window Type:</b> <span class="badge badge-corr">${inc.correlation ? escapeHtml(inc.correlation.windowType) : '30.0s_burst'}</span></div>
             <div><b>Correlated Flows:</b> ${inc.correlation ? inc.correlation.constituentAlerts : 1}</div>
             <div><b>Progression:</b> Ingest at ${escapeHtml(inc.observedAt)}</div>
-            <div><b>Byte Volume Delta:</b> +1,250 B &middot; <b>Packets:</b> 18</div>
+            <div><b>Byte Volume Delta:</b> ${inc.live ? 'not recorded on this flow' : '+1,250 B &middot; <b>Packets:</b> 18'}</div>
           </div>
 
           <!-- Block 3: MITRE ATT&CK Mapping -->
           <div class="anatomy-block" data-anatomy-block="3">
             <h4>Block 3: MITRE ATT&CK Mapping</h4>
-            <div><b>Technique:</b> <code>${ragOk ? escapeHtml(inc.chromaRagHits[0].technique_id) : 'T1046'}</code></div>
-            <div><b>Tactic:</b> ${ragOk ? escapeHtml(inc.chromaRagHits[0].technique_name) : 'Network Service Discovery'}</div>
-            <div><b>Cosine Similarity:</b> ${ragOk ? inc.chromaRagHits[0].cosine_similarity.toFixed(4) : '0.9120'}</div>
+            <div><b>Technique:</b> <code>${escapeHtml(techniqueId)}</code></div>
+            <div><b>Tactic:</b> ${escapeHtml(tacticName)}</div>
+            <div><b>Cosine Similarity:</b> ${escapeHtml(String(cosineText))}</div>
             <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.2rem;">
-              Retrieved from ChromaDB 64-dim L2 semantic vector index
+              ${inc.live && !ragOk ? 'No local technique was retrieved for this flow.' : 'Retrieved from ChromaDB 64-dim L2 semantic vector index'}
             </div>
           </div>
 
@@ -830,9 +847,10 @@
             <div><b>Playbook:</b> <code>${inc.soarRecord ? escapeHtml(inc.soarRecord.playbookId) : 'pb-isolate-01'}</code></div>
             <div><b>State:</b> <span class="badge badge-state">${inc.soarRecord ? escapeHtml(inc.soarRecord.state) : 'pending_approval'}</span></div>
             <div><b>Audit Chain:</b> <span class="badge" data-evidence-state="${chainState}">${chainOk ? 'Chain Valid (SHA-256)' : 'Chain Unavailable'}</span></div>
+            <div><b>TheHive case:</b> <code>${escapeHtml(recordedCaseId)}</code></div>
             <div><b>Callback MTTR:</b> ${inc.mttrSeconds === null || inc.mttrSeconds === undefined ? 'not recorded' : Number(inc.mttrSeconds).toFixed(3) + 's'}</div>
             <div><b>HMAC:</b> <code>${inc.callbackSignature && SHA256_HEX_REGEX.test(inc.callbackSignature) ? escapeHtml(inc.callbackSignature.substring(0, 16)) + '...' : 'none'}</code></div>
-            <div><b>HMAC Verified:</b> <span class="badge" data-evidence-state="${hiveState}">${hiveOk ? 'Verified & Dispatched' : 'Pending Authorization'}</span></div>
+            <div><b>HMAC Verified:</b> <span class="badge" data-evidence-state="${hiveState}">${(hiveOk || signedLocalCallback) ? 'Signed callback recorded' : 'Pending Authorization'}</span></div>
           </div>
         </div>
       </div>
@@ -1377,19 +1395,20 @@
         body: JSON.stringify({ flow_id: inc.flowId })
       });
       const data = await resp.json();
+      await refreshLiveCampaigns();
       const sig = typeof data.signature_sha256 === 'string' ? data.signature_sha256 : '';
       if (data.callback_recorded === true && SHA256_HEX_REGEX.test(sig)) {
         const mttr = Number(data.mttr_seconds);
         const mttrText = Number.isFinite(mttr) ? mttr.toFixed(3) + 's' : 'n/a';
+        const caseId = typeof data.thehive_case_id === 'string' ? data.thehive_case_id : 'not recorded';
         setLiveText(
           'campaignQueueStatus',
-          'Signed callback ' + sig.substring(0, 16) + ' recorded. MTTR ' + mttrText + '. Host containment was not executed.',
+          'Signed callback ' + sig.substring(0, 16) + ' recorded. Case ' + caseId + '. MTTR ' + mttrText + '. Host containment was not executed.',
           'verified'
         );
       } else {
         setLiveText('campaignQueueStatus', 'Signed callback unavailable.', 'unavailable');
       }
-      await refreshLiveCampaigns();
     } catch (err) {
       setLiveText('campaignQueueStatus', 'Signed callback unavailable.', 'unavailable');
     }

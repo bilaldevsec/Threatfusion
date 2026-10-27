@@ -1943,6 +1943,15 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Milestone #49: Launcher ledger for the signed callback loop (2026-10-27)
+
+- `POST /api/v1/live/soar/dispatch` was already able to call verify-state, write a 4-block TheHive case, and post the HMAC callback when `soar_db_path` was set. `scripts/run_live_product.sh` does not set that path. Approval then wrote the live fallback ledger, and verify-state returned HTTP 403 because it ignored the fallback.
+- Verify-state, the callback, idempotency keys, and the operational-velocity ledger read now use the same file as approval: `THREATFUSION_SOAR_LEDGER_DB_PATH` or `soar_db_path` when set, otherwise `threatfusion-live-soar.sqlite3` beside the console database, and only when that file exists. A missing ledger still fails closed. A callback whose timing row cannot be written returns HTTP 403 `callback_timing_not_recorded` instead of a recorded callback with `t_response` 0.
+- MTTR remains `round(max(0, t_callback_verified - t_approval_queued), 6)` from the ledger timestamps. The drawer shows that stored MTTR, the case id, and the 64-hex HMAC prefix after a live callback. A live flow with no retrieved technique shows `unavailable` in block 3. Host containment stays unauthorized.
+- `test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr` leaves the explicit ledger unset, refuses an unapproved flow, then approves and dispatches through the HTTP routes. It checks the 4-block outbox text, recomputes the HMAC, and checks the ledger MTTR formula.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
 ### Milestone #43: Stored campaign queue and hash-chained local approval (2026-10-27)
 
 - `GET /api/v1/live/campaigns` reads stored live flows and, when `THREATFUSION_INCIDENTS_DB_PATH` points at an existing database, the incident rows already in that file. A missing database is an empty list.
