@@ -21,7 +21,7 @@ Dispatch sends an approved playbook to `POST /api/v1/soar/verify-state`, writes 
 
 Stitch runs `IncidentCorrelationEngine` on stored Attack rows. Two rows that share a verified entity key inside the 30-second burst window become one incident, and the drawer shows the unified timeline. Rows without that key stay singletons. Benign rows are not members. The private-IP check returns HTTP 422 for `10.0.0.4` and does not send that address anywhere.
 
-Acknowledge, Escalate, and Dismiss persist a triage row. Export Shift Handoff calls `verify_explanation_groundedness()` and keeps block 3 `unavailable` when no technique was retrieved. A brief that names an address outside the evidence bundle is not verified.
+Acknowledge, Escalate, and Dismiss each append a triage row and store the latest state on that flow. The campaign card and the drawer show the stored state after the queue reloads. Export Shift Handoff builds the four blocks from the stored row, includes those triage events in the shift-handoff timeline, and calls `verify_explanation_groundedness()`. Block 3 stays `unavailable` because no technique is stored on the flow. A shift note that names an address outside the stored entity ids is refused and is not copied into the report. The page shows and downloads the markdown only after that check passes. Containment stays unauthorized.
 
 `scripts/run_live_product.sh` starts the page and the contract endpoints as one process on `127.0.0.1:8766`. The root README states the architecture, the Section 8 comparison (`+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)`; fusion stays off because those 96 true positives cost 1,574 extra false positives), and the same quickstart. The lab HMAC and MISP defaults are not production credentials.
 
@@ -44,8 +44,8 @@ A browser check on 2026-10-27 replayed those five vectors. The frozen Random For
 5. Choose Dispatch signed callback. The drawer shows the HMAC prefix, the case id, and the callback MTTR.
 6. Choose Stitch verified windows after two Attack rows share a verified entity key inside 30 seconds. The timeline lists both members.
 7. Choose Check private IP guard. The status line reports HTTP 422 for `10.0.0.4`.
-8. Choose Acknowledge, Escalate, or Dismiss. The triage state is stored on that flow.
-9. Choose Export Shift Handoff / 4-Block Incident Report. The packet is returned only when the brief is grounded.
+8. Choose Acknowledge, Escalate, or Dismiss on a stored flow. The card keeps the stored triage state after the queue reloads.
+9. Optionally type a shift note, then choose Export Shift Handoff / 4-Block Incident Report. The four-block markdown is shown and downloaded only when the note stays inside the stored evidence. A note that names an address that is not stored is refused.
 
 Stop the process when the walkthrough is finished. The launcher binds only to `127.0.0.1`.
 

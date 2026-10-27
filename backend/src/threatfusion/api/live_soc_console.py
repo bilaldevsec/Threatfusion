@@ -19,7 +19,7 @@ import stat
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -1096,6 +1096,92 @@ _TRIAGE_ACTIONS = {
 }
 
 
+def _stored_ipv4_addresses(*values: object) -> tuple[str, ...]:
+    """Keep stored IPv4 entity ids. Other text is not treated as an address."""
+    import ipaddress
+
+    found: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        text = value.strip()
+        try:
+            parsed = ipaddress.ip_address(text)
+        except ValueError:
+            continue
+        if parsed.version != 4:
+            continue
+        rendered = str(parsed)
+        if rendered not in found:
+            found.append(rendered)
+    return tuple(found)
+
+
+def _any_non_public_ipv4(addresses: Sequence[str]) -> bool:
+    """True when a stored address is private, loopback, or link-local."""
+    import ipaddress
+
+    for item in addresses:
+        parsed = ipaddress.ip_address(item)
+        if parsed.is_private or parsed.is_loopback or parsed.is_link_local:
+            return True
+    return False
+
+
+def _shift_handoff_markdown(
+    *,
+    flow_id: int,
+    report: Mapping[str, Any],
+    brief: str,
+    timeline_events: Sequence[Mapping[str, Any]],
+) -> str:
+    """Render the four stored blocks. Technique stays unavailable until one is stored."""
+    lines = [
+        f"# Shift handoff for flow {flow_id}",
+        "",
+        "## Block 1: Decision",
+        f"Decision: {report['block_1_decision']}",
+        f"Probability: {report['block_1_probability']}",
+        "",
+        "## Block 2: Timeline",
+        f"Observed at: {report['block_2_observed_at']}",
+        f"Latest triage state: {report['block_2_latest_triage_state']}",
+        f"Triage events: {report['block_2_triage_count']}",
+    ]
+    addresses = report.get("stored_addresses") or []
+    if addresses:
+        lines.append("Stored addresses: " + ", ".join(str(item) for item in addresses))
+    else:
+        lines.append("Stored addresses: none")
+    for event in timeline_events:
+        if event.get("kind") != "analyst_transition":
+            continue
+        lines.append(
+            f"- {event.get('observed_at') or ''} {event.get('to_state') or 'unreviewed'} "
+            f"by {event.get('actor_id') or 'unknown'}"
+        )
+    entry = report["block_4_entry_sha256"] or "none"
+    lines.extend(
+        [
+            "",
+            "## Block 3: Technique",
+            "Technique: unavailable",
+            "",
+            "## Block 4: Playbook",
+            f"Playbook state: {report['block_4_playbook_state']}",
+            f"Entry SHA-256: {entry}",
+            "",
+            "Containment was not executed.",
+            "production_fusion_enabled is false.",
+            "",
+            "## Brief",
+            brief,
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def record_triage_action(
     db_path: Path,
     *,
@@ -1144,13 +1230,21 @@ def record_triage_action(
     }
 
 
-def export_grounded_handoff(db_path: Path, *, flow_id: int) -> dict[str, Any]:
-    """Export a 4-block brief only when the text stays inside stored evidence."""
+def export_grounded_handoff(
+    db_path: Path, *, flow_id: int, brief: str | None = None
+) -> dict[str, Any]:
+    """Export a 4-block brief only when the text stays inside stored evidence.
+
+    The default brief is built from the stored decision and triage state. A supplied
+    note is checked with verify_explanation_groundedness and refused when it names
+    an address that is not stored on the flow. Containment stays unauthorized.
+    """
     from threatfusion.advisory.explanation_engine import (
         AdvisoryEvidenceBundle,
         verify_explanation_groundedness,
     )
     from threatfusion.api.analyst_dashboard import build_analyst_shift_handoff
+    from threatfusion.enrichment.threat_intel import ThreatIntelEnrichmentResult
 
     refused = {
         "schema_version": "live_grounded_handoff_v1",
@@ -1165,15 +1259,49 @@ def export_grounded_handoff(db_path: Path, *, flow_id: int) -> dict[str, Any]:
         return refused
     with _connect(db_path) as conn:
         row = conn.execute("SELECT * FROM live_flows WHERE flow_id = ?", (flow_id,)).fetchone()
-    if row is None:
-        refused["reason"] = "flow_not_stored"
-        return refused
-    probability = row["rf_attack_probability"]
+        if row is None:
+            refused["reason"] = "flow_not_stored"
+            return refused
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'triage_events'"
+        ).fetchone()
+        event_rows = []
+        if table is not None:
+            event_rows = conn.execute(
+                """
+                SELECT event_id, action, triage_state, actor_id, created_at_utc
+                FROM triage_events
+                WHERE flow_id = ?
+                ORDER BY event_id ASC
+                """,
+                (flow_id,),
+            ).fetchall()
+        stored = {key: row[key] for key in row.keys()}
+    probability = stored["rf_attack_probability"]
     probability_text = "unavailable" if probability is None else f"{float(probability):.4f}"
-    brief = (
-        f"Flow {flow_id} decision {row['decision']} probability {probability_text}. "
-        "production_fusion_enabled is false."
+    latest = stored["triage_state"] or "unreviewed"
+    default_brief = (
+        f"Flow {flow_id} decision {stored['decision']} probability {probability_text}. "
+        f"Triage state {latest}. "
+        "production_fusion_enabled is false. Containment was not executed."
     )
+    supplied = brief.strip() if isinstance(brief, str) else ""
+    checked = supplied or default_brief
+    addresses = _stored_ipv4_addresses(stored["src_entity_id"], stored["dst_entity_id"])
+    private_guard = _any_non_public_ipv4(addresses)
+    enrichment = None
+    if addresses:
+        enrichment = ThreatIntelEnrichmentResult(
+            status="internal_lab_entity_annotated",
+            provenance_verified=True,
+            external_lookup_performed=False,
+            private_ip_guard_triggered=private_guard,
+            inspected_entities=addresses,
+            internal_lab_annotations={},
+            matches=(),
+            feed_snapshot_id=None,
+            reason="stored_flow_entities",
+        )
     bundle = AdvisoryEvidenceBundle(
         candidate_id=f"live_flow:{flow_id}",
         record_id=f"live_flow:{flow_id}",
@@ -1181,33 +1309,62 @@ def export_grounded_handoff(db_path: Path, *, flow_id: int) -> dict[str, Any]:
         rf_attack_probability=float(probability) if probability is not None else 0.0,
         rf_threshold=0.5,
         top_feature_signals={},
-        incident_id=row["campaign_id"],
-        observed_at=row["observed_at_utc"],
+        incident_id=stored["campaign_id"],
+        observed_at=stored["observed_at_utc"],
+        enrichment_result=enrichment,
     )
-    grounded = verify_explanation_groundedness(brief, bundle)
-    if not grounded:
+    if not verify_explanation_groundedness(checked, bundle):
         refused["reason"] = "explanation_not_grounded"
         return refused
+    triage_events = [
+        {
+            "event_id": int(event["event_id"]),
+            "action": event["action"],
+            "triage_state": event["triage_state"],
+            "actor_id": event["actor_id"],
+            "created_at_utc": event["created_at_utc"],
+        }
+        for event in event_rows
+    ]
+    transitions = [
+        {
+            "observed_at": event["created_at_utc"],
+            "to_state": event["triage_state"],
+            "actor_id": event["actor_id"],
+        }
+        for event in triage_events
+    ]
     handoff = build_analyst_shift_handoff(
         incident_id=f"live_flow:{flow_id}",
-        relationship_key=row["campaign_id"],
+        relationship_key=stored["campaign_id"],
         flow_members=[
             {
-                "observed_at": row["observed_at_utc"],
+                "observed_at": stored["observed_at_utc"],
                 "alert_candidate_id": f"live_flow:{flow_id}",
-                "matched_relationship_key": row["campaign_id"],
+                "matched_relationship_key": stored["campaign_id"],
             }
         ],
-        playbook_state=row["ledger_state"],
+        analyst_transitions=transitions,
+        playbook_state=stored["ledger_state"],
     )
     report = {
-        "block_1_decision": row["decision"],
+        "block_1_decision": stored["decision"],
         "block_1_probability": probability_text,
-        "block_2_observed_at": row["observed_at_utc"],
+        "block_2_observed_at": stored["observed_at_utc"],
+        "block_2_latest_triage_state": latest,
+        "block_2_triage_count": len(triage_events),
         "block_3_technique": "unavailable",
-        "block_4_playbook_state": row["ledger_state"] or "pending_approval",
-        "block_4_entry_sha256": row["entry_sha256"] or "",
+        "block_4_playbook_state": stored["ledger_state"] or "pending_approval",
+        "block_4_entry_sha256": stored["entry_sha256"] or "",
+        "stored_addresses": list(addresses),
+        "triage_events": triage_events,
     }
+    markdown = _shift_handoff_markdown(
+        flow_id=flow_id,
+        report=report,
+        brief=checked,
+        timeline_events=handoff["timeline"]["events"],
+    )
     return {
         "schema_version": "live_grounded_handoff_v1",
         "evidence_state": "verified",
@@ -1216,8 +1373,9 @@ def export_grounded_handoff(db_path: Path, *, flow_id: int) -> dict[str, Any]:
         "execution_authorized": False,
         "containment_executed": False,
         "production_fusion_enabled": False,
-        "brief": brief,
+        "brief": checked,
         "report": report,
         "handoff": handoff,
+        "markdown": markdown,
         "flow_id": flow_id,
     }

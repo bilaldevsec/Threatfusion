@@ -494,10 +494,15 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
-            raw_flow = req_data.get("flow_id") if isinstance(req_data, dict) else 0
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            raw_flow = req_data.get("flow_id")
+            raw_brief = req_data.get("brief")
             result = export_grounded_handoff(
                 self._live_db_path(),
                 flow_id=raw_flow if isinstance(raw_flow, int) else 0,
+                brief=raw_brief if isinstance(raw_brief, str) else None,
             )
             status = 200 if result.get("evidence_state") == "verified" else 400
             self._send_json(status, result)
