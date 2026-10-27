@@ -1934,6 +1934,12 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 - `scripts/run_live_product.sh` starts the page and the contract endpoints as one process on `127.0.0.1`. The HMAC and MISP values are lab defaults.
 - The root README states the Section 8 recall comparison and leaves TF-008 through TF-011 open.
 
+### Milestone #49: Launcher preflight, shared ledger path, and shutdown (2026-10-27)
+
+- The same script now refuses a busy port, a short lab secret, a missing interpreter, and a missing console file with `error:` on stderr. It waits until `GET /` and `GET /healthz` both return HTTP 200, and it stops the child on Ctrl-C or `SIGTERM`. `--dry-run` does not bind. `--smoke` checks both responses and that the port is free afterward.
+- When `THREATFUSION_SOAR_LEDGER_DB_PATH` is unset, the launcher sets it to `threatfusion-live-soar.sqlite3` beside the console database. `run_server` copies that path onto the contract handler, so verify-state and the callback see the file approval writes. The contract server also closes the socket on `SIGTERM` and prints a bind failure instead of a traceback.
+- The root README keeps the Section 8 arithmetic and names open PRs #2, #3, and #4 as unmerged follow-up. TF-008 through TF-011 stay open.
+
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 ### Milestone #49: Live dual-window stitch and MISP private-IP refusal (2026-10-27)
