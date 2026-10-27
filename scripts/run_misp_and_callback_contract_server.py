@@ -25,7 +25,6 @@ from datetime import UTC, datetime
 import hashlib
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import ipaddress
 import json
 import os
 from pathlib import Path
@@ -76,12 +75,17 @@ CANONICAL_INDICATORS: dict[str, dict[str, Any]] = {
 
 
 def is_rfc1918_or_loopback_ip(ip_str: str) -> bool:
-    """Return True if ip_str is a valid IPv4/IPv6 private, loopback, or link-local address."""
-    try:
-        ip = ipaddress.ip_address(ip_str.strip())
-        return ip.is_private or ip.is_loopback or ip.is_link_local
-    except ValueError:
-        return False
+    """Return True for RFC1918, IPv6 ULA, loopback, and link-local addresses."""
+    from threatfusion.soar.n8n_thehive_misp_stack import (
+        is_rfc1918_or_loopback_ip as library_guard,
+    )
+
+    return library_guard(ip_str)
+
+
+def lookup_canonical_indicator(value: str) -> dict[str, Any] | None:
+    """Return a local canonical indicator. Callers must run the private-IP guard first."""
+    return CANONICAL_INDICATORS.get(value.lower())
 
 
 def verify_hmac_signature(payload_bytes: bytes, signature_hex: str, secret: str) -> bool:
@@ -367,11 +371,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return Path(configured)
         return self._live_db_path().with_name("threatfusion-live-rag.sqlite3")
 
-    def _incidents_db_path(self) -> Path | None:
+    def _incidents_db_path(self) -> Path:
         configured = os.environ.get("THREATFUSION_INCIDENTS_DB_PATH", "").strip()
-        if not configured:
-            return None
-        return Path(configured)
+        if configured:
+            return Path(configured)
+        return self._live_db_path().with_name("threatfusion-live-incidents.sqlite3")
 
     def _live_soar_path(self) -> Path:
         configured = self.soar_db_path or os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH", "")
@@ -387,7 +391,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
 
         if path == "/api/v1/live/ingest":
-            from threatfusion.api.live_soc_console import persist_scored_flow, score_canonical_flow
+            from threatfusion.api.live_soc_console import (
+                correlate_stored_attacks,
+                persist_scored_flow,
+                score_canonical_flow,
+            )
 
             try:
                 req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
@@ -398,8 +406,23 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if not isinstance(features, dict):
                 self._send_json(400, {"error": "features object required"})
                 return
+            observed_at = req_data.get("observed_at_utc")
+            provenance = req_data.get("provenance")
             score = score_canonical_flow(features, repo_root=REPO_ROOT)
-            stored = persist_scored_flow(self._live_db_path(), features, score)
+            stored = persist_scored_flow(
+                self._live_db_path(),
+                features,
+                score,
+                observed_at_utc=observed_at if isinstance(observed_at, str) else None,
+                provenance=provenance if isinstance(provenance, dict) else None,
+            )
+            if stored.get("reason") == "invalid_observed_at":
+                self._send_json(400, stored)
+                return
+            stored["correlation"] = correlate_stored_attacks(
+                self._live_db_path(),
+                self._incidents_db_path(),
+            )
             self._send_json(200, stored)
             return
 
@@ -445,7 +468,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
             result = correlate_stored_attacks(
                 self._live_db_path(),
-                self._live_db_path().with_name("threatfusion-live-incidents.sqlite3"),
+                self._incidents_db_path(),
             )
             status = 200 if result.get("evidence_state") == "verified" else 400
             self._send_json(status, result)
@@ -504,9 +527,33 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/v1/live/replay":
-            from threatfusion.api.live_soc_console import replay_benchmark_attack_burst
+            from threatfusion.api.live_soc_console import (
+                correlate_stored_attacks,
+                replay_benchmark_attack_burst,
+                replay_supplied_flows,
+            )
 
-            result = replay_benchmark_attack_burst(self._live_db_path(), repo_root=REPO_ROOT)
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            supplied = req_data.get("flows") if isinstance(req_data, dict) else None
+            if isinstance(supplied, list):
+                result = replay_supplied_flows(
+                    self._live_db_path(),
+                    supplied,
+                    repo_root=REPO_ROOT,
+                )
+            else:
+                result = replay_benchmark_attack_burst(self._live_db_path(), repo_root=REPO_ROOT)
+            if result.get("reason") == "invalid_observed_at":
+                self._send_json(400, result)
+                return
+            result["correlation"] = correlate_stored_attacks(
+                self._live_db_path(),
+                self._incidents_db_path(),
+            )
             status = 200 if result.get("member_count") else 400
             self._send_json(status, result)
             return
@@ -596,20 +643,23 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             value = str(req_data.get("value", "")).strip()
             ind_type = str(req_data.get("type", "ip-dst")).strip()
 
-            # Enforce RFC1918 Private IP Guard
-            if "ip" in ind_type or is_rfc1918_or_loopback_ip(value):
-                if is_rfc1918_or_loopback_ip(value):
-                    self._send_json(
-                        422,
-                        {
-                            "error": "RFC1918 private IP lookup forbidden",
-                            "detail": f"Private/loopback IP '{value}' is suppressed from threat intelligence lookup",
-                            "private_ip_guard_triggered": True,
-                        },
-                    )
-                    return
+            # Refuse RFC1918, ULA, loopback, and link-local before any indicator lookup.
+            if is_rfc1918_or_loopback_ip(value):
+                self._send_json(
+                    422,
+                    {
+                        "error": "RFC1918 private IP lookup forbidden",
+                        "detail": (
+                            f"Private, loopback, or link-local address '{value}' is "
+                            "suppressed before threat intelligence lookup"
+                        ),
+                        "private_ip_guard_triggered": True,
+                        "external_lookup_performed": False,
+                    },
+                )
+                return
 
-            indicator_info = CANONICAL_INDICATORS.get(value.lower())
+            indicator_info = lookup_canonical_indicator(value)
             if indicator_info and indicator_info.get("matched"):
                 attr = {
                     "id": f"attr_{hashlib.sha256(value.encode('utf-8')).hexdigest()[:8]}",

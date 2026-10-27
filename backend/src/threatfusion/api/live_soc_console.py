@@ -198,6 +198,45 @@ def score_canonical_flow(
     return base
 
 
+def _coerce_observed_at(value: str | None) -> str | None:
+    """Return a UTC timestamp. An empty value means now. An invalid value is refused."""
+    if value is None or not str(value).strip():
+        return datetime.now(UTC).isoformat()
+    text = str(value).strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).isoformat()
+
+
+def _provenance_fields(
+    provenance: Mapping[str, Any] | None,
+) -> tuple[str | None, str | None, str | None, str | None, str | None, int | None]:
+    """Copy caller-supplied entity fields. Missing fields stay empty and fail closed later."""
+    if provenance is None:
+        return None, None, None, None, None, None
+
+    def _text(key: str) -> str | None:
+        raw = provenance.get(key)
+        if raw is None:
+            return None
+        text = str(raw).strip()
+        return text or None
+
+    clock = 1 if provenance.get("clock_synchronized") is True else 0
+    return (
+        _text("entity_namespace_id"),
+        _text("src_entity_id"),
+        _text("dst_entity_id"),
+        _text("protocol"),
+        _text("service_or_port"),
+        clock,
+    )
+
+
 def persist_scored_flow(
     db_path: Path,
     features: Mapping[str, Any],
@@ -206,17 +245,31 @@ def persist_scored_flow(
     campaign_id: str | None = None,
     source_label: str | None = None,
     case_title: str | None = None,
+    observed_at_utc: str | None = None,
+    provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Append one scored flow to the live WAL queue."""
-    observed = datetime.now(UTC).isoformat()
+    observed = _coerce_observed_at(observed_at_utc)
+    if observed is None:
+        return {
+            "schema_version": "live_flow_score_v1",
+            "evidence_state": "unavailable",
+            "reason": "invalid_observed_at",
+            "decision": "withheld",
+            "rf_attack_probability": None,
+            "production_fusion_enabled": False,
+        }
+    namespace, src_entity, dst_entity, protocol, service, clock = _provenance_fields(provenance)
     with _connect(db_path) as conn:
         cursor = conn.execute(
             """
             INSERT INTO live_flows (
                 observed_at_utc, features_json, rf_attack_probability, decision,
                 evidence_state, reason, model_sha256, production_fusion_enabled,
-                campaign_id, source_label, case_title
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                campaign_id, source_label, case_title,
+                entity_namespace_id, src_entity_id, dst_entity_id,
+                flow_protocol, service_or_port, clock_synchronized
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 observed,
@@ -230,6 +283,12 @@ def persist_scored_flow(
                 campaign_id,
                 source_label,
                 case_title,
+                namespace,
+                src_entity,
+                dst_entity,
+                protocol,
+                service,
+                clock,
             ),
         )
         flow_id = int(cursor.lastrowid)
@@ -538,6 +597,79 @@ def replay_benchmark_attack_burst(
         "campaign_id": campaign_id,
         "source_label": "recorded_unsw_nb15",
         "fixture_origin": "study_triage_cases",
+        "production_fusion_enabled": False,
+        "execution_authorized": False,
+        "ae_changes_alert_decision": False,
+        "changes_model_weights": False,
+        "member_count": len(stored),
+        "flows": stored,
+    }
+
+
+def replay_supplied_flows(
+    db_path: Path,
+    flows: list[Any],
+    *,
+    repo_root: Path,
+    model: Any | None = None,
+    supply_verified: bool | None = None,
+) -> dict[str, Any]:
+    """Score caller-supplied flows, store their timestamps and entity keys, and return them.
+
+    The frozen Random Forest still makes the decision. Entity keys are stored only
+    when the caller supplies them.
+    """
+    stored: list[dict[str, Any]] = []
+    for item in flows:
+        if not isinstance(item, Mapping):
+            continue
+        features = item.get("features")
+        if not isinstance(features, Mapping):
+            continue
+        observed = item.get("observed_at_utc")
+        if isinstance(observed, str) and _coerce_observed_at(observed) is None:
+            return {
+                "schema_version": "live_campaign_replay_v1",
+                "evidence_state": "unavailable",
+                "reason": "invalid_observed_at",
+                "production_fusion_enabled": False,
+                "execution_authorized": False,
+                "member_count": 0,
+                "flows": [],
+            }
+    for item in flows:
+        if not isinstance(item, Mapping):
+            continue
+        features = item.get("features")
+        if not isinstance(features, Mapping):
+            continue
+        provenance = item.get("provenance")
+        score = score_canonical_flow(
+            features,
+            repo_root=repo_root,
+            model=model,
+            supply_verified=supply_verified,
+        )
+        stored.append(
+            persist_scored_flow(
+                db_path,
+                features,
+                score,
+                campaign_id="campaign_replayed_flows",
+                source_label="replayed_flow",
+                case_title="Replayed flow",
+                observed_at_utc=(
+                    item.get("observed_at_utc")
+                    if isinstance(item.get("observed_at_utc"), str)
+                    else None
+                ),
+                provenance=provenance if isinstance(provenance, Mapping) else None,
+            )
+        )
+    return {
+        "schema_version": "live_campaign_replay_v1",
+        "evidence_state": "verified" if stored else "unavailable",
+        "reason": "supplied_flows_scored_by_frozen_random_forest",
         "production_fusion_enabled": False,
         "execution_authorized": False,
         "ae_changes_alert_decision": False,
@@ -973,12 +1105,52 @@ def _candidate_from_attack_row(row: sqlite3.Row) -> Any:
     )
 
 
+def _drop_stale_incidents(incidents_db_path: Path, keep_ids: set[str]) -> None:
+    """Remove incident rows from an earlier stitch of a smaller attack set."""
+    if not incidents_db_path.is_file():
+        return
+    connection = sqlite3.connect(str(incidents_db_path), timeout=5.0)
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        if "incidents" not in tables:
+            return
+        if keep_ids:
+            marks = ",".join("?" for _ in keep_ids)
+            params = tuple(sorted(keep_ids))
+            if "incident_constituent_alerts" in tables:
+                connection.execute(
+                    f"DELETE FROM incident_constituent_alerts WHERE incident_id NOT IN ({marks})",
+                    params,
+                )
+            connection.execute(
+                f"DELETE FROM incidents WHERE incident_id NOT IN ({marks})",
+                params,
+            )
+        else:
+            if "incident_constituent_alerts" in tables:
+                connection.execute("DELETE FROM incident_constituent_alerts")
+            connection.execute("DELETE FROM incidents")
+        connection.commit()
+    except sqlite3.Error:
+        return
+    finally:
+        connection.close()
+
+
 def correlate_stored_attacks(live_db_path: Path, incidents_db_path: Path) -> dict[str, Any]:
     """Stitch stored Attack rows with the dual-window engine.
 
     Rows without a verified entity key stay singletons. Benign rows are not grouped.
+    The burst window is 30.0 seconds and the campaign window is 600.0 seconds.
+    A gap equal to either boundary stays inside that window.
     """
     from threatfusion.alerts.correlation_engine import (
+        BURST_WINDOW_SECONDS,
+        CAMPAIGN_WINDOW_SECONDS,
         CorrelatableAlert,
         EntityProvenanceContract,
         IncidentCorrelationEngine,
@@ -994,6 +1166,9 @@ def correlate_stored_attacks(live_db_path: Path, incidents_db_path: Path) -> dic
         "incident_count": 0,
         "burst_incident_count": 0,
         "campaign_incident_count": 0,
+        "correlated_flow_count": 0,
+        "burst_window_seconds": BURST_WINDOW_SECONDS,
+        "campaign_window_seconds": CAMPAIGN_WINDOW_SECONDS,
         "max_constituent_count": 0,
         "incidents": [],
         "timeline": build_unified_incident_timeline(flow_members=[]),
@@ -1029,31 +1204,53 @@ def correlate_stored_attacks(live_db_path: Path, incidents_db_path: Path) -> dic
     result = IncidentCorrelationEngine(IncidentSqliteRepository(incidents_db_path)).correlate(
         correlatable
     )
+    _drop_stale_incidents(
+        incidents_db_path, {incident.incident_id for incident in result.incidents}
+    )
+    observed_by_id = {
+        item.candidate.alert_candidate_id: item.candidate.observed_at.astimezone(UTC).isoformat()
+        for item in correlatable
+    }
     incidents = [
         {
             "incident_id": incident.incident_id,
             "correlation_mode": incident.correlation_mode,
             "window_type": incident.window_type,
+            "correlation_rule_id": incident.correlation_rule_id,
             "constituent_alert_count": incident.constituent_alert_count,
             "earliest_observed_at": incident.earliest_observed_at,
+            "latest_observed_at": incident.latest_observed_at,
         }
         for incident in result.incidents
     ]
     members = []
     for incident in result.incidents:
         for alert_id in incident.constituent_alert_ids:
-            members.append(
-                {
-                    "observed_at": incident.earliest_observed_at,
-                    "alert_candidate_id": alert_id,
-                    "summary": incident.correlation_mode,
-                }
-            )
+            justification = incident.member_justifications.get(alert_id)
+            member = {
+                "observed_at": observed_by_id.get(alert_id, incident.earliest_observed_at),
+                "alert_candidate_id": alert_id,
+                "summary": incident.correlation_mode,
+                "window_type": incident.window_type,
+                "correlation_mode": incident.correlation_mode,
+                "matched_relationship_key": (
+                    None if justification is None else justification.matched_relationship_key
+                ),
+            }
+            if justification is not None:
+                member["delta_seconds"] = justification.delta_seconds
+            members.append(member)
     burst = sum(
         1 for incident in result.incidents if incident.correlation_mode == "burst_correlated"
     )
     campaign = sum(
         1 for incident in result.incidents if incident.correlation_mode == "campaign_correlated"
+    )
+    stitched = {"burst_correlated", "campaign_correlated"}
+    correlated_flow_count = sum(
+        incident.constituent_alert_count
+        for incident in result.incidents
+        if incident.correlation_mode in stitched
     )
     return {
         "schema_version": "live_correlation_v1",
@@ -1063,6 +1260,9 @@ def correlate_stored_attacks(live_db_path: Path, incidents_db_path: Path) -> dic
         "incident_count": len(incidents),
         "burst_incident_count": burst,
         "campaign_incident_count": campaign,
+        "correlated_flow_count": correlated_flow_count,
+        "burst_window_seconds": BURST_WINDOW_SECONDS,
+        "campaign_window_seconds": CAMPAIGN_WINDOW_SECONDS,
         "max_constituent_count": max(
             (item["constituent_alert_count"] for item in incidents), default=0
         ),
@@ -1072,21 +1272,23 @@ def correlate_stored_attacks(live_db_path: Path, incidents_db_path: Path) -> dic
 
 
 def private_ip_guard_response(value: str) -> tuple[int, dict[str, Any]]:
-    """Return HTTP 422 for a private, loopback, or link-local address. No external lookup."""
-    import ipaddress
+    """Return HTTP 422 for RFC1918, IPv6 ULA, loopback, or link-local. No lookup is performed."""
+    from threatfusion.soar.n8n_thehive_misp_stack import is_rfc1918_or_loopback_ip
 
-    try:
-        parsed = ipaddress.ip_address(value.strip())
-        blocked = parsed.is_private or parsed.is_loopback or parsed.is_link_local
-    except ValueError:
-        blocked = False
+    blocked = is_rfc1918_or_loopback_ip(value)
     if blocked:
         return 422, {
             "error": "RFC1918 private IP lookup forbidden",
             "private_ip_guard_triggered": True,
+            "external_lookup_performed": False,
             "value": value.strip(),
         }
-    return 200, {"private_ip_guard_triggered": False, "matched": False, "value": value.strip()}
+    return 200, {
+        "private_ip_guard_triggered": False,
+        "external_lookup_performed": False,
+        "matched": False,
+        "value": value.strip(),
+    }
 
 
 _TRIAGE_ACTIONS = {

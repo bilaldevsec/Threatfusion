@@ -1936,6 +1936,14 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Milestone #49: Live dual-window stitch and MISP private-IP refusal (2026-10-27)
+
+- `POST /api/v1/live/ingest` and `POST /api/v1/live/replay` call `IncidentCorrelationEngine` on the stored Attack rows. The burst window is `30.0` seconds and the campaign window is `600.0` seconds. A gap equal to either boundary stays inside that window. A same-5-tuple gap of `30.001` seconds is not a burst; it remains inside the campaign window. A host-pair gap of `600.001` seconds stays two singletons. Rows without a verified entity key, including the recorded UNSW study replay, stay singletons. Benign rows are not members. A later stitch drops the smaller incident row it replaced.
+- The console drawer shows `correlated_flow_count` and the unified timeline events from that response. Each event keeps that flow's observed time.
+- `POST /attributes/restSearch` returns HTTP 422 for RFC1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), IPv6 ULA (`fc00::/7`), loopback (`127.0.0.0/8`, `::1`), and link-local (`169.254.0.0/16`, `fe80::/10`) before `lookup_canonical_indicator`. An IPv4-mapped address is judged by the embedded IPv4 address. Documentation networks `198.51.100.0/24` and `203.0.113.0/24` are not RFC1918. The earlier `ipaddress.is_private` check refused those networks, so the route's own canonical indicators `198.51.100.27` and `203.0.113.195` never matched. They now return the local attribute and still do not open an outbound MISP socket. `production_fusion_enabled` stays false.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
 ### Milestone #48: Full-suite audit and corrupt-database classification (2026-10-27)
 
 - The full pytest suite passed 1,527 tests after one persistence fix. A damaged alert database had been reported as `database_unavailable` because `PRAGMA journal_mode=WAL` raised `file is not a database` inside the connection helper. That message is now `database_corrupt`, and the damaged file is left unchanged.
