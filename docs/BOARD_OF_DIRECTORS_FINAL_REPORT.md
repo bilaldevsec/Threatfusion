@@ -44,8 +44,24 @@ The registered 49-column path also needs `data/raw/unsw_nb15/official/NUSW-NB15_
 
 ## Gates for this slice
 
-Whitespace, unit tests, boundary preflight, and the repository-truth audit are recorded after the rebase in the verification note below. The full 1,500-test suite was not run for the owner console commits. This rebase does not weaken those gates.
+Commands were run on 2026-10-27 from `/home/muhammad-bilal/projects/threatfusion-gemini` with `env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1` and `threatfusion-venv`. The full 1,500-test suite was not run. This rebase does not weaken those gates.
 
-## Verification note
+| Gate | Result |
+|---|---|
+| `git diff --check` | Clean. |
+| `scripts/boundary_preflight.py` | B0–B6 GO. |
+| `scripts/audit_repo_truth.py` | 7/7 PASS. Verdict GO. Receipt `acd1878050f14a35b1f8ffadf55ba4e0576fc2fda76c1698185e608e304664a9`. |
+| `pytest backend/tests/unit` | 1232 passed, 6 skipped, 3 failed. |
 
-Gate counts for this rebased checkout are written in the follow-up revision after `pytest backend/tests/unit`, `scripts/boundary_preflight.py`, `scripts/audit_repo_truth.py`, and `git diff --check` finish. This section does not invent a GO verdict.
+The audit names this checkout branch `cursor/live-analyst-console-211f` at `24be1c9b23e2657c6aa11dc7d7ded67526ca1dcc`. Check 2 matched all four frozen digests. Check 4 kept `production_fusion_enabled` false. Check 7 kept TF-008 through TF-011 open.
+
+The three unit failures:
+
+- `test_live_repository_truth_audit_passes` reaches a passing 7-check report, then asserts `git_branch == "gemini/product-20260924"`. This PR branch does not satisfy that assertion.
+- `test_full_soc_demo_incorporates_chromadb_misp_thehive_n8n` and `test_run_full_soc_demo_incorporates_soar_chain_queue_ranker_and_drift` raise `unsw_registration_invalid`. The registered schema CSV and preprocessing directory are not in this checkout.
+
+## Registered UNSW raw proof
+
+`POST /api/v1/ingest/unsw-raw` with 49 `"0"` strings returned HTTP 200. `evidence_state` is `model_supply_chain_unverified`. `scoring_reason` is `unsw_registration_invalid`. `rf_decision` and `rf_attack_probability` are null. `ae_reconstruction_error` is null. `production_fusion_enabled` is false. Admission id `live_admission_v1:ca32dca68a2b35b91176f3865ad5f6f6ab25383eb20bab407da0053844cfd946`.
+
+The frozen forest file loads and reports `n_features_in_ = 14`. A completed Attack or Normal decision still requires the registered schema CSV, the preprocessing snapshot, and each model's `model_config.json` and `evaluation_report.json`. Those files are absent here, so this proof does not invent a score.
