@@ -54,3 +54,14 @@ Stop the process when the walkthrough is finished. The launcher binds only to `1
 On 2026-10-27 the full pytest suite was run from this repository with `env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 threatfusion-venv/bin/pytest -q --tb=line`. The first run finished in about 314 seconds and failed one test: `backend/tests/unit/test_alert_persistence.py::test_corruption_is_not_replaced_and_errors_are_sanitized`. Opening a non-SQLite file ran `PRAGMA journal_mode=WAL` before the integrity check, and SQLite's `file is not a database` was labeled `database_unavailable`. The alert repository now labels that message `database_corrupt` and still leaves the damaged bytes in place. The persistence file then passed 19 tests. The full suite was run again and passed 1,527 tests in about 312 seconds, with exit code 0.
 
 `git diff --check`, boundary preflight B0–B6, and the repository-truth audit (7/7) are the commit gates for this report. TF-008, TF-009, TF-010, and TF-011 stay open. The four frozen digests are unchanged. `production_fusion_enabled` stays false.
+
+## TASK-5 evidence
+
+On 2026-10-27 this checkout recorded the triage and handoff slice above.
+
+- `backend/tests/unit/test_live_soc_console.py` passed 12 tests. Acknowledge, escalate, and dismiss each write a `triage_events` row. The handoff timeline includes those rows. `POST /api/v1/live/triage` and `POST /api/v1/live/handoff` do the same through the contract server. A note naming `203.0.113.99` is refused with `explanation_not_grounded` and is not copied into the markdown. Block 3 stays `unavailable`.
+- A local contract server on `127.0.0.1` served the page with the four controls and the shift-note box. Ingest of a 14-feature vector stayed `production_fusion_enabled` false. Acknowledge stored `acknowledged`. The same foreign address was refused on the handoff route. The buttons were not clicked in a graphical browser.
+- `git diff --check` was clean.
+- `scripts/boundary_preflight.py --venv threatfusion-venv` is NO-GO only on B1 and B6, because the process cwd is `/workspace` and the package file is `/workspace/backend/src/threatfusion/__init__.py`, while the default active root is `/home/muhammad-bilal/projects/threatfusion-gemini`. The same command with `--active /workspace` is GO for B0–B6.
+- `scripts/audit_repo_truth.py` is 6/7. Check 1 fails only on that checkout path. Checks 2–7 pass, including the four frozen digests, Section 8 (`production_fusion_enabled` false), Gate G9, and TF-008 through TF-011 still open.
+- The full pytest run collected 1,529 tests: 1,502 passed, 20 failed, 7 skipped. The 20 failures are missing UNSW registration (`unsw_registration_invalid`), missing `certutil` (`nss_tool_failed` and the registered browser path), and the same checkout-path checks. No other failure appeared.
