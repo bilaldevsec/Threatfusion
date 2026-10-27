@@ -150,7 +150,10 @@ class AlertCandidateRepository:
             connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
             connection.execute("PRAGMA journal_mode=WAL")
             return connection
-        except sqlite3.Error:
+        except sqlite3.Error as exc:
+            message = str(exc).lower()
+            if "not a database" in message or "malformed" in message or "corrupt" in message:
+                raise AlertPersistenceError("database_corrupt") from None
             raise AlertPersistenceError("database_unavailable") from None
 
     def _initialize(self) -> None:

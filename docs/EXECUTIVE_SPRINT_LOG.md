@@ -47,3 +47,9 @@
 - An approved playbook can now be checked at verify-state, written as a 4-block case, and closed with a real HMAC callback. MTTR is the callback interval.
 - Host containment stays unauthorized. A missing secret or an unapproved row does not get a receipt.
 - Frozen Random Forest authority, the four model digests, Gate G9, and TF-008 through TF-011 are unchanged.
+
+=== 30-SECOND CEO SKIM REPORT ===
+- The full pytest suite passed 1,527 tests in about 312 seconds after a damaged alert database was classified as corrupt instead of unavailable.
+- The board report now covers the signed callback, the 30-second stitch, triage and the grounded handoff, the one-command launcher, and the local walkthrough.
+- Frozen Random Forest authority, the four model digests, Gate G9, and TF-008 through TF-011 are unchanged.
+- Host containment stays unauthorized. The lab HMAC and MISP defaults are not production credentials.

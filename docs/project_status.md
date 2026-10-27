@@ -1936,6 +1936,13 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Milestone #48: Full-suite audit and corrupt-database classification (2026-10-27)
+
+- The full pytest suite passed 1,527 tests after one persistence fix. A damaged alert database had been reported as `database_unavailable` because `PRAGMA journal_mode=WAL` raised `file is not a database` inside the connection helper. That message is now `database_corrupt`, and the damaged file is left unchanged.
+- The board report records the live console through the signed callback, the dual-window stitch, triage and the grounded handoff, the one-command launcher, and the walkthrough steps.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
 ### Milestone #43: Stored campaign queue and hash-chained local approval (2026-10-27)
 
 - `GET /api/v1/live/campaigns` reads stored live flows and, when `THREATFUSION_INCIDENTS_DB_PATH` points at an existing database, the incident rows already in that file. A missing database is an empty list.

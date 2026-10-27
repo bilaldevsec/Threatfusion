@@ -925,3 +925,7 @@ Stored triage actions and the grounded brief do not satisfy the closure tests fo
 ### Milestone #47 local launcher, 2026-10-27
 
 The one-command launcher and root README do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
+
+### Milestone #48 full-suite audit, 2026-10-27
+
+A 1,527-test pytest run and the corrupt-database classification fix do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
