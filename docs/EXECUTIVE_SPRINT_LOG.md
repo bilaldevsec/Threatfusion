@@ -28,3 +28,10 @@
 - Usage is about 9% of the weekly meter, with a reset in about 2 days. This is a building window. A full owner report is due when usage reaches about 95%, or when you say "weekly report".
 - Frozen Random Forest authority, the four model digests, Gate G9, and TF-008 through TF-011 stay as they are.
 - Next product gap: the walkthrough screen still shows sample incidents. The authenticated analyst page is the real queue.
+
+=== 30-SECOND CEO SKIM REPORT ===
+- Added a live console panel: 14-feature ingest scored only by the verified frozen Random Forest, WAL analyst notes, a local MITRE copilot, read-only drift, and a 6-node n8n workbench that does not dispatch.
+- A browser check ingested a toy flow as Benign with fusion disabled, and the copilot returned T1059 from the local corpus.
+- The sample campaign queue and its simulated Approve button are still on the page. TF-008 through TF-011 stay open.
+- Focused tests, boundary preflight B0–B6, and the repository-truth audit passed for this slice.
+- Next: replace the sample campaign queue with the stored live flows, without keeping a fake Approve button.

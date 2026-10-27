@@ -280,6 +280,22 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         if path in ("/healthz", "/api/v1/heartbeat", "/api/status"):
             self._send_json(200, {"status": "ok", "service": "threatfusion_soc_contract_server"})
             return
+        if path == "/api/v1/live/queue":
+            from threatfusion.api.live_soc_console import list_live_flows
+
+            self._send_json(200, {"flows": list_live_flows(self._live_db_path())})
+            return
+        if path == "/api/v1/live/drift":
+            from threatfusion.api.live_soc_console import drift_for_stored_flows
+
+            self._send_json(200, drift_for_stored_flows(self._live_db_path()))
+            return
+        if path == "/api/v1/live/workbench":
+            from threatfusion.api.live_soc_console import read_n8n_workbench
+
+            workflow = REPO_ROOT / "docker" / "n8n" / "workflows" / "threatfusion_soar_playbook.json"
+            self._send_json(200, read_n8n_workbench(workflow))
+            return
         if path == "/api/v1/metrics/operational-velocity":
             from threatfusion.api.analyst_dashboard import compute_alert_noise_reduction_funnel
             from threatfusion.correlation.incident_correlation import (
@@ -330,12 +346,78 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
         self._send_json(404, {"error": "Not Found", "path": path})
 
+    def _live_db_path(self) -> Path:
+        configured = os.environ.get("THREATFUSION_LIVE_CONSOLE_DB", "").strip()
+        if configured:
+            return Path(configured)
+        return Path(os.environ.get("TMPDIR", "/tmp")) / "threatfusion-live-console.sqlite3"
+
+    def _live_rag_path(self) -> Path:
+        configured = os.environ.get("THREATFUSION_LIVE_RAG_DB", "").strip()
+        if configured:
+            return Path(configured)
+        return self._live_db_path().with_name("threatfusion-live-rag.sqlite3")
+
     def do_POST(self) -> None:
         path = self.path.split("?")[0]
         if self._rejected_content_length():
             return
         content_length = int(str(self.headers.get("Content-Length")).strip())
         body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
+
+        if path == "/api/v1/live/ingest":
+            from threatfusion.api.live_soc_console import persist_scored_flow, score_canonical_flow
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            features = req_data.get("features") if isinstance(req_data, dict) else None
+            if not isinstance(features, dict):
+                self._send_json(400, {"error": "features object required"})
+                return
+            score = score_canonical_flow(features, repo_root=REPO_ROOT)
+            stored = persist_scored_flow(self._live_db_path(), features, score)
+            self._send_json(200, stored)
+            return
+
+        if path == "/api/v1/live/notes":
+            from threatfusion.api.live_soc_console import add_analyst_note
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            raw_flow = req_data.get("flow_id")
+            flow_id = raw_flow if isinstance(raw_flow, int) else None
+            result = add_analyst_note(
+                self._live_db_path(),
+                flow_id=flow_id,
+                author_id=str(req_data.get("author_id") or ""),
+                note_text=str(req_data.get("note_text") or ""),
+            )
+            status = 200 if result.get("evidence_state") == "verified" else 400
+            self._send_json(status, result)
+            return
+
+        if path == "/api/v1/live/copilot":
+            from threatfusion.api.live_soc_console import answer_mitre_copilot
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            question = ""
+            if isinstance(req_data, dict):
+                question = str(req_data.get("question") or "")
+            self._send_json(200, answer_mitre_copilot(question, self._live_rag_path()))
+            return
 
         # 1. MISP Rest Search Endpoint
         if path == "/attributes/restSearch":

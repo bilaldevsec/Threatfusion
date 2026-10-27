@@ -901,3 +901,7 @@ The optional SOAR/RAG/outbox/dead-letter snapshot, the citation-locked follow-up
 ### Milestone #40 runtime import isolation, 2026-10-26
 
 Boundary preflight check B6 rejects a `PYTHONPATH` or `sys.path` entry that resolves inside the protected workspace, and rejects a `threatfusion` import from outside the active `backend/src` tree. This check does not close TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
+
+### Milestone #42 live console, 2026-10-27
+
+The live ingest, analyst notes, local MITRE copilot, read-only drift monitor, and 6-node workbench do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.

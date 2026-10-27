@@ -21,7 +21,8 @@ ThreatFusion is a single-laptop security assistant for a Tier-1 analyst. Recorde
 | Approval ledger with a hash chain, plus local n8n / TheHive / MISP clients | Built as local or simulated tools. Not a live company deployment. |
 | Response-plane snapshot for the SOAR ledger, retrieval store, outbox, and dead letters | Built in uncommitted Milestone #39. |
 | Boundary checks B0–B6, including a block when Python would import the old protected folder | Built in uncommitted Milestone #40. |
-| Pretty walkthrough screen | Built, and still shows sample incidents. Approve on that screen is still a browser simulation. |
+| Pretty walkthrough screen | Still shows sample incidents. Approve on that screen is still a browser simulation. |
+| Live console panel | Built 2026-10-27. Ingest, analyst notes, local MITRE copilot, read-only drift, and a 6-node workbench that does not dispatch. |
 
 ## How the product looks
 

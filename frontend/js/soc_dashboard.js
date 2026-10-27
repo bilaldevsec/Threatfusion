@@ -1037,6 +1037,24 @@
       });
     });
 
+    const copilotButton = document.getElementById('btnLiveCopilot');
+    if (copilotButton) {
+      copilotButton.addEventListener('click', () => { askLiveCopilot(); });
+    }
+    const noteButton = document.getElementById('btnSaveAnalystNote');
+    if (noteButton) {
+      noteButton.addEventListener('click', () => { saveLiveAnalystNote(); });
+    }
+    const ingestButton = document.getElementById('btnIngestLiveFlow');
+    if (ingestButton) {
+      ingestButton.addEventListener('click', () => { ingestLiveFlow(); });
+    }
+    const driftButton = document.getElementById('btnRefreshDrift');
+    if (driftButton) {
+      driftButton.addEventListener('click', () => { refreshLiveDriftAndWorkbench(); });
+    }
+    refreshLiveQueue();
+
     // Top Header SOAR Action Button
     const topApproveBtn = document.getElementById('topBtnApproveSoar');
     if (topApproveBtn) {
@@ -1044,6 +1062,124 @@
         const inc = SAMPLE_INCIDENTS.find(i => i.id === selectedIncidentId) || SAMPLE_INCIDENTS[0];
         simulatePlaybookApproval(inc);
       });
+    }
+  }
+
+  function setLiveText(id, text, state) {
+    const node = document.getElementById(id);
+    if (!node) return;
+    node.textContent = text;
+    if (state) node.setAttribute('data-evidence-state', state);
+  }
+
+  async function refreshLiveQueue() {
+    try {
+      const resp = await fetch('/api/v1/live/queue');
+      if (!resp.ok) {
+        setLiveText('liveQueueStatus', 'Live queue unavailable.', 'unavailable');
+        return;
+      }
+      const data = await resp.json();
+      const flows = Array.isArray(data.flows) ? data.flows : [];
+      if (!flows.length) {
+        setLiveText('liveQueueStatus', 'Live queue is empty. Sample walkthrough remains the offline fallback.', 'unavailable');
+        return;
+      }
+      const latest = flows[0];
+      setLiveText(
+        'liveQueueStatus',
+        'Live flow ' + latest.flow_id + ' decision ' + latest.decision + ' (' + latest.evidence_state + ').',
+        latest.evidence_state || 'unavailable'
+      );
+    } catch (err) {
+      setLiveText('liveQueueStatus', 'Live queue unavailable.', 'unavailable');
+    }
+  }
+
+  async function ingestLiveFlow() {
+    const features = {
+      duration_ms: 1, fwd_packets: 1, bwd_packets: 1, fwd_bytes: 1, bwd_bytes: 1,
+      packets_per_second: 1, bytes_per_second: 1, fwd_packet_length_mean: 1,
+      bwd_packet_length_mean: 1, dst_port: 80, protocol_tcp: 1, protocol_udp: 0,
+      protocol_icmp: 0, protocol_other: 0
+    };
+    try {
+      const resp = await fetch('/api/v1/live/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ features: features })
+      });
+      const data = await resp.json();
+      setLiveText(
+        'liveQueueStatus',
+        'Ingest decision ' + data.decision + ' (' + data.reason + '). Fusion disabled.',
+        data.evidence_state || 'unavailable'
+      );
+    } catch (err) {
+      setLiveText('liveQueueStatus', 'Live ingest unavailable.', 'unavailable');
+    }
+  }
+
+  async function askLiveCopilot() {
+    const input = document.getElementById('liveCopilotQuestion');
+    const question = input ? input.value : '';
+    try {
+      const resp = await fetch('/api/v1/live/copilot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: question })
+      });
+      const data = await resp.json();
+      if (data.reason === 'containment_refused') {
+        setLiveText('liveCopilotAnswer', 'Containment refused. execution_authorized is false.', 'unavailable');
+        return;
+      }
+      const hit = data.hits && data.hits[0];
+      const label = hit ? hit.technique_id + ' ' + hit.technique_name : 'No local corpus hit.';
+      setLiveText('liveCopilotAnswer', label, data.evidence_state || 'unavailable');
+    } catch (err) {
+      setLiveText('liveCopilotAnswer', 'Copilot unavailable.', 'unavailable');
+    }
+  }
+
+  async function saveLiveAnalystNote() {
+    const input = document.getElementById('analystNoteText');
+    const note = input ? input.value : '';
+    try {
+      const resp = await fetch('/api/v1/live/notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ author_id: 'analyst_a', note_text: note })
+      });
+      const data = await resp.json();
+      setLiveText(
+        'liveQueueStatus',
+        data.evidence_state === 'verified' ? 'Analyst note saved.' : 'Analyst note refused.',
+        data.evidence_state || 'unavailable'
+      );
+    } catch (err) {
+      setLiveText('liveQueueStatus', 'Analyst note unavailable.', 'unavailable');
+    }
+  }
+
+  async function refreshLiveDriftAndWorkbench() {
+    try {
+      const driftResp = await fetch('/api/v1/live/drift');
+      const drift = await driftResp.json();
+      setLiveText(
+        'liveDriftStatus',
+        'Drift ' + (drift.drift_status || drift.reason || 'unavailable') + '. Model weights unchanged.',
+        drift.evidence_state || 'unavailable'
+      );
+      const benchResp = await fetch('/api/v1/live/workbench');
+      const bench = await benchResp.json();
+      setLiveText(
+        'liveWorkbenchStatus',
+        'n8n workbench nodes: ' + (bench.node_count || 0) + '. Dispatch stays unauthorized.',
+        bench.evidence_state || 'unavailable'
+      );
+    } catch (err) {
+      setLiveText('liveDriftStatus', 'Drift unavailable.', 'unavailable');
     }
   }
 

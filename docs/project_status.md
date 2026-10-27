@@ -1905,3 +1905,11 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 - Online backup of a WAL database now checkpoints the copy and switches it to `journal_mode=DELETE` before the snapshot is sealed. Leftover `-wal` and `-shm` files are removed. `verify_storage_snapshot()` still rejects a real unexpected file. All 13 tests in `backend/tests/integration/test_storage_backup.py` pass.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
+### Milestone #42: Live console ingest, notes, MITRE copilot, drift, and n8n workbench (2026-10-27)
+
+- `POST /api/v1/live/ingest` stores a 14-feature flow and scores it with the frozen Random Forest only when that artifact verifies and its input width is 14. A mismatch or an unverified artifact stays `decision=withheld`. `production_fusion_enabled` stays false, and the autoencoder does not change the decision.
+- Analyst notes persist in the same WAL database. The MITRE copilot answers from the local corpus and refuses containment. Drift is read-only. The n8n workbench lists the 6 workflow nodes and does not dispatch.
+- The sample campaign queue remains the offline walkthrough. The live panel is a separate control on the same page.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
