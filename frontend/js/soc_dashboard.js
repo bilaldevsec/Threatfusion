@@ -1061,6 +1061,14 @@
         dispatchSignedCallback(inc);
       });
     }
+    const stitchButton = document.getElementById('btnStitchWindows');
+    if (stitchButton) {
+      stitchButton.addEventListener('click', () => { stitchVerifiedWindows(); });
+    }
+    const guardButton = document.getElementById('btnPrivateIpGuard');
+    if (guardButton) {
+      guardButton.addEventListener('click', () => { checkPrivateIpGuard(); });
+    }
   }
 
   function setLiveText(id, text, state) {
@@ -1246,6 +1254,43 @@
       await refreshLiveCampaigns();
     } catch (err) {
       setLiveText('campaignQueueStatus', 'SOAR approval unavailable.', 'unavailable');
+    }
+  }
+
+  async function stitchVerifiedWindows() {
+    try {
+      const resp = await fetch('/api/v1/live/correlate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+      const data = await resp.json();
+      const events = data.timeline && data.timeline.event_count ? data.timeline.event_count : 0;
+      setLiveText(
+        'liveTimeline',
+        'Incidents ' + (data.incident_count || 0) + '. Largest stitch ' + (data.max_constituent_count || 0) + '. Timeline events ' + events + '.',
+        data.evidence_state || 'unavailable'
+      );
+    } catch (err) {
+      setLiveText('liveTimeline', 'Correlation unavailable.', 'unavailable');
+    }
+  }
+
+  async function checkPrivateIpGuard() {
+    try {
+      const resp = await fetch('/api/v1/live/misp-guard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: '10.0.0.4' })
+      });
+      const data = await resp.json();
+      if (resp.status === 422 && data.private_ip_guard_triggered === true) {
+        setLiveText('liveTimeline', 'Private IP 10.0.0.4 was refused before any external lookup.', 'verified');
+        return;
+      }
+      setLiveText('liveTimeline', 'Private IP guard did not refuse the address.', 'unavailable');
+    } catch (err) {
+      setLiveText('liveTimeline', 'Private IP guard unavailable.', 'unavailable');
     }
   }
 

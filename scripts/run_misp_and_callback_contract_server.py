@@ -440,6 +440,30 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             self._send_json(200, answer_mitre_copilot(question, self._live_rag_path()))
             return
 
+        if path == "/api/v1/live/correlate":
+            from threatfusion.api.live_soc_console import correlate_stored_attacks
+
+            result = correlate_stored_attacks(
+                self._live_db_path(),
+                self._live_db_path().with_name("threatfusion-live-incidents.sqlite3"),
+            )
+            status = 200 if result.get("evidence_state") == "verified" else 400
+            self._send_json(status, result)
+            return
+
+        if path == "/api/v1/live/misp-guard":
+            from threatfusion.api.live_soc_console import private_ip_guard_response
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            value = str(req_data.get("value") or "") if isinstance(req_data, dict) else ""
+            status, payload = private_ip_guard_response(value)
+            self._send_json(status, payload)
+            return
+
         if path == "/api/v1/live/replay":
             from threatfusion.api.live_soc_console import replay_benchmark_attack_burst
 

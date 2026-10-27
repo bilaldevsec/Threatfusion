@@ -18,6 +18,7 @@ import sqlite3
 import stat
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -872,3 +873,217 @@ def dispatch_approved_callback(
         "candidate_id": candidate_id,
         "verify_state": True,
     }
+
+
+def store_flow_provenance(
+    db_path: Path,
+    flow_id: int,
+    *,
+    entity_namespace_id: str,
+    src_entity_id: str,
+    dst_entity_id: str,
+    protocol: str,
+    service_or_port: str,
+    clock_synchronized: bool,
+) -> dict[str, Any]:
+    """Store the entity key used by the correlation engine. This does not invent one."""
+    if not db_path.is_file():
+        return {"evidence_state": "unavailable", "reason": "flow_not_stored"}
+    with _connect(db_path) as conn:
+        updated = conn.execute(
+            """
+            UPDATE live_flows
+            SET entity_namespace_id = ?, src_entity_id = ?, dst_entity_id = ?,
+                flow_protocol = ?, service_or_port = ?, clock_synchronized = ?
+            WHERE flow_id = ?
+            """,
+            (
+                entity_namespace_id,
+                src_entity_id,
+                dst_entity_id,
+                protocol,
+                service_or_port,
+                1 if clock_synchronized else 0,
+                flow_id,
+            ),
+        )
+        if updated.rowcount != 1:
+            return {"evidence_state": "unavailable", "reason": "flow_not_stored"}
+    return {
+        "evidence_state": "verified",
+        "flow_id": flow_id,
+        "clock_synchronized": clock_synchronized,
+    }
+
+
+def _candidate_from_attack_row(row: sqlite3.Row) -> Any:
+    from threatfusion.features.network_behavior import (
+        NETWORK_BEHAVIOR_V1_CONTRACT_VERSION,
+        UNSW_NB15_ARGUS_RAW_REPRESENTATION_V1,
+    )
+    from threatfusion.schemas.alert_candidate import (
+        ALERT_CANDIDATE_SCHEMA_VERSION,
+        DECISION_POLICY_VERSION,
+        DETECTOR_IDENTITY,
+        DETECTOR_VERSION,
+        AlertCandidate,
+        derive_alert_candidate_id,
+        derive_source_event_id,
+    )
+
+    observed = datetime.fromisoformat(str(row["observed_at_utc"]).replace("Z", "+00:00"))
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=UTC)
+    source_event_id = derive_source_event_id(
+        source_representation=UNSW_NB15_ARGUS_RAW_REPRESENTATION_V1,
+        manifest_sha256="b" * 64,
+        source_member_sha256=f"{int(row['flow_id']):064x}",
+        row_number=int(row["flow_id"]),
+    )
+    model_sha = str(row["model_sha256"])
+    candidate_id = derive_alert_candidate_id(
+        source_event_id=source_event_id,
+        detector_identity=DETECTOR_IDENTITY,
+        detector_version=DETECTOR_VERSION,
+        model_identity="random_forest",
+        model_version="network_random_forest_baseline_v1",
+        model_artifact_sha256=model_sha,
+        decision_policy_version=DECISION_POLICY_VERSION,
+    )
+    return AlertCandidate(
+        schema_version=ALERT_CANDIDATE_SCHEMA_VERSION,
+        alert_candidate_id=candidate_id,
+        source_event_id=source_event_id,
+        correlation_id=str(uuid.uuid4()),
+        detector_identity=DETECTOR_IDENTITY,
+        detector_version=DETECTOR_VERSION,
+        model_identity="random_forest",
+        model_version="network_random_forest_baseline_v1",
+        model_artifact_sha256=model_sha,
+        feature_contract_identity=NETWORK_BEHAVIOR_V1_CONTRACT_VERSION,
+        source_representation_identity=UNSW_NB15_ARGUS_RAW_REPRESENTATION_V1,
+        observed_at=observed,
+        created_at=observed,
+        uncalibrated_model_score=float(row["rf_attack_probability"]),
+        decision_threshold=0.5,
+        decision_policy_version=DECISION_POLICY_VERSION,
+        decision="Attack",
+        inference_status="completed",
+        reason="inference_succeeded",
+    )
+
+
+def correlate_stored_attacks(live_db_path: Path, incidents_db_path: Path) -> dict[str, Any]:
+    """Stitch stored Attack rows with the dual-window engine.
+
+    Rows without a verified entity key stay singletons. Benign rows are not grouped.
+    """
+    from threatfusion.alerts.correlation_engine import (
+        CorrelatableAlert,
+        EntityProvenanceContract,
+        IncidentCorrelationEngine,
+        IncidentSqliteRepository,
+    )
+    from threatfusion.api.analyst_dashboard import build_unified_incident_timeline
+
+    empty = {
+        "schema_version": "live_correlation_v1",
+        "evidence_state": "unavailable",
+        "reason": "no_attack_flows",
+        "production_fusion_enabled": False,
+        "incident_count": 0,
+        "burst_incident_count": 0,
+        "campaign_incident_count": 0,
+        "max_constituent_count": 0,
+        "incidents": [],
+        "timeline": build_unified_incident_timeline(flow_members=[]),
+    }
+    if not live_db_path.is_file():
+        return empty
+    with _connect(live_db_path) as conn:
+        rows = conn.execute("""
+            SELECT * FROM live_flows
+            WHERE decision = 'Attack' AND rf_attack_probability >= 0.5
+            ORDER BY flow_id ASC
+            """).fetchall()
+    correlatable = []
+    for row in rows:
+        try:
+            candidate = _candidate_from_attack_row(row)
+        except (TypeError, ValueError, RuntimeError):
+            continue
+        provenance = EntityProvenanceContract(
+            entity_namespace_id=row["entity_namespace_id"],
+            clock_synchronized=row["clock_synchronized"] == 1,
+            src_entity_id=row["src_entity_id"],
+            dst_entity_id=row["dst_entity_id"],
+            protocol=row["flow_protocol"],
+            service_or_port=row["service_or_port"],
+            observed_at_utc=row["observed_at_utc"],
+            address_reuse_or_nat=False,
+            max_clock_skew_seconds=0.0,
+        )
+        correlatable.append(CorrelatableAlert(candidate=candidate, provenance=provenance))
+    if not correlatable:
+        return empty
+    result = IncidentCorrelationEngine(IncidentSqliteRepository(incidents_db_path)).correlate(
+        correlatable
+    )
+    incidents = [
+        {
+            "incident_id": incident.incident_id,
+            "correlation_mode": incident.correlation_mode,
+            "window_type": incident.window_type,
+            "constituent_alert_count": incident.constituent_alert_count,
+            "earliest_observed_at": incident.earliest_observed_at,
+        }
+        for incident in result.incidents
+    ]
+    members = []
+    for incident in result.incidents:
+        for alert_id in incident.constituent_alert_ids:
+            members.append(
+                {
+                    "observed_at": incident.earliest_observed_at,
+                    "alert_candidate_id": alert_id,
+                    "summary": incident.correlation_mode,
+                }
+            )
+    burst = sum(
+        1 for incident in result.incidents if incident.correlation_mode == "burst_correlated"
+    )
+    campaign = sum(
+        1 for incident in result.incidents if incident.correlation_mode == "campaign_correlated"
+    )
+    return {
+        "schema_version": "live_correlation_v1",
+        "evidence_state": "verified",
+        "reason": "dual_window_correlation",
+        "production_fusion_enabled": False,
+        "incident_count": len(incidents),
+        "burst_incident_count": burst,
+        "campaign_incident_count": campaign,
+        "max_constituent_count": max(
+            (item["constituent_alert_count"] for item in incidents), default=0
+        ),
+        "incidents": incidents,
+        "timeline": build_unified_incident_timeline(flow_members=members),
+    }
+
+
+def private_ip_guard_response(value: str) -> tuple[int, dict[str, Any]]:
+    """Return HTTP 422 for a private, loopback, or link-local address. No external lookup."""
+    import ipaddress
+
+    try:
+        parsed = ipaddress.ip_address(value.strip())
+        blocked = parsed.is_private or parsed.is_loopback or parsed.is_link_local
+    except ValueError:
+        blocked = False
+    if blocked:
+        return 422, {
+            "error": "RFC1918 private IP lookup forbidden",
+            "private_ip_guard_triggered": True,
+            "value": value.strip(),
+        }
+    return 200, {"private_ip_guard_triggered": False, "matched": False, "value": value.strip()}

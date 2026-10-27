@@ -913,3 +913,7 @@ The stored campaign queue, recorded UNSW-NB15 study-fixture replay, and hash-cha
 ### Milestone #44 signed callback loop, 2026-10-27
 
 The verify-state check, 4-block case record, and HMAC callback do not execute host containment and do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
+
+### Milestone #45 dual-window stitch, 2026-10-27
+
+Verified-key burst stitching and the private-IP refusal do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.

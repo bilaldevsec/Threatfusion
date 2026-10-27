@@ -10,13 +10,16 @@ from threatfusion.api.live_soc_console import (
     add_analyst_note,
     answer_mitre_copilot,
     approve_live_soar,
+    correlate_stored_attacks,
     drift_for_stored_flows,
     list_live_campaigns,
     list_live_flows,
     persist_scored_flow,
+    private_ip_guard_response,
     read_n8n_workbench,
     replay_benchmark_attack_burst,
     score_canonical_flow,
+    store_flow_provenance,
 )
 from threatfusion.models.drift_and_supply_chain import (
     CANONICAL_14_FEATURES,
@@ -315,3 +318,41 @@ def test_dispatch_records_signed_callback_and_mttr(tmp_path: Path, monkeypatch) 
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_verified_burst_stitches_and_private_ip_is_refused(tmp_path: Path) -> None:
+    live_db = tmp_path / "live.sqlite3"
+    score = score_canonical_flow(
+        _features(), repo_root=REPO_ROOT, model=_Width14Model(), supply_verified=True
+    )
+    first = persist_scored_flow(live_db, _features(), score)
+    second = persist_scored_flow(live_db, _features(), score)
+    benign = score_canonical_flow(
+        _features(), repo_root=REPO_ROOT, model=_Width14Model(), supply_verified=True
+    )
+    benign["decision"] = "Benign"
+    benign["rf_attack_probability"] = 0.2
+    persist_scored_flow(live_db, _features(), benign)
+    for flow_id in (first["flow_id"], second["flow_id"]):
+        stored = store_flow_provenance(
+            live_db,
+            flow_id,
+            entity_namespace_id="lab:edge-01",
+            src_entity_id="198.51.100.27",
+            dst_entity_id="10.0.0.5",
+            protocol="tcp",
+            service_or_port="80",
+            clock_synchronized=True,
+        )
+        assert stored["evidence_state"] == "verified"
+    report = correlate_stored_attacks(live_db, tmp_path / "incidents.sqlite3")
+    assert report["production_fusion_enabled"] is False
+    assert report["burst_incident_count"] == 1
+    assert report["max_constituent_count"] == 2
+    assert report["timeline"]["event_count"] == 2
+    blocked_status, blocked = private_ip_guard_response("10.0.0.4")
+    assert blocked_status == 422
+    assert blocked["private_ip_guard_triggered"] is True
+    open_status, opened = private_ip_guard_response("8.8.8.8")
+    assert open_status == 200
+    assert opened["private_ip_guard_triggered"] is False

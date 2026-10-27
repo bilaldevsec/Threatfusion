@@ -1919,6 +1919,11 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 - `POST /api/v1/live/soar/dispatch` sends the approved ledger row to `/api/v1/soar/verify-state`, writes a 4-block TheHive case record, then posts the HMAC-SHA256 body to `/api/v1/soar/callback`. The returned `t_response` is the MTTR. A second dispatch returns the same receipt.
 - Host containment stays unauthorized. A missing HMAC secret or an unapproved playbook stays `evidence_state=unavailable`.
 
+### Milestone #45: Dual-window stitch and private-IP refusal (2026-10-27)
+
+- `POST /api/v1/live/correlate` runs `IncidentCorrelationEngine` on stored Attack rows. Two rows that share a verified entity key inside 30 seconds become one burst. Rows without that key stay singletons. Benign rows are not members.
+- `POST /api/v1/live/misp-guard` returns HTTP 422 for a private address and does not query an external service.
+
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 ### Milestone #43: Stored campaign queue and hash-chained local approval (2026-10-27)
