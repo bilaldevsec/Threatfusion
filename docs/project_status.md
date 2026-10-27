@@ -1929,6 +1929,11 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 - Acknowledge, escalate, and dismiss write a triage row. An unknown action is refused.
 - The shift-handoff export calls `verify_explanation_groundedness()`. A brief that names an address outside the evidence bundle is not verified. Block 3 stays `unavailable` when no technique was retrieved. Containment stays unauthorized.
 
+### Milestone #47: One-command local launcher and root README (2026-10-27)
+
+- `scripts/run_live_product.sh` starts the page and the contract endpoints as one process on `127.0.0.1`. The HMAC and MISP values are lab defaults.
+- The root README states the Section 8 recall comparison and leaves TF-008 through TF-011 open.
+
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 ### Milestone #43: Stored campaign queue and hash-chained local approval (2026-10-27)

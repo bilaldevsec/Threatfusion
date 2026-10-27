@@ -921,3 +921,7 @@ Verified-key burst stitching and the private-IP refusal do not satisfy the closu
 ### Milestone #46 triage and grounded handoff, 2026-10-27
 
 Stored triage actions and the grounded brief do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
+
+### Milestone #47 local launcher, 2026-10-27
+
+The one-command launcher and root README do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
