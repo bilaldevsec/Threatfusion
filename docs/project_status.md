@@ -1939,6 +1939,7 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 - The same script now refuses a busy port, a short lab secret, a missing interpreter, and a missing console file with `error:` on stderr. It waits until `GET /` and `GET /healthz` both return HTTP 200, and it stops the child on Ctrl-C or `SIGTERM`. `--dry-run` does not bind. `--smoke` checks both responses and that the port is free afterward.
 - When `THREATFUSION_SOAR_LEDGER_DB_PATH` is unset, the launcher sets it to `threatfusion-live-soar.sqlite3` beside the console database. `run_server` copies that path onto the contract handler, so verify-state and the callback see the file approval writes. The contract server also closes the socket on `SIGTERM` and prints a bind failure instead of a traceback.
 - The root README keeps the Section 8 arithmetic and names open PRs #2, #3, and #4 as unmerged follow-up. TF-008 through TF-011 stay open.
+- On this `/workspace` checkout, `git diff --check` passed. Pytest collected 1,531 tests: 1,504 passed, 20 failed, 7 skipped. The failures are missing UNSW registration files, missing `certutil`, and the canonical-path checks. Boundary preflight is GO for B0–B6 with `--active /workspace`. The repository-truth audit is 6/7; check 1 is the `/workspace` path mismatch, and checks 2–7 pass.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 

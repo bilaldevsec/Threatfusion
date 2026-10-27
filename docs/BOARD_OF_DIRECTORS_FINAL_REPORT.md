@@ -53,6 +53,13 @@ Stop the process with Ctrl-C when the walkthrough is finished. The launcher bind
 
 ## Gates for this slice
 
-On 2026-10-27 the full pytest suite was run from this repository with `env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 threatfusion-venv/bin/pytest -q --tb=line`. The first run finished in about 314 seconds and failed one test: `backend/tests/unit/test_alert_persistence.py::test_corruption_is_not_replaced_and_errors_are_sanitized`. Opening a non-SQLite file ran `PRAGMA journal_mode=WAL` before the integrity check, and SQLite's `file is not a database` was labeled `database_unavailable`. The alert repository now labels that message `database_corrupt` and still leaves the damaged bytes in place. The persistence file then passed 19 tests. The full suite was run again and passed 1,527 tests in about 312 seconds, with exit code 0.
+On 2026-10-27 an earlier full pytest suite on the canonical workstation, `env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 threatfusion-venv/bin/pytest -q --tb=line`, failed once on `backend/tests/unit/test_alert_persistence.py::test_corruption_is_not_replaced_and_errors_are_sanitized`. Opening a non-SQLite file ran `PRAGMA journal_mode=WAL` before the integrity check, and SQLite's `file is not a database` was labeled `database_unavailable`. The alert repository now labels that message `database_corrupt` and still leaves the damaged bytes in place. That persistence file then passed 19 tests, and the suite on that workstation passed 1,527 tests in about 312 seconds.
 
-`git diff --check`, boundary preflight B0–B6, and the repository-truth audit (7/7) are the commit gates for this report. TF-008, TF-009, TF-010, and TF-011 stay open. The four frozen digests are unchanged. `production_fusion_enabled` stays false.
+The launcher slice was checked again from this checkout (`/workspace`, not `/home/muhammad-bilal/projects/threatfusion-gemini`):
+
+- `git diff --check` passed.
+- The same pytest command collected 1,531 tests and finished in about 114 seconds with exit code 1: 1,504 passed, 20 failed, 7 skipped. The four launcher tests passed. The 20 failures are environment gaps on this checkout: missing `NUSW-NB15_features.csv` and the preprocessing snapshot (`unsw_registration_invalid`), missing `certutil` (`nss_tool_failed`), and B1/B6 plus audit check 1 because the working directory is `/workspace`.
+- `scripts/boundary_preflight.py --venv threatfusion-venv` is NO-GO on B1 and B6 only. `--active /workspace --venv /workspace/threatfusion-venv` is GO for B0–B6.
+- `scripts/audit_repo_truth.py` on the clean launcher commit is 6/7. Check 1 is `Workspace path mismatch: /workspace != /home/muhammad-bilal/projects/threatfusion-gemini`. Checks 2–7 pass. The audit command has no active-root switch. The boundary `--active` flag is the override that makes B0–B6 GO.
+
+TF-008, TF-009, TF-010, and TF-011 stay open. The four frozen digests are unchanged. `production_fusion_enabled` stays false.
