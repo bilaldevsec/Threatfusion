@@ -830,6 +830,8 @@
             <div><b>Playbook:</b> <code>${inc.soarRecord ? escapeHtml(inc.soarRecord.playbookId) : 'pb-isolate-01'}</code></div>
             <div><b>State:</b> <span class="badge badge-state">${inc.soarRecord ? escapeHtml(inc.soarRecord.state) : 'pending_approval'}</span></div>
             <div><b>Audit Chain:</b> <span class="badge" data-evidence-state="${chainState}">${chainOk ? 'Chain Valid (SHA-256)' : 'Chain Unavailable'}</span></div>
+            <div><b>Callback MTTR:</b> ${inc.mttrSeconds === null || inc.mttrSeconds === undefined ? 'not recorded' : Number(inc.mttrSeconds).toFixed(3) + 's'}</div>
+            <div><b>HMAC:</b> <code>${inc.callbackSignature && SHA256_HEX_REGEX.test(inc.callbackSignature) ? escapeHtml(inc.callbackSignature.substring(0, 16)) + '...' : 'none'}</code></div>
             <div><b>HMAC Verified:</b> <span class="badge" data-evidence-state="${hiveState}">${hiveOk ? 'Verified & Dispatched' : 'Pending Authorization'}</span></div>
           </div>
         </div>
@@ -1052,6 +1054,13 @@
     if (replayButton) {
       replayButton.addEventListener('click', () => { replayBenchmarkBurst(); });
     }
+    const dispatchButton = document.getElementById('btnDispatchCallback');
+    if (dispatchButton) {
+      dispatchButton.addEventListener('click', () => {
+        const inc = activeIncidents().find(i => i.id === selectedIncidentId);
+        dispatchSignedCallback(inc);
+      });
+    }
   }
 
   function setLiveText(id, text, state) {
@@ -1103,6 +1112,9 @@
       },
       soarAuditChainVerified: chainOk && SHA256_HEX_REGEX.test(entry),
       soarAuditChainHeadSha256: entry,
+      callbackSignature: typeof flow.callback_signature === 'string' ? flow.callback_signature : '',
+      thehiveCaseId: flow.thehive_case_id || '',
+      mttrSeconds: flow.mttr_seconds,
       thehiveCaseRecord: null,
       n8nPlaybookReceipt: null
     };
@@ -1234,6 +1246,36 @@
       await refreshLiveCampaigns();
     } catch (err) {
       setLiveText('campaignQueueStatus', 'SOAR approval unavailable.', 'unavailable');
+    }
+  }
+
+  async function dispatchSignedCallback(inc) {
+    if (!inc || !inc.live || !inc.flowId) {
+      setLiveText('campaignQueueStatus', 'Dispatch applies to an approved stored flow.', 'unavailable');
+      return;
+    }
+    try {
+      const resp = await fetch('/api/v1/live/soar/dispatch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flow_id: inc.flowId })
+      });
+      const data = await resp.json();
+      const sig = typeof data.signature_sha256 === 'string' ? data.signature_sha256 : '';
+      if (data.callback_recorded === true && SHA256_HEX_REGEX.test(sig)) {
+        const mttr = Number(data.mttr_seconds);
+        const mttrText = Number.isFinite(mttr) ? mttr.toFixed(3) + 's' : 'n/a';
+        setLiveText(
+          'campaignQueueStatus',
+          'Signed callback ' + sig.substring(0, 16) + ' recorded. MTTR ' + mttrText + '. Host containment was not executed.',
+          'verified'
+        );
+      } else {
+        setLiveText('campaignQueueStatus', 'Signed callback unavailable.', 'unavailable');
+      }
+      await refreshLiveCampaigns();
+    } catch (err) {
+      setLiveText('campaignQueueStatus', 'Signed callback unavailable.', 'unavailable');
     }
   }
 

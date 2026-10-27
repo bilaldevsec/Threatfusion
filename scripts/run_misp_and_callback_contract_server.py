@@ -24,7 +24,7 @@ import argparse
 from datetime import UTC, datetime
 import hashlib
 import hmac
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
 import json
 import os
@@ -467,6 +467,34 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 flow_id=flow_id,
                 actor_id=str(req_data.get("actor_id") or ""),
                 reason=str(req_data.get("reason") or ""),
+            )
+            status = 200 if result.get("evidence_state") == "verified" else 400
+            self._send_json(status, result)
+            return
+
+        if path == "/api/v1/live/soar/dispatch":
+            from threatfusion.api.live_soc_console import dispatch_approved_callback
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            raw_flow = req_data.get("flow_id")
+            flow_id = raw_flow if isinstance(raw_flow, int) else 0
+            host, port = self.server.server_address[:2]
+            if host in {"0.0.0.0", "::", ""}:
+                host = "127.0.0.1"
+            result = dispatch_approved_callback(
+                self._live_db_path(),
+                self._live_soar_path(),
+                flow_id=flow_id,
+                contract_base_url=f"http://{host}:{port}",
+                hmac_secret=os.environ.get("THREATFUSION_SOAR_HMAC_SECRET", ""),
+                outbox_db_path=self._live_db_path().with_name("threatfusion-live-thehive.sqlite3"),
             )
             status = 200 if result.get("evidence_state") == "verified" else 400
             self._send_json(status, result)
@@ -996,7 +1024,7 @@ def run_server(
     if effective_db:
         MispAndCallbackContractHandler.soar_db_path = effective_db
     server_address = (bind_addr, port)
-    httpd = HTTPServer(server_address, MispAndCallbackContractHandler)
+    httpd = ThreadingHTTPServer(server_address, MispAndCallbackContractHandler)
     print(f"[ThreatFusion] SOC Contract Server listening on {bind_addr}:{port}")
     try:
         httpd.serve_forever()

@@ -909,3 +909,7 @@ The live ingest, analyst notes, local MITRE copilot, read-only drift monitor, an
 ### Milestone #43 stored campaigns and local SOAR approval, 2026-10-27
 
 The stored campaign queue, recorded UNSW-NB15 study-fixture replay, and hash-chained local approval do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. Approval does not execute containment. All four issues remain **open**.
+
+### Milestone #44 signed callback loop, 2026-10-27
+
+The verify-state check, 4-block case record, and HMAC callback do not execute host containment and do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.

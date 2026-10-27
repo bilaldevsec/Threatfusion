@@ -1914,6 +1914,13 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Milestone #44: Signed callback loop for an approved playbook (2026-10-27)
+
+- `POST /api/v1/live/soar/dispatch` sends the approved ledger row to `/api/v1/soar/verify-state`, writes a 4-block TheHive case record, then posts the HMAC-SHA256 body to `/api/v1/soar/callback`. The returned `t_response` is the MTTR. A second dispatch returns the same receipt.
+- Host containment stays unauthorized. A missing HMAC secret or an unapproved playbook stays `evidence_state=unavailable`.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
 ### Milestone #43: Stored campaign queue and hash-chained local approval (2026-10-27)
 
 - `GET /api/v1/live/campaigns` reads stored live flows and, when `THREATFUSION_INCIDENTS_DB_PATH` points at an existing database, the incident rows already in that file. A missing database is an empty list.

@@ -8,12 +8,16 @@ workbench read local files. Containment stays unauthorized.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import math
 import os
 import re
 import sqlite3
 import stat
+import urllib.error
+import urllib.request
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -48,6 +52,17 @@ _FLOW_EXTRA_COLUMNS: tuple[tuple[str, str], ...] = (
     ("entry_sha256", "TEXT"),
     ("prev_entry_sha256", "TEXT"),
     ("audit_chain_verified", "INTEGER"),
+    ("callback_signature", "TEXT"),
+    ("thehive_case_id", "TEXT"),
+    ("mttr_seconds", "REAL"),
+    ("callback_recorded", "INTEGER"),
+    ("triage_state", "TEXT"),
+    ("src_entity_id", "TEXT"),
+    ("dst_entity_id", "TEXT"),
+    ("entity_namespace_id", "TEXT"),
+    ("flow_protocol", "TEXT"),
+    ("service_or_port", "TEXT"),
+    ("clock_synchronized", "INTEGER"),
 )
 
 
@@ -363,7 +378,10 @@ def _flow_rows(db_path: Path, *, limit: int) -> list[dict[str, Any]]:
             SELECT flow_id, observed_at_utc, rf_attack_probability, decision,
                    evidence_state, reason, model_sha256, campaign_id, source_label,
                    case_title, playbook_id, ledger_state, entry_sha256,
-                   prev_entry_sha256, audit_chain_verified
+                   prev_entry_sha256, audit_chain_verified, callback_signature,
+                   thehive_case_id, mttr_seconds, callback_recorded, triage_state,
+                   src_entity_id, dst_entity_id, entity_namespace_id, flow_protocol,
+                   service_or_port, clock_synchronized
             FROM live_flows
             ORDER BY flow_id DESC
             LIMIT ?
@@ -647,3 +665,210 @@ def approve_live_soar(
     receipt["ledger_state"] = updated.state
     _store_flow_receipt(live_db_path, flow_id, receipt)
     return receipt
+
+
+def _canonical_body(payload: Mapping[str, Any]) -> bytes:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _hmac_sha256(body: bytes, secret: str) -> str:
+    return hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+
+
+def _post_signed(
+    url: str, body: bytes, signature: str, idem_key: str
+) -> tuple[int, dict[str, Any]]:
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-ThreatFusion-Signature-256": signature,
+            "X-Idempotency-Key": idem_key,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5.0) as response:
+            raw = response.read().decode("utf-8")
+            parsed = json.loads(raw) if raw else {}
+            return response.status, parsed if isinstance(parsed, dict) else {}
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8")
+        try:
+            parsed = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            parsed = {"error": "invalid_response"}
+        return exc.code, parsed if isinstance(parsed, dict) else {}
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        return 0, {"error": exc.__class__.__name__}
+
+
+def _store_callback_receipt(
+    db_path: Path,
+    flow_id: int,
+    *,
+    signature: str,
+    case_id: str,
+    mttr_seconds: float,
+) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE live_flows
+            SET callback_signature = ?, thehive_case_id = ?, mttr_seconds = ?,
+                callback_recorded = 1
+            WHERE flow_id = ?
+            """,
+            (signature, case_id, mttr_seconds, flow_id),
+        )
+
+
+def dispatch_approved_callback(
+    live_db_path: Path,
+    soar_db_path: Path,
+    *,
+    flow_id: int,
+    contract_base_url: str,
+    hmac_secret: str,
+    thehive_url: str = "http://127.0.0.1:9",
+    outbox_db_path: Path | None = None,
+) -> dict[str, Any]:
+    """Verify an approved playbook, open a local 4-block case, and record the HMAC callback.
+
+    Host containment is not executed. The callback is the signed local contract loop.
+    """
+    refused: dict[str, Any] = {
+        "schema_version": "live_soar_callback_v1",
+        "evidence_state": "unavailable",
+        "execution_authorized": False,
+        "containment_executed": False,
+        "production_fusion_enabled": False,
+        "callback_recorded": False,
+        "signature_sha256": "",
+    }
+    if flow_id <= 0:
+        refused["reason"] = "flow_not_stored"
+        return refused
+    secret = hmac_secret.strip()
+    base = contract_base_url.rstrip("/")
+    if len(secret) < 16 or not base:
+        refused["reason"] = "callback_contract_unconfigured"
+        return refused
+    if not live_db_path.is_file() or not soar_db_path.is_file():
+        refused["reason"] = "flow_not_stored"
+        return refused
+    with _connect(live_db_path) as conn:
+        flow = conn.execute("SELECT * FROM live_flows WHERE flow_id = ?", (flow_id,)).fetchone()
+    if flow is None:
+        refused["reason"] = "flow_not_stored"
+        return refused
+    stored_sig = str(flow["callback_signature"] or "")
+    if flow["callback_recorded"] and _SHA256_HEX.fullmatch(stored_sig):
+        return {
+            "schema_version": "live_soar_callback_v1",
+            "evidence_state": "verified",
+            "reason": "already_recorded",
+            "execution_authorized": False,
+            "containment_executed": False,
+            "production_fusion_enabled": False,
+            "callback_recorded": True,
+            "signature_sha256": stored_sig,
+            "thehive_case_id": flow["thehive_case_id"],
+            "mttr_seconds": flow["mttr_seconds"],
+            "flow_id": flow_id,
+            "playbook_id": flow["playbook_id"],
+        }
+    candidate_id = f"live_flow:{flow_id}"
+    repository = SoarPlaybookSqliteRepository(soar_db_path)
+    approved = next(
+        (
+            record
+            for record in repository.list_records_for_candidate(candidate_id)
+            if record.state in {"approved", "executed_simulated"}
+        ),
+        None,
+    )
+    if approved is None:
+        refused["reason"] = "playbook_not_approved"
+        return refused
+    verify_payload = {"candidate_id": candidate_id, "playbook_id": approved.playbook_id}
+    verify_body = _canonical_body(verify_payload)
+    verify_key = f"idem_{approved.playbook_id}_{approved.version}"
+    verify_sig = _hmac_sha256(verify_body, secret)
+    status, verified = _post_signed(
+        f"{base}/api/v1/soar/verify-state",
+        verify_body,
+        verify_sig,
+        verify_key,
+    )
+    if status != 200 or verified.get("state_verified") is not True:
+        refused["reason"] = "verify_state_rejected"
+        refused["http_status"] = status
+        return refused
+    from threatfusion.soar.n8n_thehive_misp_stack import TheHiveDeterministicClient
+
+    probability = flow["rf_attack_probability"]
+    confidence = float(probability) * 100.0 if probability is not None else 0.0
+    case = TheHiveDeterministicClient(
+        thehive_url=thehive_url,
+        api_key=secret,
+        outbox_db_path=outbox_db_path,
+    ).create_case_from_soar(
+        soar_record=approved,
+        soar_repo=repository,
+        rf_confidence_pct=confidence,
+        incident_id=flow["campaign_id"],
+    )
+    queued_at = (
+        approved.t_approval_queued
+        if approved.t_approval_queued is not None
+        else datetime.now(UTC).timestamp()
+    )
+    verified_at = datetime.now(UTC).timestamp()
+    callback_payload = {
+        "candidate_id": candidate_id,
+        "playbook_id": approved.playbook_id,
+        "case_id": case.case_id,
+        "t_approval_queued": queued_at,
+        "t_callback_verified": verified_at,
+    }
+    callback_body = _canonical_body(callback_payload)
+    callback_sig = _hmac_sha256(callback_body, secret)
+    callback_key = f"idem_{approved.playbook_id}_{approved.version}_cb"
+    callback_status, callback = _post_signed(
+        f"{base}/api/v1/soar/callback",
+        callback_body,
+        callback_sig,
+        callback_key,
+    )
+    if callback_status != 200 or callback.get("callback_recorded") is not True:
+        refused["reason"] = "callback_rejected"
+        refused["http_status"] = callback_status
+        refused["thehive_case_id"] = case.case_id
+        return refused
+    mttr = float(callback.get("t_response") or 0.0)
+    _store_callback_receipt(
+        live_db_path,
+        flow_id,
+        signature=callback_sig,
+        case_id=case.case_id,
+        mttr_seconds=mttr,
+    )
+    return {
+        "schema_version": "live_soar_callback_v1",
+        "evidence_state": "verified",
+        "reason": "signed_callback_recorded",
+        "execution_authorized": False,
+        "containment_executed": False,
+        "production_fusion_enabled": False,
+        "callback_recorded": True,
+        "signature_sha256": callback_sig,
+        "thehive_case_id": case.case_id,
+        "thehive_status": case.status,
+        "mttr_seconds": mttr,
+        "flow_id": flow_id,
+        "playbook_id": approved.playbook_id,
+        "candidate_id": candidate_id,
+        "verify_state": True,
+    }

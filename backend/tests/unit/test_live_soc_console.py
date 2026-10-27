@@ -237,3 +237,81 @@ def test_soar_approval_writes_linked_hash_and_does_not_execute(tmp_path: Path) -
     stored_flow = listed["campaigns"][0]["flows"][0]
     assert stored_flow["entry_sha256"] == approved["entry_sha256"]
     assert stored_flow["audit_chain_verified"] == 1
+
+
+def test_dispatch_records_signed_callback_and_mttr(tmp_path: Path, monkeypatch) -> None:
+    import importlib.util
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from threatfusion.api.live_soc_console import approve_live_soar, dispatch_approved_callback
+
+    spec = importlib.util.spec_from_file_location(
+        "contract_server_under_test",
+        REPO_ROOT / "scripts" / "run_misp_and_callback_contract_server.py",
+    )
+    assert spec is not None and spec.loader is not None
+    server_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(server_module)
+    MispAndCallbackContractHandler = server_module.MispAndCallbackContractHandler
+
+    live_db = tmp_path / "live.sqlite3"
+    soar_db = tmp_path / "soar.sqlite3"
+    monkeypatch.setenv("THREATFUSION_SOAR_HMAC_SECRET", "lab-hmac-secret-01")
+    MispAndCallbackContractHandler.soar_db_path = str(soar_db)
+    stored = persist_scored_flow(
+        live_db,
+        _features(),
+        score_canonical_flow(
+            _features(), repo_root=REPO_ROOT, model=_Width14Model(), supply_verified=True
+        ),
+    )
+    approve_live_soar(
+        live_db,
+        soar_db,
+        flow_id=stored["flow_id"],
+        actor_id="analyst_a",
+        reason="Analyst recorded local approval. Containment is not executed.",
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), MispAndCallbackContractHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        refused = dispatch_approved_callback(
+            live_db,
+            soar_db,
+            flow_id=stored["flow_id"],
+            contract_base_url="",
+            hmac_secret="lab-hmac-secret-01",
+        )
+        assert refused["evidence_state"] == "unavailable"
+        assert refused["containment_executed"] is False
+        port = server.server_address[1]
+        dispatched = dispatch_approved_callback(
+            live_db,
+            soar_db,
+            flow_id=stored["flow_id"],
+            contract_base_url=f"http://127.0.0.1:{port}",
+            hmac_secret="lab-hmac-secret-01",
+            outbox_db_path=tmp_path / "thehive.sqlite3",
+        )
+        assert dispatched["evidence_state"] == "verified"
+        assert dispatched["callback_recorded"] is True
+        assert dispatched["verify_state"] is True
+        assert dispatched["execution_authorized"] is False
+        assert dispatched["containment_executed"] is False
+        assert len(dispatched["signature_sha256"]) == 64
+        assert str(dispatched["thehive_case_id"]).startswith("case_")
+        assert dispatched["mttr_seconds"] >= 0.0
+        again = dispatch_approved_callback(
+            live_db,
+            soar_db,
+            flow_id=stored["flow_id"],
+            contract_base_url=f"http://127.0.0.1:{port}",
+            hmac_secret="lab-hmac-secret-01",
+        )
+        assert again["reason"] == "already_recorded"
+        assert again["signature_sha256"] == dispatched["signature_sha256"]
+    finally:
+        server.shutdown()
+        server.server_close()

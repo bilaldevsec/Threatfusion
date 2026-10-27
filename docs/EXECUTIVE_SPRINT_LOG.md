@@ -42,3 +42,8 @@
 - The browser no longer invents a hash, a TheHive case, or an n8n signature. Sample incidents remain only if the campaign request cannot be reached.
 - Frozen Random Forest authority, the four model digests, Gate G9, and TF-008 through TF-011 are unchanged.
 - Next: show this queue on the authenticated analyst page, still without executing containment.
+
+=== 30-SECOND CEO SKIM REPORT ===
+- An approved playbook can now be checked at verify-state, written as a 4-block case, and closed with a real HMAC callback. MTTR is the callback interval.
+- Host containment stays unauthorized. A missing secret or an unapproved row does not get a receipt.
+- Frozen Random Forest authority, the four model digests, Gate G9, and TF-008 through TF-011 are unchanged.
