@@ -59,12 +59,11 @@ On 2026-10-27 the full pytest suite was run from this repository with `env -u PY
 
 `git diff --check`, boundary preflight B0–B6, and the repository-truth audit (7/7) are the commit gates for this report. TF-008, TF-009, TF-010, and TF-011 stay open. The four frozen digests are unchanged. `production_fusion_enabled` stays false.
 
-## TASK-3 verification, 2026-10-27
+## Deltas taken from open PRs 2–5
 
-The signed callback path, the 4-block case writer, the HMAC check, and the MTTR formula were already in the tree. The default launcher did not complete that loop. This change binds verify-state and the callback to the approval ledger and adds `test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr`.
+- PR #2 (`cursor/task-3-soar-callback-8fab`, `9665090`): approval, verify-state, and the HMAC callback share one SQLite ledger even when `THREATFUSION_SOAR_LEDGER_DB_PATH` is unset. A failed timing write does not report the callback as recorded. The drawer shows the stored case id, HMAC prefix, and ledger MTTR.
+- PR #3 (`cursor/task-4-correlation-timeline-a054`, `458ccba`): ingest and replay call `IncidentCorrelationEngine` with the inclusive 30-second burst and 600-second campaign windows. The drawer shows `correlated_flow_count` and each flow's observed time. MISP lookup returns HTTP 422 for RFC1918, ULA, loopback, and link-local addresses before any indicator lookup.
+- PR #4 (`cursor/task-5-triage-handoff-c007`, `ee15e91` and `22ab96c`): Acknowledge, Escalate, and Dismiss append `triage_events` and keep the latest state on the flow across reload. The grounded handoff includes that history. A note that names an address outside the stored flow is refused by `verify_explanation_groundedness()`.
+- PR #5 (`cursor/task-6-product-launcher-bd6b`, `7093708`): `scripts/run_live_product.sh` preflights the port, secrets, and console files, waits until `/` and `/healthz` answer, points verify-state at the same ledger, and stops that process on SIGTERM. `--dry-run` and `--smoke` are part of that launcher.
 
-## TASK-4 verification on 2026-10-27
-
-Ingest and replay call `IncidentCorrelationEngine`. A gap of 30.0 seconds stays in the burst window and 30.001 seconds falls through to the campaign window. A gap of 600.0 seconds stays in the campaign window and 600.001 seconds does not stitch. `POST /attributes/restSearch` returns HTTP 422 for RFC1918, IPv6 ULA, loopback, and link-local addresses before the local indicator table.
-
-The integrated checkout gates are recorded in the section below after this branch is measured. TF-008, TF-009, TF-010, and TF-011 stay open. The four frozen digests are unchanged. `production_fusion_enabled` stays false.
+These four pull requests can be closed as superseded by this branch. The measured gates for the integrated checkout are in the section below. TF-008, TF-009, TF-010, and TF-011 stay open. The four frozen digests are unchanged. `production_fusion_enabled` stays false.
