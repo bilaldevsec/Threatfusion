@@ -405,5 +405,187 @@ def test_live_product_launcher_starts_one_process() -> None:
     assert script.startswith("#!/usr/bin/env bash\n")
     assert "run_misp_and_callback_contract_server.py" in script
     assert "production_fusion_enabled = True" not in script
-    assert "+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)" in readme
+    assert (
+        "+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)"
+        in readme
+    )
     assert "TF-008, TF-009, TF-010, and TF-011 remain open." in readme
+
+
+def _post_json(url: str, payload: dict) -> tuple[int, dict]:
+    import json
+    import urllib.error
+    import urllib.request
+
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5.0) as response:
+            parsed = json.loads(response.read().decode("utf-8"))
+            return response.status, parsed if isinstance(parsed, dict) else {}
+    except urllib.error.HTTPError as exc:
+        parsed = json.loads(exc.read().decode("utf-8"))
+        return exc.code, parsed if isinstance(parsed, dict) else {}
+
+
+def test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Drive the launcher path: no explicit ledger, real verify-state, case, and HMAC."""
+    import hashlib
+    import hmac
+    import json
+    import threading
+    import time
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
+    from scripts.run_misp_and_callback_contract_server import MispAndCallbackContractHandler
+
+    live_db = tmp_path / "live.sqlite3"
+    monkeypatch.setenv("THREATFUSION_LIVE_CONSOLE_DB", str(live_db))
+    monkeypatch.delenv("THREATFUSION_SOAR_LEDGER_DB_PATH", raising=False)
+    monkeypatch.setenv("THREATFUSION_SOAR_HMAC_SECRET", "lab-hmac-secret-01")
+    previous_ledger = MispAndCallbackContractHandler.soar_db_path
+    MispAndCallbackContractHandler.soar_db_path = None
+    MispAndCallbackContractHandler.seen_verify_idempotency_keys.clear()
+    MispAndCallbackContractHandler.seen_callback_idempotency_keys.clear()
+    scored = score_canonical_flow(
+        _features(), repo_root=REPO_ROOT, model=_Width14Model(), supply_verified=True
+    )
+    stored = persist_scored_flow(live_db, _features(), scored)
+    other = persist_scored_flow(live_db, _features(), scored)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), MispAndCallbackContractHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        missing_status, missing = _post_json(
+            f"{base}/api/v1/live/soar/dispatch", {"flow_id": stored["flow_id"]}
+        )
+        assert missing_status == 400
+        assert missing["reason"] == "flow_not_stored"
+        assert missing["containment_executed"] is False
+        assert missing["production_fusion_enabled"] is False
+
+        approved_status, approved = _post_json(
+            f"{base}/api/v1/live/soar/approve",
+            {
+                "flow_id": stored["flow_id"],
+                "actor_id": "analyst_a",
+                "reason": "Analyst recorded local approval. Containment is not executed.",
+            },
+        )
+        assert approved_status == 200
+        assert approved["ledger_state"] == "approved"
+        assert approved["execution_authorized"] is False
+
+        unapproved_status, unapproved = _post_json(
+            f"{base}/api/v1/live/soar/dispatch", {"flow_id": other["flow_id"]}
+        )
+        assert unapproved_status == 400
+        assert unapproved["reason"] == "playbook_not_approved"
+        assert unapproved["containment_executed"] is False
+        time.sleep(0.05)
+
+        status, dispatched = _post_json(
+            f"{base}/api/v1/live/soar/dispatch", {"flow_id": stored["flow_id"]}
+        )
+        assert status == 200
+        assert dispatched["evidence_state"] == "verified"
+        assert dispatched["verify_state"] is True
+        assert dispatched["callback_recorded"] is True
+        assert dispatched["four_block_recorded"] is True
+        assert dispatched["execution_authorized"] is False
+        assert dispatched["containment_executed"] is False
+        assert dispatched["production_fusion_enabled"] is False
+        assert dispatched["thehive_status"] == "queued_offline"
+        assert str(dispatched["thehive_case_id"]).startswith("case_")
+        signature = dispatched["signature_sha256"]
+        assert isinstance(signature, str) and len(signature) == 64
+        assert signature == signature.lower()
+
+        soar_db = live_db.with_name("threatfusion-live-soar.sqlite3")
+        record = SoarPlaybookSqliteRepository(soar_db).get_record(dispatched["playbook_id"])
+        assert record is not None
+        assert record.state == "approved"
+        assert record.t_approval_queued is not None
+        assert record.t_callback_verified is not None
+        assert record.t_callback_verified >= record.t_approval_queued
+        expected_mttr = round(
+            max(0.0, float(record.t_callback_verified) - float(record.t_approval_queued)),
+            6,
+        )
+        assert record.t_response == expected_mttr
+        assert dispatched["mttr_seconds"] == expected_mttr
+        assert expected_mttr > 0.0
+
+        signed_body = json.dumps(
+            {
+                "candidate_id": dispatched["candidate_id"],
+                "case_id": dispatched["thehive_case_id"],
+                "playbook_id": dispatched["playbook_id"],
+                "t_approval_queued": dispatched["t_approval_queued"],
+                "t_callback_verified": dispatched["t_callback_verified"],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        assert hmac.new(b"lab-hmac-secret-01", signed_body, hashlib.sha256).hexdigest() == signature
+
+        with sqlite3.connect(soar_db) as conn:
+            scopes = {row[0] for row in conn.execute("SELECT scope FROM contract_idempotency_keys")}
+        assert scopes == {"verify", "callback"}
+
+        outbox = live_db.with_name("threatfusion-live-thehive.sqlite3")
+        with sqlite3.connect(outbox) as conn:
+            description, case_status = conn.execute(
+                "SELECT description, status FROM thehive_cases WHERE case_id = ?",
+                (dispatched["thehive_case_id"],),
+            ).fetchone()
+        assert case_status == "queued_offline"
+        for label in (
+            "Block 1 (Executive Summary):",
+            "Block 2 (Attack Timeline):",
+            "Block 3 (MITRE Mapping):",
+            "Block 4 (Cryptographic SOAR Status):",
+        ):
+            assert label in description
+
+        with urllib.request.urlopen(f"{base}/api/v1/live/campaigns", timeout=5.0) as response:
+            campaigns = json.loads(response.read().decode("utf-8"))
+        flows = [
+            flow
+            for campaign in campaigns["campaigns"]
+            for flow in campaign["flows"]
+            if flow["flow_id"] == stored["flow_id"]
+        ]
+        assert len(flows) == 1
+        flow = flows[0]
+        assert flow["mttr_seconds"] == expected_mttr
+        assert flow["callback_signature"] == signature
+        assert flow["thehive_case_id"] == dispatched["thehive_case_id"]
+
+        again_status, again = _post_json(
+            f"{base}/api/v1/live/soar/dispatch", {"flow_id": stored["flow_id"]}
+        )
+        assert again_status == 200
+        assert again["reason"] == "already_recorded"
+        assert again["signature_sha256"] == signature
+        assert again["mttr_seconds"] == expected_mttr
+    finally:
+        MispAndCallbackContractHandler.soar_db_path = previous_ledger
+        server.shutdown()
+        server.server_close()
+
+    dashboard = (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")
+    assert "signedLocalCallback" in dashboard
+    assert "Callback MTTR" in dashboard
+    assert "flow.mttr_seconds" in dashboard
+    assert "Host containment was not executed." in dashboard

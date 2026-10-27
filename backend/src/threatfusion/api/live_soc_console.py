@@ -849,6 +849,12 @@ def dispatch_approved_callback(
         refused["thehive_case_id"] = case.case_id
         return refused
     mttr = float(callback.get("t_response") or 0.0)
+    four_block_labels = (
+        "Block 1 (Executive Summary):",
+        "Block 2 (Attack Timeline):",
+        "Block 3 (MITRE Mapping):",
+        "Block 4 (Cryptographic SOAR Status):",
+    )
     _store_callback_receipt(
         live_db_path,
         flow_id,
@@ -867,6 +873,9 @@ def dispatch_approved_callback(
         "signature_sha256": callback_sig,
         "thehive_case_id": case.case_id,
         "thehive_status": case.status,
+        "four_block_recorded": all(label in case.description for label in four_block_labels),
+        "t_approval_queued": callback.get("t_approval_queued"),
+        "t_callback_verified": callback.get("t_callback_verified"),
         "mttr_seconds": mttr,
         "flow_id": flow_id,
         "playbook_id": approved.playbook_id,

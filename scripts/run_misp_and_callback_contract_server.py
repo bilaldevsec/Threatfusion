@@ -154,7 +154,22 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
     _lock: threading.Lock = threading.Lock()
 
     def _soar_db_file(self) -> str | None:
-        return self.soar_db_path or os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH")
+        explicit = self.soar_db_path or os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH")
+        if explicit and str(explicit).strip():
+            return str(explicit).strip()
+        fallback = self._live_soar_path()
+        if fallback.is_file():
+            return str(fallback)
+        return None
+
+    def _contract_ledger_file(self) -> Path | None:
+        """Ledger shared by approval, verify-state, and the HMAC callback.
+
+        An explicit path wins. Otherwise the live-console fallback is used, and
+        only when that file already exists. A missing file stays fail-closed.
+        """
+        path = self._live_soar_path()
+        return path if path.is_file() else None
 
     def _idempotency_memory(self, scope: str) -> set[str]:
         if scope == "verify":
@@ -314,12 +329,12 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             inc_timings: list[dict[str, Any]] = []
             resp_timings: list[dict[str, Any]] = []
 
-            db_path = self.soar_db_path or os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH")
-            if db_path and Path(db_path).is_file():
+            ledger = self._contract_ledger_file()
+            if ledger is not None:
                 try:
                     from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
 
-                    s_repo = SoarPlaybookSqliteRepository(Path(db_path))
+                    s_repo = SoarPlaybookSqliteRepository(ledger)
                     resp_timings = s_repo.list_response_timings()
                 except Exception:
                     pass
@@ -722,8 +737,8 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            db_path = self.soar_db_path
-            if db_path is None or not Path(db_path).is_file():
+            ledger = self._contract_ledger_file()
+            if ledger is None:
                 self._send_json(
                     403,
                     {
@@ -738,7 +753,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             try:
                 from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
 
-                repo = SoarPlaybookSqliteRepository(Path(db_path))
+                repo = SoarPlaybookSqliteRepository(ledger)
                 chain_res = repo.verify_audit_chain_integrity()
                 chain_dict = (
                     chain_res
@@ -929,9 +944,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            # (b) Resolve db_path = self.soar_db_path and verify regular file on disk
-            db_path = self.soar_db_path
-            if db_path is None or not Path(db_path).is_file():
+            # (b) Resolve the same ledger approval writes, and require that file.
+            ledger = self._contract_ledger_file()
+            if ledger is None:
                 self._send_json(
                     403,
                     {
@@ -945,7 +960,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             try:
                 from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
 
-                repo = SoarPlaybookSqliteRepository(Path(db_path))
+                repo = SoarPlaybookSqliteRepository(ledger)
                 chain_res = repo.verify_audit_chain_integrity()
                 chain_dict = (
                     chain_res
@@ -1013,7 +1028,6 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 if ("t_approval_queued" in payload and payload["t_approval_queued"] is not None)
                 else None
             )
-            t_resp = 0.0
             try:
                 t_resp = repo.record_callback_verification(
                     playbook_id=playbook_id,
@@ -1021,7 +1035,14 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                     t_approval_queued=t_app,
                 )
             except Exception:
-                pass
+                self._send_json(
+                    403,
+                    {
+                        "error": "callback_timing_not_recorded",
+                        "callback_recorded": False,
+                    },
+                )
+                return
 
             with self._lock:
                 self._idempotency_commit("callback", idem_key)

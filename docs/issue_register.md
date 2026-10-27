@@ -914,6 +914,10 @@ The stored campaign queue, recorded UNSW-NB15 study-fixture replay, and hash-cha
 
 The verify-state check, 4-block case record, and HMAC callback do not execute host containment and do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
 
+### Milestone #49 shared launcher ledger, 2026-10-27
+
+The default launcher now points verify-state and the HMAC callback at the same SOAR ledger approval writes. A recorded callback stores MTTR from the ledger timestamps and does not execute host containment. This does not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
+
 ### Milestone #45 dual-window stitch, 2026-10-27
 
 Verified-key burst stitching and the private-IP refusal do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.

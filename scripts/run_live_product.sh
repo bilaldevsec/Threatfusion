@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Start the local SOC console and the MISP/SOAR contract endpoints.
 # Both are the same process: the page and /api/v1/soar/* share one listener.
+# Approval, verify-state, and the HMAC callback share one ledger: THREATFUSION_SOAR_LEDGER_DB_PATH
+# when set, otherwise threatfusion-live-soar.sqlite3 beside the console database.
 # The HMAC and MISP values below are lab defaults, not production credentials.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
