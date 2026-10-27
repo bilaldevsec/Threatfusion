@@ -172,16 +172,14 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             try:
                 conn.execute("PRAGMA busy_timeout = 5000")
                 conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute(
-                    """
+                conn.execute("""
                     CREATE TABLE IF NOT EXISTS contract_idempotency_keys (
                         scope TEXT NOT NULL,
                         idempotency_key TEXT NOT NULL,
                         recorded_at_utc TEXT NOT NULL,
                         PRIMARY KEY (scope, idempotency_key)
                     )
-                    """
-                )
+                    """)
                 row = conn.execute(
                     "SELECT 1 FROM contract_idempotency_keys WHERE scope = ? AND idempotency_key = ?",
                     (scope, key),
@@ -203,16 +201,14 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             try:
                 conn.execute("PRAGMA busy_timeout = 5000")
                 conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute(
-                    """
+                conn.execute("""
                     CREATE TABLE IF NOT EXISTS contract_idempotency_keys (
                         scope TEXT NOT NULL,
                         idempotency_key TEXT NOT NULL,
                         recorded_at_utc TEXT NOT NULL,
                         PRIMARY KEY (scope, idempotency_key)
                     )
-                    """
-                )
+                    """)
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO contract_idempotency_keys (
@@ -293,8 +289,21 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/live/workbench":
             from threatfusion.api.live_soc_console import read_n8n_workbench
 
-            workflow = REPO_ROOT / "docker" / "n8n" / "workflows" / "threatfusion_soar_playbook.json"
+            workflow = (
+                REPO_ROOT / "docker" / "n8n" / "workflows" / "threatfusion_soar_playbook.json"
+            )
             self._send_json(200, read_n8n_workbench(workflow))
+            return
+        if path == "/api/v1/live/campaigns":
+            from threatfusion.api.live_soc_console import list_live_campaigns
+
+            self._send_json(
+                200,
+                list_live_campaigns(
+                    self._live_db_path(),
+                    incidents_db_path=self._incidents_db_path(),
+                ),
+            )
             return
         if path == "/api/v1/metrics/operational-velocity":
             from threatfusion.api.analyst_dashboard import compute_alert_noise_reduction_funnel
@@ -358,6 +367,18 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return Path(configured)
         return self._live_db_path().with_name("threatfusion-live-rag.sqlite3")
 
+    def _incidents_db_path(self) -> Path | None:
+        configured = os.environ.get("THREATFUSION_INCIDENTS_DB_PATH", "").strip()
+        if not configured:
+            return None
+        return Path(configured)
+
+    def _live_soar_path(self) -> Path:
+        configured = self.soar_db_path or os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH", "")
+        if configured and str(configured).strip():
+            return Path(str(configured).strip())
+        return self._live_db_path().with_name("threatfusion-live-soar.sqlite3")
+
     def do_POST(self) -> None:
         path = self.path.split("?")[0]
         if self._rejected_content_length():
@@ -417,6 +438,38 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if isinstance(req_data, dict):
                 question = str(req_data.get("question") or "")
             self._send_json(200, answer_mitre_copilot(question, self._live_rag_path()))
+            return
+
+        if path == "/api/v1/live/replay":
+            from threatfusion.api.live_soc_console import replay_benchmark_attack_burst
+
+            result = replay_benchmark_attack_burst(self._live_db_path(), repo_root=REPO_ROOT)
+            status = 200 if result.get("member_count") else 400
+            self._send_json(status, result)
+            return
+
+        if path == "/api/v1/live/soar/approve":
+            from threatfusion.api.live_soc_console import approve_live_soar
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            raw_flow = req_data.get("flow_id")
+            flow_id = raw_flow if isinstance(raw_flow, int) else 0
+            result = approve_live_soar(
+                self._live_db_path(),
+                self._live_soar_path(),
+                flow_id=flow_id,
+                actor_id=str(req_data.get("actor_id") or ""),
+                reason=str(req_data.get("reason") or ""),
+            )
+            status = 200 if result.get("evidence_state") == "verified" else 400
+            self._send_json(status, result)
             return
 
         # 1. MISP Rest Search Endpoint

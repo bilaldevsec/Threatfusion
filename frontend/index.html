@@ -229,7 +229,11 @@
       <aside class="card" aria-label="Incident Triage Queue" style="background: #111827;">
         <div class="card-header">
           <h2 class="card-title">Stitched Campaigns Queue</h2>
-          <span class="badge badge-state" id="queueCountBadge">3 Campaigns Loaded</span>
+          <span class="badge badge-state" id="queueCountBadge">Stored campaigns</span>
+        </div>
+        <div style="padding: 0.35rem 0.15rem 0.15rem;">
+          <button id="btnReplayBenchmarkBurst" type="button">Replay Benchmark Attack Burst</button>
+          <div id="campaignQueueStatus" data-evidence-state="unavailable">Stored campaigns have not been loaded.</div>
         </div>
 
         <!-- Queue Filter Buttons -->

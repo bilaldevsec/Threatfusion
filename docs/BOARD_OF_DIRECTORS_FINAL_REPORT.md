@@ -15,7 +15,9 @@ On `http://127.0.0.1` the SOC page now has a live panel next to the sample walkt
 - Drift reads stored rows and does not change model weights.
 - The workbench lists the 6 n8n nodes and does not dispatch a playbook.
 
-The campaign queue underneath that panel is still the sample walkthrough, including its simulated Approve button.
+The campaign queue reads stored flows. Replay scores the five recorded UNSW-NB15 study vectors with the frozen Random Forest and does not copy the printed study probability. Approve writes a hash-chained local approval and returns the 64-hex receipt. It does not execute containment, and it does not invent a TheHive case or an n8n signature. Sample incidents remain only when the campaign request cannot be reached.
+
+A browser check on 2026-10-27 replayed those five vectors. The frozen Random Forest scored four Benign and one Attack (54.3%). Approve then showed `SOAR Chain: VERIFIED (SHA-256 Linked)` for playbook `soar:dcb1e6213c6b`, with receipt prefix `be30bcf02a8cf50e` and ledger state `approved`. The other four rows stayed pending.
 
 ## What is not claimed
 

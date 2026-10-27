@@ -383,7 +383,10 @@
   // 5. App State Management & DOM Rendering
   // ========================================================================
   let currentFilter = 'all';
-  let selectedIncidentId = SAMPLE_INCIDENTS[0].id;
+  let selectedIncidentId = '';
+  let liveCampaignIncidents = [];
+  let campaignFetchSettled = false;
+  let liveQueueLoaded = false;
   let walkthroughCurrentStep = 0;
   let walkthroughInterval = null;
 
@@ -544,29 +547,32 @@
     initWalkthroughTimeline();
     setupEventListeners();
     refreshOperationalVelocity();
+    refreshLiveCampaigns();
+  }
+
+  function activeIncidents() {
+    if (!campaignFetchSettled) return [];
+    if (liveQueueLoaded) return liveCampaignIncidents;
+    return SAMPLE_INCIDENTS;
+  }
+
+  function isReceiptVerified(inc) {
+    const chainOk = verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256);
+    if (inc.live) return chainOk;
+    const ragOk = verifyChromaRagHits(inc.chromaRagHits);
+    const hiveOk = verifyHiveAndN8nReceipt(inc.thehiveCaseRecord, inc.n8nPlaybookReceipt);
+    return chainOk && ragOk && hiveOk;
   }
 
   function getFilteredIncidents() {
-    if (currentFilter === 'all') return SAMPLE_INCIDENTS;
-    if (currentFilter === 'verified') {
-      return SAMPLE_INCIDENTS.filter(inc => {
-        const chainOk = verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256);
-        const ragOk = verifyChromaRagHits(inc.chromaRagHits);
-        const hiveOk = verifyHiveAndN8nReceipt(inc.thehiveCaseRecord, inc.n8nPlaybookReceipt);
-        return chainOk && ragOk && hiveOk;
-      });
-    }
+    const source = activeIncidents();
+    if (currentFilter === 'all') return source;
+    if (currentFilter === 'verified') return source.filter(isReceiptVerified);
     if (currentFilter === 'pending') {
-      return SAMPLE_INCIDENTS.filter(inc => inc.soarRecord && inc.soarRecord.state === 'pending_approval');
+      return source.filter(inc => inc.soarRecord && inc.soarRecord.state === 'pending_approval');
     }
-    if (currentFilter === 'unavailable') {
-      return SAMPLE_INCIDENTS.filter(inc => {
-        const chainOk = verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256);
-        const ragOk = verifyChromaRagHits(inc.chromaRagHits);
-        return !chainOk || !ragOk;
-      });
-    }
-    return SAMPLE_INCIDENTS;
+    if (currentFilter === 'unavailable') return source.filter(inc => !isReceiptVerified(inc));
+    return source;
   }
 
   function renderIncidentQueue() {
@@ -586,23 +592,25 @@
       itemEl.className = `incident-item ${inc.id === selectedIncidentId ? 'selected' : ''}`;
       itemEl.dataset.id = inc.id;
 
-      const chainOk = verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256);
-      const ragOk = verifyChromaRagHits(inc.chromaRagHits);
-      const isVerified = chainOk && ragOk && verifyHiveAndN8nReceipt(inc.thehiveCaseRecord, inc.n8nPlaybookReceipt);
+      const isVerified = isReceiptVerified(inc);
       const evidenceState = isVerified ? 'verified' : (inc.soarRecord && inc.soarRecord.state === 'pending_approval' ? 'pending' : 'unavailable');
+      const observed = typeof inc.observedAt === 'string' ? inc.observedAt : '';
+      const score = Number(inc.uncalibratedScore);
+      const scoreText = Number.isFinite(score) ? (score * 100).toFixed(1) : 'n/a';
+      const aeError = inc.secondaryAe && Number.isFinite(Number(inc.secondaryAe.aeError)) ? Number(inc.secondaryAe.aeError) : 0;
 
       itemEl.innerHTML = `
         <div class="incident-item-header">
-          <span class="incident-id">${escapeHtml(inc.id.substring(0, 32))}...</span>
+          <span class="incident-id">${escapeHtml(String(inc.id).substring(0, 32))}...</span>
           <span class="badge badge-decision">${escapeHtml(inc.decision)}</span>
         </div>
         <div class="incident-meta-row">
-          <span>Observed: ${escapeHtml(inc.observedAt.substring(11, 19))} UTC</span>
-          <span>Score: <b>${(inc.uncalibratedScore * 100).toFixed(1)}%</b></span>
+          <span>Observed: ${escapeHtml(observed.substring(11, 19))} UTC</span>
+          <span>Score: <b>${scoreText}%</b></span>
         </div>
         <div style="display: flex; gap: 0.35rem; align-items: center; margin-top: 0.2rem; flex-wrap: wrap;">
-          <span class="badge badge-rf-confidence">RF: ${(inc.uncalibratedScore * 100).toFixed(1)}%</span>
-          <span class="badge badge-secondary-anomaly">v2 AE: ${(inc.secondaryAe.aeError).toFixed(3)}</span>
+          <span class="badge badge-rf-confidence">RF: ${scoreText}%</span>
+          <span class="badge badge-secondary-anomaly">v2 AE: ${aeError.toFixed(3)}</span>
           <span class="badge" data-evidence-state="${evidenceState}">${evidenceState.toUpperCase()}</span>
         </div>
       `;
@@ -621,7 +629,12 @@
     const drawerEl = document.getElementById('forensicDrawer');
     if (!drawerEl) return;
 
-    const inc = SAMPLE_INCIDENTS.find(i => i.id === selectedIncidentId) || SAMPLE_INCIDENTS[0];
+    const incidents = activeIncidents();
+    const inc = incidents.find(i => i.id === selectedIncidentId) || incidents[0];
+    if (!inc) {
+      drawerEl.innerHTML = '<div style="padding:1rem;color:var(--text-muted);">No stored campaign is selected. Replay the benchmark burst to score recorded UNSW-NB15 study vectors.</div>';
+      return;
+    }
 
     // Verification evaluation
     const chainOk = verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256);
@@ -764,7 +777,7 @@
             Constitutional Policy: AI models are strictly advisory and forbidden from autonomous execution. Human analyst cryptographic authorization required.
           </div>
           <div class="btn-group">
-            <button class="btn btn-approve" id="btnApprovePlaybook" ${!inc.soarRecord || inc.soarRecord.state !== 'pending_approval' ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>
+            <button class="btn btn-approve" id="btnApprovePlaybook" ${!(inc.live && inc.flowId && inc.soarRecord && inc.soarRecord.state === 'pending_approval') ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>
               Approve Containment Playbook
             </button>
             <button class="btn btn-rollback" id="btnRollbackPlaybook" ${!inc.soarRecord || inc.soarRecord.state !== 'executed_simulated' ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>
@@ -825,44 +838,16 @@
 
     // Bind SOAR Action Buttons
     const btnApprove = document.getElementById('btnApprovePlaybook');
-    if (btnApprove && inc.soarRecord && inc.soarRecord.state === 'pending_approval') {
+    if (btnApprove && inc.live && inc.flowId && inc.soarRecord && inc.soarRecord.state === 'pending_approval') {
       btnApprove.addEventListener('click', () => {
-        simulatePlaybookApproval(inc);
+        approveLivePlaybook(inc);
       });
     }
 
     const btnRollback = document.getElementById('btnRollbackPlaybook');
-    if (btnRollback && inc.soarRecord && inc.soarRecord.state === 'executed_simulated') {
-      btnRollback.addEventListener('click', () => {
-        simulatePlaybookRollback(inc);
-      });
+    if (btnRollback) {
+      btnRollback.disabled = true;
     }
-  }
-
-  function simulatePlaybookApproval(inc) {
-    if (!inc.soarRecord) return;
-    inc.soarRecord.state = 'executed_simulated';
-    inc.soarRecord.version += 1;
-    inc.soarRecord.actorId = 'analyst-bilal';
-    inc.soarRecord.decisionReason = 'Manual Human-in-the-Loop authorization granted by SOC Analyst';
-    inc.soarAuditChainVerified = true;
-    inc.soarAuditChainHeadSha256 = '44d88612fea8a8f36de82e1278abb02f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d';
-    inc.thehiveCaseRecord = { case_id: `case_manual_${Date.now()}`, status: 'created_live' };
-    inc.n8nPlaybookReceipt = { execution_id: `exec_n8n_${Date.now()}`, signature_sha256: '275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f' };
-
-    renderIncidentQueue();
-    renderForensicDrawer();
-  }
-
-  function simulatePlaybookRollback(inc) {
-    if (!inc.soarRecord) return;
-    inc.soarRecord.state = 'rolled_back';
-    inc.soarRecord.version += 1;
-    inc.soarRecord.actorId = 'analyst-bilal';
-    inc.soarRecord.decisionReason = 'Reversible rollback executed; isolation firewall rules withdrawn';
-
-    renderIncidentQueue();
-    renderForensicDrawer();
   }
 
   // ========================================================================
@@ -1059,9 +1044,13 @@
     const topApproveBtn = document.getElementById('topBtnApproveSoar');
     if (topApproveBtn) {
       topApproveBtn.addEventListener('click', () => {
-        const inc = SAMPLE_INCIDENTS.find(i => i.id === selectedIncidentId) || SAMPLE_INCIDENTS[0];
-        simulatePlaybookApproval(inc);
+        const inc = activeIncidents().find(i => i.id === selectedIncidentId);
+        approveLivePlaybook(inc);
       });
+    }
+    const replayButton = document.getElementById('btnReplayBenchmarkBurst');
+    if (replayButton) {
+      replayButton.addEventListener('click', () => { replayBenchmarkBurst(); });
     }
   }
 
@@ -1070,6 +1059,182 @@
     if (!node) return;
     node.textContent = text;
     if (state) node.setAttribute('data-evidence-state', state);
+  }
+
+  function flowToIncident(flow, memberCount) {
+    const score = Number(flow.rf_attack_probability);
+    const entry = typeof flow.entry_sha256 === 'string' ? flow.entry_sha256 : '';
+    const chainOk = flow.audit_chain_verified === 1 || flow.audit_chain_verified === true;
+    return {
+      id: 'live_flow:' + flow.flow_id,
+      live: true,
+      flowId: flow.flow_id,
+      sourceEventId: flow.source_label || 'live_flow',
+      observedAt: flow.observed_at_utc || '',
+      decision: flow.decision || 'withheld',
+      uncalibratedScore: Number.isFinite(score) ? score : 0,
+      modelArtifactSha256: flow.model_sha256 || EVAL_PACK_REV2.rfArtifactSha256,
+      modelVersion: 'full-network-random-forest-6d69c72-v1',
+      provenance: {
+        srcIp: 'not-recorded',
+        dstIp: 'not-recorded',
+        srcPort: 0,
+        dstPort: 0,
+        proto: 'flow'
+      },
+      correlation: {
+        incidentId: flow.campaign_id || ('flow:' + flow.flow_id),
+        windowType: 'stored campaign',
+        constituentAlerts: memberCount || 1,
+        explanation: flow.case_title || 'Stored live flow. No new entity key was inferred.'
+      },
+      threatIntel: { privateIpGuardTriggered: false },
+      secondaryAe: { aeError: 0, status: 'not_scored' },
+      advisory: {
+        summaryHeadline: flow.case_title || ('Stored flow ' + flow.flow_id),
+        detectionRationale: 'Frozen Random Forest score. Fusion disabled. The autoencoder did not decide this alert.'
+      },
+      chromaRagHits: [],
+      soarRecord: {
+        playbookId: flow.playbook_id || 'pending',
+        state: flow.ledger_state || 'pending_approval',
+        targetEntity: 'live_flow:' + flow.flow_id,
+        version: 1
+      },
+      soarAuditChainVerified: chainOk && SHA256_HEX_REGEX.test(entry),
+      soarAuditChainHeadSha256: entry,
+      thehiveCaseRecord: null,
+      n8nPlaybookReceipt: null
+    };
+  }
+
+  function incidentRowToView(row) {
+    const score = Number(row.max_probability_score);
+    return {
+      id: String(row.incident_id),
+      live: true,
+      flowId: null,
+      sourceEventId: row.provenance_status || 'incident_store',
+      observedAt: row.earliest_observed_at || '',
+      decision: row.escalated_decision || 'withheld',
+      uncalibratedScore: Number.isFinite(score) ? score : 0,
+      modelArtifactSha256: EVAL_PACK_REV2.rfArtifactSha256,
+      modelVersion: 'stored_incident',
+      provenance: {
+        srcIp: 'stored-incident',
+        dstIp: 'stored-incident',
+        srcPort: 0,
+        dstPort: 0,
+        proto: 'incident'
+      },
+      correlation: {
+        incidentId: row.incident_id,
+        windowType: row.window_type || 'stored',
+        constituentAlerts: row.constituent_alert_count || 0,
+        explanation: 'Stored incident row. This view did not infer a new relationship.'
+      },
+      threatIntel: { privateIpGuardTriggered: false },
+      secondaryAe: { aeError: 0, status: 'not_scored' },
+      advisory: {
+        summaryHeadline: 'Stored incident ' + row.incident_id,
+        detectionRationale: 'Read from the incidents database. Fusion stays disabled.'
+      },
+      chromaRagHits: [],
+      soarRecord: {
+        playbookId: 'none',
+        state: 'pending_approval',
+        targetEntity: String(row.incident_id),
+        version: 1
+      },
+      soarAuditChainVerified: false,
+      soarAuditChainHeadSha256: '',
+      thehiveCaseRecord: null,
+      n8nPlaybookReceipt: null
+    };
+  }
+
+  async function refreshLiveCampaigns() {
+    try {
+      const resp = await fetch('/api/v1/live/campaigns');
+      if (!resp.ok) throw new Error('campaign status');
+      const data = await resp.json();
+      const views = [];
+      (data.campaigns || []).forEach(campaign => {
+        (campaign.flows || []).forEach(flow => {
+          views.push(flowToIncident(flow, campaign.member_count));
+        });
+      });
+      (data.incidents || []).forEach(row => views.push(incidentRowToView(row)));
+      liveCampaignIncidents = views;
+      liveQueueLoaded = true;
+      campaignFetchSettled = true;
+      if (!views.some(item => item.id === selectedIncidentId)) {
+        selectedIncidentId = views.length ? views[0].id : '';
+      }
+      const badge = document.getElementById('queueCountBadge');
+      if (badge) badge.textContent = views.length + ' stored rows';
+      const verifiedCount = views.filter(isReceiptVerified).length;
+      setLiveText(
+        'campaignQueueStatus',
+        views.length
+          ? ('Stored rows: ' + views.length + '. Verified SOAR receipts: ' + verifiedCount + '.')
+          : 'No stored campaigns yet.',
+        verifiedCount ? 'verified' : (views.length ? 'pending' : 'unavailable')
+      );
+    } catch (err) {
+      liveQueueLoaded = false;
+      campaignFetchSettled = true;
+      setLiveText('campaignQueueStatus', 'Campaign store unavailable. Offline sample queue is the fallback.', 'unavailable');
+    }
+    renderIncidentQueue();
+    renderForensicDrawer();
+  }
+
+  async function replayBenchmarkBurst() {
+    try {
+      const resp = await fetch('/api/v1/live/replay', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+      const data = await resp.json();
+      setLiveText(
+        'campaignQueueStatus',
+        'Replayed ' + (data.member_count || 0) + ' recorded UNSW-NB15 study vectors. Fusion disabled.',
+        data.evidence_state || 'unavailable'
+      );
+      await refreshLiveCampaigns();
+    } catch (err) {
+      setLiveText('campaignQueueStatus', 'Benchmark replay unavailable.', 'unavailable');
+    }
+  }
+
+  async function approveLivePlaybook(inc) {
+    if (!inc || !inc.live || !inc.flowId) {
+      setLiveText('campaignQueueStatus', 'Approval applies to a stored flow. Containment stays unauthorized.', 'unavailable');
+      return;
+    }
+    try {
+      const resp = await fetch('/api/v1/live/soar/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          flow_id: inc.flowId,
+          actor_id: 'analyst_a',
+          reason: 'Analyst recorded local approval. Containment is not executed.'
+        })
+      });
+      const data = await resp.json();
+      const receipt = typeof data.entry_sha256 === 'string' ? data.entry_sha256 : '';
+      if (data.evidence_state === 'verified' && SHA256_HEX_REGEX.test(receipt)) {
+        setLiveText('campaignQueueStatus', 'SOAR receipt ' + receipt.substring(0, 16) + ' verified. Containment not executed.', 'verified');
+      } else {
+        setLiveText('campaignQueueStatus', 'SOAR approval unavailable.', 'unavailable');
+      }
+      await refreshLiveCampaigns();
+    } catch (err) {
+      setLiveText('campaignQueueStatus', 'SOAR approval unavailable.', 'unavailable');
+    }
   }
 
   async function refreshLiveQueue() {
@@ -1115,6 +1280,7 @@
         'Ingest decision ' + data.decision + ' (' + data.reason + '). Fusion disabled.',
         data.evidence_state || 'unavailable'
       );
+      await refreshLiveCampaigns();
     } catch (err) {
       setLiveText('liveQueueStatus', 'Live ingest unavailable.', 'unavailable');
     }

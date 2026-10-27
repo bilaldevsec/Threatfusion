@@ -21,8 +21,9 @@ ThreatFusion is a single-laptop security assistant for a Tier-1 analyst. Recorde
 | Approval ledger with a hash chain, plus local n8n / TheHive / MISP clients | Built as local or simulated tools. Not a live company deployment. |
 | Response-plane snapshot for the SOAR ledger, retrieval store, outbox, and dead letters | Built in uncommitted Milestone #39. |
 | Boundary checks B0–B6, including a block when Python would import the old protected folder | Built in uncommitted Milestone #40. |
-| Pretty walkthrough screen | Still shows sample incidents. Approve on that screen is still a browser simulation. |
+| Pretty walkthrough screen | The campaign queue reads stored flows. Sample incidents appear only if that request cannot be reached. |
 | Live console panel | Built 2026-10-27. Ingest, analyst notes, local MITRE copilot, read-only drift, and a 6-node workbench that does not dispatch. |
+| Campaign queue and Approve | Built 2026-10-27. Replay scores five recorded UNSW-NB15 study vectors with the frozen Random Forest. Approve writes a hash-chained `approved` row and does not execute containment. |
 
 ## How the product looks
 
@@ -56,7 +57,7 @@ These are open on purpose. Closing them needs evidence, not another screen.
 2. **TF-009.** At least 10 real people, timed on the same cases with and without ThreatFusion.
 3. **TF-010.** The signed FAST-NUCES jury form.
 4. **TF-011.** A live security feed and a live threat-intel source.
-5. The walkthrough must read stored alerts. Sample incidents stay only as an offline fallback.
+5. The walkthrough queue now reads stored flows. A buyer still needs one recorded case on the authenticated page, not only this local console.
 6. Storage-backup sidecars were fixed on 2026-10-26: a WAL source no longer leaves `-wal` and `-shm` files in the snapshot. All 13 backup integration tests pass. A full crash rehearsal is still not done.
 7. A repeated crash-and-restore rehearsal across alerts, analyst state, audit, and the SOAR ledger.
 

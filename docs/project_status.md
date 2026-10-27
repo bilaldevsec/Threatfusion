@@ -1913,3 +1913,12 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 - The sample campaign queue remains the offline walkthrough. The live panel is a separate control on the same page.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
+### Milestone #43: Stored campaign queue and hash-chained local approval (2026-10-27)
+
+- `GET /api/v1/live/campaigns` reads stored live flows and, when `THREATFUSION_INCIDENTS_DB_PATH` points at an existing database, the incident rows already in that file. A missing database is an empty list.
+- `POST /api/v1/live/replay` scores the five `recorded_unsw_nb15` study-fixture vectors with the frozen Random Forest and stores them as one campaign. The printed study probability is not copied. The autoencoder does not decide.
+- `POST /api/v1/live/soar/approve` records `pending_approval` then `approved` on `SoarPlaybookSqliteRepository`, links `prev_entry_sha256` to `entry_sha256`, and returns that receipt only when `verify_audit_chain_integrity()` passes. The operator state is `approved_local`. `execution_authorized` and `containment_executed` stay false. A second approval returns the same receipt.
+- The campaign queue renders those stored rows. The browser no longer invents a SHA-256, a TheHive case, or an n8n receipt. Sample incidents remain only when the campaign request cannot be reached.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.

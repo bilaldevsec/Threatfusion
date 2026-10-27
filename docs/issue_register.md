@@ -905,3 +905,7 @@ Boundary preflight check B6 rejects a `PYTHONPATH` or `sys.path` entry that reso
 ### Milestone #42 live console, 2026-10-27
 
 The live ingest, analyst notes, local MITRE copilot, read-only drift monitor, and 6-node workbench do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
+
+### Milestone #43 stored campaigns and local SOAR approval, 2026-10-27
+
+The stored campaign queue, recorded UNSW-NB15 study-fixture replay, and hash-chained local approval do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. Approval does not execute containment. All four issues remain **open**.

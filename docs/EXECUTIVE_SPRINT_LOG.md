@@ -35,3 +35,10 @@
 - The sample campaign queue and its simulated Approve button are still on the page. TF-008 through TF-011 stay open.
 - Focused tests, boundary preflight B0–B6, and the repository-truth audit passed for this slice.
 - Next: replace the sample campaign queue with the stored live flows, without keeping a fake Approve button.
+
+=== 30-SECOND CEO SKIM REPORT ===
+- The campaign queue now reads stored flows and incident rows. Replay scores five recorded UNSW-NB15 study vectors with the frozen Random Forest and stores that live score.
+- Approve writes a hash-chained local approval on the SOAR ledger and returns the real SHA-256 receipt. Containment is not executed. A second click returns the same receipt.
+- The browser no longer invents a hash, a TheHive case, or an n8n signature. Sample incidents remain only if the campaign request cannot be reached.
+- Frozen Random Forest authority, the four model digests, Gate G9, and TF-008 through TF-011 are unchanged.
+- Next: show this queue on the authenticated analyst page, still without executing containment.
