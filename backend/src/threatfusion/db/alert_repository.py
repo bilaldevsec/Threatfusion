@@ -163,7 +163,12 @@ class AlertCandidateRepository:
             except FileNotFoundError:
                 existed = False
                 self._database_path.parent.mkdir(parents=True, exist_ok=True)
-            connection = self._connect()
+            try:
+                connection = self._connect()
+            except AlertPersistenceError:
+                if existed:
+                    raise AlertPersistenceError("database_corrupt") from None
+                raise
             try:
                 check = connection.execute("PRAGMA quick_check").fetchone()
                 if check is None or check[0] != "ok":

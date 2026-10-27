@@ -1921,4 +1921,14 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 - `POST /api/v1/live/soar/approve` records `pending_approval` then `approved` on `SoarPlaybookSqliteRepository`, links `prev_entry_sha256` to `entry_sha256`, and returns that receipt only when `verify_audit_chain_integrity()` passes. The operator state is `approved_local`. `execution_authorized` and `containment_executed` stay false. A second approval returns the same receipt.
 - The campaign queue renders those stored rows. The browser no longer invents a SHA-256, a TheHive case, or an n8n receipt. Sample incidents remain only when the campaign request cannot be reached.
 
+### Milestone #44: Registered UNSW raw ledger (2026-10-27)
+
+- `LiveAdmissionLedger` persists admitted flows in SQLite with `journal_mode=WAL`, `busy_timeout=5000`, and mode 0600. Replay of the same source event returns the original row.
+- `POST /api/v1/ingest/suricata-eve` validates a flow with `SuricataFlowAdapter` and stores the 14 features. The frozen Random Forest is not applied to that adapted flow. Client-supplied probabilities are discarded. `evidence_state` is `adapted_unscored` and `rf_decision` is null.
+- `POST /api/v1/ingest/unsw-raw` accepts a 49-column string row and calls `UnswNetworkInferenceBoundary.infer`. A missing artifact, a hash failure, or a rejected row stores no probability and no Attack/Normal decision.
+- The v2 autoencoder disposition hash-checks the frozen file and withholds `ae_reconstruction_error`. `production_fusion_enabled` remains false, and a request that sets it true is refused before a write.
+- `POST /api/v1/copilot/mitre` queries `ChromaDbMitrePlaybookRag` and labels the result as retrieval, not a detection. Attaching hits does not change the stored decision.
+- The listener binds `127.0.0.1` or `::1` only. The visible campaign queue remains the stored-flow console from Milestone #43. This ledger is not the authenticated mTLS analyst boundary, and it is not a live enterprise SIEM.
+- A non-empty SQLite file that cannot be opened is reported as `database_corrupt` and is not replaced.
+
 TF-008, TF-009, TF-010, and TF-011 remain **open**.

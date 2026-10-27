@@ -24,10 +24,11 @@ ThreatFusion is a single-laptop security assistant for a Tier-1 analyst. Recorde
 | Pretty walkthrough screen | The campaign queue reads stored flows. Sample incidents appear only if that request cannot be reached. |
 | Live console panel | Built 2026-10-27. Ingest, analyst notes, local MITRE copilot, read-only drift, and a 6-node workbench that does not dispatch. |
 | Campaign queue and Approve | Built 2026-10-27. Replay scores five recorded UNSW-NB15 study vectors with the frozen Random Forest. Approve writes a hash-chained `approved` row and does not execute containment. |
+| Registered UNSW raw ledger | `POST /api/v1/ingest/unsw-raw` scores a 49-column row only through `UnswNetworkInferenceBoundary`. A Suricata eve.json admission stays unscored. |
 
 ## How the product looks
 
-There are two screens. The real one is the authenticated analyst page: a dark queue, a case detail, evidence badges that fail closed, and a form that changes case state. The other screen is the investor walkthrough. It looks like a finished console, and its queue is still sample data. A buyer should be shown the authenticated page plus one recorded case, not the sample walkthrough alone.
+There are two screens. The authenticated analyst page is the mTLS queue, case detail, fail-closed evidence badges, and the form that changes case state. The investor console now loads the local SQLite ledger first. It shows sample incidents only after the labeled walkthrough control. A buyer should still be shown the authenticated page plus one recorded case.
 
 ## Data flow
 
@@ -57,7 +58,7 @@ These are open on purpose. Closing them needs evidence, not another screen.
 2. **TF-009.** At least 10 real people, timed on the same cases with and without ThreatFusion.
 3. **TF-010.** The signed FAST-NUCES jury form.
 4. **TF-011.** A live security feed and a live threat-intel source.
-5. The walkthrough queue now reads stored flows. A buyer still needs one recorded case on the authenticated page, not only this local console.
+5. The walkthrough queue reads stored flows. A separate loopback ledger can admit a registered UNSW raw row. A buyer still needs one recorded case on the authenticated page, not only this local console.
 6. Storage-backup sidecars were fixed on 2026-10-26: a WAL source no longer leaves `-wal` and `-shm` files in the snapshot. All 13 backup integration tests pass. A full crash rehearsal is still not done.
 7. A repeated crash-and-restore rehearsal across alerts, analyst state, audit, and the SOAR ledger.
 

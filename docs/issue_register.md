@@ -909,3 +909,7 @@ The live ingest, analyst notes, local MITRE copilot, read-only drift monitor, an
 ### Milestone #43 stored campaigns and local SOAR approval, 2026-10-27
 
 The stored campaign queue, recorded UNSW-NB15 study-fixture replay, and hash-chained local approval do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. Approval does not execute containment. All four issues remain **open**.
+
+### Milestone #44 registered UNSW raw ledger, 2026-10-27
+
+`POST /api/v1/ingest/unsw-raw` scores a 49-column string row only through `UnswNetworkInferenceBoundary`. `POST /api/v1/ingest/suricata-eve` stores adapted features and withholds `rf_decision`. The v2 autoencoder reconstruction error stays withheld. `production_fusion_enabled` stays false. This does not close TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
