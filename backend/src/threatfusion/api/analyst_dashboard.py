@@ -206,15 +206,20 @@ def build_unified_incident_timeline(
         if relationship_key and member_key and str(member_key) != relationship_key:
             continue
         observed_at = str(member.get("observed_at") or member.get("timestamp_utc") or "")
-        events.append(
-            {
-                "kind": "flow_member",
-                "observed_at": observed_at,
-                "matched_relationship_key": None if member_key is None else str(member_key),
-                "alert_candidate_id": member.get("alert_candidate_id"),
-                "summary": "Correlated flow member",
-            }
-        )
+        event = {
+            "kind": "flow_member",
+            "observed_at": observed_at,
+            "matched_relationship_key": None if member_key is None else str(member_key),
+            "alert_candidate_id": member.get("alert_candidate_id"),
+            "summary": str(member.get("summary") or "Correlated flow member"),
+        }
+        if member.get("window_type"):
+            event["window_type"] = str(member["window_type"])
+        if member.get("correlation_mode"):
+            event["correlation_mode"] = str(member["correlation_mode"])
+        if member.get("delta_seconds") is not None:
+            event["delta_seconds"] = member.get("delta_seconds")
+        events.append(event)
 
     for transition in analyst_transitions or ():
         observed_at = str(

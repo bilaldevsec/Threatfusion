@@ -349,9 +349,13 @@ def test_verified_burst_stitches_and_private_ip_is_refused(tmp_path: Path) -> No
         assert stored["evidence_state"] == "verified"
     report = correlate_stored_attacks(live_db, tmp_path / "incidents.sqlite3")
     assert report["production_fusion_enabled"] is False
+    assert report["burst_window_seconds"] == 30.0
+    assert report["campaign_window_seconds"] == 600.0
     assert report["burst_incident_count"] == 1
+    assert report["correlated_flow_count"] == 2
     assert report["max_constituent_count"] == 2
     assert report["timeline"]["event_count"] == 2
+    assert {event["window_type"] for event in report["timeline"]["events"]} == {"burst_30s"}
     blocked_status, blocked = private_ip_guard_response("10.0.0.4")
     assert blocked_status == 422
     assert blocked["private_ip_guard_triggered"] is True

@@ -385,6 +385,7 @@
   let currentFilter = 'all';
   let selectedIncidentId = '';
   let liveCampaignIncidents = [];
+  let liveCorrelationReport = null;
   let campaignFetchSettled = false;
   let liveQueueLoaded = false;
   let walkthroughCurrentStep = 0;
@@ -825,9 +826,9 @@
           <div class="anatomy-block" data-anatomy-block="2">
             <h4>Block 2: Attack Timeline</h4>
             <div><b>Window Type:</b> <span class="badge badge-corr">${inc.correlation ? escapeHtml(inc.correlation.windowType) : '30.0s_burst'}</span></div>
-            <div><b>Correlated Flows:</b> ${inc.correlation ? inc.correlation.constituentAlerts : 1}</div>
-            <div><b>Progression:</b> Ingest at ${escapeHtml(inc.observedAt)}</div>
-            <div><b>Byte Volume Delta:</b> ${inc.live ? 'not recorded on this flow' : '+1,250 B &middot; <b>Packets:</b> 18'}</div>
+            <div><b>Correlated Flows:</b> ${liveCorrelationReport ? Number(liveCorrelationReport.correlated_flow_count || 0) : (inc.correlation ? inc.correlation.constituentAlerts : 1)}</div>
+            <div><b>Progression:</b> ${liveCorrelationReport ? 'Live unified timeline' : ('Ingest at ' + escapeHtml(inc.observedAt))}</div>
+            ${liveCorrelationReport ? ('<div data-live-timeline="true">' + liveTimelineRows(liveCorrelationReport) + '</div>') : (inc.live ? '<div><b>Byte Volume Delta:</b> not recorded on this flow</div>' : '<div><b>Byte Volume Delta:</b> +1,250 B &middot; <b>Packets:</b> 18</div>')}
           </div>
 
           <!-- Block 3: MITRE ATT&CK Mapping -->
@@ -1126,11 +1127,11 @@
       modelArtifactSha256: flow.model_sha256 || EVAL_PACK_REV2.rfArtifactSha256,
       modelVersion: 'full-network-random-forest-6d69c72-v1',
       provenance: {
-        srcIp: 'not-recorded',
-        dstIp: 'not-recorded',
+        srcIp: flow.src_entity_id || 'not-recorded',
+        dstIp: flow.dst_entity_id || 'not-recorded',
         srcPort: 0,
-        dstPort: 0,
-        proto: 'flow'
+        dstPort: Number(flow.service_or_port) || 0,
+        proto: flow.flow_protocol || 'flow'
       },
       correlation: {
         incidentId: flow.campaign_id || ('flow:' + flow.flow_id),
@@ -1256,6 +1257,7 @@
         'Replayed ' + (data.member_count || 0) + ' recorded UNSW-NB15 study vectors. Fusion disabled.',
         data.evidence_state || 'unavailable'
       );
+      if (data.correlation) renderLiveCorrelation(data.correlation);
       await refreshLiveCampaigns();
     } catch (err) {
       setLiveText('campaignQueueStatus', 'Benchmark replay unavailable.', 'unavailable');
@@ -1346,6 +1348,54 @@
     }
   }
 
+  function liveTimelineRows(report) {
+    const events = report && report.timeline && Array.isArray(report.timeline.events)
+      ? report.timeline.events
+      : [];
+    return events.map(event => {
+      const when = escapeHtml(String(event.observed_at || ''));
+      const label = escapeHtml(String(event.summary || event.kind || 'event'));
+      const windowType = event.window_type ? ' · ' + escapeHtml(String(event.window_type)) : '';
+      return '<div>[' + when + '] ' + label + windowType + '</div>';
+    }).join('');
+  }
+
+  function renderLiveCorrelation(data) {
+    if (!data || typeof data !== 'object') return;
+    liveCorrelationReport = data;
+    const count = Number(data.correlated_flow_count || 0);
+    const events = data.timeline && Array.isArray(data.timeline.events) ? data.timeline.events : [];
+    const burstWindow = data.burst_window_seconds === undefined ? 30 : data.burst_window_seconds;
+    const campaignWindow = data.campaign_window_seconds === undefined ? 600 : data.campaign_window_seconds;
+    setLiveText(
+      'liveTimeline',
+      'Correlated flows ' + count
+        + '. Burst incidents ' + (data.burst_incident_count || 0) + ' (' + burstWindow + 's). '
+        + 'Campaign incidents ' + (data.campaign_incident_count || 0) + ' (' + campaignWindow + 's). '
+        + 'Timeline events ' + events.length + '.',
+      data.evidence_state || 'unavailable'
+    );
+    const drawer = document.getElementById('liveTimelineDrawer');
+    if (drawer) {
+      const rows = liveTimelineRows(data);
+      drawer.innerHTML = '<div><b>Correlated flow count:</b> ' + count + '</div>'
+        + (rows || '<div>No timeline events.</div>');
+      drawer.setAttribute('data-correlated-flow-count', String(count));
+      drawer.setAttribute('data-evidence-state', data.evidence_state || 'unavailable');
+    }
+    if (data.evidence_state === 'verified') {
+      const countEl = document.getElementById('attackTimelineFlowCount');
+      const sourceEl = document.getElementById('attackTimelineSource');
+      const eventsEl = document.getElementById('attackTimelineEvents');
+      if (countEl) countEl.textContent = count + ' correlated flows from the live stitch';
+      if (sourceEl) sourceEl.textContent = 'Live stitch from IncidentCorrelationEngine';
+      if (eventsEl) {
+        eventsEl.innerHTML = liveTimelineRows(data) || '<div>No correlated timeline events.</div>';
+      }
+    }
+    renderForensicDrawer();
+  }
+
   async function stitchVerifiedWindows() {
     try {
       const resp = await fetch('/api/v1/live/correlate', {
@@ -1354,12 +1404,11 @@
         body: '{}'
       });
       const data = await resp.json();
-      const events = data.timeline && data.timeline.event_count ? data.timeline.event_count : 0;
-      setLiveText(
-        'liveTimeline',
-        'Incidents ' + (data.incident_count || 0) + '. Largest stitch ' + (data.max_constituent_count || 0) + '. Timeline events ' + events + '.',
-        data.evidence_state || 'unavailable'
-      );
+      if (data && data.timeline) {
+        renderLiveCorrelation(data);
+        return;
+      }
+      setLiveText('liveTimeline', 'Correlation unavailable.', 'unavailable');
     } catch (err) {
       setLiveText('liveTimeline', 'Correlation unavailable.', 'unavailable');
     }
@@ -1457,6 +1506,7 @@
         'Ingest decision ' + data.decision + ' (' + data.reason + '). Fusion disabled.',
         data.evidence_state || 'unavailable'
       );
+      if (data.correlation) renderLiveCorrelation(data.correlation);
       await refreshLiveCampaigns();
     } catch (err) {
       setLiveText('liveQueueStatus', 'Live ingest unavailable.', 'unavailable');

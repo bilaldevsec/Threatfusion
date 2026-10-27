@@ -95,13 +95,34 @@ CANONICAL_MISP_SNAPSHOT: dict[str, dict[str, Any]] = {
 }
 
 
+_RFC1918_AND_ULA = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("fc00::/7"),
+)
+
+
 def is_rfc1918_or_loopback_ip(ip_str: str) -> bool:
-    """Return True if ip_str is a valid IPv4/IPv6 private, loopback, or link-local address."""
+    """Return True for RFC1918, IPv6 ULA, loopback, and link-local addresses.
+
+    Documentation ranges such as 198.51.100.0/24 and 203.0.113.0/24 are not
+    RFC1918. Python's ``ipaddress`` ``is_private`` flag includes them, so this
+    check does not use that flag. Loopback (127.0.0.0/8, ::1) and link-local
+    (169.254.0.0/16, fe80::/10) are refused with the private ranges. An
+    IPv4-mapped IPv6 address is judged by the embedded IPv4 address.
+    """
     try:
-        ip = ipaddress.ip_address(ip_str.strip())
-        return ip.is_private or ip.is_loopback or ip.is_link_local
+        parsed = ipaddress.ip_address(ip_str.strip())
     except ValueError:
         return False
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
+        parsed = parsed.ipv4_mapped
+    if parsed.is_loopback or parsed.is_link_local:
+        return True
+    return any(
+        parsed.version == network.version and parsed in network for network in _RFC1918_AND_ULA
+    )
 
 
 # =============================================================================
