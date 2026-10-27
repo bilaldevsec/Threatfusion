@@ -257,6 +257,66 @@ def build_unified_incident_timeline(
     }
 
 
+def build_analyst_shift_handoff(
+    *,
+    incident_id: str,
+    relationship_key: str | None = None,
+    flow_members: Sequence[Mapping[str, Any]] | None = None,
+    analyst_transitions: Sequence[Mapping[str, Any]] | None = None,
+    soar_ledger_entries: Sequence[Mapping[str, Any]] | None = None,
+    playbook_state: str | None = None,
+    receipt: dict[str, Any] | None = None,
+    audit_entries: Any = None,
+    transport_error: str | None = None,
+    outbox_status: str | None = None,
+    outbox_db_path: Path | str | None = None,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    """One incoming-analyst packet: timeline, operator state, and open items.
+
+    Containment stays unauthorized. An outbox lookup reuses the stored idempotency
+    key and does not create a second approval.
+    """
+    timeline = build_unified_incident_timeline(
+        flow_members=flow_members,
+        analyst_transitions=analyst_transitions,
+        soar_ledger_entries=soar_ledger_entries,
+        relationship_key=relationship_key,
+    )
+    resolved_outbox = outbox_status
+    outbox_evidence = "not_consulted"
+    if outbox_db_path is not None and idempotency_key:
+        from threatfusion.soar.n8n_thehive_misp_stack import lookup_durable_dispatch
+
+        looked_up = lookup_durable_dispatch(outbox_db_path, idempotency_key)
+        outbox_evidence = str(looked_up.get("evidence_state"))
+        if looked_up.get("status"):
+            resolved_outbox = str(looked_up["status"])
+    operator_state = classify_soar_operator_state(
+        playbook_state=playbook_state,
+        receipt=receipt,
+        audit_entries=audit_entries,
+        transport_error=transport_error,
+        outbox_status=resolved_outbox,
+    )
+    open_items: list[str] = []
+    if operator_state in {"pending_approval", "queued_durable_outbox"}:
+        open_items.append(operator_state)
+    return {
+        "schema_version": "analyst_shift_handoff_v1",
+        "incident_id": incident_id,
+        "relationship_key": relationship_key,
+        "operator_state": operator_state,
+        "timeline_event_count": timeline["event_count"],
+        "timeline": timeline,
+        "open_items": open_items,
+        "idempotency_key": idempotency_key,
+        "outbox_evidence_state": outbox_evidence,
+        "containment_executed": False,
+        "execution_authorized": False,
+    }
+
+
 def _is_rfc1918(ip_str: str) -> bool:
     """Determine deterministically whether an IP string is an RFC 1918 private IPv4 address."""
     ip = ip_str.strip()
@@ -1897,6 +1957,7 @@ __all__ = [
     "DashboardSnapshot",
     "DashboardTransitionRecord",
     "TriageQueueCardView",
+    "build_analyst_shift_handoff",
     "build_five_tab_investigation_inspector",
     "build_unified_incident_timeline",
     "classify_soar_operator_state",

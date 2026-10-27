@@ -206,12 +206,30 @@ def _backup_sqlite(src_path: Path, dest_path: Path) -> None:
         dest_conn = sqlite3.connect(str(dest_path.resolve()), timeout=SQLITE_TIMEOUT_SECONDS)
         try:
             src_conn.backup(dest_conn)
+            # A WAL source copies that journal mode into the snapshot. Checkpoint and
+            # switch the copy to DELETE so the snapshot directory does not keep -wal/-shm
+            # sidecars, which the manifest treats as unexpected files.
+            previous_isolation = dest_conn.isolation_level
+            dest_conn.isolation_level = None
+            dest_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            dest_conn.execute("PRAGMA journal_mode=DELETE")
+            dest_conn.isolation_level = previous_isolation
         finally:
             dest_conn.close()
     except (sqlite3.Error, OSError):
         raise StorageBackupError("backup_failed") from None
     finally:
         src_conn.close()
+
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(str(dest_path) + suffix)
+        if sidecar.is_symlink():
+            raise StorageBackupError("symlink_rejected")
+        if sidecar.exists():
+            try:
+                sidecar.unlink()
+            except OSError:
+                raise StorageBackupError("backup_failed") from None
 
     try:
         os.chmod(dest_path, 0o600)
@@ -733,6 +751,58 @@ def restore_storage_snapshot(
         )
 
         return manifest
+
+
+SOC_RESPONSE_PLANE_MANIFEST_SCHEMA = "soc_response_plane_snapshot_v1"
+
+
+def create_soc_response_plane_snapshot(
+    destination: Path | str,
+    *,
+    soar_db: Path | str | None = None,
+    rag_db: Path | str | None = None,
+    outbox_db: Path | str | None = None,
+    dead_letter_db: Path | str | None = None,
+) -> dict[str, object]:
+    """Copy the optional SOAR, RAG, outbox, and dead-letter databases into one snapshot.
+
+    This companion does not alter the four-database alert/state/audit/incident snapshot.
+    A caller-supplied path that is missing fails closed. At least one database is required.
+    """
+    named_sources = {
+        "soar_ledger": soar_db,
+        "chromadb_rag": rag_db,
+        "n8n_thehive_misp_outbox": outbox_db,
+        "suricata_dead_letters": dead_letter_db,
+    }
+    present = {role: Path(path) for role, path in named_sources.items() if path is not None}
+    if not present:
+        raise StorageBackupError("snapshot_incomplete")
+
+    target_dir = Path(destination)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(target_dir, 0o700)
+    databases: dict[str, object] = {}
+    for role, source in present.items():
+        if not source.is_file() or source.is_symlink():
+            raise StorageBackupError("database_corrupt")
+        copied = target_dir / f"{role}.sqlite3"
+        _backup_sqlite(source, copied)
+        databases[role] = {
+            "sha256": _compute_sha256(copied),
+            "bytes": copied.stat().st_size,
+            "mode": oct(stat.S_IMODE(copied.stat().st_mode)),
+        }
+    manifest: dict[str, object] = {
+        "schema": SOC_RESPONSE_PLANE_MANIFEST_SCHEMA,
+        "created_at_utc": datetime.now(UTC).isoformat(),
+        "databases": databases,
+        "core_alert_snapshot_unchanged": True,
+    }
+    manifest_path = target_dir / "soc_response_plane_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    os.chmod(manifest_path, 0o600)
+    return manifest
 
 
 def main(argv: list[str] | None = None) -> int:

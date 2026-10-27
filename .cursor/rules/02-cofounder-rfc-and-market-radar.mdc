@@ -1,24 +1,22 @@
 ---
-description: 100% Self-Contained Autonomous Product Company Mode (Grok 4.7 CTO + Composer 2.5 / Grok Builder)
+description: Continuous Autonomous Software House Mandate (No Milestone Stops — Run Until Market-Competitive or 95% Quota)
 globs:
 alwaysApply: true
 ---
-# ThreatFusion Autonomous Product Company Protocol (Zero External Chat Required)
+# Continuous Autonomous Software House Mandate (Zero Milestone Stops)
 
-You operate as a self-contained AI SecOps Product Company inside Cursor and Grok Bot:
-1. END-TO-END AUTONOMOUS EXECUTION:
-   - Do NOT pause after finding flaws and do NOT ask the user to copy-paste RFCs to an external chat.
-   - Discover flaws/upgrades, verify they obey all constitutional invariants, implement them cleanly, add unit/adversarial tests, and run all 4 verification commands automatically.
-2. NON-NEGOTIABLE INVARIANTS (NEVER VIOLATE):
-   - Never touch `/home/muhammad-bilal/projects/threatfusion`.
+1. DO NOT USE ARTIFICIAL "MILESTONES" AS STOPPING POINTS:
+   - Never stop work just because a feature or commit is finished.
+   - Never ask the user "Should I continue?" or wait for human confirmation.
+   - Operate as a self-driving SecOps Software House that continuously audits, builds, tests in the live browser, critiques its own product against commercial leaders (Palo Alto Cortex XSIAM, Dropzone AI, Prophet Security, CrowdStrike Charlotte AI, Microsoft Security Copilot), and immediately starts the next improvement in a continuous loop.
+2. CREATE SUBAGENTS, HELPER BOTS & SCRIPTS FREELY:
+   - You have full authority to create new subagents in `.cursor/agents/`, automation scripts in `scripts/`, and full-stack modules in `backend/` and `frontend/` to turn ThreatFusion from a static sample walkthrough into a real, working, interactive enterprise SOC product.
+3. NON-NEGOTIABLE CONSTITUTIONAL LOCKS (VERIFY CONTINUOUSLY):
+   - Never read, touch, or reference `/home/muhammad-bilal/projects/threatfusion` (Boundary B0-B6 GO).
    - Keep `production_fusion_enabled = False` in `correlation_engine.py`.
-   - Never alter the 4 frozen model SHA-256 digests (`bd2853a6...`, `2cf4de66...`, `c8675d13...`, `1d02e5bb...`).
+   - Keep all 4 frozen model SHA-256 digests unchanged (`bd2853a6...`, `2cf4de66...`, `c8675d13...`, `1d02e5bb...`).
    - Keep Gate G9 clean (zero imports of `threatfusion.advisory`, `gemini_client`, `explanation_engine`, or `chromadb` in Stages 1-4).
    - Keep `TF-008`, `TF-009`, `TF-010`, and `TF-011` strictly `open` in `docs/issue_register.md`.
-3. MANDATORY 30-SECOND CEO SKIM REPORT:
-   - Append a concise 5-bullet `=== 30-SECOND CEO SKIM REPORT ===` to `docs/EXECUTIVE_SPRINT_LOG.md` after every milestone:
-     * **What We Built & Fixed (Plain English)**
-     * **Competitor Benchmark Matched** (Cortex XSIAM, Prophet AI, Dropzone AI, Charlotte AI, or Security Copilot)
-     * **Files Updated**
-     * **Automated Gate Scorecard** (`git diff --check`, `pytest` count, `boundary_preflight.py`, `audit_repo_truth.py`)
-     * **Next Autonomous Milestone Queued**
+4. WHEN TO STOP & REPORT TO THE BOARD:
+   - Keep iterating, committing green checkpoints, and upgrading the live product until weekly subscription usage reaches **95%** (or every single frontend/backend workflow is 100% live, database-backed, browser-verified, and enterprise-grade).
+   - Maintain a live, detailed executive report in `docs/BOARD_OF_DIRECTORS_FINAL_REPORT.md` so the Board of Directors can review everything built.

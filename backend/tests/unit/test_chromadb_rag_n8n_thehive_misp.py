@@ -24,12 +24,16 @@ from threatfusion.advisory.chromadb_mitre_rag import (
     DeterministicMitreEmbeddingFunction,
     MitrePlaybookRagDocument,
 )
-from threatfusion.advisory.explanation_engine import AdvisoryEvidenceBundle
+from threatfusion.advisory.explanation_engine import (
+    AdvisoryEvidenceBundle,
+    answer_citation_locked_followup,
+)
 from threatfusion.alerts.correlation_engine import EntityProvenanceContract
 from threatfusion.api.analyst_dashboard import (
     DashboardAlertDetail,
     DashboardAlertQueue,
     DashboardSnapshot,
+    build_analyst_shift_handoff,
     load_frontend_unicorn_bundle,
     render_dashboard_html,
 )
@@ -45,11 +49,16 @@ from scripts.run_misp_and_callback_contract_server import (
     verify_hmac_signature,
 )
 from threatfusion.operations.full_soc_demo import run_full_soc_demo
+from threatfusion.operations.storage_backup import (
+    StorageBackupError,
+    create_soc_response_plane_snapshot,
+)
 from threatfusion.soar.n8n_thehive_misp_stack import (
     MispDeterministicClient,
     N8nDeterministicPlaybookClient,
     TheHiveDeterministicClient,
     is_rfc1918_or_loopback_ip,
+    lookup_durable_dispatch,
 )
 from threatfusion.soar.playbook_ledger import (
     ApprovalGatedSoarEngine,
@@ -2271,3 +2280,128 @@ class TestMegaMilestone38FailClosedEvidence:
         assert "dispatched_live" in bundle["index_html"]
         assert 'title="Click to copy identifier"' in bundle["index_html"]
         assert "data-copy-hash" in bundle["index_html"]
+
+
+class TestMegaMilestone39ResponsePlaneFollowupHandoff:
+    """Response-plane snapshot, citation-locked follow-up, and shift handoff."""
+
+    def test_response_plane_snapshot_copies_optional_stores_only(self, tmp_path: Path) -> None:
+        sources = {}
+        for name in ("soar", "rag", "outbox", "dead"):
+            path = tmp_path / f"{name}.sqlite3"
+            with sqlite3.connect(path) as conn:
+                conn.execute("CREATE TABLE probe (id INTEGER PRIMARY KEY)")
+                conn.execute("INSERT INTO probe (id) VALUES (1)")
+            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            sources[name] = path
+        dest = tmp_path / "plane"
+        manifest = create_soc_response_plane_snapshot(
+            dest,
+            soar_db=sources["soar"],
+            rag_db=sources["rag"],
+            outbox_db=sources["outbox"],
+            dead_letter_db=sources["dead"],
+        )
+        assert manifest["schema"] == "soc_response_plane_snapshot_v1"
+        assert manifest["core_alert_snapshot_unchanged"] is True
+        assert set(manifest["databases"]) == {
+            "soar_ledger",
+            "chromadb_rag",
+            "n8n_thehive_misp_outbox",
+            "suricata_dead_letters",
+        }
+        copied = dest / "soar_ledger.sqlite3"
+        assert stat.S_IMODE(copied.stat().st_mode) == 0o600
+        with sqlite3.connect(copied) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM probe").fetchone()[0] == 1
+        with pytest.raises(StorageBackupError, match="snapshot_incomplete"):
+            create_soc_response_plane_snapshot(tmp_path / "empty")
+        with pytest.raises(StorageBackupError, match="database_corrupt"):
+            create_soc_response_plane_snapshot(tmp_path / "missing", soar_db=tmp_path / "absent.sqlite3")
+
+    def test_citation_locked_followup_refuses_unknown_entity_and_containment(self) -> None:
+        bundle = AdvisoryEvidenceBundle(
+            candidate_id="cand-follow-1",
+            record_id="rec-follow-1",
+            rf_model_version="random_forest.joblib",
+            rf_attack_probability=0.91,
+            rf_threshold=0.5,
+            top_feature_signals={"sbytes": 0.4},
+        )
+        grounded = answer_citation_locked_followup("What is the frozen Random Forest probability?", bundle)
+        assert grounded["evidence_state"] == "verified"
+        assert grounded["execution_authorized"] is False
+        assert grounded["generation_mode"] == "deterministic_evidence_template"
+        assert "production_fusion_enabled is false" in grounded["answer"]
+        assert grounded["cited_evidence_keys"] == [
+            "candidate_id",
+            "rf_model_version",
+            "rf_attack_probability",
+            "rf_threshold",
+        ]
+        unknown = answer_citation_locked_followup("Is 203.0.113.99 malicious?", bundle)
+        assert unknown["evidence_state"] == "unavailable"
+        assert unknown["unknown_entities"] == ["203.0.113.99"]
+        assert unknown["cited_evidence_keys"] == []
+        blocked = answer_citation_locked_followup("Please isolate the host now", bundle)
+        assert blocked["evidence_state"] == "unavailable"
+        assert blocked["execution_authorized"] is False
+        technique = answer_citation_locked_followup("Map this to T9999", bundle)
+        assert technique["unknown_techniques"] == ["T9999"]
+        assert technique["evidence_state"] == "unavailable"
+
+    def test_shift_handoff_reads_outbox_without_a_second_approval(self, tmp_path: Path) -> None:
+        outbox = tmp_path / "n8n_thehive_misp_outbox.sqlite3"
+        with sqlite3.connect(outbox) as conn:
+            conn.execute(
+                """
+                CREATE TABLE n8n_executions (
+                    execution_id TEXT PRIMARY KEY,
+                    playbook_id TEXT NOT NULL,
+                    candidate_id TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    target_entity TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    signature_sha256 TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at_utc TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO n8n_executions VALUES (
+                    'exec_q1', 'pb_1', 'cand-1', 'notify', '10.0.0.4',
+                    'idem_pb_1_2', ?, 'queued_durable_outbox', '{}', '2026-10-26T00:00:00+00:00'
+                )
+                """,
+                ("a" * 64,),
+            )
+        looked_up = lookup_durable_dispatch(outbox, "idem_pb_1_2")
+        assert looked_up["evidence_state"] == "verified"
+        assert looked_up["status"] == "queued_durable_outbox"
+        assert looked_up["retry_requires_new_approval"] is False
+        missing = lookup_durable_dispatch(tmp_path / "absent.sqlite3", "idem_pb_1_2")
+        assert missing["evidence_state"] == "unavailable"
+        handoff = build_analyst_shift_handoff(
+            incident_id="inc-shift-1",
+            relationship_key="10.0.0.4|10.0.0.5|80",
+            flow_members=(
+                {
+                    "matched_relationship_key": "10.0.0.4|10.0.0.5|80",
+                    "observed_at": "2026-10-26T00:00:01+00:00",
+                    "candidate_id": "cand-1",
+                },
+            ),
+            playbook_state="approved",
+            outbox_db_path=outbox,
+            idempotency_key="idem_pb_1_2",
+        )
+        assert handoff["schema_version"] == "analyst_shift_handoff_v1"
+        assert handoff["operator_state"] == "queued_durable_outbox"
+        assert handoff["open_items"] == ["queued_durable_outbox"]
+        assert handoff["timeline_event_count"] == 1
+        assert handoff["containment_executed"] is False
+        assert handoff["execution_authorized"] is False
+        assert handoff["outbox_evidence_state"] == "verified"

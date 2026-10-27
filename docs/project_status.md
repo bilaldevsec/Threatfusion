@@ -1884,3 +1884,24 @@ TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptan
 - `build_unified_incident_timeline()` merges relationship-key flow members, analyst transitions, and hash-chained SOAR rows. Operator state is one of `pending_approval`, `approved_local`, `queued_durable_outbox`, or `dispatched_live` (the last only when the receipt and the linked chain both verify). MISP `verified_snapshot_fallback` is labeled `Local Verified Snapshot Fallback`. SHA-256 copy controls use `data-copy-hash`; IP and MITRE identifiers use `data-copy-value`.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
+### Milestone #39: Response-plane recovery, citation-locked follow-up, and shift handoff (2026-10-26)
+
+- `create_soc_response_plane_snapshot()` copies the SOAR ledger, Chroma RAG store, n8n/TheHive/MISP outbox, and Suricata dead-letter database into a mode-0600 snapshot with a SHA-256 manifest. The four-database alert, state, audit, and incident snapshot is unchanged. A missing supplied path fails closed.
+- `answer_citation_locked_followup()` answers from the evidence bundle only. An unknown IP, an unknown MITRE id, or a containment request returns `evidence_state=unavailable`, cites nothing, and sets `execution_authorized=False`. A grounded probability question stays on the deterministic template and states that `production_fusion_enabled` is false.
+- `build_analyst_shift_handoff()` packs the unified timeline, the operator state, and open items. `lookup_durable_dispatch()` reads the existing outbox row for the same idempotency key. A queued row stays `queued_durable_outbox` and does not create a second approval. `containment_executed` stays false.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
+### Milestone #40: Boundary preflight B6 runtime import isolation (2026-10-26)
+
+- `check_b6_runtime_import_isolation()` fails closed when a `PYTHONPATH` entry or a `sys.path` entry resolves inside the protected workspace, and when `threatfusion.__file__` resolves outside `threatfusion-gemini/backend/src`. The overall preflight verdict is `NO-GO` when B6 fails. With `PYTHONPATH` unset and the package imported from the active tree, B6 passes.
+- `scripts/boundary_preflight.py` now calls the package implementation, so the command-line gate and the repository-truth audit run the same B0–B6 checks.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
+### Milestone #41: Snapshot copies no longer leave SQLite sidecars (2026-10-26)
+
+- Online backup of a WAL database now checkpoints the copy and switches it to `journal_mode=DELETE` before the snapshot is sealed. Leftover `-wal` and `-shm` files are removed. `verify_storage_snapshot()` still rejects a real unexpected file. All 13 tests in `backend/tests/integration/test_storage_backup.py` pass.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.

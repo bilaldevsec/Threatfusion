@@ -787,3 +787,56 @@ class N8nDeterministicPlaybookClient:
                     rec.dispatched_at_utc,
                 ),
             )
+
+
+def lookup_durable_dispatch(outbox_db_path: Path | str, idempotency_key: str) -> dict[str, Any]:
+    """Read the latest outbox row for an idempotency key without dispatching again.
+
+    A retry of the same key does not require a second analyst approval. A missing
+    database or row stays unavailable.
+    """
+    path = Path(outbox_db_path)
+    if not path.is_file():
+        return {
+            "evidence_state": "unavailable",
+            "status": None,
+            "idempotency_key": idempotency_key,
+            "retry_requires_new_approval": False,
+        }
+    try:
+        conn = _connect_durable_sqlite(path)
+        try:
+            row = conn.execute(
+                """
+                SELECT status, execution_id, playbook_id
+                FROM n8n_executions
+                WHERE idempotency_key = ?
+                ORDER BY created_at_utc DESC
+                LIMIT 1
+                """,
+                (idempotency_key,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return {
+            "evidence_state": "unavailable",
+            "status": None,
+            "idempotency_key": idempotency_key,
+            "retry_requires_new_approval": False,
+        }
+    if row is None:
+        return {
+            "evidence_state": "unavailable",
+            "status": None,
+            "idempotency_key": idempotency_key,
+            "retry_requires_new_approval": False,
+        }
+    return {
+        "evidence_state": "verified",
+        "status": row["status"],
+        "execution_id": row["execution_id"],
+        "playbook_id": row["playbook_id"],
+        "idempotency_key": idempotency_key,
+        "retry_requires_new_approval": False,
+    }

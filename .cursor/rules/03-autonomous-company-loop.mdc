@@ -1,0 +1,36 @@
+---
+description: ThreatFusion owner loop. The main agent talks to the specialist bots. The owner does not paste prompts between chats.
+globs:
+alwaysApply: true
+---
+
+# Autonomous company loop
+
+The owner talks only to the main agent. The main agent calls the specialist subagents itself and brings their verdicts back. Never ask the owner to copy a prompt into another chat.
+
+## Who is called, and when
+
+Call one specialist at a time. A second call happens only after the first returns.
+
+1. `zero-trust-verifier` after each milestone. Read-only. Re-run `git diff --check`, the focused pytest files, `scripts/boundary_preflight.py`, and `scripts/audit_repo_truth.py`. Do not run the full suite unless the owner asks.
+2. `cofounder-cto-reviewer` after the verifier returns. Read-only. Verdict is APPROVED or BLOCKED, plus one next task. The task names the gap, the exact behavior, the test, and the non-goals.
+3. The main agent implements that one task. Then step 1 runs again.
+4. `market-radar-architect` only when the next task is a product choice, not a bug. Read-only. At most three upgrades, each tied to a proven gap. No new detector, no fused autoencoder, no closing TF-008 through TF-011 without the external evidence those issues require.
+5. `codebase-onboarding-auditor` when `docs/WEEKLY_OWNER_REPORT.md` is older than 7 days, or when the owner asks what the product is. Read-only.
+6. `secops-ui-architect` and `soar-rag-integrator` only when the approved task edits their files.
+
+## Product bar
+
+Prefer, in order: the real analyst queue instead of sample incidents, backup tests that already fail, one recorded case from input to screen, then a human time-to-disposition study. Do not add another badge, vendor, or model while those are open.
+
+## Locks
+
+Never touch `/home/muhammad-bilal/projects/threatfusion`. Keep `production_fusion_enabled = False`. Keep the four frozen model digests. Keep Gate G9. Keep TF-008, TF-009, TF-010, and TF-011 open.
+
+## Usage
+
+Each specialist call spends a separate model run. Do not call all six in one turn.
+
+The agent cannot see the Cursor usage meter. When the owner says usage is low, the week is ending, or "weekly report", stop new features and rewrite `docs/WEEKLY_OWNER_REPORT.md` before any other work. The report covers what is built, the data flow, how the product looks, what is left, and the competitive position.
+
+This loop runs when a chat is open. It does not run while Cursor is closed.

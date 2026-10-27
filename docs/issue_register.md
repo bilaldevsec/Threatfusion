@@ -893,3 +893,11 @@ TF-008, TF-009, TF-010, and TF-011 remain strictly **open** per their documented
 ### Mega-Milestone #38 fail-closed evidence and contract durability, 2026-10-26
 
 RFC-38.1 through RFC-38.5 add registry-digest rendering, linked hash-chain checks, a `reference_benchmark` versus `live_measured` velocity label, `--host` as an alias of `--bind`, a 1 MiB POST cap, durable idempotency keys, SQLite WAL, a unified incident timeline, and four visible SOAR states. These changes do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
+
+### Milestone #39 response-plane recovery, citation-locked follow-up, and shift handoff, 2026-10-26
+
+The optional SOAR/RAG/outbox/dead-letter snapshot, the citation-locked follow-up, and the shift-handoff packet do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
+
+### Milestone #40 runtime import isolation, 2026-10-26
+
+Boundary preflight check B6 rejects a `PYTHONPATH` or `sys.path` entry that resolves inside the protected workspace, and rejects a `threatfusion` import from outside the active `backend/src` tree. This check does not close TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.

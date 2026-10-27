@@ -725,3 +725,73 @@ def build_four_block_investigation_anatomy(
         block_3_mitre_mapping=block_3,
         block_4_cryptographic_soar_status=block_4,
     )
+
+
+_FOLLOWUP_EXECUTION_REQUEST = re.compile(
+    r"\b(isolate|contain|containment|quarantine|execute|block|kill)\b",
+    re.IGNORECASE,
+)
+_FOLLOWUP_MITRE_ID = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
+
+
+def answer_citation_locked_followup(
+    question: str,
+    bundle: AdvisoryEvidenceBundle,
+) -> dict[str, Any]:
+    """Answer one case follow-up from the evidence bundle only.
+
+    Unknown IPs, unknown MITRE ids, and containment requests fail closed to the
+    deterministic template. The reply never authorizes execution.
+    """
+    allowed = bundle.get_allowed_evidence_keys()
+    inspected: set[str] = set()
+    if bundle.enrichment_result is not None:
+        inspected.update(bundle.enrichment_result.inspected_entities)
+    unknown_ips = sorted(set(IP_REGEX.findall(question or "")) - inspected)
+    allowed_mitre = {key.split(":", 1)[1] for key in allowed if key.startswith("mitre:")}
+    unknown_mitre = sorted(set(_FOLLOWUP_MITRE_ID.findall(question or "")) - allowed_mitre)
+    asks_execution = _FOLLOWUP_EXECUTION_REQUEST.search(question or "") is not None
+    fusion_sentence = (
+        "Production authority remains the frozen Random Forest and production_fusion_enabled is false."
+    )
+    if unknown_ips or unknown_mitre or asks_execution:
+        answer = (
+            "Follow-up unavailable. The question asks for an entity, technique, or containment "
+            f"action outside the evidence bundle. {fusion_sentence}"
+        )
+        return {
+            "schema_version": "citation_locked_followup_v1",
+            "evidence_state": "unavailable",
+            "generation_mode": "deterministic_evidence_template",
+            "advisory_only_non_authoritative": True,
+            "execution_authorized": False,
+            "cited_evidence_keys": [],
+            "unknown_entities": unknown_ips,
+            "unknown_techniques": unknown_mitre,
+            "answer": answer,
+            "groundedness_verified": verify_explanation_groundedness(answer, bundle),
+        }
+    cited = tuple(
+        key
+        for key in ("candidate_id", "rf_model_version", "rf_attack_probability", "rf_threshold")
+        if key in allowed
+    )
+    answer = (
+        f"Follow-up for candidate {bundle.candidate_id}: frozen Random Forest probability "
+        f"{bundle.rf_attack_probability} using model {bundle.rf_model_version}. "
+        f"Cited evidence keys: {', '.join(cited)}. "
+        f"This reply is advisory only and does not execute an action. {fusion_sentence}"
+    )
+    grounded = verify_explanation_groundedness(answer, bundle)
+    return {
+        "schema_version": "citation_locked_followup_v1",
+        "evidence_state": "verified" if grounded else "unavailable",
+        "generation_mode": "deterministic_evidence_template",
+        "advisory_only_non_authoritative": True,
+        "execution_authorized": False,
+        "cited_evidence_keys": list(cited),
+        "unknown_entities": [],
+        "unknown_techniques": [],
+        "answer": answer,
+        "groundedness_verified": grounded,
+    }

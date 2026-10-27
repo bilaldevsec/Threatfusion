@@ -1,4 +1,4 @@
-"""Deterministic Zero-Trust Boundary Preflight Guard (B0 through B5).
+"""Deterministic Zero-Trust Boundary Preflight Guard (B0 through B6).
 
 Enforces Protocol 0 strict reference isolation:
 - B0: Active and protected realpaths do not overlap.
@@ -7,6 +7,7 @@ Enforces Protocol 0 strict reference isolation:
 - B3: Virtualenv contains no references (*.pth, direct_url.json, *.egg-link, etc.) or symlinks to protected.
 - B4: Git metadata (.git/objects/info/alternates, worktrees, config) contains no reference to protected.
 - B5: Runtime code and config files (.py, .toml, .json, etc.) contain no literal references to protected.
+- B6: PYTHONPATH and sys.path do not resolve inside the protected workspace, and the imported threatfusion package lives under the active backend/src tree.
 
 Exit Codes:
 - 0: GO (0 findings, boundary fully secure)
@@ -17,6 +18,7 @@ Exit Codes:
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
@@ -107,10 +109,10 @@ class BoundaryPreflightReport:
             f"Audit Timestamp UTC:  {self.timestamp_utc}",
             "",
             "-" * 80,
-            "BOUNDARY CHECKS (B0 THROUGH B5):",
+            "BOUNDARY CHECKS (B0 THROUGH B6):",
             "-" * 80,
         ]
-        for check_id in ("B0", "B1", "B2", "B3", "B4", "B5"):
+        for check_id in ("B0", "B1", "B2", "B3", "B4", "B5", "B6"):
             chk = self.checks.get(check_id, {})
             tag = "[PASS]" if chk.get("passed", False) else "[FAIL]"
             name = chk.get("name", check_id)
@@ -374,13 +376,70 @@ def check_b5_code_config(
     return passed, issues
 
 
+def _resolve_runtime_entry(entry: str) -> Path:
+    """Resolve a PYTHONPATH or sys.path entry. An empty entry means the working directory."""
+    if entry == "":
+        return Path(os.path.realpath(Path.cwd()))
+    return Path(os.path.realpath(entry))
+
+
+def check_b6_runtime_import_isolation(
+    *,
+    active_rp: Path,
+    protected_rp: Path,
+    pythonpath: str | None = None,
+    runtime_sys_path: Sequence[str] | None = None,
+    module_file: Path | str | None = None,
+) -> tuple[bool, list[str]]:
+    """Check B6: runtime import paths stay out of the protected workspace.
+
+    A PYTHONPATH or sys.path entry that resolves inside the protected workspace fails.
+    threatfusion.__file__ must resolve under the active workspace's backend/src tree.
+    """
+    passed = True
+    issues: list[str] = []
+    raw_pythonpath = os.environ.get("PYTHONPATH") if pythonpath is None else pythonpath
+    path_entries = raw_pythonpath.split(os.pathsep) if raw_pythonpath else []
+    for entry in path_entries:
+        resolved = _resolve_runtime_entry(entry)
+        if resolved.is_relative_to(protected_rp):
+            passed = False
+            issues.append(
+                "B6: PYTHONPATH entry "
+                f"'{resolved}' resolves inside protected workspace '{protected_rp}'"
+            )
+    for entry in sys.path if runtime_sys_path is None else runtime_sys_path:
+        resolved = _resolve_runtime_entry(entry)
+        if resolved.is_relative_to(protected_rp):
+            passed = False
+            issues.append(
+                f"B6: sys.path entry '{resolved}' resolves inside protected workspace '{protected_rp}'"
+            )
+    if module_file is None:
+        import threatfusion
+
+        module_file = Path(threatfusion.__file__)
+    module_rp = Path(os.path.realpath(module_file))
+    package_root = active_rp / "backend" / "src"
+    if not module_rp.is_relative_to(package_root):
+        passed = False
+        issues.append(
+            "B6: threatfusion.__file__ "
+            f"'{module_rp}' resolves outside active package root '{package_root}'"
+        )
+    return passed, issues
+
+
 def run_boundary_preflight(
     active: Path | str | None = None,
     protected: Path | str | None = None,
     venv: Path | str | None = None,
     cwd: Path | str | None = None,
+    pythonpath: str | None = None,
+    runtime_sys_path: Sequence[str] | None = None,
+    module_file: Path | str | None = None,
 ) -> BoundaryPreflightReport:
-    """Execute deterministic boundary preflight checks B0 through B5.
+    """Execute deterministic boundary preflight checks B0 through B6.
 
     Uses realpath containment and regex lookahead to prevent false triggers
     on substring prefixes like 'threatfusion-gemini'.
@@ -489,6 +548,25 @@ def run_boundary_preflight(
         ),
     }
 
+    # B6
+    b6_passed, b6_issues = check_b6_runtime_import_isolation(
+        active_rp=active_rp,
+        protected_rp=protected_rp,
+        pythonpath=pythonpath,
+        runtime_sys_path=runtime_sys_path,
+        module_file=module_file,
+    )
+    findings.extend(b6_issues)
+    checks["B6"] = {
+        "name": "Runtime Import Path Isolation",
+        "passed": b6_passed,
+        "summary": (
+            "PYTHONPATH, sys.path, and threatfusion.__file__ stay inside the active workspace."
+            if b6_passed
+            else "; ".join(b6_issues)
+        ),
+    }
+
     all_passed = (
         b0_passed
         and b1_passed
@@ -496,6 +574,7 @@ def run_boundary_preflight(
         and b3_passed
         and b4_passed
         and b5_passed
+        and b6_passed
         and len(findings) == 0
     )
     decision_verdict = "GO" if all_passed else "NO-GO"
@@ -515,7 +594,7 @@ def run_boundary_preflight(
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint for boundary preflight."""
     parser = argparse.ArgumentParser(
-        description="ThreatFusion Protocol 0 Zero-Trust Boundary Preflight Guard (B0-B5)"
+        description="ThreatFusion Protocol 0 Zero-Trust Boundary Preflight Guard (B0-B6)"
     )
     parser.add_argument(
         "--active",
