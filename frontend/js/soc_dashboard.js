@@ -1069,6 +1069,21 @@
     if (guardButton) {
       guardButton.addEventListener('click', () => { checkPrivateIpGuard(); });
     }
+    const triageButtons = [
+      ['btnAcknowledge', 'acknowledge'],
+      ['btnEscalate', 'escalate'],
+      ['btnDismiss', 'dismiss']
+    ];
+    triageButtons.forEach(pair => {
+      const node = document.getElementById(pair[0]);
+      if (node) {
+        node.addEventListener('click', () => { recordTriageAction(pair[1]); });
+      }
+    });
+    const exportButton = document.getElementById('btnExportHandoff');
+    if (exportButton) {
+      exportButton.addEventListener('click', () => { exportGroundedHandoff(); });
+    }
   }
 
   function setLiveText(id, text, state) {
@@ -1254,6 +1269,62 @@
       await refreshLiveCampaigns();
     } catch (err) {
       setLiveText('campaignQueueStatus', 'SOAR approval unavailable.', 'unavailable');
+    }
+  }
+
+  function selectedLiveFlowId() {
+    const inc = activeIncidents().find(item => item.id === selectedIncidentId);
+    return inc && inc.flowId ? inc.flowId : null;
+  }
+
+  async function recordTriageAction(action) {
+    const flowId = selectedLiveFlowId();
+    if (!flowId) {
+      setLiveText('campaignQueueStatus', 'Triage applies to a stored flow.', 'unavailable');
+      return;
+    }
+    try {
+      const resp = await fetch('/api/v1/live/triage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flow_id: flowId, action: action, actor_id: 'analyst_a' })
+      });
+      const data = await resp.json();
+      setLiveText(
+        'campaignQueueStatus',
+        data.evidence_state === 'verified' ? ('Triage state ' + data.triage_state + '.') : 'Triage refused.',
+        data.evidence_state || 'unavailable'
+      );
+      await refreshLiveCampaigns();
+    } catch (err) {
+      setLiveText('campaignQueueStatus', 'Triage unavailable.', 'unavailable');
+    }
+  }
+
+  async function exportGroundedHandoff() {
+    const flowId = selectedLiveFlowId();
+    if (!flowId) {
+      setLiveText('liveTimeline', 'Export applies to a stored flow.', 'unavailable');
+      return;
+    }
+    try {
+      const resp = await fetch('/api/v1/live/handoff', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flow_id: flowId })
+      });
+      const data = await resp.json();
+      if (data.grounded === true && data.report) {
+        setLiveText(
+          'liveTimeline',
+          'Grounded brief. Block 1 ' + data.report.block_1_decision + '. Block 3 ' + data.report.block_3_technique + '.',
+          'verified'
+        );
+        return;
+      }
+      setLiveText('liveTimeline', 'Handoff export unavailable.', 'unavailable');
+    } catch (err) {
+      setLiveText('liveTimeline', 'Handoff export unavailable.', 'unavailable');
     }
   }
 

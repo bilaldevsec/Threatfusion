@@ -1924,6 +1924,11 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 - `POST /api/v1/live/correlate` runs `IncidentCorrelationEngine` on stored Attack rows. Two rows that share a verified entity key inside 30 seconds become one burst. Rows without that key stay singletons. Benign rows are not members.
 - `POST /api/v1/live/misp-guard` returns HTTP 422 for a private address and does not query an external service.
 
+### Milestone #46: Triage actions and a grounded handoff (2026-10-27)
+
+- Acknowledge, escalate, and dismiss write a triage row. An unknown action is refused.
+- The shift-handoff export calls `verify_explanation_groundedness()`. A brief that names an address outside the evidence bundle is not verified. Block 3 stays `unavailable` when no technique was retrieved. Containment stays unauthorized.
+
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 ### Milestone #43: Stored campaign queue and hash-chained local approval (2026-10-27)

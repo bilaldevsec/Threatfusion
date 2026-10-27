@@ -917,3 +917,7 @@ The verify-state check, 4-block case record, and HMAC callback do not execute ho
 ### Milestone #45 dual-window stitch, 2026-10-27
 
 Verified-key burst stitching and the private-IP refusal do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
+
+### Milestone #46 triage and grounded handoff, 2026-10-27
+
+Stored triage actions and the grounded brief do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.

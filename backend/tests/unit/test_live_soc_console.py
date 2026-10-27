@@ -17,9 +17,11 @@ from threatfusion.api.live_soc_console import (
     persist_scored_flow,
     private_ip_guard_response,
     read_n8n_workbench,
+    record_triage_action,
     replay_benchmark_attack_burst,
     score_canonical_flow,
     store_flow_provenance,
+    export_grounded_handoff,
 )
 from threatfusion.models.drift_and_supply_chain import (
     CANONICAL_14_FEATURES,
@@ -356,3 +358,42 @@ def test_verified_burst_stitches_and_private_ip_is_refused(tmp_path: Path) -> No
     open_status, opened = private_ip_guard_response("8.8.8.8")
     assert open_status == 200
     assert opened["private_ip_guard_triggered"] is False
+
+
+def test_triage_actions_persist_and_handoff_stays_grounded(tmp_path: Path) -> None:
+    from threatfusion.advisory.explanation_engine import (
+        AdvisoryEvidenceBundle,
+        verify_explanation_groundedness,
+    )
+
+    live_db = tmp_path / "live.sqlite3"
+    stored = persist_scored_flow(
+        live_db,
+        _features(),
+        score_canonical_flow(
+            _features(), repo_root=REPO_ROOT, model=_Width14Model(), supply_verified=True
+        ),
+    )
+    refused = record_triage_action(
+        live_db, flow_id=stored["flow_id"], action="contain", actor_id="analyst_a"
+    )
+    assert refused["evidence_state"] == "unavailable"
+    saved = record_triage_action(
+        live_db, flow_id=stored["flow_id"], action="escalate", actor_id="analyst_a"
+    )
+    assert saved["triage_state"] == "escalated"
+    listed = list_live_flows(live_db)
+    assert listed[0]["triage_state"] == "escalated"
+    exported = export_grounded_handoff(live_db, flow_id=stored["flow_id"])
+    assert exported["grounded"] is True
+    assert exported["report"]["block_3_technique"] == "unavailable"
+    assert exported["containment_executed"] is False
+    bundle = AdvisoryEvidenceBundle(
+        candidate_id="live_flow:1",
+        record_id="live_flow:1",
+        rf_model_version="network_random_forest_baseline_v1",
+        rf_attack_probability=0.81,
+        rf_threshold=0.5,
+        top_feature_signals={},
+    )
+    assert verify_explanation_groundedness("host 203.0.113.99 was isolated", bundle) is False

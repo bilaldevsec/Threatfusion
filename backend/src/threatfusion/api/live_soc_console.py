@@ -251,7 +251,7 @@ def list_live_flows(db_path: Path, *, limit: int = 20) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT flow_id, observed_at_utc, rf_attack_probability, decision,
-                   evidence_state, reason, model_sha256
+                   evidence_state, reason, model_sha256, triage_state
             FROM live_flows
             ORDER BY flow_id DESC
             LIMIT ?
@@ -1087,3 +1087,137 @@ def private_ip_guard_response(value: str) -> tuple[int, dict[str, Any]]:
             "value": value.strip(),
         }
     return 200, {"private_ip_guard_triggered": False, "matched": False, "value": value.strip()}
+
+
+_TRIAGE_ACTIONS = {
+    "acknowledge": "acknowledged",
+    "escalate": "escalated",
+    "dismiss": "dismissed",
+}
+
+
+def record_triage_action(
+    db_path: Path,
+    *,
+    flow_id: int,
+    action: str,
+    actor_id: str,
+) -> dict[str, Any]:
+    """Persist one analyst triage action. Unknown actions are refused."""
+    state = _TRIAGE_ACTIONS.get(action.strip().lower())
+    author = actor_id.strip()
+    if state is None or not author or flow_id <= 0 or not db_path.is_file():
+        return {"evidence_state": "unavailable", "reason": "triage_incomplete"}
+    created = datetime.now(UTC).isoformat()
+    with _connect(db_path) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS triage_events (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                flow_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                triage_state TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                created_at_utc TEXT NOT NULL
+            )
+            """)
+        found = conn.execute(
+            "SELECT flow_id FROM live_flows WHERE flow_id = ?", (flow_id,)
+        ).fetchone()
+        if found is None:
+            return {"evidence_state": "unavailable", "reason": "flow_not_stored"}
+        conn.execute("UPDATE live_flows SET triage_state = ? WHERE flow_id = ?", (state, flow_id))
+        cursor = conn.execute(
+            """
+            INSERT INTO triage_events (flow_id, action, triage_state, actor_id, created_at_utc)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (flow_id, action.strip().lower(), state, author, created),
+        )
+        event_id = int(cursor.lastrowid)
+    return {
+        "evidence_state": "verified",
+        "event_id": event_id,
+        "flow_id": flow_id,
+        "triage_state": state,
+        "actor_id": author,
+        "created_at_utc": created,
+    }
+
+
+def export_grounded_handoff(db_path: Path, *, flow_id: int) -> dict[str, Any]:
+    """Export a 4-block brief only when the text stays inside stored evidence."""
+    from threatfusion.advisory.explanation_engine import (
+        AdvisoryEvidenceBundle,
+        verify_explanation_groundedness,
+    )
+    from threatfusion.api.analyst_dashboard import build_analyst_shift_handoff
+
+    refused = {
+        "schema_version": "live_grounded_handoff_v1",
+        "evidence_state": "unavailable",
+        "execution_authorized": False,
+        "containment_executed": False,
+        "production_fusion_enabled": False,
+        "grounded": False,
+    }
+    if flow_id <= 0 or not db_path.is_file():
+        refused["reason"] = "flow_not_stored"
+        return refused
+    with _connect(db_path) as conn:
+        row = conn.execute("SELECT * FROM live_flows WHERE flow_id = ?", (flow_id,)).fetchone()
+    if row is None:
+        refused["reason"] = "flow_not_stored"
+        return refused
+    probability = row["rf_attack_probability"]
+    probability_text = "unavailable" if probability is None else f"{float(probability):.4f}"
+    brief = (
+        f"Flow {flow_id} decision {row['decision']} probability {probability_text}. "
+        "production_fusion_enabled is false."
+    )
+    bundle = AdvisoryEvidenceBundle(
+        candidate_id=f"live_flow:{flow_id}",
+        record_id=f"live_flow:{flow_id}",
+        rf_model_version="network_random_forest_baseline_v1",
+        rf_attack_probability=float(probability) if probability is not None else 0.0,
+        rf_threshold=0.5,
+        top_feature_signals={},
+        incident_id=row["campaign_id"],
+        observed_at=row["observed_at_utc"],
+    )
+    grounded = verify_explanation_groundedness(brief, bundle)
+    if not grounded:
+        refused["reason"] = "explanation_not_grounded"
+        return refused
+    handoff = build_analyst_shift_handoff(
+        incident_id=f"live_flow:{flow_id}",
+        relationship_key=row["campaign_id"],
+        flow_members=[
+            {
+                "observed_at": row["observed_at_utc"],
+                "alert_candidate_id": f"live_flow:{flow_id}",
+                "matched_relationship_key": row["campaign_id"],
+            }
+        ],
+        playbook_state=row["ledger_state"],
+    )
+    report = {
+        "block_1_decision": row["decision"],
+        "block_1_probability": probability_text,
+        "block_2_observed_at": row["observed_at_utc"],
+        "block_3_technique": "unavailable",
+        "block_4_playbook_state": row["ledger_state"] or "pending_approval",
+        "block_4_entry_sha256": row["entry_sha256"] or "",
+    }
+    return {
+        "schema_version": "live_grounded_handoff_v1",
+        "evidence_state": "verified",
+        "reason": "grounded_brief",
+        "grounded": True,
+        "execution_authorized": False,
+        "containment_executed": False,
+        "production_fusion_enabled": False,
+        "brief": brief,
+        "report": report,
+        "handoff": handoff,
+        "flow_id": flow_id,
+    }

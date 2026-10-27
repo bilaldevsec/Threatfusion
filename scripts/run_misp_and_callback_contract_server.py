@@ -464,6 +464,45 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             self._send_json(status, payload)
             return
 
+        if path == "/api/v1/live/triage":
+            from threatfusion.api.live_soc_console import record_triage_action
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            raw_flow = req_data.get("flow_id")
+            result = record_triage_action(
+                self._live_db_path(),
+                flow_id=raw_flow if isinstance(raw_flow, int) else 0,
+                action=str(req_data.get("action") or ""),
+                actor_id=str(req_data.get("actor_id") or ""),
+            )
+            status = 200 if result.get("evidence_state") == "verified" else 400
+            self._send_json(status, result)
+            return
+
+        if path == "/api/v1/live/handoff":
+            from threatfusion.api.live_soc_console import export_grounded_handoff
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            raw_flow = req_data.get("flow_id") if isinstance(req_data, dict) else 0
+            result = export_grounded_handoff(
+                self._live_db_path(),
+                flow_id=raw_flow if isinstance(raw_flow, int) else 0,
+            )
+            status = 200 if result.get("evidence_state") == "verified" else 400
+            self._send_json(status, result)
+            return
+
         if path == "/api/v1/live/replay":
             from threatfusion.api.live_soc_console import replay_benchmark_attack_burst
 
