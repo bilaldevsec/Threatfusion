@@ -933,3 +933,7 @@ The one-command launcher and root README do not satisfy the closure tests for TF
 ### Milestone #48 full-suite audit, 2026-10-27
 
 A 1,527-test pytest run and the corrupt-database classification fix do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
+
+### Milestone #49 triage history in the grounded shift handoff, 2026-10-27
+
+Stored triage actions, the shift-handoff timeline, and the grounded-note refusal do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. Containment stays unauthorized. All four issues remain **open**.

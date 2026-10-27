@@ -378,20 +378,86 @@ def test_triage_actions_persist_and_handoff_stays_grounded(tmp_path: Path) -> No
             _features(), repo_root=REPO_ROOT, model=_Width14Model(), supply_verified=True
         ),
     )
+    provenance = store_flow_provenance(
+        live_db,
+        stored["flow_id"],
+        entity_namespace_id="lab:edge-01",
+        src_entity_id="198.51.100.27",
+        dst_entity_id="10.0.0.5",
+        protocol="tcp",
+        service_or_port="80",
+        clock_synchronized=True,
+    )
+    assert provenance["evidence_state"] == "verified"
     refused = record_triage_action(
         live_db, flow_id=stored["flow_id"], action="contain", actor_id="analyst_a"
     )
     assert refused["evidence_state"] == "unavailable"
-    saved = record_triage_action(
-        live_db, flow_id=stored["flow_id"], action="escalate", actor_id="analyst_a"
+    blank_actor = record_triage_action(
+        live_db, flow_id=stored["flow_id"], action="acknowledge", actor_id="  "
     )
-    assert saved["triage_state"] == "escalated"
+    assert blank_actor["evidence_state"] == "unavailable"
+    expected = (
+        ("acknowledge", "acknowledged"),
+        ("escalate", "escalated"),
+        ("dismiss", "dismissed"),
+    )
+    for action, state in expected:
+        saved = record_triage_action(
+            live_db, flow_id=stored["flow_id"], action=action, actor_id="analyst_a"
+        )
+        assert saved["triage_state"] == state
     listed = list_live_flows(live_db)
-    assert listed[0]["triage_state"] == "escalated"
+    assert listed[0]["triage_state"] == "dismissed"
+    with sqlite3.connect(live_db) as conn:
+        rows = conn.execute(
+            "SELECT action, triage_state, actor_id FROM triage_events ORDER BY event_id"
+        ).fetchall()
+    assert rows == [
+        ("acknowledge", "acknowledged", "analyst_a"),
+        ("escalate", "escalated", "analyst_a"),
+        ("dismiss", "dismissed", "analyst_a"),
+    ]
     exported = export_grounded_handoff(live_db, flow_id=stored["flow_id"])
     assert exported["grounded"] is True
+    assert exported["production_fusion_enabled"] is False
     assert exported["report"]["block_3_technique"] == "unavailable"
+    assert exported["report"]["block_2_triage_count"] == 3
+    assert exported["report"]["block_2_latest_triage_state"] == "dismissed"
+    assert exported["report"]["stored_addresses"] == ["198.51.100.27", "10.0.0.5"]
     assert exported["containment_executed"] is False
+    transitions = [
+        event
+        for event in exported["handoff"]["timeline"]["events"]
+        if event["kind"] == "analyst_transition"
+    ]
+    assert [event["to_state"] for event in transitions] == [
+        "acknowledged",
+        "escalated",
+        "dismissed",
+    ]
+    assert "Technique: unavailable" in exported["markdown"]
+    assert "Containment was not executed." in exported["markdown"]
+    blocked = export_grounded_handoff(
+        live_db,
+        flow_id=stored["flow_id"],
+        brief="host 203.0.113.99 was isolated",
+    )
+    assert blocked["evidence_state"] == "unavailable"
+    assert blocked["grounded"] is False
+    assert blocked["reason"] == "explanation_not_grounded"
+    assert "markdown" not in blocked
+    assert "203.0.113.99" not in str(blocked)
+    cited = export_grounded_handoff(
+        live_db,
+        flow_id=stored["flow_id"],
+        brief="Stored source 198.51.100.27 stays on this flow.",
+    )
+    assert cited["grounded"] is True
+    assert "198.51.100.27" in cited["brief"]
+    missing = export_grounded_handoff(live_db, flow_id=999)
+    assert missing["grounded"] is False
+    assert missing["reason"] == "flow_not_stored"
     bundle = AdvisoryEvidenceBundle(
         candidate_id="live_flow:1",
         record_id="live_flow:1",
@@ -401,6 +467,112 @@ def test_triage_actions_persist_and_handoff_stays_grounded(tmp_path: Path) -> No
         top_feature_signals={},
     )
     assert verify_explanation_groundedness("host 203.0.113.99 was isolated", bundle) is False
+
+
+def test_triage_and_handoff_routes_round_trip(tmp_path: Path, monkeypatch) -> None:
+    import importlib.util
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    spec = importlib.util.spec_from_file_location(
+        "contract_server_triage_under_test",
+        REPO_ROOT / "scripts" / "run_misp_and_callback_contract_server.py",
+    )
+    assert spec is not None and spec.loader is not None
+    server_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(server_module)
+    handler = server_module.MispAndCallbackContractHandler
+
+    live_db = tmp_path / "live.sqlite3"
+    monkeypatch.setenv("THREATFUSION_LIVE_CONSOLE_DB", str(live_db))
+    stored = persist_scored_flow(
+        live_db,
+        _features(),
+        score_canonical_flow(
+            _features(), repo_root=REPO_ROOT, model=_Width14Model(), supply_verified=True
+        ),
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+
+        def post(path: str, payload: dict[str, object]) -> tuple[int, dict[str, object]]:
+            body = json.dumps(payload).encode("utf-8")
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}{path}",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request) as response:
+                    return response.status, json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+
+        for action, state in (
+            ("acknowledge", "acknowledged"),
+            ("escalate", "escalated"),
+            ("dismiss", "dismissed"),
+        ):
+            status, body = post(
+                "/api/v1/live/triage",
+                {"flow_id": stored["flow_id"], "action": action, "actor_id": "analyst_a"},
+            )
+            assert status == 200
+            assert body["triage_state"] == state
+            assert body["evidence_state"] == "verified"
+        refused_status, refused_body = post(
+            "/api/v1/live/triage",
+            {"flow_id": stored["flow_id"], "action": "contain", "actor_id": "analyst_a"},
+        )
+        assert refused_status == 400
+        assert refused_body["evidence_state"] == "unavailable"
+        assert list_live_flows(live_db)[0]["triage_state"] == "dismissed"
+        status, exported = post("/api/v1/live/handoff", {"flow_id": stored["flow_id"]})
+        assert status == 200
+        assert exported["grounded"] is True
+        assert exported["production_fusion_enabled"] is False
+        assert exported["containment_executed"] is False
+        report = exported["report"]
+        assert isinstance(report, dict)
+        assert report["block_3_technique"] == "unavailable"
+        assert report["block_2_triage_count"] == 3
+        assert report["block_2_latest_triage_state"] == "dismissed"
+        assert "Technique: unavailable" in str(exported["markdown"])
+        blocked_status, blocked = post(
+            "/api/v1/live/handoff",
+            {"flow_id": stored["flow_id"], "brief": "host 203.0.113.99 was isolated"},
+        )
+        assert blocked_status == 400
+        assert blocked["grounded"] is False
+        assert blocked["reason"] == "explanation_not_grounded"
+        assert "markdown" not in blocked
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_triage_controls_are_wired_in_the_page() -> None:
+    html = (REPO_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    script = (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")
+    assert 'id="btnAcknowledge"' in html
+    assert 'id="btnEscalate"' in html
+    assert 'id="btnDismiss"' in html
+    assert 'id="btnExportHandoff"' in html
+    assert 'id="shiftHandoffNote"' in html
+    assert 'id="shiftHandoffReport"' in html
+    assert "/api/v1/live/triage" in script
+    assert "/api/v1/live/handoff" in script
+    assert "triageState" in script
+    assert "shiftHandoffReport" in script
+    assert "production_fusion_enabled = True" not in script
 
 
 def test_live_product_launcher_starts_one_process() -> None:

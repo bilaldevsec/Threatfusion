@@ -613,6 +613,7 @@
           <span class="badge badge-rf-confidence">RF: ${scoreText}%</span>
           <span class="badge badge-secondary-anomaly">v2 AE: ${aeError.toFixed(3)}</span>
           <span class="badge" data-evidence-state="${evidenceState}">${evidenceState.toUpperCase()}</span>
+          ${inc.triageState ? `<span class="badge badge-state">Triage: ${escapeHtml(inc.triageState)}</span>` : ''}
         </div>
       `;
 
@@ -697,6 +698,11 @@
               <span class="badge badge-secondary-anomaly">Secondary Anomaly Indicator (Unfused v2 AE — Section 8 Fusion Disabled)</span>
             </span>
           </div>
+          ${inc.triageState ? `
+          <div class="evidence-cell">
+            <span class="evidence-cell-label">ANALYST TRIAGE STATE</span>
+            <span class="evidence-cell-val"><span class="badge badge-state">${escapeHtml(inc.triageState)}</span></span>
+          </div>` : ''}
         </div>
       </div>
 
@@ -1157,6 +1163,7 @@
       callbackSignature: typeof flow.callback_signature === 'string' ? flow.callback_signature : '',
       thehiveCaseId: flow.thehive_case_id || '',
       mttrSeconds: flow.mttr_seconds,
+      triageState: flow.triage_state || 'unreviewed',
       thehiveCaseRecord: null,
       n8nPlaybookReceipt: null
     };
@@ -1297,6 +1304,25 @@
     return inc && inc.flowId ? inc.flowId : null;
   }
 
+  function showHandoffReport(text, state) {
+    const node = document.getElementById('shiftHandoffReport');
+    if (!node) return;
+    node.textContent = text;
+    node.setAttribute('data-evidence-state', state || 'unavailable');
+  }
+
+  function downloadHandoffMarkdown(flowId, markdown) {
+    const blob = new Blob([markdown], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'shift-handoff-flow-' + flowId + '.md';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
   async function recordTriageAction(action) {
     const flowId = selectedLiveFlowId();
     if (!flowId) {
@@ -1310,12 +1336,14 @@
         body: JSON.stringify({ flow_id: flowId, action: action, actor_id: 'analyst_a' })
       });
       const data = await resp.json();
+      await refreshLiveCampaigns();
       setLiveText(
         'campaignQueueStatus',
-        data.evidence_state === 'verified' ? ('Triage state ' + data.triage_state + '.') : 'Triage refused.',
+        data.evidence_state === 'verified'
+          ? ('Triage state ' + data.triage_state + ' stored for flow ' + data.flow_id + '.')
+          : 'Triage refused.',
         data.evidence_state || 'unavailable'
       );
-      await refreshLiveCampaigns();
     } catch (err) {
       setLiveText('campaignQueueStatus', 'Triage unavailable.', 'unavailable');
     }
@@ -1324,27 +1352,31 @@
   async function exportGroundedHandoff() {
     const flowId = selectedLiveFlowId();
     if (!flowId) {
-      setLiveText('liveTimeline', 'Export applies to a stored flow.', 'unavailable');
+      showHandoffReport('Export applies to a stored flow.', 'unavailable');
       return;
     }
+    const noteNode = document.getElementById('shiftHandoffNote');
+    const note = noteNode && typeof noteNode.value === 'string' ? noteNode.value.trim() : '';
+    const payload = { flow_id: flowId };
+    if (note) payload.brief = note;
     try {
       const resp = await fetch('/api/v1/live/handoff', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ flow_id: flowId })
+        body: JSON.stringify(payload)
       });
       const data = await resp.json();
-      if (data.grounded === true && data.report) {
-        setLiveText(
-          'liveTimeline',
-          'Grounded brief. Block 1 ' + data.report.block_1_decision + '. Block 3 ' + data.report.block_3_technique + '.',
-          'verified'
-        );
+      if (data.grounded === true && data.report && typeof data.markdown === 'string') {
+        showHandoffReport(data.markdown, 'verified');
+        downloadHandoffMarkdown(flowId, data.markdown);
         return;
       }
-      setLiveText('liveTimeline', 'Handoff export unavailable.', 'unavailable');
+      const reason = data.reason === 'explanation_not_grounded'
+        ? 'Handoff refused. The note names an address that is not stored on this flow.'
+        : 'Handoff export unavailable.';
+      showHandoffReport(reason, 'unavailable');
     } catch (err) {
-      setLiveText('liveTimeline', 'Handoff export unavailable.', 'unavailable');
+      showHandoffReport('Handoff export unavailable.', 'unavailable');
     }
   }
 

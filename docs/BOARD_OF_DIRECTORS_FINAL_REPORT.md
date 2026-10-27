@@ -25,7 +25,7 @@ Ingest and replay call `IncidentCorrelationEngine` on stored Attack rows. The bu
 
 `POST /attributes/restSearch` returns HTTP 422 for RFC1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), IPv6 ULA (`fc00::/7`), loopback (`127.0.0.0/8` and `::1`), and link-local (`169.254.0.0/16` and `fe80::/10`) before the local indicator table is read. An IPv4-mapped address is judged as its embedded IPv4 address. No outbound MISP socket is opened on that route. Documentation ranges `198.51.100.0/24` and `203.0.113.0/24` are not RFC1918. The previous `ipaddress.is_private` check refused them, so the route's own indicators `198.51.100.27` and `203.0.113.195` never matched. Those two addresses now return the local canonical attribute. `POST /api/v1/live/misp-guard` uses the same address rule and does not perform a lookup.
 
-Acknowledge, Escalate, and Dismiss persist a triage row. Export Shift Handoff calls `verify_explanation_groundedness()` and keeps block 3 `unavailable` when no technique was retrieved. A brief that names an address outside the evidence bundle is not verified.
+Acknowledge, Escalate, and Dismiss each append a triage row and store the latest state on that flow. The campaign card and the drawer show the stored state after the queue reloads. Export Shift Handoff builds the four blocks from the stored row, includes those triage events in the shift-handoff timeline, and calls `verify_explanation_groundedness()`. Block 3 stays `unavailable` because no technique is stored on the flow. A shift note that names an address outside the stored entity ids is refused and is not copied into the report. The page shows and downloads the markdown only after that check passes. Containment stays unauthorized.
 
 `scripts/run_live_product.sh` starts the page and the contract endpoints as one process on `127.0.0.1:8766`. The root README states the architecture, the Section 8 comparison (`+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)`; fusion stays off because those 96 true positives cost 1,574 extra false positives), and the same quickstart. The lab HMAC and MISP defaults are not production credentials.
 
@@ -48,8 +48,8 @@ A browser check on 2026-10-27 replayed those five vectors. The frozen Random For
 5. Choose Dispatch signed callback. The drawer shows the HMAC prefix, the case id, and the callback MTTR.
 6. Ingest or replay two Attack rows that share a verified entity key. A 30.0-second gap on the same 5-tuple shows correlated flow count 2 and a burst timeline. A 600.0-second gap on different ports shows one campaign. Choose Stitch verified windows to read the same stored result again.
 7. Choose Check private IP guard. The status line reports HTTP 422 for `10.0.0.4`. Loopback and link-local addresses are refused by the same MISP lookup route before any indicator lookup.
-8. Choose Acknowledge, Escalate, or Dismiss. The triage state is stored on that flow.
-9. Choose Export Shift Handoff / 4-Block Incident Report. The packet is returned only when the brief is grounded.
+8. Choose Acknowledge, Escalate, or Dismiss on a stored flow. The card keeps the stored triage state after the queue reloads.
+9. Optionally type a shift note, then choose Export Shift Handoff / 4-Block Incident Report. The four-block markdown is shown and downloaded only when the note stays inside the stored evidence. A note that names an address that is not stored is refused.
 
 Stop the process when the walkthrough is finished. The launcher binds only to `127.0.0.1`.
 

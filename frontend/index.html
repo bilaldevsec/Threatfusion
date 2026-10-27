@@ -240,6 +240,9 @@
           <button id="btnEscalate" type="button">Escalate</button>
           <button id="btnDismiss" type="button">Dismiss</button>
           <button id="btnExportHandoff" type="button">Export Shift Handoff / 4-Block Incident Report</button>
+          <label for="shiftHandoffNote" style="display:block;margin-top:0.45rem;font-size:0.75rem;color:var(--text-secondary);">Shift note</label>
+          <textarea id="shiftHandoffNote" rows="2" placeholder="Optional. An address must already be stored on this flow." style="width:100%;margin-top:0.2rem;"></textarea>
+          <pre id="shiftHandoffReport" data-evidence-state="unavailable" style="white-space:pre-wrap;font-size:0.78rem;">No shift handoff exported yet.</pre>
           <div id="liveTimeline" data-evidence-state="unavailable">No correlated timeline yet.</div>
           <div id="liveTimelineDrawer" data-evidence-state="unavailable" data-correlated-flow-count="0">No unified timeline yet.</div>
           <div id="campaignQueueStatus" data-evidence-state="unavailable">Stored campaigns have not been loaded.</div>

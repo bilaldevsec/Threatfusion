@@ -1968,3 +1968,10 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 - The campaign queue renders those stored rows. The browser no longer invents a SHA-256, a TheHive case, or an n8n receipt. Sample incidents remain only when the campaign request cannot be reached.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
+### Milestone #49: Triage history in the grounded shift handoff (2026-10-27)
+
+- Acknowledge, escalate, and dismiss each append a `triage_events` row and store the latest state on the flow. The campaign card and the drawer keep that state after the queue reloads. An unknown action and a blank actor are refused.
+- `POST /api/v1/live/handoff` builds the four blocks from the stored flow and passes the triage rows into `build_analyst_shift_handoff()`. Block 3 stays `unavailable` because no technique is stored. The default brief and any supplied note are checked with `verify_explanation_groundedness()`. A note that names an address outside the stored entity ids is refused and is not copied into the markdown. The page shows and downloads the markdown only after that check passes. `production_fusion_enabled` stays false. Containment stays unauthorized.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
