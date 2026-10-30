@@ -1300,6 +1300,20 @@
         dispatchSignedCallback(inc);
       });
     }
+    const containButton = document.getElementById('btnContainRange');
+    if (containButton) {
+      containButton.addEventListener('click', () => {
+        const inc = activeIncidents().find(i => i.id === selectedIncidentId);
+        postRangeContainment(inc, '/api/v1/live/soar/contain');
+      });
+    }
+    const rollbackButton = document.getElementById('btnRollbackRange');
+    if (rollbackButton) {
+      rollbackButton.addEventListener('click', () => {
+        const inc = activeIncidents().find(i => i.id === selectedIncidentId);
+        postRangeContainment(inc, '/api/v1/live/soar/rollback');
+      });
+    }
     const stitchButton = document.getElementById('btnStitchWindows');
     if (stitchButton) {
       stitchButton.addEventListener('click', () => { stitchVerifiedWindows(); });
@@ -1935,6 +1949,29 @@
       }
     } catch (err) {
       setLiveText('campaignQueueStatus', 'Signed callback unavailable.', 'unavailable');
+    }
+  }
+
+  async function postRangeContainment(inc, path) {
+    if (!inc || !inc.live || !inc.flowId) {
+      setLiveText('campaignQueueStatus', 'Containment applies to a stored bridge flow.', 'unavailable');
+      return;
+    }
+    try {
+      const resp = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flow_id: inc.flowId })
+      });
+      const data = await resp.json();
+      const executed = data.containment_executed === true ? 'drop applied' : 'drop not applied';
+      setLiveText(
+        'campaignQueueStatus',
+        (data.reason || 'range containment') + '. ' + executed + '.',
+        data.evidence_state || 'unavailable'
+      );
+    } catch (err) {
+      setLiveText('campaignQueueStatus', 'Range containment unavailable.', 'unavailable');
     }
   }
 

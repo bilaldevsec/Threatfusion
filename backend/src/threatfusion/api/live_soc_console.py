@@ -80,6 +80,9 @@ _FLOW_EXTRA_COLUMNS: tuple[tuple[str, str], ...] = (
     ("cert_sha256_prefix", "TEXT"),
     ("identity_verified", "INTEGER"),
     ("identity_label", "TEXT"),
+    ("containment_state", "TEXT"),
+    ("containment_at", "TEXT"),
+    ("rollback_at", "TEXT"),
 )
 
 _ANALYST_VERDICTS = frozenset({"true_positive", "false_positive", "inconclusive"})
@@ -2741,4 +2744,245 @@ def export_grounded_handoff(
         "handoff": handoff,
         "markdown": markdown,
         "flow_id": flow_id,
+    }
+
+
+RANGE_VICTIM_CONTAINER = "threatfusion_range_victim"
+RANGE_ATTACKER_CONTAINER = "threatfusion_range_attacker"
+RANGE_CONTAINMENT_SOURCE = "172.29.0.10"
+RANGE_VICTIM_ADDRESS = "172.29.0.20"
+
+
+def range_docker_argv(action: str) -> tuple[str, ...]:
+    """Commands that run only inside the victim or attacker container."""
+    source = f"{RANGE_CONTAINMENT_SOURCE}/32"
+    if action == "status":
+        return ("docker", "inspect", "-f", "{{.State.Running}}", RANGE_VICTIM_CONTAINER)
+    if action == "drop_check":
+        return (
+            "docker",
+            "exec",
+            RANGE_VICTIM_CONTAINER,
+            "iptables",
+            "-C",
+            "INPUT",
+            "-s",
+            source,
+            "-j",
+            "DROP",
+        )
+    if action == "drop":
+        return (
+            "docker",
+            "exec",
+            RANGE_VICTIM_CONTAINER,
+            "iptables",
+            "-I",
+            "INPUT",
+            "1",
+            "-s",
+            source,
+            "-j",
+            "DROP",
+        )
+    if action == "rollback":
+        return (
+            "docker",
+            "exec",
+            RANGE_VICTIM_CONTAINER,
+            "iptables",
+            "-D",
+            "INPUT",
+            "-s",
+            source,
+            "-j",
+            "DROP",
+        )
+    if action == "probe":
+        return (
+            "docker",
+            "exec",
+            RANGE_ATTACKER_CONTAINER,
+            "curl",
+            "-fsS",
+            "--max-time",
+            "3",
+            f"http://{RANGE_VICTIM_ADDRESS}/",
+        )
+    raise ValueError(action)
+
+
+def _run_range_action(action: str) -> dict[str, Any]:
+    import subprocess
+
+    if action == "status":
+        completed = subprocess.run(
+            range_docker_argv("status"),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        return {"running": completed.returncode == 0 and completed.stdout.strip() == "true"}
+    if action == "drop":
+        present = subprocess.run(
+            range_docker_argv("drop_check"),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if present.returncode != 0:
+            inserted = subprocess.run(
+                range_docker_argv("drop"),
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if inserted.returncode != 0:
+                return {"applied": False}
+        return {"applied": True}
+    if action == "rollback":
+        removed = subprocess.run(
+            range_docker_argv("rollback"),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        return {"removed": removed.returncode == 0}
+    if action == "probe":
+        probed = subprocess.run(
+            range_docker_argv("probe"),
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        return {"reachable": probed.returncode == 0}
+    raise ValueError(action)
+
+
+def _containment_refusal(reason: str, http_status: int) -> dict[str, Any]:
+    return {
+        "schema_version": "live_range_containment_v1",
+        "evidence_state": "unavailable",
+        "reason": reason,
+        "execution_authorized": False,
+        "containment_executed": False,
+        "production_fusion_enabled": False,
+        "target": RANGE_CONTAINMENT_SOURCE,
+        "http_status": http_status,
+    }
+
+
+def _authorized_range_flow(
+    live_db_path: Path, soar_db_path: Path, flow_id: int
+) -> tuple[sqlite3.Row | None, dict[str, Any] | None]:
+    if flow_id <= 0 or not live_db_path.is_file() or not soar_db_path.is_file():
+        return None, _containment_refusal("flow_not_stored", 403)
+    with _connect(live_db_path) as conn:
+        flow = conn.execute("SELECT * FROM live_flows WHERE flow_id = ?", (flow_id,)).fetchone()
+    if flow is None:
+        return None, _containment_refusal("flow_not_stored", 403)
+    if str(flow["src_entity_id"] or "") != RANGE_CONTAINMENT_SOURCE:
+        return None, _containment_refusal("containment_target_rejected", 403)
+    signature = str(flow["callback_signature"] or "")
+    if not flow["callback_recorded"] or _SHA256_HEX.fullmatch(signature) is None:
+        return None, _containment_refusal("callback_not_recorded", 403)
+    from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
+
+    repository = SoarPlaybookSqliteRepository(soar_db_path)
+    chain_ok, _message = repository.verify_audit_chain_integrity()
+    approved = next(
+        (
+            record
+            for record in repository.list_records_for_candidate(f"live_flow:{flow_id}")
+            if record.state in {"approved", "executed_simulated"}
+        ),
+        None,
+    )
+    if not chain_ok or approved is None:
+        return None, _containment_refusal("playbook_not_approved", 403)
+    return flow, None
+
+
+def _store_containment_state(db_path: Path, flow_id: int, state: str, *, when: str) -> None:
+    column = "containment_at" if state == "applied" else "rollback_at"
+    with _connect(db_path) as conn:
+        conn.execute(
+            f"""
+            UPDATE live_flows
+            SET containment_state = ?, {column} = ?
+            WHERE flow_id = ?
+            """,
+            (state, when, flow_id),
+        )
+
+
+def contain_range_source(
+    live_db_path: Path,
+    soar_db_path: Path,
+    *,
+    flow_id: int,
+    runner: Any | None = None,
+) -> dict[str, Any]:
+    """Drop 172.29.0.10 inside the victim network namespace after a verified callback."""
+    _flow, refused = _authorized_range_flow(live_db_path, soar_db_path, flow_id)
+    if refused is not None:
+        return refused
+    act = runner or _run_range_action
+    if not act("status").get("running"):
+        return _containment_refusal("range_not_running", 409)
+    if not act("drop").get("applied"):
+        return _containment_refusal("range_command_failed", 409)
+    if act("probe").get("reachable"):
+        act("rollback")
+        return _containment_refusal("containment_not_observed", 502)
+    recorded_at = datetime.now(UTC).isoformat()
+    _store_containment_state(live_db_path, flow_id, "applied", when=recorded_at)
+    return {
+        "schema_version": "live_range_containment_v1",
+        "evidence_state": "verified",
+        "reason": "containment_applied",
+        "execution_authorized": False,
+        "containment_executed": True,
+        "production_fusion_enabled": False,
+        "target": RANGE_CONTAINMENT_SOURCE,
+        "containment_at": recorded_at,
+        "http_status": 200,
+    }
+
+
+def rollback_range_source(
+    live_db_path: Path,
+    soar_db_path: Path,
+    *,
+    flow_id: int,
+    runner: Any | None = None,
+) -> dict[str, Any]:
+    """Remove the victim-namespace drop and require the attacker path to succeed again."""
+    _flow, refused = _authorized_range_flow(live_db_path, soar_db_path, flow_id)
+    if refused is not None:
+        return refused
+    act = runner or _run_range_action
+    if not act("status").get("running"):
+        return _containment_refusal("range_not_running", 409)
+    if not act("rollback").get("removed"):
+        return _containment_refusal("rollback_rule_missing", 409)
+    if not act("probe").get("reachable"):
+        return _containment_refusal("rollback_not_observed", 502)
+    recorded_at = datetime.now(UTC).isoformat()
+    _store_containment_state(live_db_path, flow_id, "rolled_back", when=recorded_at)
+    return {
+        "schema_version": "live_range_containment_v1",
+        "evidence_state": "verified",
+        "reason": "containment_rolled_back",
+        "execution_authorized": False,
+        "containment_executed": False,
+        "production_fusion_enabled": False,
+        "target": RANGE_CONTAINMENT_SOURCE,
+        "rollback_at": recorded_at,
+        "http_status": 200,
     }

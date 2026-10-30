@@ -16,6 +16,8 @@ services:
       dockerfile: Dockerfile.victim
     image: threatfusion-range-victim:local
     container_name: threatfusion_range_victim
+    cap_add:
+      - NET_ADMIN
     networks:
       threatfusion_range:
         ipv4_address: 172.29.0.20

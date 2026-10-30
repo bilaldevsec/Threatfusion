@@ -771,6 +771,31 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             self._send_json(status, result)
             return
 
+        if path in {"/api/v1/live/soar/contain", "/api/v1/live/soar/rollback"}:
+            from threatfusion.api.live_soc_console import (
+                contain_range_source,
+                rollback_range_source,
+            )
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            raw_flow = req_data.get("flow_id")
+            flow_id = raw_flow if isinstance(raw_flow, int) else 0
+            action = contain_range_source if path.endswith("/contain") else rollback_range_source
+            result = action(
+                self._live_db_path(),
+                self._live_soar_path(),
+                flow_id=flow_id,
+            )
+            self._send_json(int(result.get("http_status") or 403), result)
+            return
+
         # 1. MISP Rest Search Endpoint
         if path == "/attributes/restSearch":
             configured_key = (

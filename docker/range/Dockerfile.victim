@@ -1,6 +1,6 @@
 FROM alpine:3.20
 
-RUN apk add --no-cache nginx openssh \
+RUN apk add --no-cache nginx openssh iptables \
     && ssh-keygen -A \
     && printf '%s\n' 'root:lab-only-range' | chpasswd \
     && printf '%s\n' \
