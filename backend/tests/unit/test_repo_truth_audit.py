@@ -37,8 +37,13 @@ class TestRepoTruthAudit:
         for c in report.checks:
             assert c.passed is True, f"Check {c.check_id} ({c.name}) failed: {c.summary}"
 
-        # Git state checks
-        assert report.git_branch == "gemini/product-20260924"
+        # Git state checks. The audit must report this checkout's branch.
+        live_branch = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=Path(__file__).resolve().parents[3],
+            text=True,
+        ).strip()
+        assert report.git_branch == live_branch
         assert len(report.git_head_sha) == 40
 
         # Frozen model digest checks

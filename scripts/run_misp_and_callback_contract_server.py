@@ -325,6 +325,23 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 ),
             )
             return
+        if path == "/api/v1/live/surfaces":
+            from urllib.parse import parse_qs
+
+            from threatfusion.api.live_soc_console import build_live_operator_surfaces
+
+            query = parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+            raw_flow = (query.get("flow_id") or [None])[0]
+            selected = int(raw_flow) if isinstance(raw_flow, str) and raw_flow.isdigit() else None
+            self._send_json(
+                200,
+                build_live_operator_surfaces(
+                    self._live_db_path(),
+                    incidents_db_path=self._incidents_db_path(),
+                    selected_flow_id=selected,
+                ),
+            )
+            return
         if path == "/api/v1/metrics/operational-velocity":
             from threatfusion.api.analyst_dashboard import compute_alert_noise_reduction_funnel
             from threatfusion.correlation.incident_correlation import (

@@ -88,203 +88,8 @@
     return SHA256_HEX_REGEX.test(sig);
   }
 
-  // ========================================================================
-  // 3. Sample Incident Records in the Analyst Triage Queue
-  // ========================================================================
-  const SAMPLE_INCIDENTS = [
-    {
-      id: 'alert_candidate_v1:9f8a3c2e1b4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f',
-      sourceEventId: 'azure_suricata_eve_flow:20261019_001842_tcp_80',
-      observedAt: '2026-10-19T17:15:20Z',
-      createdAt: '2026-10-19T17:15:21Z',
-      sourceRepresentation: 'azure.victim_vm.suricata.eve_flow.v1',
-      featureContract: 'network_behavior_v1',
-      modelIdentity: 'network_random_forest',
-      modelVersion: 'full-network-random-forest-6d69c72-v1',
-      modelArtifactSha256: EVAL_PACK_REV2.rfArtifactSha256,
-      uncalibratedScore: 0.9125,
-      threshold: 0.50,
-      decision: 'Attack',
-      triageState: 'in_review',
-      version: 1,
-      // Provenance & Correlation
-      provenance: {
-        entityNamespace: 'azure_lab:victim_vm_10_0_0_5',
-        sensorVerified: true,
-        clockSync: true,
-        srcIp: '198.51.100.27',
-        dstIp: '10.0.0.5',
-        srcPort: 44120,
-        dstPort: 80,
-        proto: 'TCP'
-      },
-      correlation: {
-        incidentId: 'inc_burst_5tuple_30s_v1:44d886',
-        windowType: '30.0s Burst Window',
-        ruleId: 'corr_burst_5tuple_30s_v1',
-        constituentAlerts: 4,
-        explanation: 'Grouped 4 rapid SYN-ACK probe flows within 30.0s window sharing pivot key (198.51.100.27 -> 10.0.0.5:80/tcp)'
-      },
-      // Threat Intelligence
-      threatIntel: {
-        queryMode: 'external_threat_intel_rest',
-        privateIpGuardTriggered: false,
-        matched: true,
-        threatLevel: 'high',
-        tags: ['c2:active_beacon', 'apt:threatfusion_simulated', 'tlp:amber']
-      },
-      // Unfused Secondary Anomaly
-      secondaryAe: {
-        aeError: 0.2450,
-        threshold: EVAL_PACK_REV2.aeThreshold,
-        status: 'ANOMALY_CONFIRMED'
-      },
-      // Advisory Explanation
-      advisory: {
-        summaryHeadline: 'Active Port 80 Web Exploitation Probe & C2 Reconnaissance',
-        detectionRationale: 'Primary Random Forest scored 0.9125 (threshold 0.5000; 95.266% precision). External IP 198.51.100.27 correlated across 4 burst flows on port 80.',
-        citedEvidenceKeys: ['alert_candidate_id', 'source_event_id', 'uncalibrated_model_score', 'correlation.incident_id'],
-        generationMode: 'verified_local_llm_advisory'
-      },
-      // ChromaDB Semantic Vector RAG Hits
-      chromaRagHits: [
-        { technique_id: 'T1190', technique_name: 'Exploit Public-Facing Application', playbook_id: 'pb-isolate-host-01', cosine_similarity: 0.924 },
-        { technique_id: 'T1046', technique_name: 'Network Service Discovery', playbook_id: 'pb-block-src-ip-02', cosine_similarity: 0.885 }
-      ],
-      // SOAR Ledger Status
-      soarRecord: {
-        playbookId: 'pb-isolate-host-01',
-        actionType: 'verify_and_contain_lab_source_ip',
-        targetEntity: '198.51.100.27',
-        state: 'approved',
-        version: 2,
-        actorId: 'analyst-bilal',
-        decisionReason: 'Verified C2 beacon IOC and rapid scan pattern; approved containment'
-      },
-      soarAuditChainVerified: true,
-      soarAuditChainHeadSha256: '44d88612fea8a8f36de82e1278abb02f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d',
-      thehiveCaseRecord: { case_id: 'case_azure_victim_001842', status: 'created_live' },
-      n8nPlaybookReceipt: { execution_id: 'exec_n8n_flow_001842', signature_sha256: '275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f' }
-    },
-    {
-      id: 'alert_candidate_v1:5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b',
-      sourceEventId: 'azure_suricata_eve_flow:20261019_001905_syn_flood',
-      observedAt: '2026-10-19T17:16:10Z',
-      createdAt: '2026-10-19T17:16:11Z',
-      sourceRepresentation: 'azure.victim_vm.suricata.eve_flow.v1',
-      featureContract: 'network_behavior_v1',
-      modelIdentity: 'network_random_forest',
-      modelVersion: 'full-network-random-forest-6d69c72-v1',
-      modelArtifactSha256: EVAL_PACK_REV2.rfArtifactSha256,
-      uncalibratedScore: 0.8820,
-      threshold: 0.50,
-      decision: 'Attack',
-      triageState: 'new',
-      version: 0,
-      provenance: {
-        entityNamespace: 'azure_lab:victim_vm_10_0_0_5',
-        sensorVerified: true,
-        clockSync: true,
-        srcIp: '203.0.113.195',
-        dstIp: '10.0.0.5',
-        srcPort: 52140,
-        dstPort: 443,
-        proto: 'TCP'
-      },
-      correlation: {
-        incidentId: 'inc_burst_5tuple_30s_v1:275a02',
-        windowType: '30.0s Burst Window',
-        ruleId: 'corr_burst_5tuple_30s_v1',
-        constituentAlerts: 12,
-        explanation: 'Grouped 12 volumetric SYN flood flow alerts on port 443 within 30.0s window'
-      },
-      threatIntel: {
-        queryMode: 'external_threat_intel_rest',
-        privateIpGuardTriggered: false,
-        matched: true,
-        threatLevel: 'medium',
-        tags: ['scanner:masscan', 'reconnaissance', 'tlp:green']
-      },
-      secondaryAe: {
-        aeError: 0.1890,
-        threshold: EVAL_PACK_REV2.aeThreshold,
-        status: 'ANOMALY_CONFIRMED'
-      },
-      advisory: {
-        summaryHeadline: 'Volumetric Masscan Port Sweep & TCP Exhaustion Probe',
-        detectionRationale: 'Primary RF scored 0.8820. 12 burst records targeting SSL/TLS port 443 from scanner IP 203.0.113.195.',
-        citedEvidenceKeys: ['alert_candidate_id', 'uncalibrated_model_score', 'correlation.incident_id'],
-        generationMode: 'deterministic_evidence_template'
-      },
-      chromaRagHits: [
-        { technique_id: 'T1046', technique_name: 'Network Service Discovery', playbook_id: 'pb-rate-limit-syn-03', cosine_similarity: 0.912 }
-      ],
-      soarRecord: {
-        playbookId: 'pb-rate-limit-syn-03',
-        actionType: 'escalate_flow_anomaly_for_packet_inspection',
-        targetEntity: '203.0.113.195',
-        state: 'pending_approval',
-        version: 1,
-        actorId: null,
-        decisionReason: null
-      },
-      soarAuditChainVerified: true,
-      soarAuditChainHeadSha256: '275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f',
-      thehiveCaseRecord: null,
-      n8nPlaybookReceipt: null
-    },
-    {
-      id: 'alert_candidate_v1:0000000000000000000000000000000000000000000000000000000000000000',
-      sourceEventId: 'azure_suricata_eve_flow:20261019_unverified_sample',
-      observedAt: '2026-10-19T17:18:00Z',
-      createdAt: '2026-10-19T17:18:01Z',
-      sourceRepresentation: 'azure.victim_vm.suricata.eve_flow.v1',
-      featureContract: 'network_behavior_v1',
-      modelIdentity: 'network_random_forest',
-      modelVersion: 'full-network-random-forest-6d69c72-v1',
-      modelArtifactSha256: EVAL_PACK_REV2.rfArtifactSha256,
-      uncalibratedScore: 0.8250,
-      threshold: 0.50,
-      decision: 'Attack',
-      triageState: 'new',
-      version: 0,
-      provenance: {
-        entityNamespace: 'azure_lab:internal_segment',
-        sensorVerified: false,
-        clockSync: false,
-        srcIp: '10.0.0.4',
-        dstIp: '10.0.0.5',
-        srcPort: 38290,
-        dstPort: 80,
-        proto: 'TCP'
-      },
-      correlation: null,
-      threatIntel: {
-        queryMode: 'rfc1918_guard_suppressed',
-        privateIpGuardTriggered: true,
-        matched: false,
-        threatLevel: 'undefined',
-        tags: ['rfc1918_private_ip_suppressed']
-      },
-      secondaryAe: {
-        aeError: 0.0520,
-        threshold: EVAL_PACK_REV2.aeThreshold,
-        status: 'WITHIN_NORMAL_BOUNDS'
-      },
-      advisory: {
-        summaryHeadline: 'Unverified Internal Segment Flow (RFC1918 Suppressed)',
-        detectionRationale: 'Internal flow between 10.0.0.4 and 10.0.0.5. External threat intelligence suppressed.',
-        citedEvidenceKeys: ['alert_candidate_id'],
-        generationMode: 'deterministic_evidence_template'
-      },
-      chromaRagHits: [], // Empty hits -> forces data-evidence-state="unavailable"
-      soarRecord: null,  // No SOAR -> forces data-evidence-state="unavailable"
-      soarAuditChainVerified: false,
-      soarAuditChainHeadSha256: null,
-      thehiveCaseRecord: null,
-      n8nPlaybookReceipt: null
-    }
-  ];
+  // The queue, funnel, pipeline ribbon, and inspector read GET /api/v1/live/surfaces.
+  // There is no offline sample incident list.
 
   // ========================================================================
   // 4. 5-Minute Guided 6-Stage Walkthrough Scenario Data
@@ -399,12 +204,6 @@
           const data = await resp.json();
           const mttiEl = document.getElementById('valMtti');
           const mttrEl = document.getElementById('valMttr');
-          const compEl = document.getElementById('valCompression');
-          const badgeEl = document.getElementById('funnelBadge');
-          const t1El = document.getElementById('tier1Count');
-          const t2El = document.getElementById('tier2Count');
-          const t3El = document.getElementById('tier3Count');
-          const t4El = document.getElementById('tier4Count');
 
           if (mttiEl && data.mtti_seconds_mean !== undefined) {
             mttiEl.textContent = `${Number(data.mtti_seconds_mean).toFixed(2)}s`;
@@ -412,31 +211,7 @@
           if (mttrEl && data.mttr_seconds_mean !== undefined) {
             mttrEl.textContent = `${Number(data.mttr_seconds_mean).toFixed(2)}s`;
           }
-          if (data.noise_reduction_funnel) {
-            const fn = data.noise_reduction_funnel;
-            if (compEl && fn.noise_compression_ratio_pct !== undefined) {
-              compEl.textContent = `${Number(fn.noise_compression_ratio_pct).toFixed(4)}%`;
-            }
-            if (badgeEl && fn.noise_compression_ratio_pct !== undefined) {
-              badgeEl.textContent = `Noise Compression Ratio: ${Number(fn.noise_compression_ratio_pct).toFixed(4)}%`;
-            }
-            const heroFunnelRatioEl = document.getElementById('heroFunnelRatio');
-            if (heroFunnelRatioEl && fn.noise_compression_ratio_pct !== undefined) {
-              heroFunnelRatioEl.textContent = `${Number(fn.noise_compression_ratio_pct).toFixed(4)}% Ratio`;
-            }
-            if (t1El && fn.tier1_raw_flows_ingested !== undefined) {
-              t1El.textContent = Number(fn.tier1_raw_flows_ingested).toLocaleString();
-            }
-            if (t2El && fn.tier2_triage_queue_candidates !== undefined) {
-              t2El.textContent = Number(fn.tier2_triage_queue_candidates).toLocaleString();
-            }
-            if (t3El && fn.tier3_correlated_incidents !== undefined) {
-              t3El.textContent = Number(fn.tier3_correlated_incidents).toLocaleString();
-            }
-            if (t4El && fn.tier4_actionable_soar_playbooks !== undefined) {
-              t4El.textContent = Number(fn.tier4_actionable_soar_playbooks).toLocaleString();
-            }
-          }
+          // Funnel counts stay on GET /api/v1/live/surfaces. This route is velocity only.
 
           // Operational Velocity Decomposition (Milestone #37)
           const decomp = data.velocity_decomposition || data;
@@ -471,8 +246,8 @@
             formulaEl.textContent = decomp.velocity_formula;
           }
           const sourceEl = document.getElementById('velocitySourceLabel');
-          const telemetrySource = data.telemetry_source || decomp.telemetry_source;
-          if (sourceEl) {
+          if (sourceEl && !sourceEl.getAttribute('data-live-sqlite')) {
+            const telemetrySource = data.telemetry_source || decomp.telemetry_source;
             sourceEl.textContent = telemetrySource === 'live_measured'
               ? 'Live Measured Run'
               : 'Reference Benchmark (Inspected January Split)';
@@ -552,9 +327,76 @@
   }
 
   function activeIncidents() {
-    if (!campaignFetchSettled) return [];
-    if (liveQueueLoaded) return liveCampaignIncidents;
-    return SAMPLE_INCIDENTS;
+    return liveCampaignIncidents;
+  }
+
+  function applyLiveSurfaces(data) {
+    const payload = data || {};
+    const funnel = payload.funnel || {};
+    const setCount = (id, value) => {
+      const node = document.getElementById(id);
+      if (node && value !== undefined && value !== null) {
+        node.textContent = Number(value).toLocaleString();
+      }
+    };
+    setCount('tier1Count', funnel.tier1_raw_flows_ingested);
+    setCount('tier2Count', funnel.tier2_triage_queue_candidates);
+    setCount('tier3Count', funnel.tier3_correlated_incidents);
+    setCount('tier4Count', funnel.tier4_actionable_soar_playbooks);
+    if (funnel.noise_compression_ratio_pct !== undefined) {
+      const text = Number(funnel.noise_compression_ratio_pct).toFixed(4) + '%';
+      const comp = document.getElementById('valCompression');
+      if (comp) comp.textContent = text;
+      const badge = document.getElementById('funnelBadge');
+      if (badge) {
+        badge.textContent = 'Noise Compression Ratio: ' + text;
+        badge.setAttribute('data-evidence-state', payload.evidence_state || 'unavailable');
+      }
+      const hero = document.getElementById('heroFunnelRatio');
+      if (hero) hero.textContent = text + ' Ratio';
+    }
+    const pathEl = document.getElementById('heroFunnelPath');
+    if (pathEl) {
+      pathEl.textContent = 'Live SQLite funnel · flows '
+        + (funnel.tier1_raw_flows_ingested || 0)
+        + ' · RF candidates '
+        + (funnel.tier2_triage_queue_candidates || 0)
+        + ' · incidents '
+        + (funnel.tier3_correlated_incidents || 0)
+        + ' · playbooks '
+        + (funnel.tier4_actionable_soar_playbooks || 0)
+        + ' · flow_id=' + (funnel.latest_flow_id == null ? 'none' : funnel.latest_flow_id);
+    }
+    const detail = document.getElementById('valCompressionDetail');
+    if (detail) {
+      detail.textContent = 'Live SQLite · flow_id='
+        + (funnel.latest_flow_id == null ? 'none' : funnel.latest_flow_id);
+    }
+    const sourceEl = document.getElementById('velocitySourceLabel');
+    if (sourceEl) {
+      sourceEl.textContent = 'Live SQLite';
+      sourceEl.setAttribute('data-live-sqlite', 'true');
+    }
+    const stages = payload.pipeline && Array.isArray(payload.pipeline.stages)
+      ? payload.pipeline.stages
+      : [];
+    stages.forEach((stage) => {
+      const node = document.getElementById('pipelineStageLive' + stage.stage);
+      if (!node) return;
+      node.textContent = stage.detail || '';
+      node.setAttribute('data-flow-id', stage.flow_id == null ? '' : String(stage.flow_id));
+    });
+    const inspector = payload.inspector || {};
+    const title = document.getElementById('inspectorCaseTitle');
+    if (title) title.textContent = inspector.headline || 'No stored flow';
+    const tabs = inspector.tabs || {};
+    for (let number = 1; number <= 5; number += 1) {
+      const pane = document.getElementById('inspectorPane' + number);
+      const tab = tabs[String(number)] || {};
+      if (!pane) continue;
+      pane.textContent = tab.text || 'No stored flow.';
+      pane.setAttribute('data-flow-id', inspector.flow_id == null ? '' : String(inspector.flow_id));
+    }
   }
 
   function isReceiptVerified(inc) {
@@ -619,8 +461,7 @@
 
       itemEl.addEventListener('click', () => {
         selectedIncidentId = inc.id;
-        renderIncidentQueue();
-        renderForensicDrawer();
+        refreshLiveCampaigns();
       });
 
       listEl.appendChild(itemEl);
@@ -1216,16 +1057,22 @@
 
   async function refreshLiveCampaigns() {
     try {
-      const resp = await fetch('/api/v1/live/campaigns');
-      if (!resp.ok) throw new Error('campaign status');
+      const flowId = selectedLiveFlowId();
+      const url = flowId
+        ? ('/api/v1/live/surfaces?flow_id=' + encodeURIComponent(flowId))
+        : '/api/v1/live/surfaces';
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error('surfaces');
       const data = await resp.json();
+      applyLiveSurfaces(data);
+      const queue = data.queue || {};
       const views = [];
-      (data.campaigns || []).forEach(campaign => {
+      (queue.campaigns || []).forEach(campaign => {
         (campaign.flows || []).forEach(flow => {
           views.push(flowToIncident(flow, campaign.member_count));
         });
       });
-      (data.incidents || []).forEach(row => views.push(incidentRowToView(row)));
+      (queue.incidents || []).forEach(row => views.push(incidentRowToView(row)));
       liveCampaignIncidents = views;
       liveQueueLoaded = true;
       campaignFetchSettled = true;
@@ -1245,7 +1092,7 @@
     } catch (err) {
       liveQueueLoaded = false;
       campaignFetchSettled = true;
-      setLiveText('campaignQueueStatus', 'Campaign store unavailable. Offline sample queue is the fallback.', 'unavailable');
+      setLiveText('campaignQueueStatus', 'Live SQLite surfaces unavailable.', 'unavailable');
     }
     renderIncidentQueue();
     renderForensicDrawer();
@@ -1505,7 +1352,7 @@
       const data = await resp.json();
       const flows = Array.isArray(data.flows) ? data.flows : [];
       if (!flows.length) {
-        setLiveText('liveQueueStatus', 'Live queue is empty. Sample walkthrough remains the offline fallback.', 'unavailable');
+        setLiveText('liveQueueStatus', 'Live queue is empty.', 'unavailable');
         return;
       }
       const latest = flows[0];
@@ -1624,7 +1471,6 @@
     verifySoarChain,
     verifyChromaRagHits,
     verifyHiveAndN8nReceipt,
-    SAMPLE_INCIDENTS,
     WALKTHROUGH_STAGES,
     initApp
   };

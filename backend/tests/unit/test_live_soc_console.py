@@ -14,6 +14,7 @@ from threatfusion.api.live_soc_console import (
     drift_for_stored_flows,
     list_live_campaigns,
     list_live_flows,
+    build_live_operator_surfaces,
     persist_scored_flow,
     private_ip_guard_response,
     read_n8n_workbench,
@@ -769,3 +770,103 @@ def test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr(
     assert "Callback MTTR" in dashboard
     assert "flow.mttr_seconds" in dashboard
     assert "Host containment was not executed." in dashboard
+
+
+def _assert_surfaces_reflect_flow(payload: dict, flow_id: int, database: Path, marker: str) -> None:
+    resolved = str(database.resolve())
+    assert payload["database_path"] == resolved
+    assert payload["production_fusion_enabled"] is False
+    funnel = payload["funnel"]
+    pipeline = payload["pipeline"]
+    queue = payload["queue"]
+    inspector = payload["inspector"]
+    assert funnel["database_path"] == pipeline["database_path"] == queue["database_path"]
+    assert inspector["database_path"] == resolved
+    assert funnel["source"] == "live_sqlite"
+    assert flow_id in funnel["reflected_flow_ids"]
+    assert funnel["tier1_raw_flows_ingested"] >= 1
+    assert funnel["latest_flow_id"] == flow_id
+    assert len(pipeline["stages"]) == 6
+    for stage in pipeline["stages"]:
+        assert stage["flow_id"] == flow_id
+        assert stage["database_path"] == resolved
+        assert f"flow_id={flow_id}" in stage["detail"]
+    queued = [
+        flow
+        for campaign in queue["campaigns"]
+        for flow in campaign["flows"]
+        if flow["flow_id"] == flow_id
+    ]
+    assert len(queued) == 1
+    assert inspector["flow_id"] == flow_id
+    for number in ("1", "2", "3", "4", "5"):
+        tab = inspector["tabs"][number]
+        assert tab["flow_id"] == flow_id
+        assert f"flow_id={flow_id}" in tab["text"]
+    assert marker in inspector["tabs"]["4"]["text"]
+
+
+def test_operator_surfaces_read_one_newly_ingested_flow(tmp_path: Path) -> None:
+    """Funnel, ribbon, queue, and inspector all name the same stored flow."""
+    live_db = tmp_path / "live.sqlite3"
+    marker = "duration_ms=424242.5"
+    features = _features(duration_ms=424242.5)
+    scored = score_canonical_flow(
+        features, repo_root=REPO_ROOT, model=_Width14Model(), supply_verified=True
+    )
+    stored = persist_scored_flow(live_db, features, scored, case_title="ingested flow")
+    payload = build_live_operator_surfaces(
+        live_db, incidents_db_path=live_db.with_name("incidents.sqlite3")
+    )
+    _assert_surfaces_reflect_flow(payload, int(stored["flow_id"]), live_db, marker)
+    assert "SAMPLE_INCIDENTS" not in (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(
+        encoding="utf-8"
+    )
+    html = (REPO_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    assert "Case #001842" not in html
+    assert 'data-live-surface="funnel"' in html
+    assert 'data-live-surface="pipeline"' in html
+    assert 'data-live-surface="inspector"' in html
+    assert "/api/v1/live/surfaces" in (
+        REPO_ROOT / "frontend" / "js" / "soc_dashboard.js"
+    ).read_text(encoding="utf-8")
+
+
+def test_http_surfaces_reflect_one_ingested_flow(tmp_path: Path, monkeypatch) -> None:
+    """POST /api/v1/live/ingest then GET /api/v1/live/surfaces share one SQLite file."""
+    import json
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    from scripts.run_misp_and_callback_contract_server import MispAndCallbackContractHandler
+
+    live_db = tmp_path / "live.sqlite3"
+    monkeypatch.setenv("THREATFUSION_LIVE_CONSOLE_DB", str(live_db))
+    monkeypatch.delenv("THREATFUSION_SOAR_LEDGER_DB_PATH", raising=False)
+    monkeypatch.delenv("THREATFUSION_INCIDENTS_DB_PATH", raising=False)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), MispAndCallbackContractHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    features = _features(duration_ms=424242.5)
+    try:
+        status, ingested = _post_json(f"{base}/api/v1/live/ingest", {"features": features})
+        assert status == 200
+        assert ingested["production_fusion_enabled"] is False
+        flow_id = int(ingested["flow_id"])
+        with urllib.request.urlopen(f"{base}/api/v1/live/surfaces", timeout=5.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        _assert_surfaces_reflect_flow(payload, flow_id, live_db, "duration_ms=424242.5")
+        page = urllib.request.urlopen(f"{base}/", timeout=5.0).read().decode("utf-8")
+        script = (
+            urllib.request.urlopen(f"{base}/js/soc_dashboard.js", timeout=5.0)
+            .read()
+            .decode("utf-8")
+        )
+        assert "SAMPLE_INCIDENTS" not in script
+        assert "Case #001842" not in page
+        assert "/api/v1/live/surfaces" in script
+    finally:
+        server.shutdown()
+        server.server_close()

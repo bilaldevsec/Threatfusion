@@ -528,6 +528,222 @@ def list_live_campaigns(
     }
 
 
+def _surface_flow_rows(db_path: Path) -> list[dict[str, Any]]:
+    """Read every stored live flow, including the canonical feature JSON."""
+    if not db_path.is_file():
+        return []
+    with _connect(db_path) as conn:
+        rows = conn.execute("""
+            SELECT flow_id, observed_at_utc, features_json, rf_attack_probability,
+                   decision, evidence_state, reason, model_sha256, campaign_id,
+                   source_label, case_title, playbook_id, ledger_state, entry_sha256,
+                   triage_state, src_entity_id, dst_entity_id, flow_protocol,
+                   service_or_port, callback_signature, thehive_case_id, mttr_seconds,
+                   callback_recorded
+            FROM live_flows
+            ORDER BY flow_id ASC
+            """).fetchall()
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        events: dict[int, list[dict[str, Any]]] = {}
+        if "triage_events" in tables:
+            for event in conn.execute("""
+                SELECT event_id, flow_id, action, triage_state, actor_id, created_at_utc
+                FROM triage_events
+                ORDER BY event_id ASC
+                """):
+                events.setdefault(int(event["flow_id"]), []).append(dict(event))
+    parsed: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        try:
+            features = json.loads(item.get("features_json") or "{}")
+        except json.JSONDecodeError:
+            features = {}
+        item["features"] = features if isinstance(features, dict) else {}
+        item["triage_events"] = events.get(int(item["flow_id"]), [])
+        parsed.append(item)
+    return parsed
+
+
+def _inspector_tabs(flow: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Five inspector tabs for one stored flow. An empty queue stays unavailable."""
+    if flow is None:
+        empty = "No stored flow in the live SQLite database."
+        return {str(number): {"flow_id": None, "text": empty} for number in range(1, 6)}
+    flow_id = int(flow["flow_id"])
+    marker = f"flow_id={flow_id}"
+    features = flow.get("features") if isinstance(flow.get("features"), dict) else {}
+    feature_bits = ", ".join(
+        f"{name}={features.get(name)}" for name in CANONICAL_14_FEATURES if name in features
+    )
+    events = flow.get("triage_events") if isinstance(flow.get("triage_events"), list) else []
+    history = (
+        "; ".join(
+            f"{event.get('triage_state')} at {event.get('created_at_utc')}" for event in events
+        )
+        or "none"
+    )
+    probability = flow.get("rf_attack_probability")
+    probability_text = "unavailable" if probability is None else f"{float(probability):.4f}"
+    return {
+        "1": {
+            "flow_id": flow_id,
+            "text": (
+                f"{marker} decision {flow.get('decision')} probability {probability_text}. "
+                "production_fusion_enabled is false. The autoencoder did not decide this flow."
+            ),
+        },
+        "2": {
+            "flow_id": flow_id,
+            "text": (
+                f"{marker} observed {flow.get('observed_at_utc')}. "
+                f"Triage {flow.get('triage_state') or 'unreviewed'}. History: {history}."
+            ),
+        },
+        "3": {
+            "flow_id": flow_id,
+            "text": (
+                f"{marker} technique unavailable. No stored MITRE identifier is attached "
+                "to this flow."
+            ),
+        },
+        "4": {
+            "flow_id": flow_id,
+            "text": (
+                f"{marker} model {flow.get('model_sha256')} reason {flow.get('reason')}. "
+                f"Features: {feature_bits}."
+            ),
+        },
+        "5": {
+            "flow_id": flow_id,
+            "text": (
+                f"{marker} playbook {flow.get('playbook_id') or 'none'} "
+                f"state {flow.get('ledger_state') or 'unconfigured'} "
+                f"entry {flow.get('entry_sha256') or 'none'}."
+            ),
+        },
+    }
+
+
+def build_live_operator_surfaces(
+    db_path: Path,
+    *,
+    incidents_db_path: Path | None = None,
+    selected_flow_id: int | None = None,
+) -> dict[str, Any]:
+    """Funnel, pipeline, queue, and inspector for one live SQLite file.
+
+    Counts and tab text come from rows in ``db_path``. The January benchmark
+    population is not substituted when the file is empty or holds one new flow.
+    """
+    from threatfusion.api.analyst_dashboard import compute_alert_noise_reduction_funnel
+
+    database_path = str(Path(db_path).resolve())
+    try:
+        rows = _surface_flow_rows(Path(db_path))
+        read_reason = "stored_rows" if rows else "no_stored_flows"
+    except sqlite3.Error:
+        rows = []
+        read_reason = "database_unavailable"
+    incidents = _read_stored_incidents(incidents_db_path, limit=100)
+    attack_count = sum(1 for row in rows if row.get("decision") == "Attack")
+    playbook_count = sum(
+        1
+        for row in rows
+        if row.get("ledger_state") == "approved" or row.get("callback_recorded") in (1, True)
+    )
+    funnel_obj = compute_alert_noise_reduction_funnel(
+        tier1_raw_flows_ingested=len(rows),
+        tier2_triage_queue_candidates=attack_count,
+        tier3_correlated_incidents=len(incidents),
+        tier4_actionable_soar_playbooks=playbook_count,
+    )
+    flow_ids = [int(row["flow_id"]) for row in rows]
+    selected = next((row for row in rows if int(row["flow_id"]) == selected_flow_id), None)
+    if selected is None and rows:
+        selected = rows[-1]
+    latest_flow_id = int(selected["flow_id"]) if selected is not None else None
+    reflected = latest_flow_id
+    stages = [
+        (1, "Suricata/UNSW 14-feature ingest", f"stored rows {len(rows)}"),
+        (
+            2,
+            "SHA-256 model identity",
+            f"model {selected.get('model_sha256') if selected else 'none'}",
+        ),
+        (
+            3,
+            "Frozen Random Forest decision",
+            f"decision {selected.get('decision') if selected else 'none'}",
+        ),
+        (4, "30s burst and 600s campaign", f"stored incidents {len(incidents)}"),
+        (5, "MITRE retrieval", "technique unavailable until one is stored"),
+        (
+            6,
+            "HMAC ledger",
+            f"state {selected.get('ledger_state') if selected else 'none'}",
+        ),
+    ]
+    pipeline_stages = [
+        {
+            "stage": number,
+            "name": name,
+            "flow_id": reflected,
+            "detail": f"flow_id={reflected if reflected is not None else 'none'} {detail}",
+            "database_path": database_path,
+        }
+        for number, name, detail in stages
+    ]
+    try:
+        queue = list_live_campaigns(Path(db_path), incidents_db_path=incidents_db_path, limit=100)
+    except sqlite3.Error:
+        queue = {
+            "schema_version": "live_campaign_queue_v1",
+            "evidence_state": "unavailable",
+            "reason": "database_unavailable",
+            "production_fusion_enabled": False,
+            "execution_authorized": False,
+            "campaigns": [],
+            "incidents": [],
+            "flow_count": 0,
+            "incident_count": 0,
+        }
+    queue["database_path"] = database_path
+    headline = "No stored flow"
+    if selected is not None:
+        headline = selected.get("case_title") or f"Stored flow {latest_flow_id}"
+    return {
+        "schema_version": "live_operator_surfaces_v1",
+        "database_path": database_path,
+        "evidence_state": "verified" if rows else "unavailable",
+        "reason": read_reason,
+        "production_fusion_enabled": False,
+        "execution_authorized": False,
+        "funnel": {
+            "database_path": database_path,
+            "source": "live_sqlite",
+            "latest_flow_id": latest_flow_id,
+            "reflected_flow_ids": flow_ids,
+            **funnel_obj.to_dict(),
+        },
+        "pipeline": {
+            "database_path": database_path,
+            "latest_flow_id": latest_flow_id,
+            "stages": pipeline_stages,
+        },
+        "queue": queue,
+        "inspector": {
+            "database_path": database_path,
+            "flow_id": latest_flow_id,
+            "headline": headline,
+            "evidence_state": "verified" if selected is not None else "unavailable",
+            "tabs": _inspector_tabs(selected),
+        },
+    }
+
+
 def replay_benchmark_attack_burst(
     db_path: Path,
     *,

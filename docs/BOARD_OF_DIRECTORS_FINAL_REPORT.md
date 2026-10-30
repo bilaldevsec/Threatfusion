@@ -6,7 +6,7 @@
 
 ## What an analyst can do today
 
-On `http://127.0.0.1` the SOC page now has a live panel next to the sample walkthrough.
+On `http://127.0.0.1:8766` the top funnel, the pipeline ribbon, the queue, and the five-tab inspector read one live SQLite database through `GET /api/v1/live/surfaces`. There is no separate sample queue.
 
 - Ingest sends 14 canonical features to `POST /api/v1/live/ingest`.
 - The frozen Random Forest scores that vector only when its file verifies and its input width is 14. A browser check on 2026-10-27 returned `Benign (frozen_random_forest_scored)` for a toy all-ones vector, with fusion disabled.
@@ -15,7 +15,7 @@ On `http://127.0.0.1` the SOC page now has a live panel next to the sample walkt
 - Drift reads stored rows and does not change model weights.
 - The workbench lists the 6 n8n nodes and does not dispatch a playbook.
 
-The campaign queue reads stored flows. Replay scores the five recorded UNSW-NB15 study vectors with the frozen Random Forest and does not copy the printed study probability. Approve writes a hash-chained local approval and returns the 64-hex receipt. It does not execute containment, and it does not invent a TheHive case or an n8n signature. Sample incidents remain only when the campaign request cannot be reached.
+The campaign queue reads stored flows from that same database. Replay scores the five recorded UNSW-NB15 study vectors with the frozen Random Forest and does not copy the printed study probability. Approve writes a hash-chained local approval and returns the 64-hex receipt. It does not execute containment, and it does not invent a TheHive case or an n8n signature. A missing or empty database shows zero funnel counts and an empty queue. It does not substitute the January benchmark population or a hardcoded incident.
 
 Dispatch sends an approved playbook to `POST /api/v1/soar/verify-state`, writes a 4-block TheHive case (queued offline when TheHive is down), then records the HMAC-SHA256 callback from `POST /api/v1/soar/callback`. The drawer shows that callback's case id, HMAC prefix, and MTTR from the ledger timestamps (`t_callback_verified - t_approval_queued`). A second dispatch returns the same 64-hex signature. Host containment stays unauthorized.
 
@@ -57,9 +57,31 @@ Stop the process with Ctrl-C when the walkthrough is finished. The launcher bind
 
 ## Gates for this slice
 
-On 2026-10-27 the full pytest suite was run from this repository with `env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 threatfusion-venv/bin/pytest -q --tb=line`. The first run finished in about 314 seconds and failed one test: `backend/tests/unit/test_alert_persistence.py::test_corruption_is_not_replaced_and_errors_are_sanitized`. Opening a non-SQLite file ran `PRAGMA journal_mode=WAL` before the integrity check, and SQLite's `file is not a database` was labeled `database_unavailable`. The alert repository now labels that message `database_corrupt` and still leaves the damaged bytes in place. The persistence file then passed 19 tests. The full suite was run again and passed 1,527 tests in about 312 seconds, with exit code 0.
+On 2026-10-30 the checkout was the bind mount `/home/muhammad-bilal/projects/threatfusion-gemini`. `libnss3-tools` provided `certutil`. No UNSW data was downloaded.
 
-`git diff --check`, boundary preflight B0–B6, and the repository-truth audit (7/7) are the commit gates for this report. TF-008, TF-009, TF-010, and TF-011 stay open. The four frozen digests are unchanged. `production_fusion_enabled` stays false.
+`git diff --check` passed.
+
+`scripts/boundary_preflight.py --venv threatfusion-venv --json` was GO for B0–B6.
+
+`scripts/audit_repo_truth.py` was 7/7 GO. Check 2 matched these digests:
+
+- Random Forest `bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9`
+- Logistic Regression `2cf4de6686d937c485d4dbcbfa21d3e90f65bbb922087c8b31be4b012d7fb148`
+- Autoencoder v2 `c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23`
+- Rate-log1p candidate `1d02e5bba556cb28709bd0faefce5f29da424a419a2d95332ad27a8995b26f63`
+
+Section 8 stayed `production_fusion_enabled=False`. Gate G9 passed. TF-008, TF-009, TF-010, and TF-011 stayed open.
+
+`env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 threatfusion-venv/bin/pytest -q --tb=line backend/tests` collected 1,544 tests: 1,530 passed, 7 failed, 7 skipped, exit code 1. The 7 failures are the known missing-UNSW registration set. Six raise `unsw_registration_invalid` because `NUSW-NB15_features.csv` and the processed UNSW tree are gitignored and were not downloaded:
+
+- `test_full_soc_demo_runner_end_to_end`
+- `test_milestone23_complete_product_spine`
+- `test_slide14_end_to_end_spine_suricata_to_quiescent_snapshot`
+- `test_slide14_full_post_ingestion_soc_workflow`
+- `test_full_soc_demo_incorporates_chromadb_misp_thehive_n8n`
+- `test_run_full_soc_demo_incorporates_soar_chain_queue_ranker_and_drift`
+
+`test_one_registered_attack_reaches_authenticated_browser_and_degrades_cleanly` exits `registered_browser_path_failed` for that same missing registration. The earlier product checkpoint's 1,527-pass count was measured before these deltas and before this checkout's missing UNSW files.
 
 ## Deltas taken from open PRs 2–5
 
@@ -68,4 +90,4 @@ On 2026-10-27 the full pytest suite was run from this repository with `env -u PY
 - PR #4 (`cursor/task-5-triage-handoff-c007`, `ee15e91` and `22ab96c`): Acknowledge, Escalate, and Dismiss append `triage_events` and keep the latest state on the flow across reload. The grounded handoff includes that history. A note that names an address outside the stored flow is refused by `verify_explanation_groundedness()`.
 - PR #5 (`cursor/task-6-product-launcher-bd6b`, `7093708`): `scripts/run_live_product.sh` preflights the port, secrets, and console files, waits until `/` and `/healthz` answer, points verify-state at the same ledger, and stops that process on SIGTERM. `--dry-run` and `--smoke` are part of that launcher.
 
-These four pull requests can be closed as superseded by this branch. The measured gates for the integrated checkout are in the section below. TF-008, TF-009, TF-010, and TF-011 stay open. The four frozen digests are unchanged. `production_fusion_enabled` stays false.
+These four pull requests can be closed as superseded by this branch. The measured gates for the integrated checkout are in the section above. This branch also adds `GET /api/v1/live/surfaces`, so the top funnel, pipeline ribbon, queue, and five-tab inspector read that one SQLite file. TF-008, TF-009, TF-010, and TF-011 stay open. The four frozen digests are unchanged. `production_fusion_enabled` stays false.

@@ -1981,3 +1981,11 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 - `POST /api/v1/live/handoff` builds the four blocks from the stored flow and passes the triage rows into `build_analyst_shift_handoff()`. Block 3 stays `unavailable` because no technique is stored. The default brief and any supplied note are checked with `verify_explanation_groundedness()`. A note that names an address outside the stored entity ids is refused and is not copied into the markdown. The page shows and downloads the markdown only after that check passes. `production_fusion_enabled` stays false. Containment stays unauthorized.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
+### Milestone #50: One live SQLite database for the four operator surfaces (2026-10-30)
+
+- Open PRs #2, #3, #4, and #5 are integrated as deltas on top of the product commits that already landed: one SOAR ledger for approval and the HMAC callback when `THREATFUSION_SOAR_LEDGER_DB_PATH` is unset; ingest and replay call `IncidentCorrelationEngine` for the inclusive 30-second burst and 600-second campaign windows; Acknowledge, Escalate, and Dismiss persist in SQLite and appear in the grounded handoff; `scripts/run_live_product.sh` preflights the port, waits for `/` and `/healthz`, and shuts down on `SIGTERM`, with `--dry-run` and `--smoke`.
+- `GET /api/v1/live/surfaces` reads one live SQLite file and returns the top funnel, the six-stage pipeline ribbon, the queue, and the five inspector tabs. The page fills those four surfaces from that response. The hardcoded sample incident list is not a fallback. An empty database shows zero funnel counts and "No stored flow", not the January 216,568 / 4,358 / 24 / 8 population.
+- The frozen Random Forest remains the only decision authority. `production_fusion_enabled` stays false. TF-008, TF-009, TF-010, and TF-011 remain open.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
