@@ -1967,6 +1967,12 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Milestone #56: Board dossier for the live console (2026-10-30)
+
+- `docs/BOARD_OF_DIRECTORS_FINAL_REPORT.md` records the shared ledger, the 30.0s/600.0s stitch, triage, the one-screen console, the four-scenario replay, the health drawer, the source qualification, and `--seed-demo`. The 2026-10-30 browser checks are listed there. TF-008 through TF-011 stay open. TF-012 and TF-002 stay open.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
 ### Milestone #55: Seed-demo launcher (2026-10-30)
 
 - `scripts/run_live_product.sh --seed-demo` starts the console, stores the four labeled scenarios, and keeps serving. `--smoke` still starts both surfaces and then stops. `--dry-run` still does not bind.
