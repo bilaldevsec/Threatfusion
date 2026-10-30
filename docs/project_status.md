@@ -1967,6 +1967,12 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Milestone #54: Source qualification on the live console (2026-10-30)
+
+- The console states that UNSW-NB15 and CIC byte layers are not interchangeable and that CIC is not a validated compatible external test. The product path scores recorded UNSW-NB15 features. TF-012 and TF-002 stay open.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
 ### Milestone #53: Live constitutional health drawer (2026-10-30)
 
 - `POST /api/v1/live/health` runs boundary preflight B0–B6 and the seven repository-truth checks. The drawer lists each check, the four model digest prefixes, the boundary verdict, the truth verdict, and the receipt. TF-008 through TF-011 stay open. A dirty worktree fails check 1.

@@ -561,6 +561,18 @@ def test_triage_and_handoff_routes_round_trip(tmp_path: Path, monkeypatch) -> No
         thread.join(timeout=5)
 
 
+def test_source_qualification_is_visible_and_tf012_tf002_stay_open() -> None:
+    html = (REPO_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    register = (REPO_ROOT / "docs" / "issue_register.md").read_text(encoding="utf-8")
+    assert "UNSW-NB15 and CIC byte layers are not interchangeable." in html
+    assert "CIC is not a validated compatible external test." in html
+    stripped = html.replace("CIC is not a validated compatible external test.", "")
+    assert "validated compatible external test" not in stripped
+    for issue_id in ("TF-012", "TF-002", "TF-008", "TF-009", "TF-010", "TF-011"):
+        row = next(line for line in register.splitlines() if line.startswith(f"| {issue_id} |"))
+        assert row.rstrip().endswith("| open |")
+
+
 def test_constitutional_health_reports_digests_and_seven_checks() -> None:
     report = constitutional_health(REPO_ROOT)
     assert report["production_fusion_enabled"] is False
