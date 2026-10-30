@@ -627,6 +627,66 @@
     });
   }
 
+  function setInspectorText(id, value) {
+    const node = document.getElementById(id);
+    if (node) node.textContent = value;
+  }
+
+  function setSampleSurfacesHidden(hidden) {
+    document.querySelectorAll('[data-sample-only="true"]').forEach(node => {
+      node.hidden = hidden;
+    });
+  }
+
+  function syncLiveInspector(inc) {
+    const title = document.getElementById('inspectorCaseTitle');
+    const badge = document.getElementById('groundedBadge');
+    if (!inc) {
+      if (title) title.textContent = 'No stored campaign selected';
+      if (badge) {
+        badge.textContent = 'Grounded evidence: waiting for a stored flow';
+        badge.setAttribute('data-evidence-state', 'unavailable');
+      }
+      setInspectorText('inspectorDecision', 'waiting');
+      setInspectorText('inspectorScore', 'unavailable');
+      setInspectorText('inspectorAssets', 'not recorded');
+      setInspectorText('inspectorTechnique', 'unavailable');
+      setInspectorText('inspectorTactic', 'unavailable');
+      setInspectorText('inspectorPlaybook', 'none');
+      setInspectorText('inspectorChain', 'unavailable');
+      setInspectorText('inspectorCallback', 'not recorded');
+      return;
+    }
+    const score = Number(inc.uncalibratedScore);
+    const scoreText = Number.isFinite(score) ? (score * 100).toFixed(2) + '%' : 'unavailable';
+    if (title) title.textContent = (inc.live ? 'Stored flow ' : 'Offline sample ') + String(inc.id);
+    const src = inc.provenance && inc.provenance.srcIp ? String(inc.provenance.srcIp) : 'not recorded';
+    const dst = inc.provenance && inc.provenance.dstIp ? String(inc.provenance.dstIp) : 'not recorded';
+    setInspectorText('inspectorDecision', String(inc.decision || 'withheld'));
+    setInspectorText('inspectorScore', scoreText);
+    setInspectorText('inspectorAssets', src + ' -> ' + dst);
+    const chainOk = verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256);
+    if (badge) {
+      badge.textContent = chainOk ? 'SOAR chain verified' : 'SOAR chain unavailable';
+      badge.setAttribute('data-evidence-state', chainOk ? 'verified' : 'unavailable');
+    }
+    const ragOk = verifyChromaRagHits(inc.chromaRagHits);
+    setInspectorText('inspectorTechnique', ragOk ? inc.chromaRagHits[0].technique_id : 'unavailable');
+    setInspectorText('inspectorTactic', ragOk ? inc.chromaRagHits[0].technique_name : 'unavailable');
+    const playbook = inc.soarRecord && inc.soarRecord.playbookId ? String(inc.soarRecord.playbookId) : 'none';
+    const state = inc.soarRecord && inc.soarRecord.state ? String(inc.soarRecord.state) : 'none';
+    setInspectorText('inspectorPlaybook', playbook + ' / ' + state);
+    const chainNode = document.getElementById('inspectorChain');
+    if (chainNode) {
+      chainNode.textContent = chainOk ? 'Chain valid (SHA-256)' : 'unavailable';
+      chainNode.setAttribute('data-evidence-state', chainOk ? 'verified' : 'unavailable');
+    }
+    const signed = inc.live === true
+      && typeof inc.callbackSignature === 'string'
+      && SHA256_HEX_REGEX.test(inc.callbackSignature);
+    setInspectorText('inspectorCallback', signed ? inc.callbackSignature.slice(0, 16) : 'not recorded');
+  }
+
   function renderForensicDrawer() {
     const drawerEl = document.getElementById('forensicDrawer');
     if (!drawerEl) return;
@@ -634,9 +694,11 @@
     const incidents = activeIncidents();
     const inc = incidents.find(i => i.id === selectedIncidentId) || incidents[0];
     if (!inc) {
+      syncLiveInspector(null);
       drawerEl.innerHTML = '<div style="padding:1rem;color:var(--text-muted);">No stored campaign is selected. Replay the benchmark burst to score recorded UNSW-NB15 study vectors.</div>';
       return;
     }
+    syncLiveInspector(inc);
 
     // Verification evaluation
     const chainOk = verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256);
@@ -1229,6 +1291,7 @@
       liveCampaignIncidents = views;
       liveQueueLoaded = true;
       campaignFetchSettled = true;
+      setSampleSurfacesHidden(true);
       if (!views.some(item => item.id === selectedIncidentId)) {
         selectedIncidentId = views.length ? views[0].id : '';
       }
@@ -1245,6 +1308,7 @@
     } catch (err) {
       liveQueueLoaded = false;
       campaignFetchSettled = true;
+      setSampleSurfacesHidden(false);
       setLiveText('campaignQueueStatus', 'Campaign store unavailable. Offline sample queue is the fallback.', 'unavailable');
     }
     renderIncidentQueue();

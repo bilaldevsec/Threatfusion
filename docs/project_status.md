@@ -1967,6 +1967,12 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Milestone #51: One live console screen (2026-10-30)
+
+- The inspector title starts as "No stored campaign selected" and then shows the stored flow. The sample topology and the 5-minute walkthrough stay in the page and are hidden once the campaign store loads. They return only when that request fails. The inspector does not present a sample case, a sample technique, or a sample hash as the selected flow.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
 ### Milestone #50: Integrated callback ledger, live windows, triage history, and launcher shutdown (2026-10-30)
 
 - The open callback, correlation, triage, and launcher branches are on this branch together. Ingest and replay call the correlation engine. The burst boundary is 30.0 seconds and the campaign boundary is 600.0 seconds. The handoff reads `triage_events`. The launcher waits for `GET /` and `GET /healthz`, then stops the child on `SIGTERM`.

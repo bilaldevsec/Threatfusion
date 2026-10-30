@@ -267,13 +267,13 @@
         <!-- Top Action Header -->
         <div class="card-header" style="flex-wrap: wrap; gap: 0.75rem;">
           <div>
-            <h2 class="card-title" id="inspectorCaseTitle">Case #001842: Active C2 Reconnaissance &amp; Port 80 Web Probe</h2>
+            <h2 class="card-title" id="inspectorCaseTitle">No stored campaign selected</h2>
             <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.2rem;">
               Stitched Campaign &middot; Dual-Window 30.0s Burst / 600.0s Correlation
             </div>
           </div>
           <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
-            <span class="badge" data-evidence-state="verified" id="groundedBadge">Grounded Evidence: Verified</span>
+            <span class="badge" data-evidence-state="unavailable" id="groundedBadge">Grounded evidence: waiting for a stored flow</span>
             <span class="badge badge-rf-confidence">Primary: Frozen RF (95.27%)</span>
             <span class="badge badge-secondary-anomaly">Secondary: v2 AE Ranker</span>
             <button class="btn btn-approve" id="topBtnApproveSoar" style="font-size: 0.82rem; padding: 0.35rem 0.85rem;">
@@ -301,14 +301,11 @@
                 <span class="badge" data-evidence-state="verified">RFC1918 Internal</span>
               </h4>
               <div style="margin-top: 0.5rem; line-height: 1.6;">
-                <div><b>Risk Level:</b> <span class="badge badge-decision">CRITICAL</span> &middot; <b>Priority Rank:</b> #1</div>
-                <div><b>Frozen RF Confidence:</b> 95.27% (95.266% precision, 0.095% FPR)</div>
+                <div><b>Decision:</b> <span id="inspectorDecision">waiting</span></div>
+                <div><b>Frozen RF score:</b> <span id="inspectorScore">unavailable</span></div>
                 <div style="margin-top: 0.35rem;"><span class="badge badge-secondary-anomaly">+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)</span></div>
-                <div style="margin-top: 0.35rem;"><b>Affected Assets:</b> <code data-copy-value="10.0.0.4" data-copy-tooltip="Click to copy identifier" title="Click to copy identifier">10.0.0.4</code> (Attacker) &rarr; <code data-copy-value="10.0.0.5" data-copy-tooltip="Click to copy identifier" title="Click to copy identifier">10.0.0.5</code> (Victim)</div>
-                <div style="margin-top: 0.35rem;"><b>Exposure Assessment:</b> <span class="badge" data-evidence-state="verified">RFC1918 Internal Network (No External Leakage)</span></div>
-                <div style="margin-top: 0.35rem; color: var(--text-secondary); font-size: 0.85rem;">
-                  <b>Business Impact:</b> Host 10.0.0.5 is internal production database; automated containment queued awaiting analyst approval.
-                </div>
+                <div style="margin-top: 0.35rem;"><b>Affected assets:</b> <span id="inspectorAssets">not recorded</span></div>
+                <div id="inspectorFusionNote" style="margin-top: 0.35rem; color: var(--text-secondary); font-size: 0.85rem;">production_fusion_enabled is false. The autoencoder does not decide this alert. Containment stays unauthorized.</div>
               </div>
             </div>
           </div>
@@ -319,16 +316,9 @@
               <h4 style="color: #06B6D4; margin-top: 0;">Block 2: Attack Timeline</h4>
               <div style="margin-top: 0.5rem; line-height: 1.6;">
                 <div><b>Correlation Window:</b> <span class="badge badge-corr">30.0s Burst Window</span> &middot; <b>Campaign Window:</b> <span class="badge badge-corr">600.0s Campaign</span></div>
-                <div><b>Stitched Flow Count:</b> <span id="attackTimelineFlowCount">5 flows correlated across 22.4 seconds</span></div>
-                <div id="attackTimelineSource">Sample walkthrough. A live stitch replaces this text.</div>
-                <div><b>Time to Investigate (TTI):</b> 1.25s (864.0x human baseline speedup)</div>
-                <div id="attackTimelineEvents" style="margin-top: 0.35rem; font-family: var(--font-mono); font-size: 0.82rem; background: rgba(9, 13, 22, 0.6); padding: 0.5rem; border-radius: 4px;">
-                  <div>[17:15:02 UTC] Ingest: SYN flood scan on port 80 (dur=0.000011s, spkts=2)</div>
-                  <div>[17:15:08 UTC] Stitch: Flow 2 acknowledged by correlation engine (RFC1918)</div>
-                  <div>[17:15:15 UTC] Stage 3: RF scored 0.9450 &middot; v2 AE anomaly ranker triggered</div>
-                  <div>[17:15:20 UTC] Stage 5: ChromaDB MITRE T1071.001 cosine similarity 0.942</div>
-                  <div>[17:15:21 UTC] Stage 6: SOAR playbook pb-isolate-01 queued for approval</div>
-                </div>
+                <div><b>Stitched Flow Count:</b> <span id="attackTimelineFlowCount">No live stitch yet.</span></div>
+                <div id="attackTimelineSource">The timeline shows stored flows after a stitch.</div>
+                <div id="attackTimelineEvents" style="margin-top: 0.35rem; font-family: var(--font-mono); font-size: 0.82rem; background: rgba(9, 13, 22, 0.6); padding: 0.5rem; border-radius: 4px;">No live timeline yet.</div>
               </div>
             </div>
           </div>
@@ -338,19 +328,9 @@
             <div class="card" data-anatomy-block="3" style="background: rgba(17, 24, 39, 0.9);">
               <h4 style="color: #bc8cff; margin-top: 0;">Block 3: MITRE ATT&amp;CK Mapping &amp; n8n Playbook</h4>
               <div style="margin-top: 0.5rem; line-height: 1.6;">
-                <div><b>Technique ID:</b> <code data-copy-value="T1071.001" data-copy-tooltip="Click to copy identifier" title="Click to copy identifier">T1071.001</code></div>
-                <div><b>Technique Name:</b> Application Layer Protocol: Web Protocols</div>
-                <div><b>Tactic:</b> Command and Control (TA0011)</div>
-                <div><b>ChromaDB Cosine Similarity:</b> 0.9420 (64-dim L2 semantic vector space)</div>
-                <div style="margin-top: 0.35rem;">
-                  <b>Deterministic Remediation Steps (n8n &amp; TheHive):</b>
-                  <ol style="margin-left: 1.25rem; font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.25rem;">
-                    <li>Quarantine source IP <code>10.0.0.4</code> on ingress router ACL.</li>
-                    <li>Verify zero outbound C2 beaconing on port 80/443.</li>
-                    <li>Attach 4-Block Anatomy markdown report to TheHive Case.</li>
-                    <li>Generate HMAC-SHA256 signed callback receipt for audit chain.</li>
-                  </ol>
-                </div>
+                <div><b>Technique:</b> <span id="inspectorTechnique">unavailable</span></div>
+                <div><b>Tactic:</b> <span id="inspectorTactic">unavailable</span></div>
+                <div id="inspectorPlaybookNote">No local technique is shown until a retrieval names one. Containment stays unauthorized.</div>
               </div>
             </div>
           </div>
@@ -363,27 +343,10 @@
                 <div style="font-size: 0.8rem; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; margin-bottom: 0.35rem;">
                   Canonical 14 UNSW-NB15 / Suricata Features
                 </div>
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.4rem; font-family: var(--font-mono); font-size: 0.78rem;">
-                  <div style="background: rgba(9, 13, 22, 0.6); padding: 0.35rem; border-radius: 4px;">dur: 0.000011</div>
-                  <div style="background: rgba(9, 13, 22, 0.6); padding: 0.35rem; border-radius: 4px;">spkts: 2</div>
-                  <div style="background: rgba(9, 13, 22, 0.6); padding: 0.35rem; border-radius: 4px;">dpkts: 0</div>
-                  <div style="background: rgba(9, 13, 22, 0.6); padding: 0.35rem; border-radius: 4px;">sbytes: 496</div>
-                  <div style="background: rgba(9, 13, 22, 0.6); padding: 0.35rem; border-radius: 4px;">dbytes: 0</div>
-                  <div style="background: rgba(9, 13, 22, 0.6); padding: 0.35rem; border-radius: 4px;">rate: 90909.1</div>
-                  <div style="background: rgba(9, 13, 22, 0.6); padding: 0.35rem; border-radius: 4px;">sload: 1.8e+08</div>
-                  <div style="background: rgba(9, 13, 22, 0.6); padding: 0.35rem; border-radius: 4px;">dload: 0.0</div>
-                  <div style="background: rgba(9, 13, 22, 0.6); padding: 0.35rem; border-radius: 4px;">smean: 248</div>
-                  <div style="background: rgba(9, 13, 22, 0.6); padding: 0.35rem; border-radius: 4px;">dmean: 0</div>
-                  <div style="background: rgba(9, 13, 22, 0.6); padding: 0.35rem; border-radius: 4px;">sloss: 0</div>
-                  <div style="background: rgba(9, 13, 22, 0.6); padding: 0.35rem; border-radius: 4px;">dloss: 0</div>
-                  <div style="background: rgba(9, 13, 22, 0.6); padding: 0.35rem; border-radius: 4px;">service: -</div>
-                  <div style="background: rgba(9, 13, 22, 0.6); padding: 0.35rem; border-radius: 4px;">state: INT</div>
-                </div>
+                <div id="inspectorEvidenceNote" style="font-size: 0.85rem; line-height: 1.6;">The 14 canonical features stay on the stored flow. This tab does not invent a packet count.</div>
                 <div style="margin-top: 0.75rem; font-size: 0.85rem; line-height: 1.6;">
-                  <div><b>Primary Decision Authority:</b> Frozen Random Forest (95.266% precision, 0.095% FPR)</div>
-                  <div><b>Secondary Anomaly Ranker:</b> v2 Autoencoder reconstruction error <code>0.1420</code> vs calibrated threshold <code>0.1181361214680695</code></div>
-                  <div><b>Section 8 Lock:</b> <span class="badge badge-secondary-anomaly">+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)</span></div>
-                  <div><b>MISP Threat Intelligence:</b> RFC1918 Guard Active &middot; Zero Private IP Outbound Leakage &middot; Local Verified Snapshot Fallback</div>
+                  <div><b>Primary decision authority:</b> <span class="badge badge-rf-confidence">Frozen Random Forest</span></div>
+                  <div><b>Section 8 lock:</b> <span class="badge badge-secondary-anomaly">+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)</span></div>
                 </div>
               </div>
             </div>
@@ -394,18 +357,10 @@
             <div class="card" data-anatomy-block="4" style="background: rgba(17, 24, 39, 0.9);">
               <h4 style="color: #F59E0B; margin-top: 0;">Block 4: Cryptographic SOAR Status &amp; Audit Hash Chain</h4>
               <div style="margin-top: 0.5rem; line-height: 1.6;">
-                <div><b>Playbook ID:</b> <code data-copy-value="pb-isolate-01" data-copy-tooltip="Click to copy identifier" title="Click to copy identifier">pb-isolate-01</code> &middot; <b>State:</b> <span class="badge badge-state" data-soar-operator-state="approved_local">approved_local</span></div>
-                <div><b>Cryptographic Audit Chain:</b> <span class="badge" data-evidence-state="verified">Chain Valid (SHA-256 Linked)</span></div>
-                <div><b>HMAC-SHA256 Callback Receipt:</b> <span class="badge" data-evidence-state="verified">HMAC Signature Verified</span></div>
-                <div><b>TheHive Case ID:</b> <code data-copy-value="case_azure_victim_001842" data-copy-tooltip="Click to copy identifier" title="Click to copy identifier">case_azure_victim_001842</code></div>
+                <div><b>Playbook:</b> <span id="inspectorPlaybook">none</span></div>
+                <div><b>Audit chain:</b> <span id="inspectorChain" data-evidence-state="unavailable">unavailable</span></div>
+                <div><b>Callback:</b> <span id="inspectorCallback">not recorded</span></div>
                 <div data-soar-state-legend="pending_approval approved_local queued_durable_outbox dispatched_live">SOAR states: pending_approval, approved_local, queued_durable_outbox, dispatched_live</div>
-                <div style="margin-top: 0.5rem; font-size: 0.82rem; font-family: var(--font-mono); background: rgba(9, 13, 22, 0.6); padding: 0.5rem; border-radius: 4px;">
-                  <div><b>Genesis:</b> <code>GENESIS_BLOCK_00000000000000000000000000000000000000000000000000000000</code></div>
-                  <div style="margin-left: 1rem;">&darr; hash_chain_sha256</div>
-                  <div><b>Block 1:</b> <code>e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855</code> (queued)</div>
-                  <div style="margin-left: 1rem;">&darr; hash_chain_sha256</div>
-                  <div><b>Block 2:</b> <code>44d88612fea8a8f36de82e1278abb02f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d</code> (approved by analyst-bilal)</div>
-                </div>
               </div>
             </div>
           </div>
@@ -418,7 +373,7 @@
     </main>
 
     <!-- Live Cyber-Range, n8n Workflow Studio & Threat Intelligence Panels -->
-    <div class="studio-grid">
+    <div class="studio-grid" data-sample-only="true" hidden>
       <!-- Live Cyber-Range Panel -->
       <section class="card" aria-label="Live Cyber-Range Topology">
         <div class="card-header">
@@ -523,7 +478,7 @@
     </div>
 
     <!-- Interactive 5-Minute Guided 6-Stage Walkthrough Section -->
-    <section class="walkthrough-panel" aria-label="5-Minute Guided Real-World Scenario Walkthrough">
+    <section class="walkthrough-panel" data-sample-only="true" hidden aria-label="5-Minute Guided Real-World Scenario Walkthrough">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
         <div>
           <h2 style="font-size: 1.2rem; font-weight: 700; color: #fff;">5-Minute Guided Real-World Scenario Walkthrough</h2>

@@ -559,6 +559,16 @@ def test_triage_and_handoff_routes_round_trip(tmp_path: Path, monkeypatch) -> No
         thread.join(timeout=5)
 
 
+def test_live_console_is_one_screen() -> None:
+    html = (REPO_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    script = (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")
+    assert 'id="inspectorCaseTitle">No stored campaign selected' in html
+    assert 'data-sample-only="true" hidden' in html
+    assert "setSampleSurfacesHidden" in script
+    assert "syncLiveInspector" in script
+    assert "Case #001842: Active C2 Reconnaissance" not in html
+
+
 def test_triage_controls_are_wired_in_the_page() -> None:
     html = (REPO_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
     script = (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")

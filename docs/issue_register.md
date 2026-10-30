@@ -938,6 +938,10 @@ A 1,527-test pytest run and the corrupt-database classification fix do not satis
 
 Stored triage actions, the shift-handoff timeline, and the grounded-note refusal do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. Containment stays unauthorized. All four issues remain **open**.
 
+### Milestone #51 one live console screen, 2026-10-30
+
+Hiding the sample topology and walkthrough after the campaign store loads does not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
+
 ### Milestone #50 integrated callback, windows, triage, and launcher, 2026-10-30
 
 The shared ledger, automatic 30.0s/600.0s stitch, triage history, and launcher shutdown do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. Host containment stays unauthorized. All four issues remain **open**.
