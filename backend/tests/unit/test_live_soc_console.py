@@ -19,6 +19,7 @@ from threatfusion.api.live_soc_console import (
     read_n8n_workbench,
     record_triage_action,
     replay_benchmark_attack_burst,
+    replay_live_scenarios,
     score_canonical_flow,
     store_flow_provenance,
     export_grounded_handoff,
@@ -557,6 +558,32 @@ def test_triage_and_handoff_routes_round_trip(tmp_path: Path, monkeypatch) -> No
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_four_scenario_replay_uses_the_frozen_forest(tmp_path: Path) -> None:
+    db = tmp_path / "scenarios.sqlite3"
+    result = replay_live_scenarios(db, repo_root=REPO_ROOT)
+    assert result["evidence_state"] == "verified"
+    assert result["production_fusion_enabled"] is False
+    assert result["containment_executed"] is False
+    assert result["member_count"] == 4
+    by_id = {row["scenario_id"]: row for row in result["flows"]}
+    assert set(by_id) == {"web_exploit", "ssh_brute", "internal_recon", "benign_false_alarm"}
+    for scenario_id in ("web_exploit", "ssh_brute", "internal_recon"):
+        assert by_id[scenario_id]["decision"] == "Attack"
+        assert by_id[scenario_id]["reason"] == "frozen_random_forest_scored"
+    assert by_id["web_exploit"]["scenario_label"] == "T1190"
+    assert by_id["ssh_brute"]["scenario_label"] == "T1110"
+    assert by_id["internal_recon"]["scenario_label"] == "T1046"
+    assert by_id["internal_recon"]["misp_guard_status"] == 422
+    assert by_id["internal_recon"]["private_ip_guard_triggered"] is True
+    assert by_id["internal_recon"]["external_lookup_performed"] is False
+    assert by_id["benign_false_alarm"]["decision"] == "Benign"
+    assert by_id["benign_false_alarm"]["scenario_label"] is None
+    html = (REPO_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    script = (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")
+    assert 'id="btnReplayScenarios"' in html
+    assert "/api/v1/live/scenarios" in script
 
 
 def test_live_console_is_one_screen() -> None:

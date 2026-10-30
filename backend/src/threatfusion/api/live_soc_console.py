@@ -606,6 +606,146 @@ def replay_benchmark_attack_burst(
     }
 
 
+_ATTACK_SHAPED_UDP: dict[str, float] = {
+    "duration_ms": 3200,
+    "fwd_packets": 240,
+    "bwd_packets": 4,
+    "fwd_bytes": 19200,
+    "bwd_bytes": 320,
+    "packets_per_second": 76.25,
+    "bytes_per_second": 6100.0,
+    "fwd_packet_length_mean": 80.0,
+    "bwd_packet_length_mean": 80.0,
+    "dst_port": 53,
+    "protocol_tcp": 0,
+    "protocol_udp": 1,
+    "protocol_icmp": 0,
+    "protocol_other": 0,
+}
+
+# The technique id is the scenario label. The frozen forest does not emit it.
+LIVE_SCENARIO_REPLAYS: tuple[dict[str, Any], ...] = (
+    {
+        "scenario_id": "web_exploit",
+        "title": "Web exploit replay",
+        "scenario_label": "T1190",
+        "dst_port": 80,
+        "protocol_tcp": 0,
+        "protocol_udp": 1,
+    },
+    {
+        "scenario_id": "ssh_brute",
+        "title": "SSH brute replay",
+        "scenario_label": "T1110",
+        "dst_port": 22,
+        "protocol_tcp": 0,
+        "protocol_udp": 1,
+    },
+    {
+        "scenario_id": "internal_recon",
+        "title": "Internal recon replay",
+        "scenario_label": "T1046",
+        "dst_port": 445,
+        "protocol_tcp": 0,
+        "protocol_udp": 1,
+        "guard_value": "10.0.0.4",
+        "provenance": {
+            "entity_namespace_id": "lab:edge-01",
+            "src_entity_id": "10.0.0.4",
+            "dst_entity_id": "10.0.0.5",
+            "protocol": "udp",
+            "service_or_port": "445",
+            "clock_synchronized": True,
+        },
+    },
+    {
+        "scenario_id": "benign_false_alarm",
+        "title": "Benign false alarm",
+        "scenario_label": None,
+        "dst_port": 80,
+        "protocol_tcp": 1,
+        "protocol_udp": 0,
+    },
+)
+
+
+def replay_live_scenarios(
+    db_path: Path,
+    *,
+    repo_root: Path,
+    model: Any | None = None,
+    supply_verified: bool | None = None,
+) -> dict[str, Any]:
+    """Score four labeled scenarios with the frozen Random Forest and store them.
+
+    The technique id is stored as a scenario label. It is not a model output.
+    The internal-recon row asks the private-IP guard and does not perform a lookup.
+    """
+    campaign_id = "campaign_live_scenarios:" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    created = datetime.now(UTC).isoformat()
+    stored: list[dict[str, Any]] = []
+    for spec in LIVE_SCENARIO_REPLAYS:
+        features = dict(_ATTACK_SHAPED_UDP)
+        features["dst_port"] = spec["dst_port"]
+        features["protocol_tcp"] = spec["protocol_tcp"]
+        features["protocol_udp"] = spec["protocol_udp"]
+        score = score_canonical_flow(
+            features,
+            repo_root=repo_root,
+            model=model,
+            supply_verified=supply_verified,
+        )
+        label = spec["scenario_label"]
+        title = spec["title"] if label is None else f"{spec['title']} (scenario label {label})"
+        row = persist_scored_flow(
+            db_path,
+            features,
+            score,
+            campaign_id=campaign_id,
+            source_label="live_scenario_replay",
+            case_title=title,
+            provenance=spec.get("provenance"),
+        )
+        row["scenario_id"] = spec["scenario_id"]
+        row["scenario_label"] = label
+        row["case_title"] = title
+        guard_value = spec.get("guard_value")
+        if isinstance(guard_value, str):
+            status, guard = private_ip_guard_response(guard_value)
+            row["misp_guard_status"] = status
+            row["private_ip_guard_triggered"] = guard.get("private_ip_guard_triggered")
+            row["external_lookup_performed"] = False
+        stored.append(row)
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO live_campaigns (
+                campaign_id, title, source_label, created_at_utc, member_count
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                campaign_id,
+                "Four-scenario live replay",
+                "live_scenario_replay",
+                created,
+                len(stored),
+            ),
+        )
+    return {
+        "schema_version": "live_scenario_replay_v1",
+        "evidence_state": "verified" if stored else "unavailable",
+        "reason": "scenarios_scored_by_frozen_random_forest",
+        "campaign_id": campaign_id,
+        "source_label": "live_scenario_replay",
+        "production_fusion_enabled": False,
+        "execution_authorized": False,
+        "containment_executed": False,
+        "ae_changes_alert_decision": False,
+        "member_count": len(stored),
+        "flows": stored,
+    }
+
+
 def replay_supplied_flows(
     db_path: Path,
     flows: list[Any],

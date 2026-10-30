@@ -1967,6 +1967,12 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Milestone #52: Four-scenario live replay (2026-10-30)
+
+- `POST /api/v1/live/scenarios` scores four labeled flows with the frozen Random Forest. Web exploit (scenario label T1190), SSH brute (T1110), and internal recon (T1046) scored Attack at the live probability. The benign false alarm scored Benign. The technique id is a scenario label, not a model output. The internal-recon row returns HTTP 422 from the private-IP guard and does not perform a lookup. Containment stays unauthorized.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
 ### Milestone #51: One live console screen (2026-10-30)
 
 - The inspector title starts as "No stored campaign selected" and then shows the stored flow. The sample topology and the 5-minute walkthrough stay in the page and are hidden once the campaign store loads. They return only when that request fails. The inspector does not present a sample case, a sample technique, or a sample hash as the selected flow.

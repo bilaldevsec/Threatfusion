@@ -547,6 +547,14 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             self._send_json(status, result)
             return
 
+        if path == "/api/v1/live/scenarios":
+            from threatfusion.api.live_soc_console import replay_live_scenarios
+
+            result = replay_live_scenarios(self._live_db_path(), repo_root=REPO_ROOT)
+            status = 200 if result.get("member_count") else 400
+            self._send_json(status, result)
+            return
+
         if path == "/api/v1/live/replay":
             from threatfusion.api.live_soc_console import (
                 correlate_stored_attacks,

@@ -602,7 +602,7 @@
 
       itemEl.innerHTML = `
         <div class="incident-item-header">
-          <span class="incident-id">${escapeHtml(String(inc.id).substring(0, 32))}...</span>
+          <span class="incident-id">${escapeHtml(inc.advisory && inc.advisory.summaryHeadline ? inc.advisory.summaryHeadline : String(inc.id).substring(0, 32))}...</span>
           <span class="badge badge-decision">${escapeHtml(inc.decision)}</span>
         </div>
         <div class="incident-meta-row">
@@ -659,7 +659,10 @@
     }
     const score = Number(inc.uncalibratedScore);
     const scoreText = Number.isFinite(score) ? (score * 100).toFixed(2) + '%' : 'unavailable';
-    if (title) title.textContent = (inc.live ? 'Stored flow ' : 'Offline sample ') + String(inc.id);
+    const headline = inc.advisory && inc.advisory.summaryHeadline
+      ? String(inc.advisory.summaryHeadline)
+      : ((inc.live ? 'Stored flow ' : 'Offline sample ') + String(inc.id));
+    if (title) title.textContent = headline;
     const src = inc.provenance && inc.provenance.srcIp ? String(inc.provenance.srcIp) : 'not recorded';
     const dst = inc.provenance && inc.provenance.dstIp ? String(inc.provenance.dstIp) : 'not recorded';
     setInspectorText('inspectorDecision', String(inc.decision || 'withheld'));
@@ -1141,6 +1144,10 @@
     if (replayButton) {
       replayButton.addEventListener('click', () => { replayBenchmarkBurst(); });
     }
+    const scenarioButton = document.getElementById('btnReplayScenarios');
+    if (scenarioButton) {
+      scenarioButton.addEventListener('click', () => { replayLiveScenarios(); });
+    }
     const dispatchButton = document.getElementById('btnDispatchCallback');
     if (dispatchButton) {
       dispatchButton.addEventListener('click', () => {
@@ -1313,6 +1320,33 @@
     }
     renderIncidentQueue();
     renderForensicDrawer();
+  }
+
+  async function replayLiveScenarios() {
+    try {
+      const resp = await fetch('/api/v1/live/scenarios', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+      const data = await resp.json();
+      await refreshLiveCampaigns();
+      const lines = (data.flows || []).map(flow => {
+        const label = flow.scenario_label ? (' ' + flow.scenario_label) : '';
+        const guard = flow.misp_guard_status === 422 ? ', private IP refused HTTP 422' : '';
+        const pct = Number.isFinite(Number(flow.rf_attack_probability))
+          ? (Number(flow.rf_attack_probability) * 100).toFixed(1) + '%'
+          : 'unavailable';
+        return (flow.scenario_id || 'scenario') + label + ': ' + flow.decision + ' ' + pct + guard;
+      });
+      setLiveText(
+        'campaignQueueStatus',
+        lines.length ? lines.join('. ') + '.' : 'Scenario replay unavailable.',
+        data.evidence_state || 'unavailable'
+      );
+    } catch (err) {
+      setLiveText('campaignQueueStatus', 'Scenario replay unavailable.', 'unavailable');
+    }
   }
 
   async function replayBenchmarkBurst() {
