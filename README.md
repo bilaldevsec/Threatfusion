@@ -50,6 +50,7 @@ The lab HMAC and MISP values are not production credentials. Replace them before
 | Action | Route | What is stored |
 |---|---|---|
 | Ingest or replay | `POST /api/v1/live/ingest`, `POST /api/v1/live/replay`, `POST /api/v1/live/scenarios` | 14-feature flow scored by the frozen Random Forest |
+| Live sensor | `POST /api/v1/live/sensor` | One Suricata bridge flow. The observation line and the forest score stay separate |
 | Verdict | `POST /api/v1/live/verdict` | `true_positive`, `false_positive`, or `inconclusive`, with a grounded rationale, beside the forest decision |
 | Assignment | `POST /api/v1/live/assignment` | Local assignee and `unassigned`, `in_review`, or `reviewed` |
 | Triage | `POST /api/v1/live/triage` | Acknowledge, escalate, or dismiss |
@@ -58,7 +59,7 @@ The lab HMAC and MISP values are not production credentials. Replace them before
 | Dispatch | `POST /api/v1/live/soar/dispatch` | Verify-state, a four-block case, and the HMAC-SHA256 callback |
 | Stitch | `POST /api/v1/live/correlate` | Attack rows inside the 30.0 second burst window or the 600.0 second campaign window |
 
-The queue searches, filters, and sorts stored rows by forest decision, triage state, analyst verdict, and forest probability. The hero cards show the live SQLite flow, campaign, and incident counts. The January 216,568-flow figures stay in the Frozen Benchmark Evaluation Baseline.
+The queue searches, filters, and sorts stored rows by source, forest decision, triage state, analyst verdict, and forest probability. Live sensor rows, the recorded UNSW study, and the labeled scenario replay do not share a campaign id. The hero cards show the live SQLite flow, campaign, and incident counts, plus how many stored rows came from the live bridge. The January 216,568-flow figures stay in the Frozen Benchmark Evaluation Baseline.
 
 ## Section 8 benchmark
 

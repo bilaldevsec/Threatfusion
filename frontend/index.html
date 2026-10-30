@@ -56,6 +56,7 @@
           </div>
         </div>
         <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.45rem;">These counts are read from the live SQLite queue.</div>
+        <div id="liveHeroBridgeCount" style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.25rem;">Live bridge rows: 0</div>
       </div>
 
       <div class="hero-investor-card" id="liveSocConsole" style="background: #111827;">
@@ -288,6 +289,13 @@
           <button class="filter-btn" data-filter="unavailable">Unavailable</button>
         </div>
         <div class="queue-filter-bar">
+          <label for="queueSourceFilter">Source</label>
+          <select id="queueSourceFilter">
+            <option value="all">All</option>
+            <option value="suricata_bridge">Live sensor, this Docker bridge</option>
+            <option value="recorded_unsw_nb15">Recorded UNSW study</option>
+            <option value="live_scenario_replay">Labeled scenario replay</option>
+          </select>
           <label for="queueSearch">Search</label>
           <input id="queueSearch" type="search" value="" placeholder="Title or flow">
           <label for="queueDecisionFilter">RF decision</label>
@@ -368,6 +376,9 @@
               <div style="margin-top: 0.5rem; line-height: 1.6;">
                 <div><b>Decision:</b> <span id="inspectorDecision">waiting</span></div>
                 <div><b>Frozen RF score:</b> <span id="inspectorScore">unavailable</span></div>
+                <div id="inspectorSensorLine">Suricata: waiting</div>
+                <div id="inspectorForestLine">Frozen forest: waiting</div>
+                <div id="inspectorScenarioLabel">scenario label waiting</div>
                 <div style="margin-top: 0.35rem;"><span class="badge badge-secondary-anomaly">+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)</span></div>
                 <div style="margin-top: 0.35rem;"><b>Affected assets:</b> <span id="inspectorAssets">not recorded</span></div>
                 <div id="inspectorFusionNote" style="margin-top: 0.35rem; color: var(--text-secondary); font-size: 0.85rem;">production_fusion_enabled is false. The autoencoder does not decide this alert. Containment stays unauthorized.</div>

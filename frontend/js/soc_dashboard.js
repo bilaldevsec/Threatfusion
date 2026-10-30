@@ -388,6 +388,7 @@
   let liveCorrelationReport = null;
   let campaignFetchSettled = false;
   let liveQueueLoaded = false;
+  let campaignFingerprint = null;
   let walkthroughCurrentStep = 0;
   let walkthroughInterval = null;
 
@@ -549,6 +550,7 @@
     setupEventListeners();
     refreshOperationalVelocity();
     refreshLiveCampaigns();
+    setInterval(refreshLiveCampaigns, 3000);
   }
 
   function activeIncidents() {
@@ -576,6 +578,8 @@
     else if (currentFilter === 'pending') {
       source = source.filter(inc => inc.soarRecord && inc.soarRecord.state === 'pending_approval');
     } else if (currentFilter === 'unavailable') source = source.filter(inc => !isReceiptVerified(inc));
+    const sourceFilter = queueControlValue('queueSourceFilter', 'all');
+    if (sourceFilter !== 'all') source = source.filter(inc => inc.sourceLabel === sourceFilter);
     const query = queueControlValue('queueSearch', '').trim().toLowerCase();
     if (query) {
       source = source.filter(inc => {
@@ -612,7 +616,34 @@
       return;
     }
 
-    incidents.forEach(inc => {
+    if (!liveQueueLoaded) {
+      incidents.forEach(inc => appendIncidentItem(listEl, inc));
+      return;
+    }
+
+    const sourceOrder = ['suricata_bridge', 'recorded_unsw_nb15', 'live_scenario_replay', 'other'];
+    sourceOrder.forEach(bucket => {
+      const members = incidents.filter(inc => {
+        const label = sourceOrder.includes(inc.sourceLabel) ? inc.sourceLabel : 'other';
+        return label === bucket;
+      });
+      if (!members.length) return;
+      const heading = document.createElement('div');
+      heading.className = 'queue-source-heading';
+      heading.textContent = sourceHeading(bucket);
+      listEl.appendChild(heading);
+      members.forEach(inc => appendIncidentItem(listEl, inc));
+    });
+  }
+
+  function sourceHeading(label) {
+    if (label === 'suricata_bridge') return 'Live sensor, this Docker bridge';
+    if (label === 'recorded_unsw_nb15') return 'Recorded UNSW study';
+    if (label === 'live_scenario_replay') return 'Labeled scenario replay';
+    return 'Other stored flows';
+  }
+
+  function appendIncidentItem(listEl, inc) {
       const itemEl = document.createElement('div');
       itemEl.className = `incident-item ${inc.id === selectedIncidentId ? 'selected' : ''}`;
       itemEl.dataset.id = inc.id;
@@ -623,12 +654,22 @@
       const score = Number(inc.uncalibratedScore);
       const scoreText = Number.isFinite(score) ? (score * 100).toFixed(1) : 'n/a';
       const aeError = inc.secondaryAe && Number.isFinite(Number(inc.secondaryAe.aeError)) ? Number(inc.secondaryAe.aeError) : 0;
+      const sensor = inc.sensorObservation;
+      const sensorLines = inc.sourceLabel === 'suricata_bridge' && sensor
+        ? `<div>Suricata: ${escapeHtml(sensor.suricata_line || 'flow only, no signature')}</div><div>Frozen forest: ${escapeHtml(sensor.forest_line || 'unavailable')}</div>`
+        : '';
+      const scenarioLine = inc.sourceLabel === 'live_scenario_replay'
+        ? `<div>scenario label ${escapeHtml(inc.scenarioLabel || 'none')}</div>`
+        : '';
+      itemEl.dataset.sourceLabel = inc.sourceLabel || '';
 
       itemEl.innerHTML = `
         <div class="incident-item-header">
           <span class="incident-id">${escapeHtml(inc.advisory && inc.advisory.summaryHeadline ? inc.advisory.summaryHeadline : String(inc.id).substring(0, 32))}...</span>
           <span class="badge badge-decision">${escapeHtml(inc.decision)}</span>
         </div>
+        ${sensorLines}
+        ${scenarioLine}
         <div class="incident-meta-row">
           <span>Observed: ${escapeHtml(observed.substring(11, 19))} UTC</span>
           <span>Score: <b>${scoreText}%</b></span>
@@ -649,7 +690,6 @@
       });
 
       listEl.appendChild(itemEl);
-    });
   }
 
   function setInspectorText(id, value) {
@@ -674,6 +714,9 @@
       }
       setInspectorText('inspectorDecision', 'waiting');
       setInspectorText('inspectorScore', 'unavailable');
+      setInspectorText('inspectorSensorLine', 'Suricata: waiting');
+      setInspectorText('inspectorForestLine', 'Frozen forest: waiting');
+      setInspectorText('inspectorScenarioLabel', 'scenario label waiting');
       setInspectorText('inspectorAssets', 'not recorded');
       setInspectorText('inspectorTechnique', 'unavailable');
       setInspectorText('inspectorTactic', 'unavailable');
@@ -693,6 +736,21 @@
     const dst = inc.provenance && inc.provenance.dstIp ? String(inc.provenance.dstIp) : 'not recorded';
     setInspectorText('inspectorDecision', String(inc.decision || 'withheld'));
     setInspectorText('inspectorScore', scoreText);
+    const sensor = inc.sensorObservation;
+    if (inc.sourceLabel === 'suricata_bridge' && sensor) {
+      setInspectorText('inspectorSensorLine', 'Suricata: ' + (sensor.suricata_line || 'flow only, no signature'));
+      setInspectorText('inspectorForestLine', 'Frozen forest: ' + (sensor.forest_line || 'unavailable'));
+      setInspectorText('inspectorScenarioLabel', 'no scenario label');
+    } else if (inc.sourceLabel === 'live_scenario_replay') {
+      const reason = inc.scoreReason || 'unscored';
+      setInspectorText('inspectorSensorLine', 'Suricata: not a live sensor flow');
+      setInspectorText('inspectorForestLine', 'Frozen forest: ' + String(inc.decision || 'withheld') + ', ' + scoreText + ', ' + reason);
+      setInspectorText('inspectorScenarioLabel', 'scenario label ' + (inc.scenarioLabel || 'none'));
+    } else {
+      setInspectorText('inspectorSensorLine', 'Suricata: not a live sensor flow');
+      setInspectorText('inspectorForestLine', 'Frozen forest: ' + String(inc.decision || 'withheld') + ', ' + scoreText + ', ' + (inc.scoreReason || 'unscored'));
+      setInspectorText('inspectorScenarioLabel', 'no scenario label');
+    }
     setInspectorText('inspectorAssets', src + ' -> ' + dst);
     const chainOk = verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256);
     if (badge) {
@@ -700,8 +758,13 @@
       badge.setAttribute('data-evidence-state', chainOk ? 'verified' : 'unavailable');
     }
     const ragOk = verifyChromaRagHits(inc.chromaRagHits);
-    setInspectorText('inspectorTechnique', ragOk ? inc.chromaRagHits[0].technique_id : 'unavailable');
-    setInspectorText('inspectorTactic', ragOk ? inc.chromaRagHits[0].technique_name : 'unavailable');
+    if (ragOk) {
+      setInspectorText('inspectorTechnique', 'retrieved candidate technique ' + inc.chromaRagHits[0].technique_id);
+      setInspectorText('inspectorTactic', inc.chromaRagHits[0].technique_name);
+    } else {
+      setInspectorText('inspectorTechnique', 'unavailable');
+      setInspectorText('inspectorTactic', 'unavailable');
+    }
     const playbook = inc.soarRecord && inc.soarRecord.playbookId ? String(inc.soarRecord.playbookId) : 'none';
     const state = inc.soarRecord && inc.soarRecord.state ? String(inc.soarRecord.state) : 'none';
     setInspectorText('inspectorPlaybook', playbook + ' / ' + state);
@@ -965,7 +1028,7 @@
             <div><b>Tactic:</b> ${escapeHtml(tacticName)}</div>
             <div><b>Cosine Similarity:</b> ${escapeHtml(String(cosineText))}</div>
             <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.2rem;">
-              ${inc.live && !ragOk ? 'No local technique was retrieved for this flow.' : 'Retrieved from ChromaDB 64-dim L2 semantic vector index'}
+              ${inc.live && !ragOk ? 'No local technique was retrieved for this flow.' : 'retrieved candidate technique'}
             </div>
           </div>
 
@@ -1106,7 +1169,7 @@
       });
     });
 
-    ['queueSearch', 'queueDecisionFilter', 'queueTriageFilter', 'queueVerdictFilter', 'queueSort'].forEach(id => {
+    ['queueSourceFilter', 'queueSearch', 'queueDecisionFilter', 'queueTriageFilter', 'queueVerdictFilter', 'queueSort'].forEach(id => {
       const node = document.getElementById(id);
       if (!node) return;
       node.addEventListener('input', renderIncidentQueue);
@@ -1259,6 +1322,13 @@
     if (state) node.setAttribute('data-evidence-state', state);
   }
 
+  function scenarioLabelFromTitle(flow) {
+    if (!flow || flow.source_label !== 'live_scenario_replay') return '';
+    const title = String(flow.case_title || '');
+    const match = title.match(/scenario label (T\d+(?:\.\d+)?)/);
+    return match ? match[1] : 'none';
+  }
+
   function flowToIncident(flow, memberCount) {
     const score = Number(flow.rf_attack_probability);
     const entry = typeof flow.entry_sha256 === 'string' ? flow.entry_sha256 : '';
@@ -1268,6 +1338,10 @@
       live: true,
       flowId: flow.flow_id,
       sourceEventId: flow.source_label || 'live_flow',
+      sourceLabel: flow.source_label || 'live_flow',
+      scenarioLabel: scenarioLabelFromTitle(flow),
+      sensorObservation: flow.sensor_observation || null,
+      scoreReason: flow.reason || '',
       observedAt: flow.observed_at_utc || '',
       decision: flow.decision || 'withheld',
       uncalibratedScore: Number.isFinite(score) ? score : 0,
@@ -1289,7 +1363,9 @@
       threatIntel: { privateIpGuardTriggered: false },
       secondaryAe: { aeError: 0, status: 'not_scored' },
       advisory: {
-        summaryHeadline: flow.case_title || ('Stored flow ' + flow.flow_id),
+        summaryHeadline: flow.source_label === 'suricata_bridge' && flow.sensor_observation
+          ? ('Suricata: ' + flow.sensor_observation.suricata_line)
+          : (flow.case_title || ('Stored flow ' + flow.flow_id)),
         detectionRationale: 'Frozen Random Forest score. Fusion disabled. The autoencoder did not decide this alert.'
       },
       chromaRagHits: [],
@@ -1390,9 +1466,22 @@
       const flowCount = document.getElementById('liveHeroFlowCount');
       const campaignCount = document.getElementById('liveHeroCampaignCount');
       const incidentCount = document.getElementById('liveHeroIncidentCount');
+      const bridgeCount = document.getElementById('liveHeroBridgeCount');
       if (flowCount) flowCount.textContent = String(data.flow_count || 0);
       if (campaignCount) campaignCount.textContent = String(data.campaign_count || 0);
       if (incidentCount) incidentCount.textContent = String(data.incident_count || 0);
+      if (bridgeCount) bridgeCount.textContent = 'Live bridge rows: ' + String(data.bridge_flow_count || 0);
+      const nextPrint = views.map(item => [
+        item.id,
+        item.decision,
+        item.sourceLabel,
+        item.analystVerdict,
+        item.assigneeId,
+        item.reviewStatus,
+        item.sensorObservation && item.sensorObservation.forest_line
+      ].join(':')).join('|');
+      if (nextPrint === campaignFingerprint) return;
+      campaignFingerprint = nextPrint;
       const verifiedCount = views.filter(isReceiptVerified).length;
       setLiveText(
         'campaignQueueStatus',
@@ -1402,6 +1491,7 @@
         verifiedCount ? 'verified' : (views.length ? 'pending' : 'unavailable')
       );
     } catch (err) {
+      campaignFingerprint = null;
       liveQueueLoaded = false;
       campaignFetchSettled = true;
       setSampleSurfacesHidden(false);
@@ -1847,7 +1937,9 @@
         return;
       }
       const hit = data.hits && data.hits[0];
-      const label = hit ? hit.technique_id + ' ' + hit.technique_name : 'No local corpus hit.';
+      const label = hit
+        ? ('retrieved candidate technique ' + hit.technique_id + ' ' + hit.technique_name)
+        : 'No local corpus hit.';
       setLiveText('liveCopilotAnswer', label, data.evidence_state || 'unavailable');
     } catch (err) {
       setLiveText('liveCopilotAnswer', 'Copilot unavailable.', 'unavailable');

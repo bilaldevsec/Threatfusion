@@ -1,0 +1,19 @@
+FROM alpine:3.20
+
+RUN apk add --no-cache nginx openssh \
+    && ssh-keygen -A \
+    && printf '%s\n' 'root:lab-only-range' | chpasswd \
+    && printf '%s\n' \
+        'Port 22' \
+        'ListenAddress 0.0.0.0' \
+        'PermitRootLogin yes' \
+        'PasswordAuthentication yes' \
+        'PidFile /run/sshd.pid' \
+        > /etc/ssh/sshd_config \
+    && mkdir -p /run/nginx /var/lib/nginx/tmp /var/log/nginx /usr/share/nginx/html \
+    && printf '%s\n' 'range-victim' > /usr/share/nginx/html/index.html
+
+COPY nginx-default.conf /etc/nginx/http.d/default.conf
+COPY entrypoint-victim.sh /entrypoint-victim.sh
+
+ENTRYPOINT ["/bin/sh", "/entrypoint-victim.sh"]

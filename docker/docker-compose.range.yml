@@ -1,0 +1,90 @@
+# Private lab range. No host ports are published. This file is not the n8n stack.
+
+networks:
+  threatfusion_range:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.29.0.0/24
+          gateway: 172.29.0.1
+
+services:
+  victim:
+    build:
+      context: ./range
+      dockerfile: Dockerfile.victim
+    image: threatfusion-range-victim:local
+    container_name: threatfusion_range_victim
+    networks:
+      threatfusion_range:
+        ipv4_address: 172.29.0.20
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  suricata:
+    image: jasonish/suricata:7.0.11
+    container_name: threatfusion_range_suricata
+    network_mode: "service:victim"
+    depends_on:
+      victim:
+        condition: service_healthy
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_NICE
+    entrypoint: ["suricata"]
+    command:
+      - -i
+      - eth0
+      - -l
+      - /var/log/suricata
+      - --set
+      - flow-timeouts.tcp.new=3
+      - --set
+      - flow-timeouts.tcp.established=5
+      - --set
+      - flow-timeouts.tcp.closed=2
+      - --set
+      - flow-timeouts.tcp.emergency-new=1
+      - --set
+      - flow-timeouts.tcp.emergency-established=2
+      - --set
+      - flow-timeouts.tcp.emergency-closed=1
+      - --set
+      - flow-timeouts.udp.new=2
+      - --set
+      - flow-timeouts.udp.established=3
+      - --set
+      - flow-timeouts.udp.emergency-new=1
+      - --set
+      - flow-timeouts.udp.emergency-established=2
+      - --set
+      - flow-timeouts.default.new=3
+      - --set
+      - flow-timeouts.default.established=5
+      - --set
+      - flow-timeouts.default.emergency-new=1
+      - --set
+      - flow-timeouts.default.emergency-established=2
+    volumes:
+      - ./range/eve:/var/log/suricata
+    restart: "no"
+
+  attacker:
+    build:
+      context: ./range
+      dockerfile: Dockerfile.attacker
+    image: threatfusion-range-attacker:local
+    container_name: threatfusion_range_attacker
+    networks:
+      threatfusion_range:
+        ipv4_address: 172.29.0.10
+    depends_on:
+      victim:
+        condition: service_healthy
+    command: ["sleep", "infinity"]
+    restart: "no"

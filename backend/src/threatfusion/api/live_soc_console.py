@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import math
 import os
@@ -71,6 +72,8 @@ _FLOW_EXTRA_COLUMNS: tuple[tuple[str, str], ...] = (
     ("assignee_id", "TEXT"),
     ("review_status", "TEXT"),
     ("correlation_window_checked", "INTEGER"),
+    ("source_event_id", "TEXT"),
+    ("sensor_observation_json", "TEXT"),
 )
 
 _ANALYST_VERDICTS = frozenset({"true_positive", "false_positive", "inconclusive"})
@@ -122,6 +125,11 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     for name, declaration in _FLOW_EXTRA_COLUMNS:
         if name not in existing:
             conn.execute(f"ALTER TABLE live_flows ADD COLUMN {name} {declaration}")
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS live_flows_source_event_id
+        ON live_flows(source_event_id)
+        WHERE source_event_id IS NOT NULL
+        """)
     if db_path.exists():
         os.chmod(db_path, stat.S_IRUSR | stat.S_IWUSR)
     return conn
@@ -248,6 +256,132 @@ def _provenance_fields(
     )
 
 
+SENSOR_BRIDGE_SOURCE = "suricata_bridge"
+SENSOR_BRIDGE_NAMESPACE = "lab:range-bridge-01"
+_SENSOR_EVENT_ID = re.compile(r"^suricata_flow_v1:[0-9a-f]{64}$")
+_ENTITY_ID_PREFIXES = (
+    "attacker:",
+    "victim:",
+    "client:",
+    "server:",
+    "sensor:",
+    "node:",
+    "host:",
+    "vm:",
+)
+_SENSOR_PROTOCOLS = frozenset({"tcp", "udp", "icmp", "other"})
+
+
+def _probability_text(value: Any) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "unavailable"
+    number = float(value)
+    if not math.isfinite(number):
+        return "unavailable"
+    return format(number, ".17g")
+
+
+def _bare_ip(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or any(text.startswith(prefix) for prefix in _ENTITY_ID_PREFIXES):
+        return None
+    try:
+        return str(ipaddress.ip_address(text))
+    except ValueError:
+        return None
+
+
+def _sensor_observation_body(
+    observation: Mapping[str, Any], score: Mapping[str, Any]
+) -> dict[str, Any]:
+    proto = str(observation["proto"])
+    src = str(observation["src_ip"])
+    dst = str(observation["dst_ip"])
+    src_port = int(observation["src_port"])
+    dst_port = int(observation["dst_port"])
+    signature = observation.get("signature")
+    signature_text = signature.strip() if isinstance(signature, str) and signature.strip() else ""
+    suffix = signature_text or "flow only, no signature"
+
+    def _endpoint(host: str, port: int) -> str:
+        if ":" in host:
+            return f"[{host}]:{port}"
+        return f"{host}:{port}"
+
+    return {
+        "proto": proto,
+        "src_ip": src,
+        "src_port": src_port,
+        "dst_ip": dst,
+        "dst_port": dst_port,
+        "signature": signature_text or None,
+        "suricata_line": f"{proto} {_endpoint(src, src_port)} -> {_endpoint(dst, dst_port)}, {suffix}",
+        "forest_line": (
+            f"{score.get('decision')}, {_probability_text(score.get('rf_attack_probability'))}, "
+            f"{score.get('reason')}"
+        ),
+    }
+
+
+def _validate_sensor_request(
+    features: Any,
+    provenance: Any,
+    observation: Any,
+    source_event_id: Any,
+) -> str | None:
+    if not isinstance(features, Mapping):
+        return "features_required"
+    if not isinstance(observation, Mapping):
+        return "sensor_observation_required"
+    if not isinstance(provenance, Mapping):
+        return "provenance_required"
+    if provenance.get("entity_namespace_id") != SENSOR_BRIDGE_NAMESPACE:
+        return "namespace_mismatch"
+    if provenance.get("clock_synchronized") is not True:
+        return "clock_not_synchronized"
+    src = _bare_ip(provenance.get("src_entity_id"))
+    dst = _bare_ip(provenance.get("dst_entity_id"))
+    obs_src = _bare_ip(observation.get("src_ip"))
+    obs_dst = _bare_ip(observation.get("dst_ip"))
+    if src is None or dst is None or obs_src is None or obs_dst is None:
+        return "prefixed_or_invalid_address"
+    if src != obs_src or dst != obs_dst:
+        return "address_mismatch"
+    proto = observation.get("proto")
+    if proto not in _SENSOR_PROTOCOLS or str(provenance.get("protocol") or "") != proto:
+        return "invalid_sensor_observation"
+    try:
+        src_port = int(observation["src_port"])
+        dst_port = int(observation["dst_port"])
+    except (KeyError, TypeError, ValueError):
+        return "invalid_sensor_observation"
+    if src_port < 0 or src_port > 65535 or dst_port < 0 or dst_port > 65535:
+        return "invalid_sensor_observation"
+    if str(provenance.get("service_or_port") or "") != str(dst_port):
+        return "invalid_sensor_observation"
+    if not isinstance(source_event_id, str) or _SENSOR_EVENT_ID.fullmatch(source_event_id) is None:
+        return "invalid_source_event_id"
+    signature = observation.get("signature")
+    if signature is not None and not isinstance(signature, str):
+        return "invalid_sensor_observation"
+    return None
+
+
+def _refused_sensor(reason: str) -> dict[str, Any]:
+    return {
+        "schema_version": "live_sensor_flow_v1",
+        "evidence_state": "unavailable",
+        "reason": reason,
+        "decision": "withheld",
+        "rf_attack_probability": None,
+        "production_fusion_enabled": False,
+        "source_label": SENSOR_BRIDGE_SOURCE,
+        "duplicate": False,
+    }
+
+
 def persist_scored_flow(
     db_path: Path,
     features: Mapping[str, Any],
@@ -258,6 +392,8 @@ def persist_scored_flow(
     case_title: str | None = None,
     observed_at_utc: str | None = None,
     provenance: Mapping[str, Any] | None = None,
+    source_event_id: str | None = None,
+    sensor_observation_json: str | None = None,
 ) -> dict[str, Any]:
     """Append one scored flow to the live WAL queue."""
     observed = _coerce_observed_at(observed_at_utc)
@@ -279,8 +415,9 @@ def persist_scored_flow(
                 evidence_state, reason, model_sha256, production_fusion_enabled,
                 campaign_id, source_label, case_title,
                 entity_namespace_id, src_entity_id, dst_entity_id,
-                flow_protocol, service_or_port, clock_synchronized
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                flow_protocol, service_or_port, clock_synchronized,
+                source_event_id, sensor_observation_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 observed,
@@ -300,6 +437,8 @@ def persist_scored_flow(
                 protocol,
                 service,
                 clock,
+                source_event_id,
+                sensor_observation_json,
             ),
         )
         flow_id = int(cursor.lastrowid)
@@ -309,7 +448,112 @@ def persist_scored_flow(
     stored["campaign_id"] = campaign_id
     stored["source_label"] = source_label
     stored["case_title"] = case_title
+    stored["source_event_id"] = source_event_id
     stored["production_fusion_enabled"] = False
+    if sensor_observation_json:
+        try:
+            stored["sensor_observation"] = json.loads(sensor_observation_json)
+        except json.JSONDecodeError:
+            stored["sensor_observation"] = None
+    return stored
+
+
+def record_suricata_bridge_flow(
+    db_path: Path,
+    features: Mapping[str, Any],
+    *,
+    repo_root: Path,
+    provenance: Mapping[str, Any] | None,
+    sensor_observation: Mapping[str, Any] | None,
+    source_event_id: str | None,
+    observed_at_utc: str | None = None,
+    model: Any | None = None,
+    supply_verified: bool | None = None,
+) -> dict[str, Any]:
+    """Score one adapted Suricata flow and store it under its own bridge campaign.
+
+    The forest score is whatever the frozen model returns. The Suricata line is
+    display text. No technique id is written onto the row.
+    """
+    reason = _validate_sensor_request(features, provenance, sensor_observation, source_event_id)
+    if reason is not None or provenance is None or sensor_observation is None:
+        return _refused_sensor(reason or "sensor_observation_required")
+    if not isinstance(source_event_id, str):
+        return _refused_sensor("invalid_source_event_id")
+    campaign_id = f"campaign_suricata_bridge:{source_event_id}"
+    with _connect(db_path) as conn:
+        existing = conn.execute(
+            """
+            SELECT flow_id, decision, rf_attack_probability, reason, evidence_state,
+                   campaign_id, source_label, case_title, sensor_observation_json,
+                   observed_at_utc
+            FROM live_flows
+            WHERE source_event_id = ?
+            """,
+            (source_event_id,),
+        ).fetchone()
+    if existing is not None:
+        body = {
+            "schema_version": "live_sensor_flow_v1",
+            "evidence_state": existing["evidence_state"],
+            "reason": existing["reason"],
+            "decision": existing["decision"],
+            "rf_attack_probability": existing["rf_attack_probability"],
+            "production_fusion_enabled": False,
+            "source_label": existing["source_label"],
+            "campaign_id": existing["campaign_id"],
+            "case_title": existing["case_title"],
+            "flow_id": int(existing["flow_id"]),
+            "observed_at_utc": existing["observed_at_utc"],
+            "source_event_id": source_event_id,
+            "duplicate": True,
+        }
+        raw_observation = existing["sensor_observation_json"]
+        if isinstance(raw_observation, str):
+            try:
+                body["sensor_observation"] = json.loads(raw_observation)
+            except json.JSONDecodeError:
+                body["sensor_observation"] = None
+        return body
+    score = score_canonical_flow(
+        features,
+        repo_root=repo_root,
+        model=model,
+        supply_verified=supply_verified,
+    )
+    if score.get("reason") != "frozen_random_forest_scored":
+        refused = _refused_sensor(str(score.get("reason") or "unscored"))
+        refused["model_sha256"] = score.get("model_sha256")
+        return refused
+    observation = _sensor_observation_body(sensor_observation, score)
+    stored = persist_scored_flow(
+        db_path,
+        features,
+        score,
+        campaign_id=campaign_id,
+        source_label=SENSOR_BRIDGE_SOURCE,
+        case_title=None,
+        observed_at_utc=observed_at_utc,
+        provenance=provenance,
+        source_event_id=source_event_id,
+        sensor_observation_json=json.dumps(observation, sort_keys=True),
+    )
+    if stored.get("reason") == "invalid_observed_at":
+        return _refused_sensor("invalid_observed_at")
+    created = datetime.now(UTC).isoformat()
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO live_campaigns (
+                campaign_id, title, source_label, created_at_utc, member_count
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (campaign_id, "Live sensor flow", SENSOR_BRIDGE_SOURCE, created, 1),
+        )
+    stored["schema_version"] = "live_sensor_flow_v1"
+    stored["duplicate"] = False
+    stored["sensor_observation"] = observation
+    stored["case_title"] = None
     return stored
 
 
@@ -455,7 +699,7 @@ def _flow_rows(db_path: Path, *, limit: int) -> list[dict[str, Any]]:
                    service_or_port, clock_synchronized, features_json,
                    analyst_verdict, analyst_rationale, analyst_verdict_actor,
                    analyst_verdict_at, assignee_id, review_status,
-                   correlation_window_checked
+                   correlation_window_checked, source_event_id, sensor_observation_json
             FROM live_flows
             ORDER BY flow_id DESC
             LIMIT ?
@@ -466,7 +710,18 @@ def _flow_rows(db_path: Path, *, limit: int) -> list[dict[str, Any]]:
     for row in rows:
         item = dict(row)
         item["glass_box"] = build_glass_box_checklist(item)
+        raw_observation = item.pop("sensor_observation_json", None)
         item.pop("features_json", None)
+        if isinstance(raw_observation, str) and raw_observation:
+            try:
+                parsed_observation = json.loads(raw_observation)
+            except json.JSONDecodeError:
+                parsed_observation = None
+            item["sensor_observation"] = (
+                parsed_observation if isinstance(parsed_observation, dict) else None
+            )
+        else:
+            item["sensor_observation"] = None
         if not item.get("review_status"):
             item["review_status"] = "unassigned"
         published.append(item)
@@ -546,6 +801,9 @@ def list_live_campaigns(
         "campaigns": campaigns,
         "incidents": incidents,
         "flow_count": len(flows),
+        "bridge_flow_count": sum(
+            1 for row in flows if row.get("source_label") == SENSOR_BRIDGE_SOURCE
+        ),
         "campaign_count": len(campaigns),
         "incident_count": len(incidents),
         "queue_count": len(flows) + len(incidents),

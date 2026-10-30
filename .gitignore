@@ -55,6 +55,8 @@ Thumbs.db
 # Logs
 logs/
 *.log
+docker/range/eve/*
+!docker/range/eve/.gitkeep
 
 # Local agent notes. Product docs and AGENTS.md stay tracked.
 CLAUDE.md

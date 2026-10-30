@@ -406,6 +406,43 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         content_length = int(str(self.headers.get("Content-Length")).strip())
         body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
 
+        if path == "/api/v1/live/sensor":
+            from threatfusion.api.live_soc_console import (
+                correlate_stored_attacks,
+                record_suricata_bridge_flow,
+            )
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            observed_at = req_data.get("observed_at_utc")
+            provenance = req_data.get("provenance")
+            observation = req_data.get("sensor_observation")
+            stored = record_suricata_bridge_flow(
+                self._live_db_path(),
+                req_data.get("features"),
+                repo_root=REPO_ROOT,
+                provenance=provenance if isinstance(provenance, dict) else None,
+                sensor_observation=observation if isinstance(observation, dict) else None,
+                source_event_id=req_data.get("source_event_id"),
+                observed_at_utc=observed_at if isinstance(observed_at, str) else None,
+            )
+            if stored.get("evidence_state") != "verified":
+                self._send_json(400, stored)
+                return
+            if not stored.get("duplicate"):
+                stored["correlation"] = correlate_stored_attacks(
+                    self._live_db_path(),
+                    self._incidents_db_path(),
+                )
+            self._send_json(200, stored)
+            return
+
         if path == "/api/v1/live/ingest":
             from threatfusion.api.live_soc_console import (
                 correlate_stored_attacks,
