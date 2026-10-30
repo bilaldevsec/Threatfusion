@@ -240,7 +240,11 @@
           <button id="btnEscalate" type="button">Escalate</button>
           <button id="btnDismiss" type="button">Dismiss</button>
           <button id="btnExportHandoff" type="button">Export Shift Handoff / 4-Block Incident Report</button>
+          <label for="shiftHandoffNote" style="display:block;margin-top:0.45rem;font-size:0.75rem;color:var(--text-secondary);">Shift note</label>
+          <textarea id="shiftHandoffNote" rows="2" placeholder="Optional. An address must already be stored on this flow." style="width:100%;margin-top:0.2rem;"></textarea>
+          <pre id="shiftHandoffReport" data-evidence-state="unavailable" style="white-space:pre-wrap;font-size:0.78rem;">No shift handoff exported yet.</pre>
           <div id="liveTimeline" data-evidence-state="unavailable">No correlated timeline yet.</div>
+          <div id="liveTimelineDrawer" data-evidence-state="unavailable" data-correlated-flow-count="0">No unified timeline yet.</div>
           <div id="campaignQueueStatus" data-evidence-state="unavailable">Stored campaigns have not been loaded.</div>
         </div>
 
@@ -315,9 +319,10 @@
               <h4 style="color: #06B6D4; margin-top: 0;">Block 2: Attack Timeline</h4>
               <div style="margin-top: 0.5rem; line-height: 1.6;">
                 <div><b>Correlation Window:</b> <span class="badge badge-corr">30.0s Burst Window</span> &middot; <b>Campaign Window:</b> <span class="badge badge-corr">600.0s Campaign</span></div>
-                <div><b>Stitched Flow Count:</b> 5 flows correlated across 22.4 seconds</div>
+                <div><b>Stitched Flow Count:</b> <span id="attackTimelineFlowCount">5 flows correlated across 22.4 seconds</span></div>
+                <div id="attackTimelineSource">Sample walkthrough. A live stitch replaces this text.</div>
                 <div><b>Time to Investigate (TTI):</b> 1.25s (864.0x human baseline speedup)</div>
-                <div style="margin-top: 0.35rem; font-family: var(--font-mono); font-size: 0.82rem; background: rgba(9, 13, 22, 0.6); padding: 0.5rem; border-radius: 4px;">
+                <div id="attackTimelineEvents" style="margin-top: 0.35rem; font-family: var(--font-mono); font-size: 0.82rem; background: rgba(9, 13, 22, 0.6); padding: 0.5rem; border-radius: 4px;">
                   <div>[17:15:02 UTC] Ingest: SYN flood scan on port 80 (dur=0.000011s, spkts=2)</div>
                   <div>[17:15:08 UTC] Stitch: Flow 2 acknowledged by correlation engine (RFC1918)</div>
                   <div>[17:15:15 UTC] Stage 3: RF scored 0.9450 &middot; v2 AE anomaly ranker triggered</div>

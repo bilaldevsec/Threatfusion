@@ -25,11 +25,11 @@ from datetime import UTC, datetime
 import hashlib
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import ipaddress
 import json
 import os
 from pathlib import Path
 import re
+import signal
 import sqlite3
 import sys
 import threading
@@ -76,12 +76,17 @@ CANONICAL_INDICATORS: dict[str, dict[str, Any]] = {
 
 
 def is_rfc1918_or_loopback_ip(ip_str: str) -> bool:
-    """Return True if ip_str is a valid IPv4/IPv6 private, loopback, or link-local address."""
-    try:
-        ip = ipaddress.ip_address(ip_str.strip())
-        return ip.is_private or ip.is_loopback or ip.is_link_local
-    except ValueError:
-        return False
+    """Return True for RFC1918, IPv6 ULA, loopback, and link-local addresses."""
+    from threatfusion.soar.n8n_thehive_misp_stack import (
+        is_rfc1918_or_loopback_ip as library_guard,
+    )
+
+    return library_guard(ip_str)
+
+
+def lookup_canonical_indicator(value: str) -> dict[str, Any] | None:
+    """Return a local canonical indicator. Callers must run the private-IP guard first."""
+    return CANONICAL_INDICATORS.get(value.lower())
 
 
 def verify_hmac_signature(payload_bytes: bytes, signature_hex: str, secret: str) -> bool:
@@ -154,7 +159,22 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
     _lock: threading.Lock = threading.Lock()
 
     def _soar_db_file(self) -> str | None:
-        return self.soar_db_path or os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH")
+        explicit = self.soar_db_path or os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH")
+        if explicit and str(explicit).strip():
+            return str(explicit).strip()
+        fallback = self._live_soar_path()
+        if fallback.is_file():
+            return str(fallback)
+        return None
+
+    def _contract_ledger_file(self) -> Path | None:
+        """Ledger shared by approval, verify-state, and the HMAC callback.
+
+        An explicit path wins. Otherwise the live-console fallback is used, and
+        only when that file already exists. A missing file stays fail-closed.
+        """
+        path = self._live_soar_path()
+        return path if path.is_file() else None
 
     def _idempotency_memory(self, scope: str) -> set[str]:
         if scope == "verify":
@@ -314,12 +334,12 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             inc_timings: list[dict[str, Any]] = []
             resp_timings: list[dict[str, Any]] = []
 
-            db_path = self.soar_db_path or os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH")
-            if db_path and Path(db_path).is_file():
+            ledger = self._contract_ledger_file()
+            if ledger is not None:
                 try:
                     from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
 
-                    s_repo = SoarPlaybookSqliteRepository(Path(db_path))
+                    s_repo = SoarPlaybookSqliteRepository(ledger)
                     resp_timings = s_repo.list_response_timings()
                 except Exception:
                     pass
@@ -367,11 +387,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return Path(configured)
         return self._live_db_path().with_name("threatfusion-live-rag.sqlite3")
 
-    def _incidents_db_path(self) -> Path | None:
+    def _incidents_db_path(self) -> Path:
         configured = os.environ.get("THREATFUSION_INCIDENTS_DB_PATH", "").strip()
-        if not configured:
-            return None
-        return Path(configured)
+        if configured:
+            return Path(configured)
+        return self._live_db_path().with_name("threatfusion-live-incidents.sqlite3")
 
     def _live_soar_path(self) -> Path:
         configured = self.soar_db_path or os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH", "")
@@ -387,7 +407,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
 
         if path == "/api/v1/live/ingest":
-            from threatfusion.api.live_soc_console import persist_scored_flow, score_canonical_flow
+            from threatfusion.api.live_soc_console import (
+                correlate_stored_attacks,
+                persist_scored_flow,
+                score_canonical_flow,
+            )
 
             try:
                 req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
@@ -398,8 +422,23 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if not isinstance(features, dict):
                 self._send_json(400, {"error": "features object required"})
                 return
+            observed_at = req_data.get("observed_at_utc")
+            provenance = req_data.get("provenance")
             score = score_canonical_flow(features, repo_root=REPO_ROOT)
-            stored = persist_scored_flow(self._live_db_path(), features, score)
+            stored = persist_scored_flow(
+                self._live_db_path(),
+                features,
+                score,
+                observed_at_utc=observed_at if isinstance(observed_at, str) else None,
+                provenance=provenance if isinstance(provenance, dict) else None,
+            )
+            if stored.get("reason") == "invalid_observed_at":
+                self._send_json(400, stored)
+                return
+            stored["correlation"] = correlate_stored_attacks(
+                self._live_db_path(),
+                self._incidents_db_path(),
+            )
             self._send_json(200, stored)
             return
 
@@ -445,7 +484,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
             result = correlate_stored_attacks(
                 self._live_db_path(),
-                self._live_db_path().with_name("threatfusion-live-incidents.sqlite3"),
+                self._incidents_db_path(),
             )
             status = 200 if result.get("evidence_state") == "verified" else 400
             self._send_json(status, result)
@@ -494,19 +533,48 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
-            raw_flow = req_data.get("flow_id") if isinstance(req_data, dict) else 0
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            raw_flow = req_data.get("flow_id")
+            raw_brief = req_data.get("brief")
             result = export_grounded_handoff(
                 self._live_db_path(),
                 flow_id=raw_flow if isinstance(raw_flow, int) else 0,
+                brief=raw_brief if isinstance(raw_brief, str) else None,
             )
             status = 200 if result.get("evidence_state") == "verified" else 400
             self._send_json(status, result)
             return
 
         if path == "/api/v1/live/replay":
-            from threatfusion.api.live_soc_console import replay_benchmark_attack_burst
+            from threatfusion.api.live_soc_console import (
+                correlate_stored_attacks,
+                replay_benchmark_attack_burst,
+                replay_supplied_flows,
+            )
 
-            result = replay_benchmark_attack_burst(self._live_db_path(), repo_root=REPO_ROOT)
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            supplied = req_data.get("flows") if isinstance(req_data, dict) else None
+            if isinstance(supplied, list):
+                result = replay_supplied_flows(
+                    self._live_db_path(),
+                    supplied,
+                    repo_root=REPO_ROOT,
+                )
+            else:
+                result = replay_benchmark_attack_burst(self._live_db_path(), repo_root=REPO_ROOT)
+            if result.get("reason") == "invalid_observed_at":
+                self._send_json(400, result)
+                return
+            result["correlation"] = correlate_stored_attacks(
+                self._live_db_path(),
+                self._incidents_db_path(),
+            )
             status = 200 if result.get("member_count") else 400
             self._send_json(status, result)
             return
@@ -596,20 +664,23 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             value = str(req_data.get("value", "")).strip()
             ind_type = str(req_data.get("type", "ip-dst")).strip()
 
-            # Enforce RFC1918 Private IP Guard
-            if "ip" in ind_type or is_rfc1918_or_loopback_ip(value):
-                if is_rfc1918_or_loopback_ip(value):
-                    self._send_json(
-                        422,
-                        {
-                            "error": "RFC1918 private IP lookup forbidden",
-                            "detail": f"Private/loopback IP '{value}' is suppressed from threat intelligence lookup",
-                            "private_ip_guard_triggered": True,
-                        },
-                    )
-                    return
+            # Refuse RFC1918, ULA, loopback, and link-local before any indicator lookup.
+            if is_rfc1918_or_loopback_ip(value):
+                self._send_json(
+                    422,
+                    {
+                        "error": "RFC1918 private IP lookup forbidden",
+                        "detail": (
+                            f"Private, loopback, or link-local address '{value}' is "
+                            "suppressed before threat intelligence lookup"
+                        ),
+                        "private_ip_guard_triggered": True,
+                        "external_lookup_performed": False,
+                    },
+                )
+                return
 
-            indicator_info = CANONICAL_INDICATORS.get(value.lower())
+            indicator_info = lookup_canonical_indicator(value)
             if indicator_info and indicator_info.get("matched"):
                 attr = {
                     "id": f"attr_{hashlib.sha256(value.encode('utf-8')).hexdigest()[:8]}",
@@ -722,8 +793,8 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            db_path = self.soar_db_path
-            if db_path is None or not Path(db_path).is_file():
+            ledger = self._contract_ledger_file()
+            if ledger is None:
                 self._send_json(
                     403,
                     {
@@ -738,7 +809,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             try:
                 from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
 
-                repo = SoarPlaybookSqliteRepository(Path(db_path))
+                repo = SoarPlaybookSqliteRepository(ledger)
                 chain_res = repo.verify_audit_chain_integrity()
                 chain_dict = (
                     chain_res
@@ -929,9 +1000,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            # (b) Resolve db_path = self.soar_db_path and verify regular file on disk
-            db_path = self.soar_db_path
-            if db_path is None or not Path(db_path).is_file():
+            # (b) Resolve the same ledger approval writes, and require that file.
+            ledger = self._contract_ledger_file()
+            if ledger is None:
                 self._send_json(
                     403,
                     {
@@ -945,7 +1016,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             try:
                 from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
 
-                repo = SoarPlaybookSqliteRepository(Path(db_path))
+                repo = SoarPlaybookSqliteRepository(ledger)
                 chain_res = repo.verify_audit_chain_integrity()
                 chain_dict = (
                     chain_res
@@ -1013,7 +1084,6 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 if ("t_approval_queued" in payload and payload["t_approval_queued"] is not None)
                 else None
             )
-            t_resp = 0.0
             try:
                 t_resp = repo.record_callback_verification(
                     playbook_id=playbook_id,
@@ -1021,7 +1091,14 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                     t_approval_queued=t_app,
                 )
             except Exception:
-                pass
+                self._send_json(
+                    403,
+                    {
+                        "error": "callback_timing_not_recorded",
+                        "callback_recorded": False,
+                    },
+                )
+                return
 
             with self._lock:
                 self._idempotency_commit("callback", idem_key)
@@ -1086,8 +1163,26 @@ def run_server(
     effective_db = soar_db_path or os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH")
     if effective_db:
         MispAndCallbackContractHandler.soar_db_path = effective_db
+    # Load the console package on this thread. The first request threads otherwise
+    # deadlock inside threatfusion.api while the package init is still running.
+    import threatfusion.api.analyst_dashboard  # noqa: F401
+    import threatfusion.api.live_soc_console  # noqa: F401
+
     server_address = (bind_addr, port)
-    httpd = ThreadingHTTPServer(server_address, MispAndCallbackContractHandler)
+    try:
+        httpd = ThreadingHTTPServer(server_address, MispAndCallbackContractHandler)
+    except OSError as exc:
+        detail = exc.strerror or exc.__class__.__name__
+        print(
+            f"[ThreatFusion] Cannot bind {bind_addr}:{port}: {detail}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+
+    def _stop(_signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _stop)
     print(f"[ThreatFusion] SOC Contract Server listening on {bind_addr}:{port}")
     try:
         httpd.serve_forever()

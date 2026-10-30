@@ -1934,6 +1934,21 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 - `scripts/run_live_product.sh` starts the page and the contract endpoints as one process on `127.0.0.1`. The HMAC and MISP values are lab defaults.
 - The root README states the Section 8 recall comparison and leaves TF-008 through TF-011 open.
 
+### Milestone #49: Launcher preflight, shared ledger path, and shutdown (2026-10-27)
+
+- The same script now refuses a busy port, a short lab secret, a missing interpreter, and a missing console file with `error:` on stderr. It waits until `GET /` and `GET /healthz` both return HTTP 200, and it stops the child on Ctrl-C or `SIGTERM`. `--dry-run` does not bind. `--smoke` checks both responses and that the port is free afterward.
+- When `THREATFUSION_SOAR_LEDGER_DB_PATH` is unset, the launcher sets it to `threatfusion-live-soar.sqlite3` beside the console database. `run_server` copies that path onto the contract handler, so verify-state and the callback see the file approval writes. The contract server also closes the socket on `SIGTERM` and prints a bind failure instead of a traceback.
+- The root README keeps the Section 8 arithmetic and names open PRs #2, #3, and #4 as unmerged follow-up. TF-008 through TF-011 stay open.
+- On this `/workspace` checkout, `git diff --check` passed. Pytest collected 1,531 tests: 1,504 passed, 20 failed, 7 skipped. The failures are missing UNSW registration files, missing `certutil`, and the canonical-path checks. Boundary preflight is GO for B0–B6 with `--active /workspace`. The repository-truth audit is 6/7; check 1 is the `/workspace` path mismatch, and checks 2–7 pass.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
+### Milestone #49: Live dual-window stitch and MISP private-IP refusal (2026-10-27)
+
+- `POST /api/v1/live/ingest` and `POST /api/v1/live/replay` call `IncidentCorrelationEngine` on the stored Attack rows. The burst window is `30.0` seconds and the campaign window is `600.0` seconds. A gap equal to either boundary stays inside that window. A same-5-tuple gap of `30.001` seconds is not a burst; it remains inside the campaign window. A host-pair gap of `600.001` seconds stays two singletons. Rows without a verified entity key, including the recorded UNSW study replay, stay singletons. Benign rows are not members. A later stitch drops the smaller incident row it replaced.
+- The console drawer shows `correlated_flow_count` and the unified timeline events from that response. Each event keeps that flow's observed time.
+- `POST /attributes/restSearch` returns HTTP 422 for RFC1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), IPv6 ULA (`fc00::/7`), loopback (`127.0.0.0/8`, `::1`), and link-local (`169.254.0.0/16`, `fe80::/10`) before `lookup_canonical_indicator`. An IPv4-mapped address is judged by the embedded IPv4 address. Documentation networks `198.51.100.0/24` and `203.0.113.0/24` are not RFC1918. The earlier `ipaddress.is_private` check refused those networks, so the route's own canonical indicators `198.51.100.27` and `203.0.113.195` never matched. They now return the local attribute and still do not open an outbound MISP socket. `production_fusion_enabled` stays false.
+
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 ### Milestone #48: Full-suite audit and corrupt-database classification (2026-10-27)
@@ -1943,11 +1958,35 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Milestone #49: Launcher ledger for the signed callback loop (2026-10-27)
+
+- `POST /api/v1/live/soar/dispatch` was already able to call verify-state, write a 4-block TheHive case, and post the HMAC callback when `soar_db_path` was set. Before this slice, approval wrote the live fallback ledger and verify-state returned HTTP 403 because it ignored that file. The launcher now exports `THREATFUSION_SOAR_LEDGER_DB_PATH` to that same file, and the server still falls back to it when the variable is unset and the file exists.
+- Verify-state, the callback, idempotency keys, and the operational-velocity ledger read now use the same file as approval: `THREATFUSION_SOAR_LEDGER_DB_PATH` or `soar_db_path` when set, otherwise `threatfusion-live-soar.sqlite3` beside the console database, and only when that file exists. A missing ledger still fails closed. A callback whose timing row cannot be written returns HTTP 403 `callback_timing_not_recorded` instead of a recorded callback with `t_response` 0.
+- MTTR remains `round(max(0, t_callback_verified - t_approval_queued), 6)` from the ledger timestamps. The drawer shows that stored MTTR, the case id, and the 64-hex HMAC prefix after a live callback. A live flow with no retrieved technique shows `unavailable` in block 3. Host containment stays unauthorized.
+- `test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr` leaves the explicit ledger unset, refuses an unapproved flow, then approves and dispatches through the HTTP routes. It checks the 4-block outbox text, recomputes the HMAC, and checks the ledger MTTR formula.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
+### Milestone #50: Integrated callback ledger, live windows, triage history, and launcher shutdown (2026-10-30)
+
+- The open callback, correlation, triage, and launcher branches are on this branch together. Ingest and replay call the correlation engine. The burst boundary is 30.0 seconds and the campaign boundary is 600.0 seconds. The handoff reads `triage_events`. The launcher waits for `GET /` and `GET /healthz`, then stops the child on `SIGTERM`.
+- The contract server imports the console package before it accepts connections, so the first concurrent requests do not deadlock inside `threatfusion.api`.
+- A browser session on `http://127.0.0.1:8766` replayed the five recorded vectors (four Benign, one Attack at 54.3%), approved `soar:a11fab108999`, and recorded HMAC prefix `7f6698f18c054126` with case `case_live_flow_3_a46929`. Private address `10.0.0.4` was refused. Acknowledge stored triage state `acknowledged`. The handoff for flow 3 was grounded and listed that triage event. Host containment was not executed.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
 ### Milestone #43: Stored campaign queue and hash-chained local approval (2026-10-27)
 
 - `GET /api/v1/live/campaigns` reads stored live flows and, when `THREATFUSION_INCIDENTS_DB_PATH` points at an existing database, the incident rows already in that file. A missing database is an empty list.
 - `POST /api/v1/live/replay` scores the five `recorded_unsw_nb15` study-fixture vectors with the frozen Random Forest and stores them as one campaign. The printed study probability is not copied. The autoencoder does not decide.
 - `POST /api/v1/live/soar/approve` records `pending_approval` then `approved` on `SoarPlaybookSqliteRepository`, links `prev_entry_sha256` to `entry_sha256`, and returns that receipt only when `verify_audit_chain_integrity()` passes. The operator state is `approved_local`. `execution_authorized` and `containment_executed` stay false. A second approval returns the same receipt.
 - The campaign queue renders those stored rows. The browser no longer invents a SHA-256, a TheHive case, or an n8n receipt. Sample incidents remain only when the campaign request cannot be reached.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
+### Milestone #49: Triage history in the grounded shift handoff (2026-10-27)
+
+- Acknowledge, escalate, and dismiss each append a `triage_events` row and store the latest state on the flow. The campaign card and the drawer keep that state after the queue reloads. An unknown action and a blank actor are refused.
+- `POST /api/v1/live/handoff` builds the four blocks from the stored flow and passes the triage rows into `build_analyst_shift_handoff()`. Block 3 stays `unavailable` because no technique is stored. The default brief and any supplied note are checked with `verify_explanation_groundedness()`. A note that names an address outside the stored entity ids is refused and is not copied into the markdown. The page shows and downloads the markdown only after that check passes. `production_fusion_enabled` stays false. Containment stays unauthorized.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.

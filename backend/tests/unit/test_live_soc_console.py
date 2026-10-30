@@ -349,9 +349,13 @@ def test_verified_burst_stitches_and_private_ip_is_refused(tmp_path: Path) -> No
         assert stored["evidence_state"] == "verified"
     report = correlate_stored_attacks(live_db, tmp_path / "incidents.sqlite3")
     assert report["production_fusion_enabled"] is False
+    assert report["burst_window_seconds"] == 30.0
+    assert report["campaign_window_seconds"] == 600.0
     assert report["burst_incident_count"] == 1
+    assert report["correlated_flow_count"] == 2
     assert report["max_constituent_count"] == 2
     assert report["timeline"]["event_count"] == 2
+    assert {event["window_type"] for event in report["timeline"]["events"]} == {"burst_30s"}
     blocked_status, blocked = private_ip_guard_response("10.0.0.4")
     assert blocked_status == 422
     assert blocked["private_ip_guard_triggered"] is True
@@ -374,20 +378,86 @@ def test_triage_actions_persist_and_handoff_stays_grounded(tmp_path: Path) -> No
             _features(), repo_root=REPO_ROOT, model=_Width14Model(), supply_verified=True
         ),
     )
+    provenance = store_flow_provenance(
+        live_db,
+        stored["flow_id"],
+        entity_namespace_id="lab:edge-01",
+        src_entity_id="198.51.100.27",
+        dst_entity_id="10.0.0.5",
+        protocol="tcp",
+        service_or_port="80",
+        clock_synchronized=True,
+    )
+    assert provenance["evidence_state"] == "verified"
     refused = record_triage_action(
         live_db, flow_id=stored["flow_id"], action="contain", actor_id="analyst_a"
     )
     assert refused["evidence_state"] == "unavailable"
-    saved = record_triage_action(
-        live_db, flow_id=stored["flow_id"], action="escalate", actor_id="analyst_a"
+    blank_actor = record_triage_action(
+        live_db, flow_id=stored["flow_id"], action="acknowledge", actor_id="  "
     )
-    assert saved["triage_state"] == "escalated"
+    assert blank_actor["evidence_state"] == "unavailable"
+    expected = (
+        ("acknowledge", "acknowledged"),
+        ("escalate", "escalated"),
+        ("dismiss", "dismissed"),
+    )
+    for action, state in expected:
+        saved = record_triage_action(
+            live_db, flow_id=stored["flow_id"], action=action, actor_id="analyst_a"
+        )
+        assert saved["triage_state"] == state
     listed = list_live_flows(live_db)
-    assert listed[0]["triage_state"] == "escalated"
+    assert listed[0]["triage_state"] == "dismissed"
+    with sqlite3.connect(live_db) as conn:
+        rows = conn.execute(
+            "SELECT action, triage_state, actor_id FROM triage_events ORDER BY event_id"
+        ).fetchall()
+    assert rows == [
+        ("acknowledge", "acknowledged", "analyst_a"),
+        ("escalate", "escalated", "analyst_a"),
+        ("dismiss", "dismissed", "analyst_a"),
+    ]
     exported = export_grounded_handoff(live_db, flow_id=stored["flow_id"])
     assert exported["grounded"] is True
+    assert exported["production_fusion_enabled"] is False
     assert exported["report"]["block_3_technique"] == "unavailable"
+    assert exported["report"]["block_2_triage_count"] == 3
+    assert exported["report"]["block_2_latest_triage_state"] == "dismissed"
+    assert exported["report"]["stored_addresses"] == ["198.51.100.27", "10.0.0.5"]
     assert exported["containment_executed"] is False
+    transitions = [
+        event
+        for event in exported["handoff"]["timeline"]["events"]
+        if event["kind"] == "analyst_transition"
+    ]
+    assert [event["to_state"] for event in transitions] == [
+        "acknowledged",
+        "escalated",
+        "dismissed",
+    ]
+    assert "Technique: unavailable" in exported["markdown"]
+    assert "Containment was not executed." in exported["markdown"]
+    blocked = export_grounded_handoff(
+        live_db,
+        flow_id=stored["flow_id"],
+        brief="host 203.0.113.99 was isolated",
+    )
+    assert blocked["evidence_state"] == "unavailable"
+    assert blocked["grounded"] is False
+    assert blocked["reason"] == "explanation_not_grounded"
+    assert "markdown" not in blocked
+    assert "203.0.113.99" not in str(blocked)
+    cited = export_grounded_handoff(
+        live_db,
+        flow_id=stored["flow_id"],
+        brief="Stored source 198.51.100.27 stays on this flow.",
+    )
+    assert cited["grounded"] is True
+    assert "198.51.100.27" in cited["brief"]
+    missing = export_grounded_handoff(live_db, flow_id=999)
+    assert missing["grounded"] is False
+    assert missing["reason"] == "flow_not_stored"
     bundle = AdvisoryEvidenceBundle(
         candidate_id="live_flow:1",
         record_id="live_flow:1",
@@ -399,11 +469,303 @@ def test_triage_actions_persist_and_handoff_stays_grounded(tmp_path: Path) -> No
     assert verify_explanation_groundedness("host 203.0.113.99 was isolated", bundle) is False
 
 
+def test_triage_and_handoff_routes_round_trip(tmp_path: Path, monkeypatch) -> None:
+    import importlib.util
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    spec = importlib.util.spec_from_file_location(
+        "contract_server_triage_under_test",
+        REPO_ROOT / "scripts" / "run_misp_and_callback_contract_server.py",
+    )
+    assert spec is not None and spec.loader is not None
+    server_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(server_module)
+    handler = server_module.MispAndCallbackContractHandler
+
+    live_db = tmp_path / "live.sqlite3"
+    monkeypatch.setenv("THREATFUSION_LIVE_CONSOLE_DB", str(live_db))
+    stored = persist_scored_flow(
+        live_db,
+        _features(),
+        score_canonical_flow(
+            _features(), repo_root=REPO_ROOT, model=_Width14Model(), supply_verified=True
+        ),
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+
+        def post(path: str, payload: dict[str, object]) -> tuple[int, dict[str, object]]:
+            body = json.dumps(payload).encode("utf-8")
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}{path}",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request) as response:
+                    return response.status, json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+
+        for action, state in (
+            ("acknowledge", "acknowledged"),
+            ("escalate", "escalated"),
+            ("dismiss", "dismissed"),
+        ):
+            status, body = post(
+                "/api/v1/live/triage",
+                {"flow_id": stored["flow_id"], "action": action, "actor_id": "analyst_a"},
+            )
+            assert status == 200
+            assert body["triage_state"] == state
+            assert body["evidence_state"] == "verified"
+        refused_status, refused_body = post(
+            "/api/v1/live/triage",
+            {"flow_id": stored["flow_id"], "action": "contain", "actor_id": "analyst_a"},
+        )
+        assert refused_status == 400
+        assert refused_body["evidence_state"] == "unavailable"
+        assert list_live_flows(live_db)[0]["triage_state"] == "dismissed"
+        status, exported = post("/api/v1/live/handoff", {"flow_id": stored["flow_id"]})
+        assert status == 200
+        assert exported["grounded"] is True
+        assert exported["production_fusion_enabled"] is False
+        assert exported["containment_executed"] is False
+        report = exported["report"]
+        assert isinstance(report, dict)
+        assert report["block_3_technique"] == "unavailable"
+        assert report["block_2_triage_count"] == 3
+        assert report["block_2_latest_triage_state"] == "dismissed"
+        assert "Technique: unavailable" in str(exported["markdown"])
+        blocked_status, blocked = post(
+            "/api/v1/live/handoff",
+            {"flow_id": stored["flow_id"], "brief": "host 203.0.113.99 was isolated"},
+        )
+        assert blocked_status == 400
+        assert blocked["grounded"] is False
+        assert blocked["reason"] == "explanation_not_grounded"
+        assert "markdown" not in blocked
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_triage_controls_are_wired_in_the_page() -> None:
+    html = (REPO_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    script = (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")
+    assert 'id="btnAcknowledge"' in html
+    assert 'id="btnEscalate"' in html
+    assert 'id="btnDismiss"' in html
+    assert 'id="btnExportHandoff"' in html
+    assert 'id="shiftHandoffNote"' in html
+    assert 'id="shiftHandoffReport"' in html
+    assert "/api/v1/live/triage" in script
+    assert "/api/v1/live/handoff" in script
+    assert "triageState" in script
+    assert "shiftHandoffReport" in script
+    assert "production_fusion_enabled = True" not in script
+
+
 def test_live_product_launcher_starts_one_process() -> None:
     script = (REPO_ROOT / "scripts" / "run_live_product.sh").read_text(encoding="utf-8")
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert script.startswith("#!/usr/bin/env bash\n")
     assert "run_misp_and_callback_contract_server.py" in script
+    assert "--dry-run" in script
+    assert "--smoke" in script
+    assert "THREATFUSION_SOAR_LEDGER_DB_PATH" in script
+    assert "already in use" in script
     assert "production_fusion_enabled = True" not in script
-    assert "+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)" in readme
+    assert (
+        "+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)"
+        in readme
+    )
     assert "TF-008, TF-009, TF-010, and TF-011 remain open." in readme
+
+
+def _post_json(url: str, payload: dict) -> tuple[int, dict]:
+    import json
+    import urllib.error
+    import urllib.request
+
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5.0) as response:
+            parsed = json.loads(response.read().decode("utf-8"))
+            return response.status, parsed if isinstance(parsed, dict) else {}
+    except urllib.error.HTTPError as exc:
+        parsed = json.loads(exc.read().decode("utf-8"))
+        return exc.code, parsed if isinstance(parsed, dict) else {}
+
+
+def test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Drive the launcher path: no explicit ledger, real verify-state, case, and HMAC."""
+    import hashlib
+    import hmac
+    import json
+    import threading
+    import time
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
+    from scripts.run_misp_and_callback_contract_server import MispAndCallbackContractHandler
+
+    live_db = tmp_path / "live.sqlite3"
+    monkeypatch.setenv("THREATFUSION_LIVE_CONSOLE_DB", str(live_db))
+    monkeypatch.delenv("THREATFUSION_SOAR_LEDGER_DB_PATH", raising=False)
+    monkeypatch.setenv("THREATFUSION_SOAR_HMAC_SECRET", "lab-hmac-secret-01")
+    previous_ledger = MispAndCallbackContractHandler.soar_db_path
+    MispAndCallbackContractHandler.soar_db_path = None
+    MispAndCallbackContractHandler.seen_verify_idempotency_keys.clear()
+    MispAndCallbackContractHandler.seen_callback_idempotency_keys.clear()
+    scored = score_canonical_flow(
+        _features(), repo_root=REPO_ROOT, model=_Width14Model(), supply_verified=True
+    )
+    stored = persist_scored_flow(live_db, _features(), scored)
+    other = persist_scored_flow(live_db, _features(), scored)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), MispAndCallbackContractHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        missing_status, missing = _post_json(
+            f"{base}/api/v1/live/soar/dispatch", {"flow_id": stored["flow_id"]}
+        )
+        assert missing_status == 400
+        assert missing["reason"] == "flow_not_stored"
+        assert missing["containment_executed"] is False
+        assert missing["production_fusion_enabled"] is False
+
+        approved_status, approved = _post_json(
+            f"{base}/api/v1/live/soar/approve",
+            {
+                "flow_id": stored["flow_id"],
+                "actor_id": "analyst_a",
+                "reason": "Analyst recorded local approval. Containment is not executed.",
+            },
+        )
+        assert approved_status == 200
+        assert approved["ledger_state"] == "approved"
+        assert approved["execution_authorized"] is False
+
+        unapproved_status, unapproved = _post_json(
+            f"{base}/api/v1/live/soar/dispatch", {"flow_id": other["flow_id"]}
+        )
+        assert unapproved_status == 400
+        assert unapproved["reason"] == "playbook_not_approved"
+        assert unapproved["containment_executed"] is False
+        time.sleep(0.05)
+
+        status, dispatched = _post_json(
+            f"{base}/api/v1/live/soar/dispatch", {"flow_id": stored["flow_id"]}
+        )
+        assert status == 200
+        assert dispatched["evidence_state"] == "verified"
+        assert dispatched["verify_state"] is True
+        assert dispatched["callback_recorded"] is True
+        assert dispatched["four_block_recorded"] is True
+        assert dispatched["execution_authorized"] is False
+        assert dispatched["containment_executed"] is False
+        assert dispatched["production_fusion_enabled"] is False
+        assert dispatched["thehive_status"] == "queued_offline"
+        assert str(dispatched["thehive_case_id"]).startswith("case_")
+        signature = dispatched["signature_sha256"]
+        assert isinstance(signature, str) and len(signature) == 64
+        assert signature == signature.lower()
+
+        soar_db = live_db.with_name("threatfusion-live-soar.sqlite3")
+        record = SoarPlaybookSqliteRepository(soar_db).get_record(dispatched["playbook_id"])
+        assert record is not None
+        assert record.state == "approved"
+        assert record.t_approval_queued is not None
+        assert record.t_callback_verified is not None
+        assert record.t_callback_verified >= record.t_approval_queued
+        expected_mttr = round(
+            max(0.0, float(record.t_callback_verified) - float(record.t_approval_queued)),
+            6,
+        )
+        assert record.t_response == expected_mttr
+        assert dispatched["mttr_seconds"] == expected_mttr
+        assert expected_mttr > 0.0
+
+        signed_body = json.dumps(
+            {
+                "candidate_id": dispatched["candidate_id"],
+                "case_id": dispatched["thehive_case_id"],
+                "playbook_id": dispatched["playbook_id"],
+                "t_approval_queued": dispatched["t_approval_queued"],
+                "t_callback_verified": dispatched["t_callback_verified"],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        assert hmac.new(b"lab-hmac-secret-01", signed_body, hashlib.sha256).hexdigest() == signature
+
+        with sqlite3.connect(soar_db) as conn:
+            scopes = {row[0] for row in conn.execute("SELECT scope FROM contract_idempotency_keys")}
+        assert scopes == {"verify", "callback"}
+
+        outbox = live_db.with_name("threatfusion-live-thehive.sqlite3")
+        with sqlite3.connect(outbox) as conn:
+            description, case_status = conn.execute(
+                "SELECT description, status FROM thehive_cases WHERE case_id = ?",
+                (dispatched["thehive_case_id"],),
+            ).fetchone()
+        assert case_status == "queued_offline"
+        for label in (
+            "Block 1 (Executive Summary):",
+            "Block 2 (Attack Timeline):",
+            "Block 3 (MITRE Mapping):",
+            "Block 4 (Cryptographic SOAR Status):",
+        ):
+            assert label in description
+
+        with urllib.request.urlopen(f"{base}/api/v1/live/campaigns", timeout=5.0) as response:
+            campaigns = json.loads(response.read().decode("utf-8"))
+        flows = [
+            flow
+            for campaign in campaigns["campaigns"]
+            for flow in campaign["flows"]
+            if flow["flow_id"] == stored["flow_id"]
+        ]
+        assert len(flows) == 1
+        flow = flows[0]
+        assert flow["mttr_seconds"] == expected_mttr
+        assert flow["callback_signature"] == signature
+        assert flow["thehive_case_id"] == dispatched["thehive_case_id"]
+
+        again_status, again = _post_json(
+            f"{base}/api/v1/live/soar/dispatch", {"flow_id": stored["flow_id"]}
+        )
+        assert again_status == 200
+        assert again["reason"] == "already_recorded"
+        assert again["signature_sha256"] == signature
+        assert again["mttr_seconds"] == expected_mttr
+    finally:
+        MispAndCallbackContractHandler.soar_db_path = previous_ledger
+        server.shutdown()
+        server.server_close()
+
+    dashboard = (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")
+    assert "signedLocalCallback" in dashboard
+    assert "Callback MTTR" in dashboard
+    assert "flow.mttr_seconds" in dashboard
+    assert "Host containment was not executed." in dashboard

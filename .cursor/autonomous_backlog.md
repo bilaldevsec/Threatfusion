@@ -4,7 +4,7 @@
 - [x] TASK-1 to TASK-7: Live console, SQLite queue, SOAR hash chain, correlation, and 1,527 local tests.
 
 ## Phase 2 Active Queue (Non-Stop)
-- [ ] TASK-8: Rebase and integrate PRs 2–5 fixes (unified SOAR ledger, live 30s/600s correlation, persistent SQLite triage).
+- [x] TASK-8: Rebase and integrate PRs 2–5 fixes (unified SOAR ledger, live 30s/600s correlation, persistent SQLite triage).
 - [ ] TASK-9: Unified Single-Screen SOC Console (no split between sample and live page at http://127.0.0.1:8766/).
 - [ ] TASK-10: 1-Click Multi-Scenario Replay Suite (Web Exploit, SSH Brute, Internal Recon, Benign False Alarm).
 - [ ] TASK-11: Live Constitutional Health & Cryptographic Proof Drawer (runs live SHA-256 and Truth Gates check).

@@ -914,6 +914,10 @@ The stored campaign queue, recorded UNSW-NB15 study-fixture replay, and hash-cha
 
 The verify-state check, 4-block case record, and HMAC callback do not execute host containment and do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
 
+### Milestone #49 shared launcher ledger, 2026-10-27
+
+The default launcher now points verify-state and the HMAC callback at the same SOAR ledger approval writes. A recorded callback stores MTTR from the ledger timestamps and does not execute host containment. This does not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
+
 ### Milestone #45 dual-window stitch, 2026-10-27
 
 Verified-key burst stitching and the private-IP refusal do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
@@ -929,3 +933,11 @@ The one-command launcher and root README do not satisfy the closure tests for TF
 ### Milestone #48 full-suite audit, 2026-10-27
 
 A 1,527-test pytest run and the corrupt-database classification fix do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
+
+### Milestone #49 triage history in the grounded shift handoff, 2026-10-27
+
+Stored triage actions, the shift-handoff timeline, and the grounded-note refusal do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. Containment stays unauthorized. All four issues remain **open**.
+
+### Milestone #50 integrated callback, windows, triage, and launcher, 2026-10-30
+
+The shared ledger, automatic 30.0s/600.0s stitch, triage history, and launcher shutdown do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. Host containment stays unauthorized. All four issues remain **open**.

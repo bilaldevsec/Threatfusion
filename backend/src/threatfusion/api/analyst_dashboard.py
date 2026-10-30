@@ -105,7 +105,9 @@ def _is_verified_receipt_dict(receipt: Any) -> bool:
     ).strip()
     if not sig or not re.fullmatch(r"[0-9a-fA-F]{64}", sig):
         return False
-    eid = str(receipt.get("execution_id", receipt.get("receipt_id", receipt.get("case_id", "")))).strip()
+    eid = str(
+        receipt.get("execution_id", receipt.get("receipt_id", receipt.get("case_id", "")))
+    ).strip()
     if eid and not (
         eid.startswith("exec_")
         or eid.startswith("rcpt_")
@@ -206,15 +208,20 @@ def build_unified_incident_timeline(
         if relationship_key and member_key and str(member_key) != relationship_key:
             continue
         observed_at = str(member.get("observed_at") or member.get("timestamp_utc") or "")
-        events.append(
-            {
-                "kind": "flow_member",
-                "observed_at": observed_at,
-                "matched_relationship_key": None if member_key is None else str(member_key),
-                "alert_candidate_id": member.get("alert_candidate_id"),
-                "summary": "Correlated flow member",
-            }
-        )
+        event = {
+            "kind": "flow_member",
+            "observed_at": observed_at,
+            "matched_relationship_key": None if member_key is None else str(member_key),
+            "alert_candidate_id": member.get("alert_candidate_id"),
+            "summary": str(member.get("summary") or "Correlated flow member"),
+        }
+        if member.get("window_type"):
+            event["window_type"] = str(member["window_type"])
+        if member.get("correlation_mode"):
+            event["correlation_mode"] = str(member["correlation_mode"])
+        if member.get("delta_seconds") is not None:
+            event["delta_seconds"] = member.get("delta_seconds")
+        events.append(event)
 
     for transition in analyst_transitions or ():
         observed_at = str(
@@ -379,41 +386,88 @@ def build_five_tab_investigation_inspector(
         or (item.get("campaign_id") if isinstance(item, dict) else None)
         or "camp_m37_001"
     )
-    src_ip = str(getattr(item, "source_ip", None) or (item.get("source_ip") if isinstance(item, dict) else "10.0.0.4"))
-    dst_ip = str(getattr(item, "dest_ip", None) or (item.get("dest_ip") if isinstance(item, dict) else "10.0.0.5"))
-    tech_id = str(getattr(item, "technique_id", None) or (item.get("technique_id") if isinstance(item, dict) else "T1071.001")).strip()
-    tech_name = str(getattr(item, "technique_name", None) or (item.get("technique_name") if isinstance(item, dict) else "Application Layer Protocol: Web Protocols"))
-    tactic = str(getattr(item, "tactic", None) or (item.get("tactic") if isinstance(item, dict) else "Command and Control"))
+    src_ip = str(
+        getattr(item, "source_ip", None)
+        or (item.get("source_ip") if isinstance(item, dict) else "10.0.0.4")
+    )
+    dst_ip = str(
+        getattr(item, "dest_ip", None)
+        or (item.get("dest_ip") if isinstance(item, dict) else "10.0.0.5")
+    )
+    tech_id = str(
+        getattr(item, "technique_id", None)
+        or (item.get("technique_id") if isinstance(item, dict) else "T1071.001")
+    ).strip()
+    tech_name = str(
+        getattr(item, "technique_name", None)
+        or (
+            item.get("technique_name")
+            if isinstance(item, dict)
+            else "Application Layer Protocol: Web Protocols"
+        )
+    )
+    tactic = str(
+        getattr(item, "tactic", None)
+        or (item.get("tactic") if isinstance(item, dict) else "Command and Control")
+    )
 
-    rf_conf_raw = getattr(item, "rf_confidence_pct", None) or (item.get("rf_confidence_pct") if isinstance(item, dict) else None)
+    rf_conf_raw = getattr(item, "rf_confidence_pct", None) or (
+        item.get("rf_confidence_pct") if isinstance(item, dict) else None
+    )
     if rf_conf_raw is None and hasattr(item, "uncalibrated_model_score"):
         rf_conf_raw = getattr(item, "uncalibrated_model_score") * 100.0
     rf_conf = float(rf_conf_raw if rf_conf_raw is not None else 95.27)
 
-    ae_score_raw = getattr(item, "autoencoder_score", None) or (item.get("autoencoder_score") if isinstance(item, dict) else 0.1420)
+    ae_score_raw = getattr(item, "autoencoder_score", None) or (
+        item.get("autoencoder_score") if isinstance(item, dict) else 0.1420
+    )
     ae_score = float(ae_score_raw if ae_score_raw is not None else 0.1420)
 
-    flow_count = int(getattr(item, "flow_count", 5) or (item.get("flow_count") if isinstance(item, dict) else 5) or 5)
-    window_type = str(getattr(item, "window_type", "30.0s_burst") or (item.get("window_type") if isinstance(item, dict) else "30.0s_burst") or "30.0s_burst")
-    t_inv = float(getattr(item, "t_investigation", 1.25) or (item.get("t_investigation") if isinstance(item, dict) else 1.25) or 1.25)
+    flow_count = int(
+        getattr(item, "flow_count", 5)
+        or (item.get("flow_count") if isinstance(item, dict) else 5)
+        or 5
+    )
+    window_type = str(
+        getattr(item, "window_type", "30.0s_burst")
+        or (item.get("window_type") if isinstance(item, dict) else "30.0s_burst")
+        or "30.0s_burst"
+    )
+    t_inv = float(
+        getattr(item, "t_investigation", 1.25)
+        or (item.get("t_investigation") if isinstance(item, dict) else 1.25)
+        or 1.25
+    )
 
-    soar_receipt = getattr(item, "soar_receipt", None) or (item.get("soar_receipt") if isinstance(item, dict) else None)
+    soar_receipt = getattr(item, "soar_receipt", None) or (
+        item.get("soar_receipt") if isinstance(item, dict) else None
+    )
     if soar_receipt is None and hasattr(item, "n8n_playbook_receipt"):
         soar_receipt = getattr(item, "n8n_playbook_receipt")
 
-    audit_chain = getattr(item, "audit_chain", None) or (item.get("audit_chain") if isinstance(item, dict) else None)
+    audit_chain = getattr(item, "audit_chain", None) or (
+        item.get("audit_chain") if isinstance(item, dict) else None
+    )
     if audit_chain is None and hasattr(item, "soar_audit_chain_entries"):
         audit_chain = getattr(item, "soar_audit_chain_entries")
 
-    explanation_val = getattr(item, "explanation", None) or (item.get("explanation") if isinstance(item, dict) else None)
+    explanation_val = getattr(item, "explanation", None) or (
+        item.get("explanation") if isinstance(item, dict) else None
+    )
     thehive_case_id = (
         getattr(item, "thehive_case_id", None)
         or (item.get("thehive_case_id") if isinstance(item, dict) else None)
-        or (getattr(getattr(item, "thehive_case_record", None), "case_id", None) if hasattr(item, "thehive_case_record") else "case_azure_victim_001842")
+        or (
+            getattr(getattr(item, "thehive_case_record", None), "case_id", None)
+            if hasattr(item, "thehive_case_record")
+            else "case_azure_victim_001842"
+        )
         or "case_azure_victim_001842"
     )
 
-    feat_signals = getattr(item, "features", None) or (item.get("features") if isinstance(item, dict) else None)
+    feat_signals = getattr(item, "features", None) or (
+        item.get("features") if isinstance(item, dict) else None
+    )
     if not feat_signals or not isinstance(feat_signals, dict):
         feat_signals = {
             "dur": 0.000011,
@@ -439,9 +493,12 @@ def build_five_tab_investigation_inspector(
         if isinstance(explanation_val, str):
             exp_summary = explanation_val
         elif isinstance(explanation_val, dict):
-            exp_summary = str(explanation_val.get("summary", explanation_val.get("explanation", "")))
+            exp_summary = str(
+                explanation_val.get("summary", explanation_val.get("explanation", ""))
+            )
 
         from threatfusion.enrichment.threat_intel import ThreatIntelEnrichmentResult
+
         enrichment = ThreatIntelEnrichmentResult(
             status="internal_lab_entity_annotated",
             provenance_verified=True,
@@ -456,7 +513,9 @@ def build_five_tab_investigation_inspector(
         bundle = AdvisoryEvidenceBundle(
             candidate_id=cid,
             record_id=str(getattr(item, "source_event_id", cid)),
-            rf_model_version=str(getattr(item, "model_version", "full-network-random-forest-6d69c72-v1")),
+            rf_model_version=str(
+                getattr(item, "model_version", "full-network-random-forest-6d69c72-v1")
+            ),
             rf_attack_probability=rf_conf / 100.0 if rf_conf > 1.0 else rf_conf,
             rf_threshold=0.50,
             top_feature_signals=feat_signals,
@@ -499,7 +558,9 @@ def build_five_tab_investigation_inspector(
 
     tab_1 = {
         "title": "Executive Summary & Asset Exposure",
-        "grounded_synthesis": exp_summary if grounded_ok else "Ungrounded synthesis rejected by safety guard.",
+        "grounded_synthesis": (
+            exp_summary if grounded_ok else "Ungrounded synthesis rejected by safety guard."
+        ),
         "affected_assets": (src_ip, dst_ip) if grounded_ok else (),
         "asset_exposure": exposure_badge,
         "business_impact": f"Target host {dst_ip} is internal asset; containment action awaiting analyst decision.",
@@ -578,12 +639,22 @@ def build_five_tab_investigation_inspector(
         or (item.get("soar_audit_chain_head_sha256") if isinstance(item, dict) else None)
         or (
             audit_chain[-1].get("entry_hash")
-            if (audit_chain and isinstance(audit_chain, (list, tuple)) and len(audit_chain) > 0 and isinstance(audit_chain[-1], dict))
+            if (
+                audit_chain
+                and isinstance(audit_chain, (list, tuple))
+                and len(audit_chain) > 0
+                and isinstance(audit_chain[-1], dict)
+            )
             else None
         )
         or (
             audit_chain[-1].get("entry_sha256")
-            if (audit_chain and isinstance(audit_chain, (list, tuple)) and len(audit_chain) > 0 and isinstance(audit_chain[-1], dict))
+            if (
+                audit_chain
+                and isinstance(audit_chain, (list, tuple))
+                and len(audit_chain) > 0
+                and isinstance(audit_chain[-1], dict)
+            )
             else None
         )
         or (
@@ -593,7 +664,9 @@ def build_five_tab_investigation_inspector(
         )
         or "GENESIS_BLOCK_00000000000000000000000000000000000000000000000000000000"
     )
-    ledger_copy_attr = "data-copy-hash" if _is_hex64(str(entry_sha256).strip()) else "data-copy-value"
+    ledger_copy_attr = (
+        "data-copy-hash" if _is_hex64(str(entry_sha256).strip()) else "data-copy-value"
+    )
     ledger_copy_title = (
         "Click to copy SHA-256 digest"
         if ledger_copy_attr == "data-copy-hash"
@@ -627,7 +700,9 @@ def build_five_tab_investigation_inspector(
         else "unavailable"
     )
 
-    combined_html = "\n".join([tab_1["html"], tab_2["html"], tab_3["html"], tab_4["html"], tab_5["html"]])
+    combined_html = "\n".join(
+        [tab_1["html"], tab_2["html"], tab_3["html"], tab_4["html"], tab_5["html"]]
+    )
 
     return {
         "tab_1_executive_summary": tab_1,
@@ -1491,7 +1566,9 @@ def render_dashboard_html(
         transport_error = None
         outbox_status = None
         if sel.soar_recommendations:
-            first_rec = next((row for row in sel.soar_recommendations if isinstance(row, dict)), None)
+            first_rec = next(
+                (row for row in sel.soar_recommendations if isinstance(row, dict)), None
+            )
             if isinstance(first_rec, dict):
                 rec_state = str(first_rec.get("state") or "")
                 raw_error = first_rec.get("transport_error")
@@ -1677,7 +1754,9 @@ def render_dashboard_html(
         velocity_source_label = "Reference Benchmark (Inspected January Split)"
     else:
         velocity_payload = (
-            velocity_report.to_dict() if hasattr(velocity_report, "to_dict") else dict(velocity_report)
+            velocity_report.to_dict()
+            if hasattr(velocity_report, "to_dict")
+            else dict(velocity_report)
         )
         velocity_source_label = (
             "Live Measured Run"
@@ -1924,14 +2003,20 @@ def verify_frontend_asset_bundle(repo_root: Path | None = None) -> dict[str, Any
     # Explicit parity check for data-copy-hash across all individual frontend bundle files
     for asset_name in ("index_html", "css", "js"):
         if "data-copy-hash" not in bundle[asset_name]:
-            raise ValueError(f"Required frontend asset marker missing: data-copy-hash in {asset_name}")
+            raise ValueError(
+                f"Required frontend asset marker missing: data-copy-hash in {asset_name}"
+            )
 
     if "navigator.clipboard.writeText" not in bundle["js"]:
-        raise ValueError("Required frontend asset marker missing: navigator.clipboard.writeText in js")
+        raise ValueError(
+            "Required frontend asset marker missing: navigator.clipboard.writeText in js"
+        )
 
     rendered_empty_html = render_dashboard_html([])
     if "data-copy-hash" not in rendered_empty_html:
-        raise ValueError("Required frontend asset marker missing: data-copy-hash in render_dashboard_html([])")
+        raise ValueError(
+            "Required frontend asset marker missing: data-copy-hash in render_dashboard_html([])"
+        )
 
     sha256_map = {
         name: hashlib.sha256(content.encode("utf-8")).hexdigest()

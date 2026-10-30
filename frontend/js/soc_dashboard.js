@@ -385,6 +385,7 @@
   let currentFilter = 'all';
   let selectedIncidentId = '';
   let liveCampaignIncidents = [];
+  let liveCorrelationReport = null;
   let campaignFetchSettled = false;
   let liveQueueLoaded = false;
   let walkthroughCurrentStep = 0;
@@ -612,6 +613,7 @@
           <span class="badge badge-rf-confidence">RF: ${scoreText}%</span>
           <span class="badge badge-secondary-anomaly">v2 AE: ${aeError.toFixed(3)}</span>
           <span class="badge" data-evidence-state="${evidenceState}">${evidenceState.toUpperCase()}</span>
+          ${inc.triageState ? `<span class="badge badge-state">Triage: ${escapeHtml(inc.triageState)}</span>` : ''}
         </div>
       `;
 
@@ -640,10 +642,25 @@
     const chainOk = verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256);
     const ragOk = verifyChromaRagHits(inc.chromaRagHits);
     const hiveOk = verifyHiveAndN8nReceipt(inc.thehiveCaseRecord, inc.n8nPlaybookReceipt);
+    const signedLocalCallback = inc.live === true
+      && typeof inc.callbackSignature === 'string'
+      && SHA256_HEX_REGEX.test(inc.callbackSignature)
+      && typeof inc.thehiveCaseId === 'string'
+      && inc.thehiveCaseId.indexOf('case_') === 0
+      && Number.isFinite(Number(inc.mttrSeconds));
 
     const chainState = chainOk ? 'verified' : 'unavailable';
     const ragState = ragOk ? 'verified' : 'unavailable';
-    const hiveState = hiveOk ? 'verified' : (inc.soarRecord && inc.soarRecord.state === 'pending_approval' ? 'pending' : 'unavailable');
+    const hiveState = (hiveOk || signedLocalCallback) ? 'verified' : (inc.soarRecord && inc.soarRecord.state === 'pending_approval' ? 'pending' : 'unavailable');
+    const hiveLabel = signedLocalCallback
+      ? ('TheHive Case: ' + inc.thehiveCaseId)
+      : (hiveOk ? 'TheHive Case: DISPATCHED' : (inc.soarRecord && inc.soarRecord.state === 'pending_approval' ? 'TheHive Case: PENDING APPROVAL' : 'TheHive Case: UNAVAILABLE'));
+    const techniqueId = ragOk ? inc.chromaRagHits[0].technique_id : (inc.live ? 'unavailable' : 'T1046');
+    const tacticName = ragOk ? inc.chromaRagHits[0].technique_name : (inc.live ? 'unavailable' : 'Network Service Discovery');
+    const cosineText = ragOk ? inc.chromaRagHits[0].cosine_similarity.toFixed(4) : (inc.live ? 'unavailable' : '0.9120');
+    const recordedCaseId = signedLocalCallback
+      ? inc.thehiveCaseId
+      : ((inc.thehiveCaseRecord && inc.thehiveCaseRecord.case_id) || 'not recorded');
 
     // Build Forensic Drawer HTML
     drawerEl.innerHTML = `
@@ -681,6 +698,11 @@
               <span class="badge badge-secondary-anomaly">Secondary Anomaly Indicator (Unfused v2 AE — Section 8 Fusion Disabled)</span>
             </span>
           </div>
+          ${inc.triageState ? `
+          <div class="evidence-cell">
+            <span class="evidence-cell-label">ANALYST TRIAGE STATE</span>
+            <span class="evidence-cell-val"><span class="badge badge-state">${escapeHtml(inc.triageState)}</span></span>
+          </div>` : ''}
         </div>
       </div>
 
@@ -704,7 +726,9 @@
             <span class="evidence-cell-val">
               ${inc.threatIntel.privateIpGuardTriggered
                 ? '<span class="badge" data-evidence-state="verified">TRIGGERED: RFC1918 Private IP Suppressed</span>'
-                : '<span class="badge badge-auth">PUBLIC IP: External TI Looked Up</span>'
+                : (inc.live
+                  ? '<span class="badge" data-evidence-state="unavailable">No MISP lookup on this flow</span>'
+                  : '<span class="badge badge-auth">PUBLIC IP: External TI Looked Up</span>')
               }
             </span>
           </div>
@@ -730,7 +754,7 @@
               ${ragOk ? `ChromaDB RAG: ${inc.chromaRagHits.length} Hits Verified` : 'ChromaDB RAG: UNAVAILABLE'}
             </span>
             <span class="badge badge-n8n-hive" data-evidence-state="${hiveState}">
-              ${hiveOk ? 'TheHive Case: DISPATCHED' : (inc.soarRecord && inc.soarRecord.state === 'pending_approval' ? 'TheHive Case: PENDING APPROVAL' : 'TheHive Case: UNAVAILABLE')}
+              ${hiveLabel}
             </span>
           </div>
         </div>
@@ -791,7 +815,7 @@
       <div class="tier-section anatomy-card" data-blast-ui-tier="unicorn-progressive-disclosure-v1">
         <div class="tier-header">
           <span class="tier-1-title" style="color: #58a6ff;">Standardized 4-Block Investigation Case Anatomy</span>
-          <span class="badge" data-evidence-state="verified">4-Block Verified</span>
+          <span class="badge" data-evidence-state="${inc.live ? (signedLocalCallback ? 'verified' : 'pending') : 'verified'}">${inc.live ? (signedLocalCallback ? 'Signed callback recorded' : 'Awaiting callback') : '4-Block Verified'}</span>
         </div>
         <div class="anatomy-grid">
           <!-- Block 1: Executive Summary -->
@@ -808,19 +832,19 @@
           <div class="anatomy-block" data-anatomy-block="2">
             <h4>Block 2: Attack Timeline</h4>
             <div><b>Window Type:</b> <span class="badge badge-corr">${inc.correlation ? escapeHtml(inc.correlation.windowType) : '30.0s_burst'}</span></div>
-            <div><b>Correlated Flows:</b> ${inc.correlation ? inc.correlation.constituentAlerts : 1}</div>
-            <div><b>Progression:</b> Ingest at ${escapeHtml(inc.observedAt)}</div>
-            <div><b>Byte Volume Delta:</b> +1,250 B &middot; <b>Packets:</b> 18</div>
+            <div><b>Correlated Flows:</b> ${liveCorrelationReport ? Number(liveCorrelationReport.correlated_flow_count || 0) : (inc.correlation ? inc.correlation.constituentAlerts : 1)}</div>
+            <div><b>Progression:</b> ${liveCorrelationReport ? 'Live unified timeline' : ('Ingest at ' + escapeHtml(inc.observedAt))}</div>
+            ${liveCorrelationReport ? ('<div data-live-timeline="true">' + liveTimelineRows(liveCorrelationReport) + '</div>') : (inc.live ? '<div><b>Byte Volume Delta:</b> not recorded on this flow</div>' : '<div><b>Byte Volume Delta:</b> +1,250 B &middot; <b>Packets:</b> 18</div>')}
           </div>
 
           <!-- Block 3: MITRE ATT&CK Mapping -->
           <div class="anatomy-block" data-anatomy-block="3">
             <h4>Block 3: MITRE ATT&CK Mapping</h4>
-            <div><b>Technique:</b> <code>${ragOk ? escapeHtml(inc.chromaRagHits[0].technique_id) : 'T1046'}</code></div>
-            <div><b>Tactic:</b> ${ragOk ? escapeHtml(inc.chromaRagHits[0].technique_name) : 'Network Service Discovery'}</div>
-            <div><b>Cosine Similarity:</b> ${ragOk ? inc.chromaRagHits[0].cosine_similarity.toFixed(4) : '0.9120'}</div>
+            <div><b>Technique:</b> <code>${escapeHtml(techniqueId)}</code></div>
+            <div><b>Tactic:</b> ${escapeHtml(tacticName)}</div>
+            <div><b>Cosine Similarity:</b> ${escapeHtml(String(cosineText))}</div>
             <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.2rem;">
-              Retrieved from ChromaDB 64-dim L2 semantic vector index
+              ${inc.live && !ragOk ? 'No local technique was retrieved for this flow.' : 'Retrieved from ChromaDB 64-dim L2 semantic vector index'}
             </div>
           </div>
 
@@ -830,9 +854,10 @@
             <div><b>Playbook:</b> <code>${inc.soarRecord ? escapeHtml(inc.soarRecord.playbookId) : 'pb-isolate-01'}</code></div>
             <div><b>State:</b> <span class="badge badge-state">${inc.soarRecord ? escapeHtml(inc.soarRecord.state) : 'pending_approval'}</span></div>
             <div><b>Audit Chain:</b> <span class="badge" data-evidence-state="${chainState}">${chainOk ? 'Chain Valid (SHA-256)' : 'Chain Unavailable'}</span></div>
+            <div><b>TheHive case:</b> <code>${escapeHtml(recordedCaseId)}</code></div>
             <div><b>Callback MTTR:</b> ${inc.mttrSeconds === null || inc.mttrSeconds === undefined ? 'not recorded' : Number(inc.mttrSeconds).toFixed(3) + 's'}</div>
             <div><b>HMAC:</b> <code>${inc.callbackSignature && SHA256_HEX_REGEX.test(inc.callbackSignature) ? escapeHtml(inc.callbackSignature.substring(0, 16)) + '...' : 'none'}</code></div>
-            <div><b>HMAC Verified:</b> <span class="badge" data-evidence-state="${hiveState}">${hiveOk ? 'Verified & Dispatched' : 'Pending Authorization'}</span></div>
+            <div><b>HMAC Verified:</b> <span class="badge" data-evidence-state="${hiveState}">${(hiveOk || signedLocalCallback) ? 'Signed callback recorded' : 'Pending Authorization'}</span></div>
           </div>
         </div>
       </div>
@@ -1108,11 +1133,11 @@
       modelArtifactSha256: flow.model_sha256 || EVAL_PACK_REV2.rfArtifactSha256,
       modelVersion: 'full-network-random-forest-6d69c72-v1',
       provenance: {
-        srcIp: 'not-recorded',
-        dstIp: 'not-recorded',
+        srcIp: flow.src_entity_id || 'not-recorded',
+        dstIp: flow.dst_entity_id || 'not-recorded',
         srcPort: 0,
-        dstPort: 0,
-        proto: 'flow'
+        dstPort: Number(flow.service_or_port) || 0,
+        proto: flow.flow_protocol || 'flow'
       },
       correlation: {
         incidentId: flow.campaign_id || ('flow:' + flow.flow_id),
@@ -1138,6 +1163,7 @@
       callbackSignature: typeof flow.callback_signature === 'string' ? flow.callback_signature : '',
       thehiveCaseId: flow.thehive_case_id || '',
       mttrSeconds: flow.mttr_seconds,
+      triageState: flow.triage_state || 'unreviewed',
       thehiveCaseRecord: null,
       n8nPlaybookReceipt: null
     };
@@ -1238,6 +1264,7 @@
         'Replayed ' + (data.member_count || 0) + ' recorded UNSW-NB15 study vectors. Fusion disabled.',
         data.evidence_state || 'unavailable'
       );
+      if (data.correlation) renderLiveCorrelation(data.correlation);
       await refreshLiveCampaigns();
     } catch (err) {
       setLiveText('campaignQueueStatus', 'Benchmark replay unavailable.', 'unavailable');
@@ -1277,6 +1304,25 @@
     return inc && inc.flowId ? inc.flowId : null;
   }
 
+  function showHandoffReport(text, state) {
+    const node = document.getElementById('shiftHandoffReport');
+    if (!node) return;
+    node.textContent = text;
+    node.setAttribute('data-evidence-state', state || 'unavailable');
+  }
+
+  function downloadHandoffMarkdown(flowId, markdown) {
+    const blob = new Blob([markdown], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'shift-handoff-flow-' + flowId + '.md';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
   async function recordTriageAction(action) {
     const flowId = selectedLiveFlowId();
     if (!flowId) {
@@ -1290,12 +1336,14 @@
         body: JSON.stringify({ flow_id: flowId, action: action, actor_id: 'analyst_a' })
       });
       const data = await resp.json();
+      await refreshLiveCampaigns();
       setLiveText(
         'campaignQueueStatus',
-        data.evidence_state === 'verified' ? ('Triage state ' + data.triage_state + '.') : 'Triage refused.',
+        data.evidence_state === 'verified'
+          ? ('Triage state ' + data.triage_state + ' stored for flow ' + data.flow_id + '.')
+          : 'Triage refused.',
         data.evidence_state || 'unavailable'
       );
-      await refreshLiveCampaigns();
     } catch (err) {
       setLiveText('campaignQueueStatus', 'Triage unavailable.', 'unavailable');
     }
@@ -1304,28 +1352,80 @@
   async function exportGroundedHandoff() {
     const flowId = selectedLiveFlowId();
     if (!flowId) {
-      setLiveText('liveTimeline', 'Export applies to a stored flow.', 'unavailable');
+      showHandoffReport('Export applies to a stored flow.', 'unavailable');
       return;
     }
+    const noteNode = document.getElementById('shiftHandoffNote');
+    const note = noteNode && typeof noteNode.value === 'string' ? noteNode.value.trim() : '';
+    const payload = { flow_id: flowId };
+    if (note) payload.brief = note;
     try {
       const resp = await fetch('/api/v1/live/handoff', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ flow_id: flowId })
+        body: JSON.stringify(payload)
       });
       const data = await resp.json();
-      if (data.grounded === true && data.report) {
-        setLiveText(
-          'liveTimeline',
-          'Grounded brief. Block 1 ' + data.report.block_1_decision + '. Block 3 ' + data.report.block_3_technique + '.',
-          'verified'
-        );
+      if (data.grounded === true && data.report && typeof data.markdown === 'string') {
+        showHandoffReport(data.markdown, 'verified');
+        downloadHandoffMarkdown(flowId, data.markdown);
         return;
       }
-      setLiveText('liveTimeline', 'Handoff export unavailable.', 'unavailable');
+      const reason = data.reason === 'explanation_not_grounded'
+        ? 'Handoff refused. The note names an address that is not stored on this flow.'
+        : 'Handoff export unavailable.';
+      showHandoffReport(reason, 'unavailable');
     } catch (err) {
-      setLiveText('liveTimeline', 'Handoff export unavailable.', 'unavailable');
+      showHandoffReport('Handoff export unavailable.', 'unavailable');
     }
+  }
+
+  function liveTimelineRows(report) {
+    const events = report && report.timeline && Array.isArray(report.timeline.events)
+      ? report.timeline.events
+      : [];
+    return events.map(event => {
+      const when = escapeHtml(String(event.observed_at || ''));
+      const label = escapeHtml(String(event.summary || event.kind || 'event'));
+      const windowType = event.window_type ? ' · ' + escapeHtml(String(event.window_type)) : '';
+      return '<div>[' + when + '] ' + label + windowType + '</div>';
+    }).join('');
+  }
+
+  function renderLiveCorrelation(data) {
+    if (!data || typeof data !== 'object') return;
+    liveCorrelationReport = data;
+    const count = Number(data.correlated_flow_count || 0);
+    const events = data.timeline && Array.isArray(data.timeline.events) ? data.timeline.events : [];
+    const burstWindow = data.burst_window_seconds === undefined ? 30 : data.burst_window_seconds;
+    const campaignWindow = data.campaign_window_seconds === undefined ? 600 : data.campaign_window_seconds;
+    setLiveText(
+      'liveTimeline',
+      'Correlated flows ' + count
+        + '. Burst incidents ' + (data.burst_incident_count || 0) + ' (' + burstWindow + 's). '
+        + 'Campaign incidents ' + (data.campaign_incident_count || 0) + ' (' + campaignWindow + 's). '
+        + 'Timeline events ' + events.length + '.',
+      data.evidence_state || 'unavailable'
+    );
+    const drawer = document.getElementById('liveTimelineDrawer');
+    if (drawer) {
+      const rows = liveTimelineRows(data);
+      drawer.innerHTML = '<div><b>Correlated flow count:</b> ' + count + '</div>'
+        + (rows || '<div>No timeline events.</div>');
+      drawer.setAttribute('data-correlated-flow-count', String(count));
+      drawer.setAttribute('data-evidence-state', data.evidence_state || 'unavailable');
+    }
+    if (data.evidence_state === 'verified') {
+      const countEl = document.getElementById('attackTimelineFlowCount');
+      const sourceEl = document.getElementById('attackTimelineSource');
+      const eventsEl = document.getElementById('attackTimelineEvents');
+      if (countEl) countEl.textContent = count + ' correlated flows from the live stitch';
+      if (sourceEl) sourceEl.textContent = 'Live stitch from IncidentCorrelationEngine';
+      if (eventsEl) {
+        eventsEl.innerHTML = liveTimelineRows(data) || '<div>No correlated timeline events.</div>';
+      }
+    }
+    renderForensicDrawer();
   }
 
   async function stitchVerifiedWindows() {
@@ -1336,12 +1436,11 @@
         body: '{}'
       });
       const data = await resp.json();
-      const events = data.timeline && data.timeline.event_count ? data.timeline.event_count : 0;
-      setLiveText(
-        'liveTimeline',
-        'Incidents ' + (data.incident_count || 0) + '. Largest stitch ' + (data.max_constituent_count || 0) + '. Timeline events ' + events + '.',
-        data.evidence_state || 'unavailable'
-      );
+      if (data && data.timeline) {
+        renderLiveCorrelation(data);
+        return;
+      }
+      setLiveText('liveTimeline', 'Correlation unavailable.', 'unavailable');
     } catch (err) {
       setLiveText('liveTimeline', 'Correlation unavailable.', 'unavailable');
     }
@@ -1377,19 +1476,20 @@
         body: JSON.stringify({ flow_id: inc.flowId })
       });
       const data = await resp.json();
+      await refreshLiveCampaigns();
       const sig = typeof data.signature_sha256 === 'string' ? data.signature_sha256 : '';
       if (data.callback_recorded === true && SHA256_HEX_REGEX.test(sig)) {
         const mttr = Number(data.mttr_seconds);
         const mttrText = Number.isFinite(mttr) ? mttr.toFixed(3) + 's' : 'n/a';
+        const caseId = typeof data.thehive_case_id === 'string' ? data.thehive_case_id : 'not recorded';
         setLiveText(
           'campaignQueueStatus',
-          'Signed callback ' + sig.substring(0, 16) + ' recorded. MTTR ' + mttrText + '. Host containment was not executed.',
+          'Signed callback ' + sig.substring(0, 16) + ' recorded. Case ' + caseId + '. MTTR ' + mttrText + '. Host containment was not executed.',
           'verified'
         );
       } else {
         setLiveText('campaignQueueStatus', 'Signed callback unavailable.', 'unavailable');
       }
-      await refreshLiveCampaigns();
     } catch (err) {
       setLiveText('campaignQueueStatus', 'Signed callback unavailable.', 'unavailable');
     }
@@ -1438,6 +1538,7 @@
         'Ingest decision ' + data.decision + ' (' + data.reason + '). Fusion disabled.',
         data.evidence_state || 'unavailable'
       );
+      if (data.correlation) renderLiveCorrelation(data.correlation);
       await refreshLiveCampaigns();
     } catch (err) {
       setLiveText('liveQueueStatus', 'Live ingest unavailable.', 'unavailable');

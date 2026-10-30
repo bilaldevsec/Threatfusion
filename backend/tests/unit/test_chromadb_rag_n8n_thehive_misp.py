@@ -223,8 +223,15 @@ class TestMispDeterministicClient:
         assert is_rfc1918_or_loopback_ip("1.1.1.1") is False
         assert is_rfc1918_or_loopback_ip("93.184.216.34") is False
         assert is_rfc1918_or_loopback_ip("142.250.190.46") is False
+        assert is_rfc1918_or_loopback_ip("198.51.100.27") is False
+        assert is_rfc1918_or_loopback_ip("203.0.113.195") is False
+        assert is_rfc1918_or_loopback_ip("172.31.255.255") is True
+        assert is_rfc1918_or_loopback_ip("172.32.0.1") is False
+        assert is_rfc1918_or_loopback_ip("::ffff:10.1.2.3") is True
         assert is_rfc1918_or_loopback_ip("not_an_ip") is False
         assert is_rfc1918_or_loopback_ip("") is False
+        assert contract_is_rfc1918("198.51.100.27") is False
+        assert contract_is_rfc1918("169.254.10.10") is True
 
     def test_misp_client_rfc1918_guard(self, tmp_path: Path) -> None:
         """Verify private IP addresses are suppressed from external lookup."""
