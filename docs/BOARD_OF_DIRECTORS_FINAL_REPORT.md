@@ -64,3 +64,19 @@ On 2026-10-27 an earlier full pytest suite on the canonical workstation, `env -u
 ## Integrated fixes from the open callback, correlation, triage, and launcher branches
 
 Verify-state and the HMAC callback read the same ledger file approval writes when the launcher does not set an explicit path. A failed timing write returns HTTP 403 `callback_timing_not_recorded`. Ingest and replay call `IncidentCorrelationEngine` after the row is stored. The burst window is 30.0 seconds and the campaign window is 600.0 seconds, boundaries included. The MISP lookup refuses RFC1918, loopback, link-local, and IPv6 ULA addresses before any indicator match, and it does not treat the documentation ranges `198.51.100.0/24` and `203.0.113.0/24` as private. The handoff packet reads stored `triage_events`. A shift note that names an address outside the stored flow is refused with `explanation_not_grounded`. `scripts/run_live_product.sh` preflights both surfaces, waits for `GET /` and `GET /healthz`, and stops the child on Ctrl-C and `SIGTERM`. Host containment stays unauthorized. TF-008, TF-009, TF-010, and TF-011 stay open.
+
+## Competitor-gap backlog (2026-10-30)
+
+Public product pages for Cortex XSIAM, Dropzone AI, and Prophet Security were compared with this branch's live console. The ranked list is `.cursor/competitor_gap_backlog.md`. Each item has competitor URLs, analyst or manager value, an S/M/L effort, acceptance criteria for one follow-up pull request, and a constitutional-lock note.
+
+[PR #6](https://github.com/bilaldevsec/Threatfusion/pull/6) already binds the top funnel, pipeline ribbon, queue, and five-tab inspector to one SQLite file and is not re-filed here as new work. It still leaves the hero headline `99%+ Alert Noise Eliminated`, which is GAP-04.
+
+The top five, by value divided by effort:
+
+1. **GAP-01** — Store an analyst conclusion (`true_positive`, `false_positive`, `inconclusive`) with a grounded rationale, apart from the frozen Random Forest decision.
+2. **GAP-02** — Search the queue and filter or sort it by the stored decision, triage state, and probability.
+3. **GAP-03** — Record a local assignee and a review status of new, in progress, on hold, or closed.
+4. **GAP-04** — Show live queue counts in the hero, and keep the inspected January 99.9889% / 216,568 figures on the evaluation banner only.
+5. **GAP-05** — Show a glass-box checklist in the evidence tab, answered only from stored fields, with missing fields marked unavailable.
+
+No item enables production fusion, replaces the frozen forest, changes the four frozen digests, or closes TF-008, TF-009, TF-010, or TF-011. Host containment stays unauthorized. Gate G9 stays intact.

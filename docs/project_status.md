@@ -2008,3 +2008,9 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 - `POST /api/v1/live/handoff` builds the four blocks from the stored flow and passes the triage rows into `build_analyst_shift_handoff()`. Block 3 stays `unavailable` because no technique is stored. The default brief and any supplied note are checked with `verify_explanation_groundedness()`. A note that names an address outside the stored entity ids is refused and is not copied into the markdown. The page shows and downloads the markdown only after that check passes. `production_fusion_enabled` stays false. Containment stays unauthorized.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
+### Milestone #54: Ranked competitor-gap backlog (2026-10-30)
+
+- `.cursor/competitor_gap_backlog.md` ranks twelve product gaps against public Cortex XSIAM, Dropzone AI, and Prophet Security sources. The top five are an analyst conclusion stored apart from the frozen Random Forest decision, queue search and filters, a local assignee and review status, a live hero that does not wear the inspected January compression claim, and a glass-box checklist answered only from stored fields.
+- Open PR #6 (`GET /api/v1/live/surfaces`) is recorded as already in flight. Binding the four operator surfaces to one SQLite file is not re-opened as a new gap.
+- This milestone is documentation only. `production_fusion_enabled` stays false. The four frozen digests are unchanged. Gate G9 is unchanged. TF-008, TF-009, TF-010, and TF-011 remain **open**.
