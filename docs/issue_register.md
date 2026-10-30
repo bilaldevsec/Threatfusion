@@ -938,6 +938,10 @@ A 1,527-test pytest run and the corrupt-database classification fix do not satis
 
 Stored triage actions, the shift-handoff timeline, and the grounded-note refusal do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. Containment stays unauthorized. All four issues remain **open**.
 
+### Milestone #53 constitutional health drawer, 2026-10-30
+
+A live boundary and truth-gate report does not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
+
 ### Milestone #52 four-scenario replay, 2026-10-30
 
 The four labeled replays and the private-IP refusal do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.

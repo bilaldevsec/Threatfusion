@@ -19,6 +19,7 @@ from threatfusion.api.live_soc_console import (
     read_n8n_workbench,
     record_triage_action,
     replay_benchmark_attack_burst,
+    constitutional_health,
     replay_live_scenarios,
     score_canonical_flow,
     store_flow_provenance,
@@ -558,6 +559,24 @@ def test_triage_and_handoff_routes_round_trip(tmp_path: Path, monkeypatch) -> No
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_constitutional_health_reports_digests_and_seven_checks() -> None:
+    report = constitutional_health(REPO_ROOT)
+    assert report["production_fusion_enabled"] is False
+    assert report["containment_executed"] is False
+    assert report["tf_008_through_tf_011"] == "open"
+    assert report["checks_total"] == 7
+    assert report["boundary_verdict"] in {"GO", "NO-GO"}
+    assert report["truth_verdict"] in {"GO", "NO-GO"}
+    assert len(report["receipt_sha256"]) == 64
+    forest = report["model_digests"]["random_forest"]
+    assert forest["verified"] is True
+    assert forest["sha256"].startswith("bd2853a6")
+    html = (REPO_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    script = (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")
+    assert 'id="btnConstitutionalHealth"' in html
+    assert "/api/v1/live/health" in script
 
 
 def test_four_scenario_replay_uses_the_frozen_forest(tmp_path: Path) -> None:

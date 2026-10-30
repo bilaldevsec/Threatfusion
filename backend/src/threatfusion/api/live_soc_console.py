@@ -669,6 +669,44 @@ LIVE_SCENARIO_REPLAYS: tuple[dict[str, Any], ...] = (
 )
 
 
+def constitutional_health(repo_root: Path) -> dict[str, Any]:
+    """Run the boundary preflight and the seven repository-truth checks.
+
+    The digest list is the supply-chain result. A dirty worktree fails check 1.
+    """
+    from threatfusion.evaluation.boundary_preflight import run_boundary_preflight
+    from threatfusion.evaluation.repo_truth_audit import run_repository_truth_audit
+
+    boundary = run_boundary_preflight(active=repo_root, venv=repo_root / "threatfusion-venv")
+    audit = run_repository_truth_audit(repo_root)
+    digests = {
+        name: {
+            "sha256": entry.get("actual_sha256") or entry.get("expected_sha256"),
+            "verified": entry.get("matched") is True,
+        }
+        for name, entry in audit.model_digests.items()
+    }
+    return {
+        "schema_version": "live_constitutional_health_v1",
+        "evidence_state": (
+            "verified" if audit.all_checks_passed and boundary.passed else "unavailable"
+        ),
+        "boundary_verdict": boundary.decision_verdict,
+        "truth_verdict": audit.decision_verdict,
+        "checks_passed": sum(1 for check in audit.checks if check.passed),
+        "checks_total": len(audit.checks),
+        "checks": [
+            {"check_id": check.check_id, "name": check.name, "passed": check.passed}
+            for check in audit.checks
+        ],
+        "model_digests": digests,
+        "receipt_sha256": audit.receipt_digest,
+        "production_fusion_enabled": False,
+        "tf_008_through_tf_011": "open",
+        "containment_executed": False,
+    }
+
+
 def replay_live_scenarios(
     db_path: Path,
     *,

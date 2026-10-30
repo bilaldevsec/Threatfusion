@@ -1967,6 +1967,12 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Milestone #53: Live constitutional health drawer (2026-10-30)
+
+- `POST /api/v1/live/health` runs boundary preflight B0–B6 and the seven repository-truth checks. The drawer lists each check, the four model digest prefixes, the boundary verdict, the truth verdict, and the receipt. TF-008 through TF-011 stay open. A dirty worktree fails check 1.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
 ### Milestone #52: Four-scenario live replay (2026-10-30)
 
 - `POST /api/v1/live/scenarios` scores four labeled flows with the frozen Random Forest. Web exploit (scenario label T1190), SSH brute (T1110), and internal recon (T1046) scored Attack at the live probability. The benign false alarm scored Benign. The technique id is a scenario label, not a model output. The internal-recon row returns HTTP 422 from the private-IP guard and does not perform a lookup. Containment stays unauthorized.

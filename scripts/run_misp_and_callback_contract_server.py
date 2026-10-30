@@ -547,6 +547,14 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             self._send_json(status, result)
             return
 
+        if path == "/api/v1/live/health":
+            from threatfusion.api.live_soc_console import constitutional_health
+
+            report = constitutional_health(REPO_ROOT)
+            status = 200 if report.get("truth_verdict") == "GO" else 409
+            self._send_json(status, report)
+            return
+
         if path == "/api/v1/live/scenarios":
             from threatfusion.api.live_soc_console import replay_live_scenarios
 

@@ -1144,6 +1144,10 @@
     if (replayButton) {
       replayButton.addEventListener('click', () => { replayBenchmarkBurst(); });
     }
+    const healthButton = document.getElementById('btnConstitutionalHealth');
+    if (healthButton) {
+      healthButton.addEventListener('click', () => { runConstitutionalHealth(); });
+    }
     const scenarioButton = document.getElementById('btnReplayScenarios');
     if (scenarioButton) {
       scenarioButton.addEventListener('click', () => { replayLiveScenarios(); });
@@ -1320,6 +1324,38 @@
     }
     renderIncidentQueue();
     renderForensicDrawer();
+  }
+
+  async function runConstitutionalHealth() {
+    setLiveText('constitutionalHealth', 'Running the boundary preflight and the seven truth checks.', 'pending');
+    try {
+      const resp = await fetch('/api/v1/live/health', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+      const data = await resp.json();
+      const lines = (data.checks || []).map(check => (
+        'Check ' + check.check_id + ': ' + (check.passed ? 'PASS' : 'FAIL')
+      ));
+      const digests = data.model_digests || {};
+      Object.keys(digests).forEach(name => {
+        const row = digests[name];
+        const sha = row && row.sha256 ? String(row.sha256).slice(0, 16) : 'unavailable';
+        lines.push(name + ' ' + sha + (row && row.verified ? ' verified' : ' unverified'));
+      });
+      lines.push('Boundary ' + (data.boundary_verdict || 'NO-GO'));
+      lines.push('Truth ' + (data.truth_verdict || 'NO-GO'));
+      lines.push('Receipt ' + (data.receipt_sha256 || 'unavailable'));
+      lines.push('TF-008 through TF-011 stay open.');
+      setLiveText(
+        'constitutionalHealth',
+        lines.join('\n'),
+        data.evidence_state === 'verified' ? 'verified' : 'unavailable'
+      );
+    } catch (err) {
+      setLiveText('constitutionalHealth', 'Constitutional health unavailable.', 'unavailable');
+    }
   }
 
   async function replayLiveScenarios() {
