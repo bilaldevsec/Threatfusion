@@ -9,5 +9,5 @@
 - [x] TASK-10: 1-Click Multi-Scenario Replay Suite (Web Exploit, SSH Brute, Internal Recon, Benign False Alarm).
 - [x] TASK-11: Live Constitutional Health & Cryptographic Proof Drawer (runs live SHA-256 and Truth Gates check).
 - [x] TASK-12: The live console binds the UNSW/CIC qualification. TF-012 and TF-002 stay open because full byte-layer equivalence and every historical surface are still unproven. TF-008 through TF-011 stay open.
-- [ ] TASK-13: Turnkey Defense Demo Launcher (scripts/run_live_product.sh with --smoke and --seed-demo).
+- [x] TASK-13: Turnkey Defense Demo Launcher (scripts/run_live_product.sh with --smoke and --seed-demo).
 - [ ] TASK-14: Comprehensive Board of Directors & Defense Readiness Dossier (docs/BOARD_OF_DIRECTORS_FINAL_REPORT.md).

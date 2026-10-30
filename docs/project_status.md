@@ -1967,6 +1967,12 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Milestone #55: Seed-demo launcher (2026-10-30)
+
+- `scripts/run_live_product.sh --seed-demo` starts the console, stores the four labeled scenarios, and keeps serving. `--smoke` still starts both surfaces and then stops. `--dry-run` still does not bind.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
 ### Milestone #54: Source qualification on the live console (2026-10-30)
 
 - The console states that UNSW-NB15 and CIC byte layers are not interchangeable and that CIC is not a validated compatible external test. The product path scores recorded UNSW-NB15 features. TF-012 and TF-002 stay open.

@@ -121,6 +121,34 @@ def test_dry_run_rejects_a_busy_port_a_short_secret_and_a_bad_port(tmp_path: Pat
     assert "unknown argument" in unknown.stderr
 
 
+def test_seed_demo_stores_four_scenarios_and_stays_up(tmp_path: Path) -> None:
+    _require_launcher()
+    port = _free_port()
+    proc = subprocess.Popen(
+        [str(SCRIPT), "--seed-demo", "--port", str(port)],
+        cwd=REPO_ROOT,
+        env=_env(tmp_path),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        seen = ""
+        deadline = time.time() + 60
+        assert proc.stdout is not None
+        while time.time() < deadline and "seed-demo: four scenarios stored" not in seen:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            seen += line
+        assert "seed-demo: four scenarios stored" in seen
+        assert _port_open(port) is True
+    finally:
+        if proc.poll() is None:
+            proc.send_signal(signal.SIGTERM)
+            proc.communicate(timeout=10)
+
+
 def test_smoke_starts_console_and_contract_then_releases_the_port(tmp_path: Path) -> None:
     _require_launcher()
     port = _free_port()

@@ -22,11 +22,12 @@ PIDFILE=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/run_live_product.sh [--dry-run | --smoke] [--port PORT]
+Usage: scripts/run_live_product.sh [--dry-run | --smoke | --seed-demo] [--port PORT]
 
   (default)   Start the SOC console and the contract server. Ctrl-C stops both.
   --dry-run   Check files, secrets, and the port, print the plan, and do not bind.
   --smoke     Start both surfaces, require HTTP 200 from / and /healthz, then stop.
+  --seed-demo Start both surfaces, store the four labeled scenarios, and keep serving.
   --port N    Listen on 127.0.0.1:N (default 8766, or PORT).
 
 Lab defaults: THREATFUSION_SOAR_HMAC_SECRET and THREATFUSION_MISP_API_KEY.
@@ -42,13 +43,18 @@ die() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)
-      [[ "$MODE" == "serve" ]] || die "--dry-run and --smoke cannot be combined"
+      [[ "$MODE" == "serve" ]] || die "--dry-run, --smoke, and --seed-demo cannot be combined"
       MODE="dry-run"
       shift
       ;;
     --smoke)
-      [[ "$MODE" == "serve" ]] || die "--dry-run and --smoke cannot be combined"
+      [[ "$MODE" == "serve" ]] || die "--dry-run, --smoke, and --seed-demo cannot be combined"
       MODE="smoke"
+      shift
+      ;;
+    --seed-demo)
+      [[ "$MODE" == "serve" ]] || die "--dry-run, --smoke, and --seed-demo cannot be combined"
+      MODE="seed-demo"
       shift
       ;;
     --port)
@@ -212,6 +218,30 @@ done
 
 if [[ "$ready" != 1 ]]; then
   die "timed out waiting for the SOC console and contract health endpoint on ${HOST}:${PORT}"
+fi
+
+if [[ "$MODE" == "seed-demo" ]]; then
+  "$PYTHON" - "$HOST" "$PORT" <<'PY'
+import json
+import sys
+import urllib.request
+
+host, port = sys.argv[1], sys.argv[2]
+request = urllib.request.Request(
+    f"http://{host}:{port}/api/v1/live/scenarios",
+    data=b"{}",
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+with urllib.request.urlopen(request, timeout=60) as response:
+    body = json.load(response)
+ids = {row.get("scenario_id") for row in body.get("flows", [])}
+required = {"web_exploit", "ssh_brute", "internal_recon", "benign_false_alarm"}
+if response.status != 200 or body.get("member_count") != 4 or not required <= ids:
+    sys.stderr.write("error: seed-demo did not store the four scenarios\n")
+    sys.exit(1)
+print("seed-demo: four scenarios stored")
+PY
 fi
 
 if [[ "$MODE" == "smoke" ]]; then

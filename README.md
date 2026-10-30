@@ -98,6 +98,12 @@ scripts/run_live_product.sh --smoke
 
 Smoke starts both surfaces, requires HTTP 200 from the page and from `/healthz`, then shuts the process down and checks that the port is free.
 
+```bash
+scripts/run_live_product.sh --seed-demo
+```
+
+Seed-demo starts both surfaces, stores the four labeled scenarios with the frozen Random Forest, and keeps serving until Ctrl-C. The technique ids are scenario labels. Host containment stays unauthorized.
+
 Stop a running launcher with Ctrl-C. `SIGTERM` to the launcher stops the child the same way. A busy port, a secret shorter than 16 characters, a missing interpreter, or a missing console file exits with `error:` on stderr and does not leave a listener behind.
 
 Replay scores the recorded study vectors. Approve writes the hash chain on the shared ledger. Dispatch sends verify-state and the HMAC callback. A private address such as `10.0.0.4` is refused before any external lookup.

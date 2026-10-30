@@ -938,6 +938,10 @@ A 1,527-test pytest run and the corrupt-database classification fix do not satis
 
 Stored triage actions, the shift-handoff timeline, and the grounded-note refusal do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. Containment stays unauthorized. All four issues remain **open**.
 
+### Milestone #55 seed-demo launcher, 2026-10-30
+
+`--smoke` and `--seed-demo` do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. All four issues remain **open**.
+
 ### Milestone #54 source qualification on the live console, 2026-10-30
 
 The live console states that UNSW-NB15 and CIC byte layers are not interchangeable and that CIC is not a validated compatible external test. That sentence does not create the five-field equivalence evidence TF-012 requires, and it does not cover every historical export TF-002 names. TF-012 and TF-002 remain **open**. TF-008, TF-009, TF-010, and TF-011 remain **open**.

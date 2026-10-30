@@ -650,6 +650,7 @@ def test_live_product_launcher_starts_one_process() -> None:
     assert "run_misp_and_callback_contract_server.py" in script
     assert "--dry-run" in script
     assert "--smoke" in script
+    assert "--seed-demo" in script
     assert "THREATFUSION_SOAR_LEDGER_DB_PATH" in script
     assert "already in use" in script
     assert "production_fusion_enabled = True" not in script
