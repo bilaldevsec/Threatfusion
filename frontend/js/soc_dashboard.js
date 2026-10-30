@@ -723,6 +723,7 @@
       setInspectorText('inspectorPlaybook', 'none');
       setInspectorText('inspectorChain', 'unavailable');
       setInspectorText('inspectorCallback', 'not recorded');
+      setInspectorText('inspectorExecutionPath', 'not dispatched');
       renderGlassBox(null);
       return;
     }
@@ -777,6 +778,11 @@
       && typeof inc.callbackSignature === 'string'
       && SHA256_HEX_REGEX.test(inc.callbackSignature);
     setInspectorText('inspectorCallback', signed ? inc.callbackSignature.slice(0, 16) : 'not recorded');
+    const executionPath = inc.executionPath === 'n8n_live_container'
+      || inc.executionPath === 'local_contract_fallback'
+      ? inc.executionPath
+      : 'not dispatched';
+    setInspectorText('inspectorExecutionPath', executionPath);
     const verdictNode = document.getElementById('analystVerdictDisplay');
     if (verdictNode) {
       const verdict = inc.analystVerdict || 'not recorded';
@@ -1378,6 +1384,7 @@
       soarAuditChainVerified: chainOk && SHA256_HEX_REGEX.test(entry),
       soarAuditChainHeadSha256: entry,
       callbackSignature: typeof flow.callback_signature === 'string' ? flow.callback_signature : '',
+      executionPath: flow.execution_path || '',
       thehiveCaseId: flow.thehive_case_id || '',
       mttrSeconds: flow.mttr_seconds,
       triageState: flow.triage_state || 'unreviewed',

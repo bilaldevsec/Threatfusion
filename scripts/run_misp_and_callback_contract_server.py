@@ -310,7 +310,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             from threatfusion.api.live_soc_console import read_n8n_workbench
 
             workflow = (
-                REPO_ROOT / "docker" / "n8n" / "workflows" / "threatfusion_soar_playbook.json"
+                REPO_ROOT
+                / "docker"
+                / "n8n"
+                / "workflows"
+                / "threatfusion_live_console_playbook.json"
             )
             self._send_json(200, read_n8n_workbench(workflow))
             return
@@ -732,6 +736,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 contract_base_url=f"http://{host}:{port}",
                 hmac_secret=os.environ.get("THREATFUSION_SOAR_HMAC_SECRET", ""),
                 outbox_db_path=self._live_db_path().with_name("threatfusion-live-thehive.sqlite3"),
+                n8n_webhook_url=os.environ.get("THREATFUSION_N8N_WEBHOOK_URL", ""),
             )
             status = 200 if result.get("evidence_state") == "verified" else 400
             self._send_json(status, result)

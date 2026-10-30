@@ -309,6 +309,7 @@ def test_dispatch_records_signed_callback_and_mttr(tmp_path: Path, monkeypatch) 
         assert dispatched["verify_state"] is True
         assert dispatched["execution_authorized"] is False
         assert dispatched["containment_executed"] is False
+        assert dispatched["execution_path"] == "local_contract_fallback"
         assert len(dispatched["signature_sha256"]) == 64
         assert str(dispatched["thehive_case_id"]).startswith("case_")
         assert dispatched["mttr_seconds"] >= 0.0

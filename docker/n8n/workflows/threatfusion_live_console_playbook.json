@@ -1,0 +1,56 @@
+[
+  {
+    "name": "ThreatFusion Live Console SOAR Callback",
+    "id": "threatfusion-live-console",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "threatfusion-live-console",
+          "responseMode": "lastNode",
+          "options": {}
+        },
+        "id": "live-webhook",
+        "name": "Live console webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          250,
+          300
+        ],
+        "webhookId": "threatfusion-live-console"
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForEachItem",
+          "jsCode": "// Signed callback JSON, posted as the exact canonical bytes in callback_body:\n// candidate_id, playbook_id, case_id, t_approval_queued, t_callback_verified\nconst body = ($json && $json.body) ? $json.body : ($json || {});\nconst base = String(body.contract_base_url || 'http://host.docker.internal:8766').replace(/\\/$/, '');\nconst helpers = this.helpers;\n\nasync function postExact(path, canonical, signature, idemKey) {\n  try {\n    const response = await helpers.httpRequest({\n      method: 'POST',\n      url: base + path,\n      body: String(canonical || ''),\n      headers: {\n        'Content-Type': 'application/json',\n        'X-ThreatFusion-Signature-256': String(signature || ''),\n        'X-Idempotency-Key': String(idemKey || ''),\n      },\n      returnFullResponse: true,\n      ignoreHttpStatusErrors: true,\n      json: false,\n    });\n    const status = Number(response.statusCode || 0);\n    let data = response.body;\n    if (typeof data === 'string') {\n      try { data = JSON.parse(data || '{}'); } catch (err) { data = {}; }\n    }\n    if (!data || typeof data !== 'object') data = {};\n    return { status, data, error: '' };\n  } catch (err) {\n    return { status: Number(err.statusCode || 0), data: {}, error: String(err.message || err) };\n  }\n}\n\nlet verifyStatus = 0;\nlet stateVerified = false;\nlet transportError = '';\nconst verified = await postExact(\n  '/api/v1/soar/verify-state',\n  body.verify_body,\n  body.verify_signature,\n  body.verify_idempotency_key\n);\nverifyStatus = verified.status;\ntransportError = verified.error || '';\nstateVerified = verified.status === 200 && verified.data && verified.data.state_verified === true;\n\nlet mispStatus = null;\nlet privateIpGuard = false;\nif (stateVerified && body.target_value) {\n  try {\n    const response = await helpers.httpRequest({\n      method: 'POST',\n      url: base + '/attributes/restSearch',\n      body: {\n        returnFormat: 'json',\n        value: String(body.target_value),\n        type: 'ip-dst',\n      },\n      headers: {\n        'Content-Type': 'application/json',\n        'Authorization': String($env.THREATFUSION_MISP_API_KEY || ''),\n      },\n      returnFullResponse: true,\n      ignoreHttpStatusErrors: true,\n      json: true,\n    });\n    mispStatus = Number(response.statusCode || 0);\n    privateIpGuard = mispStatus === 422;\n  } catch (err) {\n    mispStatus = Number(err.statusCode || 0);\n    privateIpGuard = mispStatus === 422;\n    transportError = transportError || String(err.message || err);\n  }\n}\n\nlet callbackStatus = 0;\nlet callbackRecorded = false;\nlet tResponse = null;\nif (stateVerified && body.callback_body) {\n  const callback = await postExact(\n    '/api/v1/soar/callback',\n    body.callback_body,\n    body.callback_signature,\n    body.callback_idempotency_key\n  );\n  callbackStatus = callback.status;\n  callbackRecorded = callback.status === 200 && callback.data && callback.data.callback_recorded === true;\n  if (callback.data && typeof callback.data.t_response === 'number') {\n    tResponse = callback.data.t_response;\n  }\n  transportError = transportError || callback.error || '';\n}\n\nreturn {\n  execution_path: 'n8n_live_container',\n  state_verified: stateVerified,\n  verify_status: verifyStatus,\n  misp_status: mispStatus,\n  private_ip_guard_triggered: privateIpGuard,\n  external_lookup_performed: false,\n  callback_recorded: callbackRecorded,\n  callback_status: callbackStatus,\n  t_response: tResponse,\n  transport_error: transportError,\n};\n"
+        },
+        "id": "live-verify-and-callback",
+        "name": "Verify state, record private-IP refusal, post signed callback",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          520,
+          300
+        ]
+      }
+    ],
+    "connections": {
+      "Live console webhook": {
+        "main": [
+          [
+            {
+              "node": "Verify state, record private-IP refusal, post signed callback",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1"
+    }
+  }
+]

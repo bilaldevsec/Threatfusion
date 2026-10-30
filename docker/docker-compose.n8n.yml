@@ -1,0 +1,28 @@
+# Live-console n8n only. This file does not start MISP, TheHive, or ChromaDB.
+services:
+  n8n:
+    image: n8nio/n8n:1.68.0
+    container_name: threatfusion_n8n_live
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: lab-n8n
+      N8N_BASIC_AUTH_PASSWORD: lab-only-n8n-password
+      THREATFUSION_SOAR_HMAC_SECRET: ${THREATFUSION_SOAR_HMAC_SECRET:?required}
+      THREATFUSION_MISP_API_KEY: ${THREATFUSION_MISP_API_KEY:?required}
+      N8N_HOST: 127.0.0.1
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://127.0.0.1:5678/
+      GENERIC_TIMEZONE: UTC
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "false"
+    volumes:
+      - ./n8n/workflows/threatfusion_live_console_playbook.json:/import/threatfusion_live_console_playbook.json:ro
+      - ./n8n/start-live-workflow.sh:/import/start-live-workflow.sh:ro
+    entrypoint: ["/bin/sh", "/import/start-live-workflow.sh"]

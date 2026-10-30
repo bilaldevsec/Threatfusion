@@ -18,6 +18,7 @@ import re
 import sqlite3
 import stat
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Mapping, Sequence
@@ -74,6 +75,7 @@ _FLOW_EXTRA_COLUMNS: tuple[tuple[str, str], ...] = (
     ("correlation_window_checked", "INTEGER"),
     ("source_event_id", "TEXT"),
     ("sensor_observation_json", "TEXT"),
+    ("execution_path", "TEXT"),
 )
 
 _ANALYST_VERDICTS = frozenset({"true_positive", "false_positive", "inconclusive"})
@@ -699,7 +701,8 @@ def _flow_rows(db_path: Path, *, limit: int) -> list[dict[str, Any]]:
                    service_or_port, clock_synchronized, features_json,
                    analyst_verdict, analyst_rationale, analyst_verdict_actor,
                    analyst_verdict_at, assignee_id, review_status,
-                   correlation_window_checked, source_event_id, sensor_observation_json
+                   correlation_window_checked, source_event_id, sensor_observation_json,
+                   execution_path
             FROM live_flows
             ORDER BY flow_id DESC
             LIMIT ?
@@ -1304,17 +1307,192 @@ def _store_callback_receipt(
     signature: str,
     case_id: str,
     mttr_seconds: float,
+    execution_path: str,
 ) -> None:
     with _connect(db_path) as conn:
         conn.execute(
             """
             UPDATE live_flows
             SET callback_signature = ?, thehive_case_id = ?, mttr_seconds = ?,
-                callback_recorded = 1
+                callback_recorded = 1, execution_path = ?
             WHERE flow_id = ?
             """,
-            (signature, case_id, mttr_seconds, flow_id),
+            (signature, case_id, mttr_seconds, execution_path, flow_id),
         )
+
+
+def _mark_execution_path(db_path: Path, flow_id: int, execution_path: str) -> None:
+    if not db_path.is_file():
+        return
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE live_flows SET execution_path = ? WHERE flow_id = ?",
+            (execution_path, flow_id),
+        )
+
+
+def _n8n_result_dict(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, list) and payload:
+        payload = payload[0]
+    if isinstance(payload, dict) and isinstance(payload.get("json"), dict):
+        payload = payload["json"]
+    return payload if isinstance(payload, dict) else {}
+
+
+LOCAL_CONTRACT_FALLBACK = "local_contract_fallback"
+N8N_LIVE_CONTAINER = "n8n_live_container"
+
+
+def _n8n_contract_base(contract_base_url: str, override: str | None) -> str:
+    if override and override.strip():
+        return override.strip().rstrip("/")
+    parsed = urllib.parse.urlparse(contract_base_url)
+    port = parsed.port or 8766
+    return f"http://host.docker.internal:{port}"
+
+
+def _post_n8n_webhook(webhook_url: str, envelope: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    encoded = json.dumps(envelope).encode("utf-8")
+    request = urllib.request.Request(
+        webhook_url,
+        data=encoded,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            raw = response.read(65536)
+            status = int(response.status)
+    except urllib.error.HTTPError as exc:
+        raw = exc.read(65536)
+        status = int(exc.code)
+    payload = json.loads(raw.decode("utf-8")) if raw else {}
+    return status, _n8n_result_dict(payload)
+
+
+def _dispatch_through_live_n8n(
+    live_db_path: Path,
+    flow: sqlite3.Row,
+    approved: Any,
+    repository: Any,
+    refused: dict[str, Any],
+    *,
+    flow_id: int,
+    candidate_id: str,
+    secret: str,
+    thehive_url: str,
+    outbox_db_path: Path | None,
+    webhook_url: str,
+    contract_base_url: str,
+) -> dict[str, Any]:
+    """Hand the exact signed bytes to n8n. A missing callback is a refusal."""
+    from threatfusion.soar.n8n_thehive_misp_stack import TheHiveDeterministicClient
+    from threatfusion.soar.playbook_ledger import SoarStateTransitionError
+
+    verify_body = _canonical_body(
+        {"candidate_id": candidate_id, "playbook_id": approved.playbook_id}
+    )
+    verify_key = f"idem_{approved.playbook_id}_{approved.version}"
+    verify_sig = _hmac_sha256(verify_body, secret)
+    case = None
+    try:
+        probability = flow["rf_attack_probability"]
+        confidence = float(probability) * 100.0 if probability is not None else 0.0
+        case = TheHiveDeterministicClient(
+            thehive_url=thehive_url,
+            api_key=secret,
+            outbox_db_path=outbox_db_path,
+        ).create_case_from_soar(
+            soar_record=approved,
+            soar_repo=repository,
+            rf_confidence_pct=confidence,
+            incident_id=flow["campaign_id"],
+        )
+    except SoarStateTransitionError:
+        case = None
+    callback_body = ""
+    callback_sig = ""
+    callback_key = ""
+    if case is not None:
+        queued_at = (
+            approved.t_approval_queued
+            if approved.t_approval_queued is not None
+            else datetime.now(UTC).timestamp()
+        )
+        callback_body = _canonical_body(
+            {
+                "candidate_id": candidate_id,
+                "playbook_id": approved.playbook_id,
+                "case_id": case.case_id,
+                "t_approval_queued": queued_at,
+                "t_callback_verified": datetime.now(UTC).timestamp(),
+            }
+        )
+        callback_sig = _hmac_sha256(callback_body, secret)
+        callback_key = f"idem_{approved.playbook_id}_{approved.version}_cb"
+    target = str(flow["src_entity_id"] or "")
+    envelope = {
+        "contract_base_url": contract_base_url,
+        "verify_body": verify_body.decode("utf-8"),
+        "verify_signature": verify_sig,
+        "verify_idempotency_key": verify_key,
+        "callback_body": callback_body.decode("utf-8") if callback_body else "",
+        "callback_signature": callback_sig,
+        "callback_idempotency_key": callback_key,
+        "target_value": target if _bare_ip(target) else "",
+    }
+    try:
+        status, result = _post_n8n_webhook(webhook_url, envelope)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        _mark_execution_path(live_db_path, flow_id, N8N_LIVE_CONTAINER)
+        refused["reason"] = "n8n_unreachable"
+        refused["execution_path"] = N8N_LIVE_CONTAINER
+        return refused
+    recorded = result.get("callback_recorded") is True
+    if status != 200 or not recorded or case is None:
+        _mark_execution_path(live_db_path, flow_id, N8N_LIVE_CONTAINER)
+        refused["reason"] = "verify_state_rejected" if not recorded else "callback_rejected"
+        refused["http_status"] = result.get("verify_status") or status
+        refused["execution_path"] = N8N_LIVE_CONTAINER
+        refused["private_ip_guard_triggered"] = result.get("private_ip_guard_triggered") is True
+        return refused
+    mttr = result.get("t_response")
+    if not isinstance(mttr, (int, float)) or isinstance(mttr, bool):
+        mttr = 0.0
+    four_block_labels = (
+        "Block 1 (Executive Summary):",
+        "Block 2 (Attack Timeline):",
+        "Block 3 (MITRE Mapping):",
+        "Block 4 (Cryptographic SOAR Status):",
+    )
+    _store_callback_receipt(
+        live_db_path,
+        flow_id,
+        signature=callback_sig,
+        case_id=case.case_id,
+        mttr_seconds=float(mttr),
+        execution_path=N8N_LIVE_CONTAINER,
+    )
+    return {
+        "schema_version": "live_soar_callback_v1",
+        "evidence_state": "verified",
+        "reason": "signed_callback_recorded",
+        "execution_authorized": False,
+        "containment_executed": False,
+        "production_fusion_enabled": False,
+        "callback_recorded": True,
+        "signature_sha256": callback_sig,
+        "thehive_case_id": case.case_id,
+        "thehive_status": case.status,
+        "four_block_recorded": all(label in case.description for label in four_block_labels),
+        "mttr_seconds": float(mttr),
+        "flow_id": flow_id,
+        "playbook_id": approved.playbook_id,
+        "candidate_id": candidate_id,
+        "verify_state": True,
+        "execution_path": N8N_LIVE_CONTAINER,
+        "private_ip_guard_triggered": result.get("private_ip_guard_triggered") is True,
+    }
 
 
 def dispatch_approved_callback(
@@ -1326,6 +1504,8 @@ def dispatch_approved_callback(
     hmac_secret: str,
     thehive_url: str = "http://127.0.0.1:9",
     outbox_db_path: Path | None = None,
+    n8n_webhook_url: str | None = None,
+    n8n_contract_base_url: str | None = None,
 ) -> dict[str, Any]:
     """Verify an approved playbook, open a local 4-block case, and record the HMAC callback.
 
@@ -1371,6 +1551,7 @@ def dispatch_approved_callback(
             "mttr_seconds": flow["mttr_seconds"],
             "flow_id": flow_id,
             "playbook_id": flow["playbook_id"],
+            "execution_path": flow["execution_path"] or LOCAL_CONTRACT_FALLBACK,
         }
     candidate_id = f"live_flow:{flow_id}"
     repository = SoarPlaybookSqliteRepository(soar_db_path)
@@ -1385,6 +1566,22 @@ def dispatch_approved_callback(
     if approved is None:
         refused["reason"] = "playbook_not_approved"
         return refused
+    webhook = (n8n_webhook_url or "").strip()
+    if webhook:
+        return _dispatch_through_live_n8n(
+            live_db_path,
+            flow,
+            approved,
+            repository,
+            refused,
+            flow_id=flow_id,
+            candidate_id=candidate_id,
+            secret=secret,
+            thehive_url=thehive_url,
+            outbox_db_path=outbox_db_path,
+            webhook_url=webhook,
+            contract_base_url=_n8n_contract_base(base, n8n_contract_base_url),
+        )
     verify_payload = {"candidate_id": candidate_id, "playbook_id": approved.playbook_id}
     verify_body = _canonical_body(verify_payload)
     verify_key = f"idem_{approved.playbook_id}_{approved.version}"
@@ -1396,8 +1593,10 @@ def dispatch_approved_callback(
         verify_key,
     )
     if status != 200 or verified.get("state_verified") is not True:
+        _mark_execution_path(live_db_path, flow_id, LOCAL_CONTRACT_FALLBACK)
         refused["reason"] = "verify_state_rejected"
         refused["http_status"] = status
+        refused["execution_path"] = LOCAL_CONTRACT_FALLBACK
         return refused
     from threatfusion.soar.n8n_thehive_misp_stack import TheHiveDeterministicClient
 
@@ -1453,6 +1652,7 @@ def dispatch_approved_callback(
         signature=callback_sig,
         case_id=case.case_id,
         mttr_seconds=mttr,
+        execution_path=LOCAL_CONTRACT_FALLBACK,
     )
     return {
         "schema_version": "live_soar_callback_v1",
@@ -1473,6 +1673,7 @@ def dispatch_approved_callback(
         "playbook_id": approved.playbook_id,
         "candidate_id": candidate_id,
         "verify_state": True,
+        "execution_path": LOCAL_CONTRACT_FALLBACK,
     }
 
 

@@ -1967,6 +1967,10 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Live n8n callback path (2026-10-30)
+
+- Approved dispatch uses `docker/docker-compose.n8n.yml` when `THREATFUSION_N8N_WEBHOOK_URL` is set. The imported workflow `threatfusion-live-console` is activated and calls `http://host.docker.internal:8766`. It posts the console's exact callback JSON (`candidate_id`, `playbook_id`, `case_id`, `t_approval_queued`, `t_callback_verified`). An HTTP 422 for `172.29.0.10` is recorded and the signed callback still completes. When verify-state returns HTTP 403, no callback is stored. With the webhook unset, dispatch stays `local_contract_fallback`. On 2026-10-30 an approved row dispatched through the running container returned `execution_path=n8n_live_container`, a 64-character HMAC, `mttr_seconds=0.052761`, `private_ip_guard_triggered=true`, and `containment_executed=false`. An unapproved row returned `playbook_not_approved` with no callback. Approve and dispatch still report `containment_executed=false`.
+
 ### Live Suricata bridge and three-source queue (2026-10-30)
 
 - A private Docker bridge at `172.29.0.0/24` runs an attacker, a victim, and Suricata. No host ports are published. The follower posts each `eve.json` flow to `POST /api/v1/live/sensor` with `source_label=suricata_bridge`. The Suricata line and the frozen Random Forest score are stored as separate facts. Sensor rows use `campaign_suricata_bridge:` and do not share a campaign id with the recorded UNSW study or the labeled scenario replay. A technique appears only after an explicit local search, labeled as a retrieved candidate technique. On 2026-10-30 a real `wget` and `nmap` from `172.29.0.10` to `172.29.0.20` produced `tcp 172.29.0.10:62348 -> 172.29.0.20:80, flow only, no signature`, scored Benign at `0.2455229627681187`, and `tcp 172.29.0.10:62348 -> 172.29.0.20:22, flow only, no signature`, scored Benign at `0.2317729627681187`. No signature was attached and the score was not edited. TF-003 stays open: Suricata byte, direction, and timeout fields are not treated as UNSW equivalents. TF-012 and TF-002 stay open.
