@@ -503,6 +503,51 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             self._send_json(status, payload)
             return
 
+        if path == "/api/v1/live/verdict":
+            from threatfusion.api.live_soc_console import record_analyst_verdict
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            raw_flow = req_data.get("flow_id")
+            result = record_analyst_verdict(
+                self._live_db_path(),
+                flow_id=raw_flow if isinstance(raw_flow, int) else 0,
+                verdict=str(req_data.get("verdict") or ""),
+                rationale=str(req_data.get("rationale") or ""),
+                actor_id=str(req_data.get("actor_id") or ""),
+            )
+            status = 200 if result.get("evidence_state") == "verified" else 400
+            self._send_json(status, result)
+            return
+
+        if path == "/api/v1/live/assignment":
+            from threatfusion.api.live_soc_console import record_case_assignment
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            raw_flow = req_data.get("flow_id")
+            result = record_case_assignment(
+                self._live_db_path(),
+                flow_id=raw_flow if isinstance(raw_flow, int) else 0,
+                assignee_id=str(req_data.get("assignee_id") or ""),
+                review_status=str(req_data.get("review_status") or ""),
+            )
+            status = 200 if result.get("evidence_state") == "verified" else 400
+            self._send_json(status, result)
+            return
+
         if path == "/api/v1/live/triage":
             from threatfusion.api.live_soc_console import record_triage_action
 
@@ -556,9 +601,17 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/v1/live/scenarios":
-            from threatfusion.api.live_soc_console import replay_live_scenarios
+            from threatfusion.api.live_soc_console import (
+                correlate_stored_attacks,
+                replay_live_scenarios,
+            )
 
             result = replay_live_scenarios(self._live_db_path(), repo_root=REPO_ROOT)
+            if result.get("member_count"):
+                result["correlation"] = correlate_stored_attacks(
+                    self._live_db_path(),
+                    self._incidents_db_path(),
+                )
             status = 200 if result.get("member_count") else 400
             self._send_json(status, result)
             return

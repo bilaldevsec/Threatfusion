@@ -565,14 +565,38 @@
     return chainOk && ragOk && hiveOk;
   }
 
+  function queueControlValue(id, fallback) {
+    const node = document.getElementById(id);
+    return node && node.value ? node.value : fallback;
+  }
+
   function getFilteredIncidents() {
-    const source = activeIncidents();
-    if (currentFilter === 'all') return source;
-    if (currentFilter === 'verified') return source.filter(isReceiptVerified);
-    if (currentFilter === 'pending') {
-      return source.filter(inc => inc.soarRecord && inc.soarRecord.state === 'pending_approval');
+    let source = activeIncidents().slice();
+    if (currentFilter === 'verified') source = source.filter(isReceiptVerified);
+    else if (currentFilter === 'pending') {
+      source = source.filter(inc => inc.soarRecord && inc.soarRecord.state === 'pending_approval');
+    } else if (currentFilter === 'unavailable') source = source.filter(inc => !isReceiptVerified(inc));
+    const query = queueControlValue('queueSearch', '').trim().toLowerCase();
+    if (query) {
+      source = source.filter(inc => {
+        const title = inc.advisory && inc.advisory.summaryHeadline ? inc.advisory.summaryHeadline : '';
+        return (title + ' ' + inc.id).toLowerCase().indexOf(query) !== -1;
+      });
     }
-    if (currentFilter === 'unavailable') return source.filter(inc => !isReceiptVerified(inc));
+    const decision = queueControlValue('queueDecisionFilter', 'all');
+    if (decision !== 'all') source = source.filter(inc => inc.decision === decision);
+    const triage = queueControlValue('queueTriageFilter', 'all');
+    if (triage !== 'all') source = source.filter(inc => (inc.triageState || 'unreviewed') === triage);
+    const verdict = queueControlValue('queueVerdictFilter', 'all');
+    if (verdict === 'none') source = source.filter(inc => !inc.analystVerdict);
+    else if (verdict !== 'all') source = source.filter(inc => inc.analystVerdict === verdict);
+    const sort = queueControlValue('queueSort', 'newest');
+    if (sort === 'probability_desc' || sort === 'probability_asc') {
+      source.sort((left, right) => {
+        const delta = Number(left.uncalibratedScore) - Number(right.uncalibratedScore);
+        return sort === 'probability_asc' ? delta : -delta;
+      });
+    }
     return source;
   }
 
@@ -614,6 +638,7 @@
           <span class="badge badge-secondary-anomaly">v2 AE: ${aeError.toFixed(3)}</span>
           <span class="badge" data-evidence-state="${evidenceState}">${evidenceState.toUpperCase()}</span>
           ${inc.triageState ? `<span class="badge badge-state">Triage: ${escapeHtml(inc.triageState)}</span>` : ''}
+          <span class="badge badge-state">Verdict: ${escapeHtml(inc.analystVerdict || 'none')}</span>
         </div>
       `;
 
@@ -655,13 +680,14 @@
       setInspectorText('inspectorPlaybook', 'none');
       setInspectorText('inspectorChain', 'unavailable');
       setInspectorText('inspectorCallback', 'not recorded');
+      renderGlassBox(null);
       return;
     }
     const score = Number(inc.uncalibratedScore);
     const scoreText = Number.isFinite(score) ? (score * 100).toFixed(2) + '%' : 'unavailable';
     const headline = inc.advisory && inc.advisory.summaryHeadline
       ? String(inc.advisory.summaryHeadline)
-      : ((inc.live ? 'Stored flow ' : 'Offline sample ') + String(inc.id));
+      : ((inc.live ? 'Stored flow ' : 'Recorded case ') + String(inc.id));
     if (title) title.textContent = headline;
     const src = inc.provenance && inc.provenance.srcIp ? String(inc.provenance.srcIp) : 'not recorded';
     const dst = inc.provenance && inc.provenance.dstIp ? String(inc.provenance.dstIp) : 'not recorded';
@@ -688,6 +714,36 @@
       && typeof inc.callbackSignature === 'string'
       && SHA256_HEX_REGEX.test(inc.callbackSignature);
     setInspectorText('inspectorCallback', signed ? inc.callbackSignature.slice(0, 16) : 'not recorded');
+    const verdictNode = document.getElementById('analystVerdictDisplay');
+    if (verdictNode) {
+      const verdict = inc.analystVerdict || 'not recorded';
+      verdictNode.textContent = 'Analyst verdict: ' + verdict + '. Frozen RF decision: ' + String(inc.decision || 'withheld') + '.';
+      verdictNode.setAttribute('data-evidence-state', inc.analystVerdict ? 'verified' : 'unavailable');
+    }
+    const assignmentNode = document.getElementById('caseAssignmentDisplay');
+    if (assignmentNode) {
+      const assignee = inc.assigneeId || 'unassigned';
+      const review = inc.reviewStatus || 'unassigned';
+      assignmentNode.textContent = 'Assignee: ' + assignee + '. Review status: ' + review + '.';
+      assignmentNode.setAttribute('data-evidence-state', inc.assigneeId ? 'verified' : 'unavailable');
+    }
+    renderGlassBox(inc.glassBox);
+  }
+
+  function renderGlassBox(checklist) {
+    const node = document.getElementById('glassBoxChecklist');
+    if (!node) return;
+    const items = checklist && Array.isArray(checklist.items) ? checklist.items : [];
+    if (!items.length) {
+      node.textContent = 'Glass-box checklist waiting for a stored flow.';
+      node.setAttribute('data-evidence-state', 'unavailable');
+      return;
+    }
+    node.textContent = items.map(item => (
+      item.id + ': ' + item.status + (item.passed ? ' pass' : ' open')
+    )).join('\n');
+    const allKnown = items.every(item => item.status !== 'not_recorded' && item.status !== 'invalid' && item.status !== 'unscored');
+    node.setAttribute('data-evidence-state', allKnown ? 'verified' : 'pending');
   }
 
   function renderForensicDrawer() {
@@ -1017,7 +1073,7 @@
     }
 
     if (btnPlay) {
-      btnPlay.innerText = 'Pause Walkthrough';
+      btnPlay.innerText = 'Pause pipeline review';
       btnPlay.classList.add('btn-rollback');
     }
 
@@ -1033,7 +1089,7 @@
     }
     const btnPlay = document.getElementById('btnWalkthroughPlay');
     if (btnPlay) {
-      btnPlay.innerText = 'Play 5-Min Walkthrough';
+      btnPlay.innerText = 'Play pipeline review';
       btnPlay.classList.remove('btn-rollback');
     }
   }
@@ -1049,6 +1105,18 @@
         renderIncidentQueue();
       });
     });
+
+    ['queueSearch', 'queueDecisionFilter', 'queueTriageFilter', 'queueVerdictFilter', 'queueSort'].forEach(id => {
+      const node = document.getElementById(id);
+      if (!node) return;
+      node.addEventListener('input', renderIncidentQueue);
+      node.addEventListener('change', renderIncidentQueue);
+    });
+
+    const verdictButton = document.getElementById('btnSaveVerdict');
+    if (verdictButton) verdictButton.addEventListener('click', saveAnalystVerdict);
+    const assignmentButton = document.getElementById('btnSaveAssignment');
+    if (assignmentButton) assignmentButton.addEventListener('click', saveCaseAssignment);
 
     // Walkthrough Buttons
     const btnPlay = document.getElementById('btnWalkthroughPlay');
@@ -1237,6 +1305,11 @@
       thehiveCaseId: flow.thehive_case_id || '',
       mttrSeconds: flow.mttr_seconds,
       triageState: flow.triage_state || 'unreviewed',
+      analystVerdict: flow.analyst_verdict || '',
+      analystRationale: flow.analyst_rationale || '',
+      assigneeId: flow.assignee_id || '',
+      reviewStatus: flow.review_status || 'unassigned',
+      glassBox: flow.glass_box || null,
       thehiveCaseRecord: null,
       n8nPlaybookReceipt: null
     };
@@ -1282,6 +1355,12 @@
       },
       soarAuditChainVerified: false,
       soarAuditChainHeadSha256: '',
+      triageState: 'unreviewed',
+      analystVerdict: '',
+      analystRationale: '',
+      assigneeId: '',
+      reviewStatus: 'unassigned',
+      glassBox: null,
       thehiveCaseRecord: null,
       n8nPlaybookReceipt: null
     };
@@ -1308,6 +1387,12 @@
       }
       const badge = document.getElementById('queueCountBadge');
       if (badge) badge.textContent = views.length + ' stored rows';
+      const flowCount = document.getElementById('liveHeroFlowCount');
+      const campaignCount = document.getElementById('liveHeroCampaignCount');
+      const incidentCount = document.getElementById('liveHeroIncidentCount');
+      if (flowCount) flowCount.textContent = String(data.flow_count || 0);
+      if (campaignCount) campaignCount.textContent = String(data.campaign_count || 0);
+      if (incidentCount) incidentCount.textContent = String(data.incident_count || 0);
       const verifiedCount = views.filter(isReceiptVerified).length;
       setLiveText(
         'campaignQueueStatus',
@@ -1320,7 +1405,7 @@
       liveQueueLoaded = false;
       campaignFetchSettled = true;
       setSampleSurfacesHidden(false);
-      setLiveText('campaignQueueStatus', 'Campaign store unavailable. Offline sample queue is the fallback.', 'unavailable');
+      setLiveText('campaignQueueStatus', 'Campaign store unavailable. The recorded queue is the fallback.', 'unavailable');
     }
     renderIncidentQueue();
     renderForensicDrawer();
@@ -1457,6 +1542,73 @@
     URL.revokeObjectURL(url);
   }
 
+  async function saveAnalystVerdict() {
+    const flowId = selectedLiveFlowId();
+    const verdict = queueControlValue('analystVerdictSelect', '');
+    const rationaleNode = document.getElementById('analystRationale');
+    const rationale = rationaleNode ? rationaleNode.value : '';
+    if (!flowId) {
+      setLiveText('analystVerdictDisplay', 'A stored flow is required.', 'unavailable');
+      return;
+    }
+    try {
+      const resp = await fetch('/api/v1/live/verdict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          flow_id: flowId,
+          verdict: verdict,
+          rationale: rationale,
+          actor_id: 'analyst_a'
+        })
+      });
+      const data = await resp.json();
+      await refreshLiveCampaigns();
+      setLiveText(
+        'analystVerdictDisplay',
+        data.evidence_state === 'verified'
+          ? ('Analyst verdict ' + data.analyst_verdict + ' stored. Frozen RF decision ' + data.frozen_rf_decision + '.')
+          : 'Analyst verdict refused.',
+        data.evidence_state || 'unavailable'
+      );
+    } catch (err) {
+      setLiveText('analystVerdictDisplay', 'Analyst verdict unavailable.', 'unavailable');
+    }
+  }
+
+  async function saveCaseAssignment() {
+    const flowId = selectedLiveFlowId();
+    const assigneeNode = document.getElementById('caseAssignee');
+    const assignee = assigneeNode ? assigneeNode.value : '';
+    const reviewStatus = queueControlValue('reviewStatusSelect', 'unassigned');
+    if (!flowId) {
+      setLiveText('caseAssignmentDisplay', 'A stored flow is required.', 'unavailable');
+      return;
+    }
+    try {
+      const resp = await fetch('/api/v1/live/assignment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          flow_id: flowId,
+          assignee_id: assignee,
+          review_status: reviewStatus
+        })
+      });
+      const data = await resp.json();
+      await refreshLiveCampaigns();
+      setLiveText(
+        'caseAssignmentDisplay',
+        data.evidence_state === 'verified'
+          ? ('Assignee ' + (data.assignee_id || 'unassigned') + '. Review status ' + data.review_status + '.')
+          : 'Assignment refused.',
+        data.evidence_state || 'unavailable'
+      );
+    } catch (err) {
+      setLiveText('caseAssignmentDisplay', 'Assignment unavailable.', 'unavailable');
+    }
+  }
+
   async function recordTriageAction(action) {
     const flowId = selectedLiveFlowId();
     if (!flowId) {
@@ -1572,6 +1724,7 @@
       const data = await resp.json();
       if (data && data.timeline) {
         renderLiveCorrelation(data);
+        await refreshLiveCampaigns();
         return;
       }
       setLiveText('liveTimeline', 'Correlation unavailable.', 'unavailable');
@@ -1639,7 +1792,7 @@
       const data = await resp.json();
       const flows = Array.isArray(data.flows) ? data.flows : [];
       if (!flows.length) {
-        setLiveText('liveQueueStatus', 'Live queue is empty. Sample walkthrough remains the offline fallback.', 'unavailable');
+        setLiveText('liveQueueStatus', 'Live queue is empty. The recorded queue remains available.', 'unavailable');
         return;
       }
       const latest = flows[0];

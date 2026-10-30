@@ -1967,6 +1967,10 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Live analyst verdict, queue controls, and assignment (2026-10-30)
+
+- An analyst verdict and grounded rationale are stored beside the frozen Random Forest decision. The queue can be searched, filtered, and sorted. A local assignee and review status persist and appear in the shift handoff. Hero cards read live SQLite counts. The January 216,568-flow figures stay in the Frozen Benchmark Evaluation Baseline. The evidence tab checklist is built from stored fields. TF-008, TF-009, TF-010, and TF-011 remain **open**. TF-012 and TF-002 remain **open**.
+
 ### Milestone #56: Board dossier for the live console (2026-10-30)
 
 - `docs/BOARD_OF_DIRECTORS_FINAL_REPORT.md` records the shared ledger, the 30.0s/600.0s stitch, triage, the one-screen console, the four-scenario replay, the health drawer, the source qualification, and `--seed-demo`. The 2026-10-30 browser checks are listed there. TF-008 through TF-011 stay open. TF-012 and TF-002 stay open.

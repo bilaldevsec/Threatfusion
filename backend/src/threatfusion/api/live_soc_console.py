@@ -1,4 +1,4 @@
-"""Live analyst console services for the local SOC walkthrough.
+"""Live analyst console services.
 
 Scores a 14-feature flow only when the frozen Random Forest artifact verifies and
 its input width matches the canonical feature contract. The autoencoder never
@@ -64,7 +64,18 @@ _FLOW_EXTRA_COLUMNS: tuple[tuple[str, str], ...] = (
     ("flow_protocol", "TEXT"),
     ("service_or_port", "TEXT"),
     ("clock_synchronized", "INTEGER"),
+    ("analyst_verdict", "TEXT"),
+    ("analyst_rationale", "TEXT"),
+    ("analyst_verdict_actor", "TEXT"),
+    ("analyst_verdict_at", "TEXT"),
+    ("assignee_id", "TEXT"),
+    ("review_status", "TEXT"),
+    ("correlation_window_checked", "INTEGER"),
 )
+
+_ANALYST_VERDICTS = frozenset({"true_positive", "false_positive", "inconclusive"})
+_REVIEW_STATUSES = frozenset({"unassigned", "in_review", "reviewed"})
+_LOCAL_ACTOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -441,14 +452,25 @@ def _flow_rows(db_path: Path, *, limit: int) -> list[dict[str, Any]]:
                    prev_entry_sha256, audit_chain_verified, callback_signature,
                    thehive_case_id, mttr_seconds, callback_recorded, triage_state,
                    src_entity_id, dst_entity_id, entity_namespace_id, flow_protocol,
-                   service_or_port, clock_synchronized
+                   service_or_port, clock_synchronized, features_json,
+                   analyst_verdict, analyst_rationale, analyst_verdict_actor,
+                   analyst_verdict_at, assignee_id, review_status,
+                   correlation_window_checked
             FROM live_flows
             ORDER BY flow_id DESC
             LIMIT ?
             """,
             (max(1, min(limit, 100)),),
         ).fetchall()
-    return [dict(row) for row in rows]
+    published: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["glass_box"] = build_glass_box_checklist(item)
+        item.pop("features_json", None)
+        if not item.get("review_status"):
+            item["review_status"] = "unassigned"
+        published.append(item)
+    return published
 
 
 def _read_stored_incidents(incidents_db_path: Path | None, *, limit: int) -> list[dict[str, Any]]:
@@ -524,7 +546,9 @@ def list_live_campaigns(
         "campaigns": campaigns,
         "incidents": incidents,
         "flow_count": len(flows),
+        "campaign_count": len(campaigns),
         "incident_count": len(incidents),
+        "queue_count": len(flows) + len(incidents),
     }
 
 
@@ -1369,11 +1393,13 @@ def correlate_stored_attacks(live_db_path: Path, incidents_db_path: Path) -> dic
             ORDER BY flow_id ASC
             """).fetchall()
     correlatable = []
+    checked_flow_ids: list[int] = []
     for row in rows:
         try:
             candidate = _candidate_from_attack_row(row)
         except (TypeError, ValueError, RuntimeError):
             continue
+        checked_flow_ids.append(int(row["flow_id"]))
         provenance = EntityProvenanceContract(
             entity_namespace_id=row["entity_namespace_id"],
             clock_synchronized=row["clock_synchronized"] == 1,
@@ -1391,6 +1417,7 @@ def correlate_stored_attacks(live_db_path: Path, incidents_db_path: Path) -> dic
     result = IncidentCorrelationEngine(IncidentSqliteRepository(incidents_db_path)).correlate(
         correlatable
     )
+    _mark_correlation_window_checked(live_db_path, checked_flow_ids)
     _drop_stale_incidents(
         incidents_db_path, {incident.incident_id for incident in result.incidents}
     )
@@ -1455,6 +1482,124 @@ def correlate_stored_attacks(live_db_path: Path, incidents_db_path: Path) -> dic
         ),
         "incidents": incidents,
         "timeline": build_unified_incident_timeline(flow_members=members),
+    }
+
+
+def _mark_correlation_window_checked(db_path: Path, flow_ids: Sequence[int]) -> None:
+    """Record that the 30.0s and 600.0s windows were applied to these Attack rows."""
+    if not flow_ids or not db_path.is_file():
+        return
+    with _connect(db_path) as conn:
+        conn.executemany(
+            "UPDATE live_flows SET correlation_window_checked = 1 WHERE flow_id = ?",
+            [(flow_id,) for flow_id in flow_ids],
+        )
+
+
+def build_glass_box_checklist(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Five checks from stored columns. The analyst verdict is not the forest decision."""
+    from threatfusion.soar.n8n_thehive_misp_stack import is_rfc1918_or_loopback_ip
+
+    parsed: Any = None
+    raw_features = row.get("features_json")
+    if isinstance(raw_features, str):
+        try:
+            parsed = json.loads(raw_features)
+        except json.JSONDecodeError:
+            parsed = None
+    contract_ok = False
+    if isinstance(parsed, dict):
+        vector, _reason = _finite_feature_vector(parsed)
+        contract_ok = vector is not None
+    try:
+        probability_ok = row.get("rf_attack_probability") is not None and math.isfinite(
+            float(row["rf_attack_probability"])
+        )
+    except (TypeError, ValueError):
+        probability_ok = False
+    rf_ok = (
+        row.get("reason") == "frozen_random_forest_scored"
+        and row.get("decision") in {"Attack", "Benign"}
+        and row.get("evidence_state") == "verified"
+        and probability_ok
+    )
+    if row.get("decision") == "Benign":
+        correlation = {
+            "id": "correlation_window_checked",
+            "status": "excluded",
+            "passed": False,
+            "detail": "Benign rows are not correlation members.",
+        }
+    elif row.get("correlation_window_checked") == 1:
+        correlation = {
+            "id": "correlation_window_checked",
+            "status": "checked",
+            "passed": True,
+            "detail": "The 30.0 second and 600.0 second windows were applied.",
+        }
+    else:
+        correlation = {
+            "id": "correlation_window_checked",
+            "status": "not_recorded",
+            "passed": False,
+            "detail": "This Attack row has not been submitted to the correlation windows.",
+        }
+    addresses = _stored_ipv4_addresses(row.get("src_entity_id"), row.get("dst_entity_id"))
+    if not addresses:
+        misp = {
+            "id": "misp_rfc1918_guard",
+            "status": "not_recorded",
+            "passed": False,
+            "private_ip_guard_triggered": False,
+            "external_lookup_performed": False,
+            "detail": "No address is stored on this flow.",
+        }
+    else:
+        blocked = any(is_rfc1918_or_loopback_ip(item) for item in addresses)
+        misp = {
+            "id": "misp_rfc1918_guard",
+            "status": "refused" if blocked else "clear",
+            "passed": True,
+            "private_ip_guard_triggered": blocked,
+            "external_lookup_performed": False,
+            "detail": "Stored addresses were classified locally. No external lookup was performed.",
+        }
+    entry = str(row.get("entry_sha256") or "")
+    chain_ok = row.get("audit_chain_verified") == 1 and _SHA256_HEX.match(entry) is not None
+    return {
+        "schema_version": "glass_box_evidence_v1",
+        "frozen_rf_decision": row.get("decision"),
+        "analyst_verdict": row.get("analyst_verdict") or None,
+        "items": [
+            {
+                "id": "flow_contract_valid",
+                "status": "valid" if contract_ok else "invalid",
+                "passed": contract_ok,
+                "detail": (
+                    "All 14 canonical features are finite."
+                    if contract_ok
+                    else "The stored feature contract is incomplete."
+                ),
+            },
+            {
+                "id": "rf_scored",
+                "status": "scored" if rf_ok else "unscored",
+                "passed": rf_ok,
+                "detail": "The frozen Random Forest decision is stored separately from the analyst verdict.",
+            },
+            correlation,
+            misp,
+            {
+                "id": "soar_hash_chain",
+                "status": "verified" if chain_ok else "pending",
+                "passed": chain_ok,
+                "detail": (
+                    "SHA-256 chain verified."
+                    if chain_ok
+                    else "No verified hash-chain receipt is stored."
+                ),
+            },
+        ],
     }
 
 
@@ -1529,8 +1674,12 @@ def _shift_handoff_markdown(
         f"# Shift handoff for flow {flow_id}",
         "",
         "## Block 1: Decision",
-        f"Decision: {report['block_1_decision']}",
+        f"Frozen Random Forest decision: {report['block_1_decision']}",
         f"Probability: {report['block_1_probability']}",
+        f"Analyst verdict: {report['analyst_verdict']}",
+        "The analyst verdict is stored separately from the frozen Random Forest decision.",
+        f"Assignee: {report['assignee_id']}",
+        f"Review status: {report['review_status']}",
         "",
         "## Block 2: Timeline",
         f"Observed at: {report['block_2_observed_at']}",
@@ -1565,6 +1714,12 @@ def _shift_handoff_markdown(
             "",
             "## Brief",
             brief,
+            "",
+            "## Analyst record",
+            f"Analyst verdict: {report['analyst_verdict']}",
+            f"Rationale: {report['analyst_rationale'] or 'none'}",
+            f"Assignee: {report['assignee_id']}",
+            f"Review status: {report['review_status']}",
             "",
         ]
     )
@@ -1616,6 +1771,168 @@ def record_triage_action(
         "triage_state": state,
         "actor_id": author,
         "created_at_utc": created,
+    }
+
+
+def _load_flow_row(db_path: Path, flow_id: int) -> dict[str, Any] | None:
+    if flow_id <= 0 or not db_path.is_file():
+        return None
+    with _connect(db_path) as conn:
+        row = conn.execute("SELECT * FROM live_flows WHERE flow_id = ?", (flow_id,)).fetchone()
+    if row is None:
+        return None
+    return {key: row[key] for key in row.keys()}
+
+
+def _rationale_stays_on_stored_flow(text: str, stored: Mapping[str, Any]) -> bool:
+    """Refuse a rationale that names an address the flow does not store."""
+    from threatfusion.advisory.explanation_engine import (
+        AdvisoryEvidenceBundle,
+        verify_explanation_groundedness,
+    )
+    from threatfusion.enrichment.threat_intel import ThreatIntelEnrichmentResult
+
+    addresses = _stored_ipv4_addresses(stored.get("src_entity_id"), stored.get("dst_entity_id"))
+    enrichment = None
+    if addresses:
+        enrichment = ThreatIntelEnrichmentResult(
+            status="internal_lab_entity_annotated",
+            provenance_verified=True,
+            external_lookup_performed=False,
+            private_ip_guard_triggered=_any_non_public_ipv4(addresses),
+            inspected_entities=addresses,
+            internal_lab_annotations={},
+            matches=(),
+            feed_snapshot_id=None,
+            reason="stored_flow_entities",
+        )
+    probability = stored.get("rf_attack_probability")
+    bundle = AdvisoryEvidenceBundle(
+        candidate_id=f"live_flow:{stored.get('flow_id')}",
+        record_id=f"live_flow:{stored.get('flow_id')}",
+        rf_model_version="network_random_forest_baseline_v1",
+        rf_attack_probability=float(probability) if probability is not None else 0.0,
+        rf_threshold=0.5,
+        top_feature_signals={},
+        incident_id=stored.get("campaign_id"),
+        observed_at=stored.get("observed_at_utc"),
+        enrichment_result=enrichment,
+    )
+    return verify_explanation_groundedness(text, bundle)
+
+
+def record_analyst_verdict(
+    db_path: Path,
+    *,
+    flow_id: int,
+    verdict: str,
+    rationale: str,
+    actor_id: str,
+) -> dict[str, Any]:
+    """Store an analyst verdict beside the frozen Random Forest decision."""
+    chosen = verdict.strip().lower()
+    text = rationale.strip()
+    actor = actor_id.strip()
+    refused = {
+        "evidence_state": "unavailable",
+        "execution_authorized": False,
+        "containment_executed": False,
+        "production_fusion_enabled": False,
+    }
+    if (
+        chosen not in _ANALYST_VERDICTS
+        or not text
+        or _LOCAL_ACTOR.match(actor) is None
+        or flow_id <= 0
+        or not db_path.is_file()
+    ):
+        refused["reason"] = "verdict_incomplete"
+        return refused
+    stored = _load_flow_row(db_path, flow_id)
+    if stored is None:
+        refused["reason"] = "flow_not_stored"
+        return refused
+    if not _rationale_stays_on_stored_flow(text, stored):
+        refused["reason"] = "explanation_not_grounded"
+        return refused
+    recorded_at = datetime.now(UTC).isoformat()
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE live_flows
+            SET analyst_verdict = ?, analyst_rationale = ?,
+                analyst_verdict_actor = ?, analyst_verdict_at = ?
+            WHERE flow_id = ?
+            """,
+            (chosen, text, actor, recorded_at, flow_id),
+        )
+        decision = conn.execute(
+            "SELECT decision FROM live_flows WHERE flow_id = ?", (flow_id,)
+        ).fetchone()
+    frozen_decision = None if decision is None else decision["decision"]
+    return {
+        "evidence_state": "verified",
+        "reason": "analyst_verdict_stored",
+        "flow_id": flow_id,
+        "analyst_verdict": chosen,
+        "analyst_rationale": text,
+        "actor_id": actor,
+        "recorded_at_utc": recorded_at,
+        "frozen_rf_decision": frozen_decision,
+        "decision_unchanged": frozen_decision == stored["decision"],
+        "execution_authorized": False,
+        "containment_executed": False,
+        "production_fusion_enabled": False,
+    }
+
+
+def record_case_assignment(
+    db_path: Path,
+    *,
+    flow_id: int,
+    assignee_id: str,
+    review_status: str,
+) -> dict[str, Any]:
+    """Store a local assignee and review status. This does not dispatch containment."""
+    status = review_status.strip().lower()
+    assignee = assignee_id.strip()
+    refused = {
+        "evidence_state": "unavailable",
+        "execution_authorized": False,
+        "containment_executed": False,
+        "production_fusion_enabled": False,
+    }
+    if status not in _REVIEW_STATUSES or flow_id <= 0 or not db_path.is_file():
+        refused["reason"] = "assignment_incomplete"
+        return refused
+    if status == "unassigned":
+        assignee = ""
+    elif _LOCAL_ACTOR.match(assignee) is None:
+        refused["reason"] = "assignment_incomplete"
+        return refused
+    stored = _load_flow_row(db_path, flow_id)
+    if stored is None:
+        refused["reason"] = "flow_not_stored"
+        return refused
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE live_flows
+            SET assignee_id = ?, review_status = ?
+            WHERE flow_id = ?
+            """,
+            (assignee or None, status, flow_id),
+        )
+    return {
+        "evidence_state": "verified",
+        "reason": "case_assignment_stored",
+        "flow_id": flow_id,
+        "assignee_id": assignee or None,
+        "review_status": status,
+        "frozen_rf_decision": stored["decision"],
+        "execution_authorized": False,
+        "containment_executed": False,
+        "production_fusion_enabled": False,
     }
 
 
@@ -1736,9 +2053,20 @@ def export_grounded_handoff(
         analyst_transitions=transitions,
         playbook_state=stored["ledger_state"],
     )
+    verdict = stored.get("analyst_verdict") or "not recorded"
+    rationale = stored.get("analyst_rationale") or ""
+    if rationale and not _rationale_stays_on_stored_flow(str(rationale), stored):
+        rationale = ""
+        verdict = "not recorded"
+    review_status = stored.get("review_status") or "unassigned"
+    assignee = stored.get("assignee_id") or "unassigned"
     report = {
         "block_1_decision": stored["decision"],
         "block_1_probability": probability_text,
+        "analyst_verdict": verdict,
+        "analyst_rationale": rationale,
+        "assignee_id": assignee,
+        "review_status": review_status,
         "block_2_observed_at": stored["observed_at_utc"],
         "block_2_latest_triage_state": latest,
         "block_2_triage_count": len(triage_events),

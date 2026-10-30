@@ -24,6 +24,8 @@ from threatfusion.api.live_soc_console import (
     score_canonical_flow,
     store_flow_provenance,
     export_grounded_handoff,
+    record_analyst_verdict,
+    record_case_assignment,
 )
 from threatfusion.models.drift_and_supply_chain import (
     CANONICAL_14_FEATURES,
@@ -571,6 +573,80 @@ def test_source_qualification_is_visible_and_tf012_tf002_stay_open() -> None:
     for issue_id in ("TF-012", "TF-002", "TF-008", "TF-009", "TF-010", "TF-011"):
         row = next(line for line in register.splitlines() if line.startswith(f"| {issue_id} |"))
         assert row.rstrip().endswith("| open |")
+
+
+def test_analyst_verdict_assignment_and_glass_box_stay_beside_the_forest(tmp_path: Path) -> None:
+    db_path = tmp_path / "live.sqlite3"
+    score = score_canonical_flow(
+        _features(),
+        repo_root=REPO_ROOT,
+        model=_Width14Model(),
+        supply_verified=True,
+    )
+    stored = persist_scored_flow(db_path, _features(), score)
+    flow_id = int(stored["flow_id"])
+    refused = record_analyst_verdict(
+        db_path,
+        flow_id=flow_id,
+        verdict="false_positive",
+        rationale="Contact 203.0.113.50 about this row.",
+        actor_id="analyst_a",
+    )
+    assert refused["reason"] == "explanation_not_grounded"
+    saved = record_analyst_verdict(
+        db_path,
+        flow_id=flow_id,
+        verdict="false_positive",
+        rationale="The stored score stands. No new address is named.",
+        actor_id="analyst_a",
+    )
+    assert saved["evidence_state"] == "verified"
+    assert saved["frozen_rf_decision"] == "Attack"
+    assert saved["decision_unchanged"] is True
+    assigned = record_case_assignment(
+        db_path,
+        flow_id=flow_id,
+        assignee_id="analyst_a",
+        review_status="in_review",
+    )
+    assert assigned["evidence_state"] == "verified"
+    queue = list_live_campaigns(db_path)
+    flow = queue["campaigns"][0]["flows"][0]
+    assert flow["decision"] == "Attack"
+    assert flow["analyst_verdict"] == "false_positive"
+    assert flow["assignee_id"] == "analyst_a"
+    assert flow["review_status"] == "in_review"
+    assert queue["flow_count"] == 1
+    assert queue["campaign_count"] == 1
+    item_ids = [item["id"] for item in flow["glass_box"]["items"]]
+    assert item_ids == [
+        "flow_contract_valid",
+        "rf_scored",
+        "correlation_window_checked",
+        "misp_rfc1918_guard",
+        "soar_hash_chain",
+    ]
+    scored = next(item for item in flow["glass_box"]["items"] if item["id"] == "rf_scored")
+    assert scored["passed"] is True
+    assert flow["glass_box"]["frozen_rf_decision"] == "Attack"
+    assert flow["glass_box"]["analyst_verdict"] == "false_positive"
+    handoff = export_grounded_handoff(db_path, flow_id=flow_id)
+    assert handoff["grounded"] is True
+    assert "Frozen Random Forest decision: Attack" in handoff["markdown"]
+    assert "Analyst verdict: false_positive" in handoff["markdown"]
+    assert "Assignee: analyst_a" in handoff["markdown"]
+    assert "Review status: in_review" in handoff["markdown"]
+    html = (REPO_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    script = (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")
+    assert "Frozen Benchmark Evaluation Baseline" in html
+    assert "216,568" in html
+    assert 'id="liveHeroFlowCount"' in html
+    assert 'id="queueSearch"' in html
+    assert 'id="queueDecisionFilter"' in html
+    assert 'id="queueVerdictFilter"' in html
+    assert 'id="glassBoxChecklist"' in html
+    assert "/api/v1/live/verdict" in script
+    assert "/api/v1/live/assignment" in script
 
 
 def test_constitutional_health_reports_digests_and_seven_checks() -> None:

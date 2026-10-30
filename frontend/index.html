@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="ThreatFusion SOC Unicorn Web Console & 5-Minute Real-World Scenario Walkthrough — AI-FYP-2006">
+  <meta name="description" content="ThreatFusion SOC console for recorded network-flow triage">
   <title>ThreatFusion &mdash; SOC Unicorn Web Console (AI-FYP-2006)</title>
   <!-- 100% Offline / Zero CDN Dependencies / Air-Gapped Master Stylesheet -->
   <link rel="stylesheet" href="css/soc_unicorn.css">
@@ -22,7 +22,7 @@
         <div class="brand-icon">TF</div>
         <div>
           <span class="brand-title">ThreatFusion SOC Console</span>
-          <span class="brand-subtitle">Unicorn Progressive Disclosure Triage &middot; AI-FYP-2006</span>
+          <span class="brand-subtitle">Analyst queue, evidence, and approval-gated response</span>
         </div>
       </div>
       <div class="header-telemetry">
@@ -38,17 +38,24 @@
       <!-- Card 1: Alert Noise Compression Funnel -->
       <div class="hero-investor-card" style="background: #111827;">
         <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem;">
-          <span style="font-size: 0.82rem; font-weight: 700; color: var(--text-secondary); text-transform: uppercase;">Alert Noise Compression Funnel</span>
-          <span class="hero-badge-headline">99%+ Alert Noise Eliminated</span>
+          <span style="font-size: 0.82rem; font-weight: 700; color: var(--text-secondary); text-transform: uppercase;">Live queue</span>
+          <span class="hero-badge-headline">SQLite</span>
         </div>
-        <div style="font-size: 1.4rem; font-weight: 800; color: #10B981; margin: 0.2rem 0;" id="heroFunnelRatio">99.9889% Ratio</div>
-        <div style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.35rem;" id="velocitySourceLabel">Reference Benchmark (Inspected January Split)</div>
-        <div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
-          216,568 Raw Ingested Flows &rarr; 4,358 RF Candidates &rarr; 24 Correlated Campaigns &rarr; 8 Actionable Playbooks
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem;">
+          <div>
+            <div style="font-size: 1.4rem; font-weight: 800; color: #10B981;" id="liveHeroFlowCount">0</div>
+            <div style="font-size: 0.75rem; color: var(--text-secondary);">Stored flows</div>
+          </div>
+          <div>
+            <div style="font-size: 1.4rem; font-weight: 800; color: #06B6D4;" id="liveHeroCampaignCount">0</div>
+            <div style="font-size: 0.75rem; color: var(--text-secondary);">Campaigns</div>
+          </div>
+          <div>
+            <div style="font-size: 1.4rem; font-weight: 800; color: #F59E0B;" id="liveHeroIncidentCount">0</div>
+            <div style="font-size: 0.75rem; color: var(--text-secondary);">Incidents</div>
+          </div>
         </div>
-        <div style="display: flex; gap: 0.25rem; font-size: 0.72rem; color: var(--text-muted); font-family: var(--font-mono);">
-          <span>Raw Flows</span> &rarr; <span>RF Gatekeeper (95.266% Prec, 0.095% FPR)</span> &rarr; <span>v2 AE (+2.203 pp Recall)</span> &rarr; <span>30s/600s Stitching</span>
-        </div>
+        <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.45rem;">These counts are read from the live SQLite queue.</div>
       </div>
 
       <div class="hero-investor-card" id="liveSocConsole" style="background: #111827;">
@@ -154,7 +161,7 @@
       <div class="velocity-card">
         <span class="velocity-label">Alert Noise Compression Ratio</span>
         <span class="velocity-value" id="valCompression" style="color: var(--color-emerald);">99.9889%</span>
-        <span class="velocity-detail">4-Tier Aggregation &middot; 216,568 Flows &rarr; 24 Incidents</span>
+        <span class="velocity-detail">January figures stay in the Frozen Benchmark Evaluation Baseline</span>
       </div>
       <div class="velocity-card">
         <span class="velocity-label">Cloud Budget Tracker</span>
@@ -188,11 +195,12 @@
     </section>
 
     <!-- 4-Tier Alert Noise Reduction Funnel Section -->
-    <section class="funnel-container" aria-label="4-Tier Alert Noise Reduction Funnel">
+    <section class="funnel-container" id="frozenBenchmarkBaseline" aria-label="Frozen Benchmark Evaluation Baseline">
       <div class="funnel-header">
-        <h2 style="font-size: 1.1rem; font-weight: 700; color: #fff;">4-Tier Alert Noise Compression Funnel Analytics</h2>
+        <h2 style="font-size: 1.1rem; font-weight: 700; color: #fff;">Frozen Benchmark Evaluation Baseline</h2>
         <span class="badge" data-evidence-state="verified" id="funnelBadge">Noise Compression Ratio: 99.9889%</span>
       </div>
+      <p style="font-size: 0.8rem; color: var(--text-secondary); margin: 0.35rem 0 0.75rem;">January evaluation, 216,568 flows. These figures are not the live queue.</p>
       <div class="funnel-grid">
         <div class="funnel-card tier-1">
           <div class="funnel-tier-num">Tier 1</div>
@@ -243,6 +251,26 @@
           <button id="btnAcknowledge" type="button">Acknowledge</button>
           <button id="btnEscalate" type="button">Escalate</button>
           <button id="btnDismiss" type="button">Dismiss</button>
+          <label for="analystVerdictSelect" style="display:block;margin-top:0.45rem;font-size:0.75rem;color:var(--text-secondary);">Analyst verdict</label>
+          <select id="analystVerdictSelect">
+            <option value="true_positive">true_positive</option>
+            <option value="false_positive">false_positive</option>
+            <option value="inconclusive">inconclusive</option>
+          </select>
+          <label for="analystRationale" style="display:block;margin-top:0.35rem;font-size:0.75rem;color:var(--text-secondary);">Grounded rationale</label>
+          <textarea id="analystRationale" rows="2" placeholder="Stored separately from the frozen Random Forest decision. An address must already be on this flow." style="width:100%;margin-top:0.2rem;"></textarea>
+          <button id="btnSaveVerdict" type="button">Save analyst verdict</button>
+          <div id="analystVerdictDisplay" data-evidence-state="unavailable">No analyst verdict stored.</div>
+          <label for="caseAssignee" style="display:block;margin-top:0.45rem;font-size:0.75rem;color:var(--text-secondary);">Assignee</label>
+          <input id="caseAssignee" type="text" value="">
+          <label for="reviewStatusSelect" style="display:block;margin-top:0.35rem;font-size:0.75rem;color:var(--text-secondary);">Review status</label>
+          <select id="reviewStatusSelect">
+            <option value="unassigned">unassigned</option>
+            <option value="in_review">in_review</option>
+            <option value="reviewed">reviewed</option>
+          </select>
+          <button id="btnSaveAssignment" type="button">Save assignment</button>
+          <div id="caseAssignmentDisplay" data-evidence-state="unavailable">No assignee stored.</div>
           <button id="btnExportHandoff" type="button">Export Shift Handoff / 4-Block Incident Report</button>
           <label for="shiftHandoffNote" style="display:block;margin-top:0.45rem;font-size:0.75rem;color:var(--text-secondary);">Shift note</label>
           <textarea id="shiftHandoffNote" rows="2" placeholder="Optional. An address must already be stored on this flow." style="width:100%;margin-top:0.2rem;"></textarea>
@@ -258,6 +286,39 @@
           <button class="filter-btn" data-filter="verified">Verified Receipts</button>
           <button class="filter-btn" data-filter="pending">Pending Approval</button>
           <button class="filter-btn" data-filter="unavailable">Unavailable</button>
+        </div>
+        <div class="queue-filter-bar">
+          <label for="queueSearch">Search</label>
+          <input id="queueSearch" type="search" value="" placeholder="Title or flow">
+          <label for="queueDecisionFilter">RF decision</label>
+          <select id="queueDecisionFilter">
+            <option value="all">All decisions</option>
+            <option value="Attack">Attack</option>
+            <option value="Benign">Benign</option>
+            <option value="withheld">withheld</option>
+          </select>
+          <label for="queueTriageFilter">Triage state</label>
+          <select id="queueTriageFilter">
+            <option value="all">All triage states</option>
+            <option value="unreviewed">unreviewed</option>
+            <option value="acknowledged">acknowledged</option>
+            <option value="escalated">escalated</option>
+            <option value="dismissed">dismissed</option>
+          </select>
+          <label for="queueVerdictFilter">Analyst verdict</label>
+          <select id="queueVerdictFilter">
+            <option value="all">All verdicts</option>
+            <option value="true_positive">true_positive</option>
+            <option value="false_positive">false_positive</option>
+            <option value="inconclusive">inconclusive</option>
+            <option value="none">No verdict</option>
+          </select>
+          <label for="queueSort">Sort</label>
+          <select id="queueSort">
+            <option value="newest">Newest</option>
+            <option value="probability_desc">RF probability high to low</option>
+            <option value="probability_asc">RF probability low to high</option>
+          </select>
         </div>
 
         <!-- Incident Item List Container -->
@@ -348,6 +409,8 @@
                   Canonical 14 UNSW-NB15 / Suricata Features
                 </div>
                 <div id="inspectorEvidenceNote" style="font-size: 0.85rem; line-height: 1.6;">The 14 canonical features stay on the stored flow. This tab does not invent a packet count.</div>
+                <div id="glassBoxChecklist" data-evidence-state="unavailable" style="margin-top: 0.75rem; font-size: 0.85rem; line-height: 1.6;">Glass-box checklist waiting for a stored flow.</div>
+                <div style="margin-top: 0.35rem;">MISP Source: Local Verified Snapshot Fallback</div>
                 <div style="margin-top: 0.75rem; font-size: 0.85rem; line-height: 1.6;">
                   <div><b>Primary decision authority:</b> <span class="badge badge-rf-confidence">Frozen Random Forest</span></div>
                   <div><b>Section 8 lock:</b> <span class="badge badge-secondary-anomaly">+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)</span></div>
@@ -440,7 +503,7 @@
             Semantic Retrieval Index: 64-Dimensional L2-Normalized Embeddings over MITRE ATT&amp;CK Enterprise Corpus
           </div>
           <div class="corpus-pills">
-            <code>T1046 (Network Service Discovery)</code>
+            <code data-copy-value="T1046" title="Click to copy identifier">T1046 (Network Service Discovery)</code>
             <code>T1190 (Exploit Public-Facing App)</code>
             <code>T1498 (Network Denial of Service)</code>
             <code>T1071.001 (Web Protocols C2)</code>
@@ -481,17 +544,17 @@
       </section>
     </div>
 
-    <!-- Interactive 5-Minute Guided 6-Stage Walkthrough Section -->
-    <section class="walkthrough-panel" data-sample-only="true" hidden aria-label="5-Minute Guided Real-World Scenario Walkthrough">
+    <!-- Offline pipeline stage review. Hidden once the live queue loads. -->
+    <section class="walkthrough-panel" data-sample-only="true" hidden aria-label="Pipeline stage review">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
         <div>
-          <h2 style="font-size: 1.2rem; font-weight: 700; color: #fff;">5-Minute Guided Real-World Scenario Walkthrough</h2>
+          <h2 style="font-size: 1.2rem; font-weight: 700; color: #fff;">Pipeline stage review</h2>
           <p style="font-size: 0.8rem; color: var(--text-secondary);">
             Interactive Step-by-Step Defense Rehearsal &middot; From Raw Azure Suricata Ingestion to Human-in-the-Loop SOAR Containment
           </p>
         </div>
         <div class="walkthrough-controls">
-          <button class="btn btn-approve" id="btnWalkthroughPlay">Play 5-Min Walkthrough</button>
+          <button class="btn btn-approve" id="btnWalkthroughPlay">Play pipeline review</button>
           <button class="btn" style="background:#21262d;color:#fff;border-color:#30363d;" id="btnWalkthroughPrev">&larr; Previous Stage</button>
           <button class="btn" style="background:#21262d;color:#fff;border-color:#30363d;" id="btnWalkthroughNext">Next Stage &rarr;</button>
           <button class="btn btn-rollback" id="btnWalkthroughReset">Reset</button>

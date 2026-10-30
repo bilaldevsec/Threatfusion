@@ -55,3 +55,13 @@ Thumbs.db
 # Logs
 logs/
 *.log
+
+# Local agent notes. Product docs and AGENTS.md stay tracked.
+CLAUDE.md
+SKILL.md
+MIGRATE_TO_ANTIGRAVITY.md
+.agents/
+.cursor/autonomous_backlog.md
+.cursor/agents/
+.cursor/BUGBOT.md
+.cursor/config/

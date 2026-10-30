@@ -938,6 +938,10 @@ A 1,527-test pytest run and the corrupt-database classification fix do not satis
 
 Stored triage actions, the shift-handoff timeline, and the grounded-note refusal do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. Containment stays unauthorized. All four issues remain **open**.
 
+### Live analyst verdict and assignment, 2026-10-30
+
+The analyst verdict, queue controls, assignee, live hero counts, and glass-box checklist do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. TF-012 and TF-002 remain **open**. All four external gates remain **open**.
+
 ### Milestone #56 board dossier, 2026-10-30
 
 The 2026-10-30 board dossier does not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. TF-012 and TF-002 remain **open**. All four external gates remain **open**.
