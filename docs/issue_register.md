@@ -938,6 +938,10 @@ A 1,527-test pytest run and the corrupt-database classification fix do not satis
 
 Stored triage actions, the shift-handoff timeline, and the grounded-note refusal do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. Containment stays unauthorized. All four issues remain **open**.
 
+### Operator certificate stamp, 2026-10-30
+
+The lab certificate stamp does not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. It does not close TF-003, TF-012, or TF-002. All four external gates remain **open**.
+
 ### Live n8n callback path, 2026-10-30
 
 The live n8n container and the local contract fallback do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. They do not close TF-003, TF-012, or TF-002. All four external gates remain **open**.

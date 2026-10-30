@@ -711,6 +711,27 @@ def enroll(directory: Path, certificate: Path, ca: Path, actor: str, *, create=F
         return record.certificate_sha256
 
 
+def active_fingerprint(directory: Path, actor_id: str) -> str | None:
+    """Return the DER SHA-256 of an enabled, unrevoked, in-date credential for this actor."""
+    if not valid_actor_id(actor_id):
+        return None
+    try:
+        with _boundary(), _directory(directory) as fd:
+            records = _read(fd)
+    except (CredentialPolicyError, FileNotFoundError, OSError):
+        return None
+    now = datetime.now(UTC)
+    for record in records:
+        if (
+            record.actor_id == actor_id
+            and record.enabled
+            and not record.revoked
+            and record.not_before <= now < record.not_after
+        ):
+            return record.certificate_sha256
+    return None
+
+
 def restrict(directory: Path, fingerprint: str, *, revoke: bool) -> None:
     """Retain the exact record; no delete, re-enable, or un-revoke operation."""
     with _boundary(), _directory(directory, write=True) as fd:

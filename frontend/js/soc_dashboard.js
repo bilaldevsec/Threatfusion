@@ -724,6 +724,7 @@
       setInspectorText('inspectorChain', 'unavailable');
       setInspectorText('inspectorCallback', 'not recorded');
       setInspectorText('inspectorExecutionPath', 'not dispatched');
+      showOperatorStamp({ identity_verified: false, identity_label: 'unverified_local_label' });
       renderGlassBox(null);
       return;
     }
@@ -783,6 +784,7 @@
       ? inc.executionPath
       : 'not dispatched';
     setInspectorText('inspectorExecutionPath', executionPath);
+    showOperatorStamp(inc);
     const verdictNode = document.getElementById('analystVerdictDisplay');
     if (verdictNode) {
       const verdict = inc.analystVerdict || 'not recorded';
@@ -1184,6 +1186,8 @@
 
     const verdictButton = document.getElementById('btnSaveVerdict');
     if (verdictButton) verdictButton.addEventListener('click', saveAnalystVerdict);
+    const enrollButton = document.getElementById('btnEnrollOperator');
+    if (enrollButton) enrollButton.addEventListener('click', enrollLabOperator);
     const assignmentButton = document.getElementById('btnSaveAssignment');
     if (assignmentButton) assignmentButton.addEventListener('click', saveCaseAssignment);
 
@@ -1385,6 +1389,10 @@
       soarAuditChainHeadSha256: entry,
       callbackSignature: typeof flow.callback_signature === 'string' ? flow.callback_signature : '',
       executionPath: flow.execution_path || '',
+      operatorId: flow.operator_id || '',
+      certSha256Prefix: flow.cert_sha256_prefix || '',
+      identityVerified: flow.identity_verified === 1 || flow.identity_verified === true,
+      identityLabel: flow.identity_label || 'unverified_local_label',
       thehiveCaseId: flow.thehive_case_id || '',
       mttrSeconds: flow.mttr_seconds,
       triageState: flow.triage_state || 'unreviewed',
@@ -1587,6 +1595,53 @@
     }
   }
 
+  function operatorActorId() {
+    const node = document.getElementById('operatorActor');
+    const value = node && node.value ? node.value.trim() : 'analyst_a';
+    return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value) ? value : 'analyst_a';
+  }
+
+  function showOperatorStamp(stamp) {
+    const node = document.getElementById('operatorIdentityBadge');
+    if (!node || !stamp) return;
+    const verified = stamp.identity_verified === true || stamp.identityVerified === true;
+    const label = stamp.identity_label || stamp.identityLabel || '';
+    const operatorId = stamp.operator_id || stamp.operatorId || '';
+    const prefix = stamp.cert_sha256_prefix || stamp.certSha256Prefix || '';
+    if (verified && label !== 'unverified_local_label' && operatorId && prefix) {
+      node.textContent = 'verified operator ' + operatorId + ' ' + prefix;
+      node.setAttribute('data-evidence-state', 'verified');
+      return;
+    }
+    node.textContent = 'unverified local label';
+    node.setAttribute('data-evidence-state', 'unavailable');
+  }
+
+  async function enrollLabOperator() {
+    const node = document.getElementById('operatorActor');
+    if (node && (!node.value.trim() || node.value.trim() === 'analyst_a')) {
+      node.value = 'lab_operator';
+    }
+    try {
+      const resp = await fetch('/api/v1/live/operator/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actor_id: operatorActorId() })
+      });
+      const data = await resp.json();
+      showOperatorStamp(data);
+      setLiveText(
+        'campaignQueueStatus',
+        data.evidence_state === 'verified'
+          ? ('Lab certificate enrolled for ' + (data.operator_id || operatorActorId()) + '.')
+          : 'Lab certificate enrollment refused.',
+        data.evidence_state || 'unavailable'
+      );
+    } catch (err) {
+      setLiveText('campaignQueueStatus', 'Lab certificate enrollment refused.', 'unavailable');
+    }
+  }
+
   async function approveLivePlaybook(inc) {
     if (!inc || !inc.live || !inc.flowId) {
       setLiveText('campaignQueueStatus', 'Approval applies to a stored flow. Containment stays unauthorized.', 'unavailable');
@@ -1598,12 +1653,13 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           flow_id: inc.flowId,
-          actor_id: 'analyst_a',
+          actor_id: operatorActorId(),
           reason: 'Analyst recorded local approval. Containment is not executed.'
         })
       });
       const data = await resp.json();
       const receipt = typeof data.entry_sha256 === 'string' ? data.entry_sha256 : '';
+      showOperatorStamp(data);
       if (data.evidence_state === 'verified' && SHA256_HEX_REGEX.test(receipt)) {
         setLiveText('campaignQueueStatus', 'SOAR receipt ' + receipt.substring(0, 16) + ' verified. Containment not executed.', 'verified');
       } else {
@@ -1656,10 +1712,11 @@
           flow_id: flowId,
           verdict: verdict,
           rationale: rationale,
-          actor_id: 'analyst_a'
+          actor_id: operatorActorId()
         })
       });
       const data = await resp.json();
+      showOperatorStamp(data);
       await refreshLiveCampaigns();
       setLiveText(
         'analystVerdictDisplay',
@@ -1693,6 +1750,7 @@
         })
       });
       const data = await resp.json();
+      showOperatorStamp(data);
       await refreshLiveCampaigns();
       setLiveText(
         'caseAssignmentDisplay',
@@ -1716,9 +1774,10 @@
       const resp = await fetch('/api/v1/live/triage', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ flow_id: flowId, action: action, actor_id: 'analyst_a' })
+        body: JSON.stringify({ flow_id: flowId, action: action, actor_id: operatorActorId() })
       });
       const data = await resp.json();
+      showOperatorStamp(data);
       await refreshLiveCampaigns();
       setLiveText(
         'campaignQueueStatus',

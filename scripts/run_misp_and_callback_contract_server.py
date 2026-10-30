@@ -149,6 +149,11 @@ def _get_soar_record_and_verify_chain(
         return False, None, f"Ledger access error: {exc}"
 
 
+def _operator_policy_dir() -> Path | None:
+    configured = os.environ.get("THREATFUSION_OPERATOR_POLICY_DIR", "").strip()
+    return Path(configured) if configured else None
+
+
 class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
     """HTTP Request Handler implementing MISP restSearch, state verification, and callback."""
 
@@ -562,7 +567,28 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 verdict=str(req_data.get("verdict") or ""),
                 rationale=str(req_data.get("rationale") or ""),
                 actor_id=str(req_data.get("actor_id") or ""),
+                policy_dir=_operator_policy_dir(),
             )
+            status = 200 if result.get("evidence_state") == "verified" else 400
+            self._send_json(status, result)
+            return
+
+        if path == "/api/v1/live/operator/enroll":
+            from threatfusion.api.live_soc_console import enroll_lab_operator
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            directory = _operator_policy_dir()
+            if directory is None:
+                directory = Path(os.environ.get("TMPDIR", "/tmp")) / "threatfusion-operator-policy"
+                os.environ["THREATFUSION_OPERATOR_POLICY_DIR"] = str(directory)
+            result = enroll_lab_operator(directory, str(req_data.get("actor_id") or ""))
             status = 200 if result.get("evidence_state") == "verified" else 400
             self._send_json(status, result)
             return
@@ -584,6 +610,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 flow_id=raw_flow if isinstance(raw_flow, int) else 0,
                 assignee_id=str(req_data.get("assignee_id") or ""),
                 review_status=str(req_data.get("review_status") or ""),
+                policy_dir=_operator_policy_dir(),
             )
             status = 200 if result.get("evidence_state") == "verified" else 400
             self._send_json(status, result)
@@ -606,6 +633,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 flow_id=raw_flow if isinstance(raw_flow, int) else 0,
                 action=str(req_data.get("action") or ""),
                 actor_id=str(req_data.get("actor_id") or ""),
+                policy_dir=_operator_policy_dir(),
             )
             status = 200 if result.get("evidence_state") == "verified" else 400
             self._send_json(status, result)
@@ -708,6 +736,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 flow_id=flow_id,
                 actor_id=str(req_data.get("actor_id") or ""),
                 reason=str(req_data.get("reason") or ""),
+                policy_dir=_operator_policy_dir(),
             )
             status = 200 if result.get("evidence_state") == "verified" else 400
             self._send_json(status, result)

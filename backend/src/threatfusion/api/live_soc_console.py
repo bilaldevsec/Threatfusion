@@ -76,6 +76,10 @@ _FLOW_EXTRA_COLUMNS: tuple[tuple[str, str], ...] = (
     ("source_event_id", "TEXT"),
     ("sensor_observation_json", "TEXT"),
     ("execution_path", "TEXT"),
+    ("operator_id", "TEXT"),
+    ("cert_sha256_prefix", "TEXT"),
+    ("identity_verified", "INTEGER"),
+    ("identity_label", "TEXT"),
 )
 
 _ANALYST_VERDICTS = frozenset({"true_positive", "false_positive", "inconclusive"})
@@ -702,7 +706,8 @@ def _flow_rows(db_path: Path, *, limit: int) -> list[dict[str, Any]]:
                    analyst_verdict, analyst_rationale, analyst_verdict_actor,
                    analyst_verdict_at, assignee_id, review_status,
                    correlation_window_checked, source_event_id, sensor_observation_json,
-                   execution_path
+                   execution_path, operator_id, cert_sha256_prefix,
+                   identity_verified, identity_label
             FROM live_flows
             ORDER BY flow_id DESC
             LIMIT ?
@@ -1191,6 +1196,169 @@ def _store_flow_receipt(db_path: Path, flow_id: int, receipt: Mapping[str, Any])
         )
 
 
+def operator_stamp(actor_id: str, policy_dir: Path | None) -> dict[str, Any]:
+    """Stamp a verified operator only when an enrolled credential matches this actor."""
+    unverified = {
+        "operator_id": "",
+        "cert_sha256_prefix": "",
+        "identity_verified": False,
+        "identity_label": "unverified_local_label",
+    }
+    author = actor_id.strip()
+    if author == "analyst_a" or policy_dir is None or _LOCAL_ACTOR.fullmatch(author) is None:
+        return unverified
+    from threatfusion.operations.human_credentials import active_fingerprint
+
+    fingerprint = active_fingerprint(policy_dir, author)
+    if not fingerprint:
+        return unverified
+    return {
+        "operator_id": author,
+        "cert_sha256_prefix": fingerprint[:16],
+        "identity_verified": True,
+        "identity_label": "verified_operator",
+    }
+
+
+def _store_operator_stamp(db_path: Path, flow_id: int, stamp: Mapping[str, Any]) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE live_flows
+            SET operator_id = ?, cert_sha256_prefix = ?,
+                identity_verified = ?, identity_label = ?
+            WHERE flow_id = ?
+            """,
+            (
+                stamp.get("operator_id") or None,
+                stamp.get("cert_sha256_prefix") or None,
+                1 if stamp.get("identity_verified") else 0,
+                stamp.get("identity_label") or "unverified_local_label",
+                flow_id,
+            ),
+        )
+
+
+def enroll_lab_operator(directory: Path, actor_id: str) -> dict[str, Any]:
+    """Issue a short-lived lab client certificate and enroll its fingerprint."""
+    import subprocess
+    import tempfile
+
+    from threatfusion.api.analyst_tls_service import ANALYST_URI_PREFIX
+    from threatfusion.operations import human_credentials as policy
+    from threatfusion.schemas.analyst_state import valid_actor_id
+
+    actor = actor_id.strip()
+    refused = {
+        "evidence_state": "unavailable",
+        "identity_verified": False,
+        "identity_label": "unverified_local_label",
+        "operator_id": "",
+        "cert_sha256_prefix": "",
+    }
+    if actor == "analyst_a" or not valid_actor_id(actor):
+        refused["reason"] = "actor_rejected"
+        return refused
+    try:
+        policy.init_policy_directory(directory)
+    except policy.CredentialPolicyError:
+        refused["reason"] = "policy_directory_rejected"
+        return refused
+    existing = policy.active_fingerprint(directory, actor)
+    if existing:
+        stamp = operator_stamp(actor, directory)
+        stamp["evidence_state"] = "verified"
+        stamp["reason"] = "already_enrolled"
+        return stamp
+    try:
+        with tempfile.TemporaryDirectory(prefix="tf-lab-operator-") as tmp:
+            folder = Path(tmp)
+            ca_cert, ca_key = folder / "ca.pem", folder / "ca.key"
+            cert, key = folder / "client.pem", folder / "client.key"
+            request, extension = folder / "client.csr", folder / "client.ext"
+            extension.write_text(
+                "basicConstraints=CA:FALSE\n"
+                "keyUsage=digitalSignature,keyEncipherment\n"
+                "extendedKeyUsage=clientAuth\n"
+                f"subjectAltName=URI:{ANALYST_URI_PREFIX}{actor}\n",
+                encoding="ascii",
+            )
+            commands = (
+                (
+                    "req",
+                    "-x509",
+                    "-newkey",
+                    "rsa:2048",
+                    "-nodes",
+                    "-keyout",
+                    str(ca_key),
+                    "-out",
+                    str(ca_cert),
+                    "-days",
+                    "30",
+                    "-sha256",
+                    "-subj",
+                    f"/CN={actor} lab CA",
+                ),
+                (
+                    "req",
+                    "-new",
+                    "-newkey",
+                    "rsa:2048",
+                    "-nodes",
+                    "-keyout",
+                    str(key),
+                    "-out",
+                    str(request),
+                    "-subj",
+                    f"/CN={actor}",
+                ),
+                (
+                    "x509",
+                    "-req",
+                    "-in",
+                    str(request),
+                    "-CA",
+                    str(ca_cert),
+                    "-CAkey",
+                    str(ca_key),
+                    "-CAcreateserial",
+                    "-out",
+                    str(cert),
+                    "-days",
+                    "30",
+                    "-sha256",
+                    "-extfile",
+                    str(extension),
+                ),
+            )
+            for command in commands:
+                result = subprocess.run(
+                    ["openssl", *command],
+                    capture_output=True,
+                    timeout=20,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    refused["reason"] = "certificate_not_issued"
+                    return refused
+            policy_file = directory / policy.FILENAME
+            if policy_file.is_file():
+                policy.enroll(directory, cert, ca_cert, actor, create=False)
+            else:
+                policy.init(directory, cert, ca_cert, actor)
+    except (policy.CredentialPolicyError, OSError, subprocess.TimeoutExpired):
+        refused["reason"] = "enrollment_rejected"
+        return refused
+    stamp = operator_stamp(actor, directory)
+    if not stamp["identity_verified"]:
+        refused["reason"] = "enrollment_rejected"
+        return refused
+    stamp["evidence_state"] = "verified"
+    stamp["reason"] = "lab_operator_enrolled"
+    return stamp
+
+
 def approve_live_soar(
     live_db_path: Path,
     soar_db_path: Path,
@@ -1198,6 +1366,7 @@ def approve_live_soar(
     flow_id: int,
     actor_id: str,
     reason: str,
+    policy_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Record analyst approval on the SOAR hash chain. Containment is not executed."""
     refused = {
@@ -1237,6 +1406,9 @@ def approve_live_soar(
         receipt["flow_id"] = flow_id
         receipt["candidate_id"] = candidate_id
         _store_flow_receipt(live_db_path, flow_id, receipt)
+        stamp = operator_stamp(author, policy_dir)
+        _store_operator_stamp(live_db_path, flow_id, stamp)
+        receipt.update(stamp)
         return receipt
     pending = next((record for record in existing if record.state == "pending_approval"), None)
     try:
@@ -1260,6 +1432,9 @@ def approve_live_soar(
     receipt["candidate_id"] = candidate_id
     receipt["ledger_state"] = updated.state
     _store_flow_receipt(live_db_path, flow_id, receipt)
+    stamp = operator_stamp(author, policy_dir)
+    _store_operator_stamp(live_db_path, flow_id, stamp)
+    receipt.update(stamp)
     return receipt
 
 
@@ -2191,6 +2366,7 @@ def record_triage_action(
     flow_id: int,
     action: str,
     actor_id: str,
+    policy_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Persist one analyst triage action. Unknown actions are refused."""
     state = _TRIAGE_ACTIONS.get(action.strip().lower())
@@ -2223,6 +2399,8 @@ def record_triage_action(
             (flow_id, action.strip().lower(), state, author, created),
         )
         event_id = int(cursor.lastrowid)
+    stamp = operator_stamp(author, policy_dir)
+    _store_operator_stamp(db_path, flow_id, stamp)
     return {
         "evidence_state": "verified",
         "event_id": event_id,
@@ -2230,6 +2408,7 @@ def record_triage_action(
         "triage_state": state,
         "actor_id": author,
         "created_at_utc": created,
+        **stamp,
     }
 
 
@@ -2287,6 +2466,7 @@ def record_analyst_verdict(
     verdict: str,
     rationale: str,
     actor_id: str,
+    policy_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Store an analyst verdict beside the frozen Random Forest decision."""
     chosen = verdict.strip().lower()
@@ -2329,6 +2509,8 @@ def record_analyst_verdict(
             "SELECT decision FROM live_flows WHERE flow_id = ?", (flow_id,)
         ).fetchone()
     frozen_decision = None if decision is None else decision["decision"]
+    stamp = operator_stamp(actor, policy_dir)
+    _store_operator_stamp(db_path, flow_id, stamp)
     return {
         "evidence_state": "verified",
         "reason": "analyst_verdict_stored",
@@ -2342,6 +2524,7 @@ def record_analyst_verdict(
         "execution_authorized": False,
         "containment_executed": False,
         "production_fusion_enabled": False,
+        **stamp,
     }
 
 
@@ -2351,6 +2534,7 @@ def record_case_assignment(
     flow_id: int,
     assignee_id: str,
     review_status: str,
+    policy_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Store a local assignee and review status. This does not dispatch containment."""
     status = review_status.strip().lower()
@@ -2382,6 +2566,8 @@ def record_case_assignment(
             """,
             (assignee or None, status, flow_id),
         )
+    stamp = operator_stamp(assignee, policy_dir)
+    _store_operator_stamp(db_path, flow_id, stamp)
     return {
         "evidence_state": "verified",
         "reason": "case_assignment_stored",
@@ -2392,6 +2578,7 @@ def record_case_assignment(
         "execution_authorized": False,
         "containment_executed": False,
         "production_fusion_enabled": False,
+        **stamp,
     }
 
 

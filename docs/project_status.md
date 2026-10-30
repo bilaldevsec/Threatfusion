@@ -1967,6 +1967,10 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Operator certificate stamp (2026-10-30)
+
+- Verdict, assignment, triage, and SOAR approval record `operator_id`, `cert_sha256_prefix`, and `identity_verified` only when `human_credentials.py` has an enrolled, enabled, unrevoked certificate for that actor. The typed label `analyst_a` stays `unverified_local_label`. A lab helper enrolls a different actor, such as `lab_operator`, from a generated client certificate.
+
 ### Live n8n callback path (2026-10-30)
 
 - Approved dispatch uses `docker/docker-compose.n8n.yml` when `THREATFUSION_N8N_WEBHOOK_URL` is set. The imported workflow `threatfusion-live-console` is activated and calls `http://host.docker.internal:8766`. It posts the console's exact callback JSON (`candidate_id`, `playbook_id`, `case_id`, `t_approval_queued`, `t_callback_verified`). An HTTP 422 for `172.29.0.10` is recorded and the signed callback still completes. When verify-state returns HTTP 403, no callback is stored. With the webhook unset, dispatch stays `local_contract_fallback`. On 2026-10-30 an approved row dispatched through the running container returned `execution_path=n8n_live_container`, a 64-character HMAC, `mttr_seconds=0.052761`, `private_ip_guard_triggered=true`, and `containment_executed=false`. An unapproved row returned `playbook_not_approved` with no callback. Approve and dispatch still report `containment_executed=false`.

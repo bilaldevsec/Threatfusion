@@ -28,6 +28,7 @@
       <div class="header-telemetry">
         <span class="badge badge-auth">mTLS 1.3 Authenticated</span>
         <span class="badge badge-role">Role: Triage Lead</span>
+        <span class="badge" id="operatorIdentityBadge" data-evidence-state="unavailable">unverified local label</span>
         <span class="badge badge-terminal">Air-Gapped / Zero-CDN</span>
         <span style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-secondary);" id="liveClock">2026-10-19 22:30:00 UTC</span>
       </div>
@@ -252,6 +253,9 @@
           <button id="btnAcknowledge" type="button">Acknowledge</button>
           <button id="btnEscalate" type="button">Escalate</button>
           <button id="btnDismiss" type="button">Dismiss</button>
+          <label for="operatorActor" style="display:block;margin-top:0.45rem;font-size:0.75rem;color:var(--text-secondary);">Operator label</label>
+          <input id="operatorActor" type="text" value="analyst_a" maxlength="64" autocomplete="off">
+          <button id="btnEnrollOperator" type="button">Enroll lab certificate</button>
           <label for="analystVerdictSelect" style="display:block;margin-top:0.45rem;font-size:0.75rem;color:var(--text-secondary);">Analyst verdict</label>
           <select id="analystVerdictSelect">
             <option value="true_positive">true_positive</option>
