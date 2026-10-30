@@ -45,6 +45,10 @@ Open `http://127.0.0.1:8766/`. `--seed-demo` stores four labeled scenarios and k
 
 The lab HMAC and MISP values are not production credentials. Replace them before any shared deployment.
 
+## Range demo
+
+`scripts/run_full_range_demo.sh --up` starts the console, `docker/docker-compose.n8n.yml`, the private `172.29.0.0/24` range, and the eve follower. It waits until Suricata logs `Engine started`. Open `http://127.0.0.1:8766/`. The process listens beyond loopback so the n8n container can call `http://host.docker.internal:8766`. `--scan` runs non-interactive `curl` and `ssh -o BatchMode=yes` from `172.29.0.10`. `--down` stops the follower, the console, n8n, and the range. The host firewall is not changed. No Azure resources are created.
+
 ## Analyst workflow
 
 | Action | Route | What is stored |
@@ -55,8 +59,10 @@ The lab HMAC and MISP values are not production credentials. Replace them before
 | Assignment | `POST /api/v1/live/assignment` | Local assignee and `unassigned`, `in_review`, or `reviewed` |
 | Triage | `POST /api/v1/live/triage` | Acknowledge, escalate, or dismiss |
 | Handoff | `POST /api/v1/live/handoff` | Four blocks plus the verdict, assignee, and review status, only when the note stays inside stored evidence |
-| Approve | `POST /api/v1/live/soar/approve` | Hash-chained approval. Containment stays unauthorized |
-| Dispatch | `POST /api/v1/live/soar/dispatch` | Verify-state, a four-block case, and the HMAC-SHA256 callback |
+| Approve | `POST /api/v1/live/soar/approve` | Hash-chained approval. `containment_executed` stays false |
+| Dispatch | `POST /api/v1/live/soar/dispatch` | Signed callback. Uses live n8n when `THREATFUSION_N8N_WEBHOOK_URL` is set, otherwise `local_contract_fallback`. `containment_executed` stays false |
+| Contain | `POST /api/v1/live/soar/contain` | Drops `172.29.0.10` inside the victim container after an approved hash chain and a verified callback |
+| Rollback | `POST /api/v1/live/soar/rollback` | Removes that victim-namespace drop and requires the attacker path to succeed |
 | Stitch | `POST /api/v1/live/correlate` | Attack rows inside the 30.0 second burst window or the 600.0 second campaign window |
 
 The queue searches, filters, and sorts stored rows by source, forest decision, triage state, analyst verdict, and forest probability. Live sensor rows, the recorded UNSW study, and the labeled scenario replay do not share a campaign id. The hero cards show the live SQLite flow, campaign, and incident counts, plus how many stored rows came from the live bridge. The January 216,568-flow figures stay in the Frozen Benchmark Evaluation Baseline.

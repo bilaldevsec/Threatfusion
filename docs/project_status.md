@@ -1967,6 +1967,10 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Victim-namespace containment and range demo (2026-10-30)
+
+- `POST /api/v1/live/soar/contain` and `POST /api/v1/live/soar/rollback` drop and remove source `172.29.0.10` with iptables inside `threatfusion_range_victim`. The route returns HTTP 403 without an approved hash chain, a stored HMAC callback, and that exact source. With the range stopped it returns `range_not_running` and does not claim a block. On 2026-10-30 curl from the attacker returned `range-victim` before the drop, timed out with exit 28 after the drop, and returned `range-victim` after rollback. Approve and dispatch still report `containment_executed: false`. `scripts/run_full_range_demo.sh` waits for Suricata `Engine started`, scans with non-interactive ssh and curl, and stops the follower, console, n8n, and range. No Azure resources were created.
+
 ### Operator certificate stamp (2026-10-30)
 
 - Verdict, assignment, triage, and SOAR approval record `operator_id`, `cert_sha256_prefix`, and `identity_verified` only when `human_credentials.py` has an enrolled, enabled, unrevoked certificate for that actor. The typed label `analyst_a` stays `unverified_local_label`. A lab helper enrolls a different actor, such as `lab_operator`, from a generated client certificate.

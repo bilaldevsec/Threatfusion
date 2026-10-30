@@ -37,7 +37,25 @@ Section 8 stays: `+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP
 - TF-012 and TF-002 remain open. The live sentence does not prove five-field byte equivalence, and it does not cover every historical export.
 - There is no live enterprise SIEM feed, no 10-person analyst study, and no signed jury rubric.
 - The four frozen model digests are unchanged.
-- Host containment stays unauthorized.
+- The host firewall is not changed. A drop of `172.29.0.10` runs only inside the victim container, and only after an approved hash chain and a verified callback. Approve and dispatch still report `containment_executed: false`.
+
+## Measured lab path, 2026-10-30
+
+- An approved dispatch through the running n8n container returned `execution_path=n8n_live_container`, a 64-character HMAC, `mttr_seconds=0.052761`, `private_ip_guard_triggered=true` for `172.29.0.10`, and `containment_executed=false`. An unapproved dispatch returned `playbook_not_approved` and recorded no callback.
+- `analyst_a` stays `unverified_local_label`. `operator_id`, `cert_sha256_prefix`, and `identity_verified: true` are stored only for an enrolled, enabled, unrevoked certificate such as `lab_operator`.
+- Inside the victim namespace, `curl` from `172.29.0.10` to `172.29.0.20` returned `range-victim` before the drop, timed out with curl exit 28 after the drop, and returned `range-victim` after rollback. With the range stopped, the same request returned `range_not_running` and `containment_executed: false`.
+
+## Five-minute jury sequence
+
+1. Run `scripts/run_full_range_demo.sh --up` and open `http://127.0.0.1:8766/`.
+2. Run `--scan`. Read the Suricata line and the frozen forest score as two separate facts.
+3. Enroll `lab_operator`. Leave a typed `analyst_a` label unverified.
+4. Approve one bridge row and dispatch it. The path label is `n8n_live_container`. The private address `172.29.0.10` is refused with HTTP 422 and the signed callback is still recorded.
+5. Drop `172.29.0.10` in the victim container, show curl failing, roll the rule back, and show curl succeeding. Then run `--down`.
+
+## Azure checklist, not started
+
+This work spent $0 and created no Azure resources. A later rehearsal, if the board asks for one, is one small Linux VM, deallocated after that rehearsal, and started again only on defense day. Keep the VM off between those two windows so the spend stays inside a $60 cap. Do not leave it running.
 
 ## Walkthrough
 
