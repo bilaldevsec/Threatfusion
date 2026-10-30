@@ -1,0 +1,107 @@
+{
+  "artifact_budget_bytes": 2147483648,
+  "assignment": {
+    "archive_sha256": "154829274f1a2d594086c6a73db6fce7b585ffeba58632dfce08422c1b187dc9",
+    "preflight_report_sha256": "f805424dc5f39ca41f7b1935b25938307d2e15c18caa008b3a1ca9250b8ab384",
+    "report_sha256": "6913c1f2ef974d0b969506daf2b091a740fbf0d6b43d231a6f64f30841436857",
+    "schema_version": "unsw_development_split_v1",
+    "seed": "threatfusion-unsw-dev-split-v1"
+  },
+  "batch_size": 10000,
+  "categorical_feature_names": [
+    "protocol"
+  ],
+  "dependencies": {
+    "numpy": "2.4.6",
+    "pandas": "2.3.3",
+    "pydantic": "2.13.5",
+    "python": "3.11.16"
+  },
+  "excluded_from_predictors": "all fields outside the exact contract allowlist",
+  "feature_contract": "network_behavior_v1",
+  "fit_partition": "train",
+  "input_feature_names": [
+    "duration_ms",
+    "fwd_packets",
+    "bwd_packets",
+    "fwd_bytes",
+    "bwd_bytes",
+    "packets_per_second",
+    "bytes_per_second",
+    "fwd_packet_length_mean",
+    "bwd_packet_length_mean",
+    "dst_port",
+    "protocol"
+  ],
+  "label_mapping": {
+    "Attack": 1,
+    "Normal": 0
+  },
+  "minimum_free_bytes": 2147483648,
+  "numeric_feature_names": [
+    "duration_ms",
+    "fwd_packets",
+    "bwd_packets",
+    "fwd_bytes",
+    "bwd_bytes",
+    "packets_per_second",
+    "bytes_per_second",
+    "fwd_packet_length_mean",
+    "bwd_packet_length_mean",
+    "dst_port"
+  ],
+  "output_dtype": "float64",
+  "schema_version": "network_behavior_v1_preprocessing_v1",
+  "source": {
+    "manifest_sha256": "c6794cab5af9de5bf218989461b2ad673d1a14232688edf46aed1c63bc6e60e1",
+    "registered_raw_files": [
+      {
+        "name": "UNSW-NB15_1.csv",
+        "rows": 700001,
+        "sha256": "7d851bbeabd27894ce39c8e78835c73341fc946652fb7743b9eff193b55eb511"
+      },
+      {
+        "name": "UNSW-NB15_2.csv",
+        "rows": 700001,
+        "sha256": "6130ad02873cc6069ae695cf2844f2e8c2e9a9a1b7532dd82ab8f202757cacf8"
+      },
+      {
+        "name": "UNSW-NB15_3.csv",
+        "rows": 700001,
+        "sha256": "ae990a96c3dfcd425ce2801aadb1727a34d5e0ae6d8215dbcdae60dedfaef640"
+      },
+      {
+        "name": "UNSW-NB15_4.csv",
+        "rows": 440044,
+        "sha256": "cdf563692d51d405541dd659ddcdad9fa01f001f05fe9fc4b67f00ca12fbc96a"
+      }
+    ]
+  },
+  "transform_partitions": [
+    "train",
+    "validation"
+  ],
+  "transformations": {
+    "non_finite_values": "reject",
+    "numeric": "population z-score fitted on train only",
+    "protocol": "fixed contract categories one-hot encoded",
+    "unknown_categories": "reject",
+    "zero_variance_numeric": "center and divide by one"
+  },
+  "transformed_feature_names": [
+    "duration_ms__zscore",
+    "fwd_packets__zscore",
+    "bwd_packets__zscore",
+    "fwd_bytes__zscore",
+    "bwd_bytes__zscore",
+    "packets_per_second__zscore",
+    "bytes_per_second__zscore",
+    "fwd_packet_length_mean__zscore",
+    "bwd_packet_length_mean__zscore",
+    "dst_port__zscore",
+    "protocol=tcp",
+    "protocol=udp",
+    "protocol=icmp",
+    "protocol=other"
+  ]
+}

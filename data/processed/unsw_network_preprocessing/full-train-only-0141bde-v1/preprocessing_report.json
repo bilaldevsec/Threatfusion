@@ -1,0 +1,113 @@
+{
+  "artifact_size_bytes_excluding_report": 122277114,
+  "checks": {
+    "assignment_and_source_counts_reconciled": true,
+    "assignment_evidence_verified": true,
+    "fitted_state_reload_equivalent": true,
+    "matrices_finite": true,
+    "only_train_influenced_fitted_state": true,
+    "test_and_cic_not_transformed": true
+  },
+  "completed": true,
+  "counts": {
+    "excluded": {
+      "quarantine": 5145,
+      "rejected": 10,
+      "test": 1452844
+    },
+    "train": {
+      "attack": 17643,
+      "benign": 847837,
+      "rows": 865480
+    },
+    "validation": {
+      "attack": 4358,
+      "benign": 212210,
+      "rows": 216568
+    }
+  },
+  "fit_partition": "train",
+  "global_training_ready": false,
+  "hashes": {
+    "configuration": "70273ec360e0bce88b5ec8311df4b5b8ccbbdbe6c456d8a679528563d477645a",
+    "fitted_state": "30c955e3931dc010f8b4391a80fc0fbeddd17e14260701c8131d88f95b06ee49",
+    "outputs": {
+      "X_train": {
+        "sha256": "56563f752bba2c7b01f2fa35c4c6927f90d0c83dd6e06c25c9b23cbf2bd2ca81",
+        "size_bytes": 96933888
+      },
+      "X_validation": {
+        "sha256": "573993809be67edf8a6e5e4b4683d9254e9da4188aca97918d0ceac01ee487d6",
+        "size_bytes": 24255744
+      },
+      "y_train": {
+        "sha256": "f12ba5c05db37d5c34bf7f22fa62d41535bdeaab58014bdd3975d50c21a24209",
+        "size_bytes": 865608
+      },
+      "y_validation": {
+        "sha256": "38d87b7c7fbf27a59228a2a84f3f4eca4e026acedc4e4aa3626da28292dd467b",
+        "size_bytes": 216696
+      }
+    }
+  },
+  "input_feature_count": 11,
+  "input_feature_names": [
+    "duration_ms",
+    "fwd_packets",
+    "bwd_packets",
+    "fwd_bytes",
+    "bwd_bytes",
+    "packets_per_second",
+    "bytes_per_second",
+    "fwd_packet_length_mean",
+    "bwd_packet_length_mean",
+    "dst_port",
+    "protocol"
+  ],
+  "limitations": [
+    "capture and session provenance remain unresolved",
+    "near-duplicate leakage is not assessed",
+    "held-out February UNSW and CIC remain untransformed and unevaluated",
+    "this preprocessing run does not change global training readiness"
+  ],
+  "output_feature_count": 14,
+  "output_feature_names": [
+    "duration_ms__zscore",
+    "fwd_packets__zscore",
+    "bwd_packets__zscore",
+    "fwd_bytes__zscore",
+    "bwd_bytes__zscore",
+    "packets_per_second__zscore",
+    "bytes_per_second__zscore",
+    "fwd_packet_length_mean__zscore",
+    "bwd_packet_length_mean__zscore",
+    "dst_port__zscore",
+    "protocol=tcp",
+    "protocol=udp",
+    "protocol=icmp",
+    "protocol=other"
+  ],
+  "row_order": "registered raw file order then one-based source row; filtered per split",
+  "runtime_seconds": 150.0868569690001,
+  "schema_version": "network_behavior_v1_preprocessing_v1",
+  "shapes": {
+    "X_train": [
+      865480,
+      14
+    ],
+    "X_validation": [
+      216568,
+      14
+    ],
+    "y_train": [
+      865480
+    ],
+    "y_validation": [
+      216568
+    ]
+  },
+  "transformed_partitions": [
+    "train",
+    "validation"
+  ]
+}

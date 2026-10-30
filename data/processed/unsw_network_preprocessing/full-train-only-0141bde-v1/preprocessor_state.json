@@ -1,0 +1,94 @@
+{
+  "batch_equivalence_tolerance": 1e-12,
+  "categorical_feature_names": [
+    "protocol"
+  ],
+  "feature_contract": "network_behavior_v1",
+  "fixed_category_vocabularies": {
+    "protocol": [
+      "tcp",
+      "udp",
+      "icmp",
+      "other"
+    ]
+  },
+  "input_feature_names": [
+    "duration_ms",
+    "fwd_packets",
+    "bwd_packets",
+    "fwd_bytes",
+    "bwd_bytes",
+    "packets_per_second",
+    "bytes_per_second",
+    "fwd_packet_length_mean",
+    "bwd_packet_length_mean",
+    "dst_port",
+    "protocol"
+  ],
+  "label_mapping": {
+    "Attack": 1,
+    "Normal": 0
+  },
+  "learned_category_vocabularies": {},
+  "non_finite_policy": "reject",
+  "numeric_feature_names": [
+    "duration_ms",
+    "fwd_packets",
+    "bwd_packets",
+    "fwd_bytes",
+    "bwd_bytes",
+    "packets_per_second",
+    "bytes_per_second",
+    "fwd_packet_length_mean",
+    "bwd_packet_length_mean",
+    "dst_port"
+  ],
+  "numeric_means": [
+    674.7873430327663,
+    40.79383810140037,
+    53.7352382492952,
+    4744.387895734159,
+    46146.04035795164,
+    10030.53052796937,
+    1397249.979797445,
+    127.70309498757078,
+    344.62567228440037,
+    13963.423913897483
+  ],
+  "numeric_scales": [
+    3249.359219215994,
+    74.51383981177717,
+    131.9446897097694,
+    34765.77442524916,
+    176662.62932597075,
+    72274.32027031305,
+    10733970.32451404,
+    159.51951931804308,
+    344.0988063490458,
+    19603.899142941656
+  ],
+  "numeric_transform": "population_zscore",
+  "output_dtype": "float64",
+  "schema_version": "network_behavior_v1_preprocessing_v1",
+  "training_partition": "train",
+  "training_row_count": 865480,
+  "transformed_feature_names": [
+    "duration_ms__zscore",
+    "fwd_packets__zscore",
+    "bwd_packets__zscore",
+    "fwd_bytes__zscore",
+    "bwd_bytes__zscore",
+    "packets_per_second__zscore",
+    "bytes_per_second__zscore",
+    "fwd_packet_length_mean__zscore",
+    "bwd_packet_length_mean__zscore",
+    "dst_port__zscore",
+    "protocol=tcp",
+    "protocol=udp",
+    "protocol=icmp",
+    "protocol=other"
+  ],
+  "unknown_category_policy": "reject",
+  "zero_variance_features": [],
+  "zero_variance_policy": "scale_by_one"
+}
