@@ -1183,6 +1183,207 @@ def replay_live_scenarios(
     }
 
 
+_NOTABLE_BRIDGE_EVENT_ID = "suricata_flow_v1:" + hashlib.sha256(
+    b"threatfusion-seed-notable-bridge-v1"
+).hexdigest()
+
+
+def _queue_has_recorded_attack(db_path: Path) -> bool:
+    if not db_path.is_file():
+        return False
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM live_flows
+            WHERE decision = 'Attack'
+              AND source_label IN ('recorded_unsw_nb15', 'live_scenario_replay')
+            LIMIT 1
+            """
+        ).fetchone()
+    return row is not None
+
+
+def _queue_has_notable_bridge(db_path: Path) -> bool:
+    if not db_path.is_file():
+        return False
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM live_flows
+            WHERE source_label = ?
+              AND decision != 'Attack'
+            LIMIT 1
+            """,
+            (SENSOR_BRIDGE_SOURCE,),
+        ).fetchone()
+    return row is not None
+
+
+def ensure_recorded_attack_row(
+    db_path: Path,
+    *,
+    repo_root: Path,
+    model: Any | None = None,
+    supply_verified: bool | None = None,
+) -> dict[str, Any]:
+    """Store one frozen-forest Attack row when the queue has none.
+
+    Existing rows stay. A recorded UNSW study vector is preferred. The labeled
+    web-exploit scenario is the fallback when those vectors do not score Attack.
+    """
+    if _queue_has_recorded_attack(db_path):
+        return {
+            "present": True,
+            "seeded": False,
+            "reason": "recorded_attack_already_stored",
+            "production_fusion_enabled": False,
+        }
+    from threatfusion.evaluation.study_runner import STUDY_TRIAGE_CASES
+
+    campaign_id = "campaign_recorded_attack:" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    created = datetime.now(UTC).isoformat()
+    for case in STUDY_TRIAGE_CASES:
+        if case.source != "recorded_unsw_nb15":
+            continue
+        features = {name: float(case.raw_features_14[name]) for name in CANONICAL_14_FEATURES}
+        score = score_canonical_flow(
+            features,
+            repo_root=repo_root,
+            model=model,
+            supply_verified=supply_verified,
+        )
+        if score.get("decision") != "Attack" or score.get("reason") != "frozen_random_forest_scored":
+            continue
+        persist_scored_flow(
+            db_path,
+            features,
+            score,
+            campaign_id=campaign_id,
+            source_label="recorded_unsw_nb15",
+            case_title=case.title,
+        )
+        with _connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO live_campaigns (
+                    campaign_id, title, source_label, created_at_utc, member_count
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (campaign_id, case.title, "recorded_unsw_nb15", created, 1),
+            )
+        return {
+            "present": True,
+            "seeded": True,
+            "reason": "recorded_attack_seeded",
+            "source_label": "recorded_unsw_nb15",
+            "decision": "Attack",
+            "production_fusion_enabled": False,
+        }
+    spec = next(item for item in LIVE_SCENARIO_REPLAYS if item["scenario_id"] == "web_exploit")
+    features = dict(_ATTACK_SHAPED_UDP)
+    features["dst_port"] = spec["dst_port"]
+    features["protocol_tcp"] = spec["protocol_tcp"]
+    features["protocol_udp"] = spec["protocol_udp"]
+    score = score_canonical_flow(
+        features,
+        repo_root=repo_root,
+        model=model,
+        supply_verified=supply_verified,
+    )
+    if score.get("decision") != "Attack" or score.get("reason") != "frozen_random_forest_scored":
+        return {
+            "present": False,
+            "seeded": False,
+            "reason": str(score.get("reason") or "recorded_attack_not_scored"),
+            "production_fusion_enabled": False,
+        }
+    title = f"{spec['title']} (scenario label {spec['scenario_label']})"
+    persist_scored_flow(
+        db_path,
+        features,
+        score,
+        campaign_id=campaign_id,
+        source_label="live_scenario_replay",
+        case_title=title,
+    )
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO live_campaigns (
+                campaign_id, title, source_label, created_at_utc, member_count
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (campaign_id, title, "live_scenario_replay", created, 1),
+        )
+    return {
+        "present": True,
+        "seeded": True,
+        "reason": "recorded_attack_seeded",
+        "source_label": "live_scenario_replay",
+        "decision": "Attack",
+        "production_fusion_enabled": False,
+    }
+
+
+def ensure_notable_bridge_row(
+    db_path: Path,
+    *,
+    repo_root: Path,
+    model: Any | None = None,
+    supply_verified: bool | None = None,
+) -> dict[str, Any]:
+    """Store one Benign lab-pair bridge row when the queue has no non-Attack bridge row.
+
+    The frozen forest still makes the decision. No Suricata signature is invented.
+    An existing notable bridge row is left in place.
+    """
+    if _queue_has_notable_bridge(db_path):
+        return {
+            "present": True,
+            "seeded": False,
+            "reason": "notable_bridge_already_stored",
+            "production_fusion_enabled": False,
+        }
+    features = dict(_ATTACK_SHAPED_UDP)
+    features["dst_port"] = 80
+    features["protocol_tcp"] = 1
+    features["protocol_udp"] = 0
+    provenance = {
+        "entity_namespace_id": SENSOR_BRIDGE_NAMESPACE,
+        "src_entity_id": RANGE_CONTAINMENT_SOURCE,
+        "dst_entity_id": RANGE_VICTIM_ADDRESS,
+        "protocol": "tcp",
+        "service_or_port": "80",
+        "clock_synchronized": True,
+    }
+    observation = {
+        "proto": "tcp",
+        "src_ip": RANGE_CONTAINMENT_SOURCE,
+        "src_port": 44120,
+        "dst_ip": RANGE_VICTIM_ADDRESS,
+        "dst_port": 80,
+        "signature": None,
+    }
+    stored = record_suricata_bridge_flow(
+        db_path,
+        features,
+        repo_root=repo_root,
+        provenance=provenance,
+        sensor_observation=observation,
+        source_event_id=_NOTABLE_BRIDGE_EVENT_ID,
+        model=model,
+        supply_verified=supply_verified,
+    )
+    present = stored.get("source_label") == SENSOR_BRIDGE_SOURCE and stored.get("decision") != "Attack"
+    return {
+        "present": present,
+        "seeded": present and stored.get("duplicate") is not True,
+        "reason": "notable_bridge_seeded" if present else str(stored.get("reason") or "notable_bridge_refused"),
+        "decision": stored.get("decision"),
+        "production_fusion_enabled": False,
+    }
+
+
 def replay_supplied_flows(
     db_path: Path,
     flows: list[Any],

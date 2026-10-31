@@ -430,13 +430,21 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/v1/live/range-scan":
-            from threatfusion.api.live_soc_console import run_live_range_scan
+            from threatfusion.api.live_soc_console import (
+                ensure_notable_bridge_row,
+                ensure_recorded_attack_row,
+                run_live_range_scan,
+            )
 
             result = run_live_range_scan(
                 self._live_db_path(),
                 eve_path=REPO_ROOT / "docker" / "range" / "eve" / "eve.json",
             )
             if result.get("ingested"):
+                attack = ensure_recorded_attack_row(self._live_db_path(), repo_root=REPO_ROOT)
+                bridge = ensure_notable_bridge_row(self._live_db_path(), repo_root=REPO_ROOT)
+                result["recorded_attack_present"] = attack.get("present") is True
+                result["notable_bridge_present"] = bridge.get("present") is True
                 status = 200
             elif result.get("http_status") == 503:
                 status = 503
@@ -733,11 +741,17 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/live/scenarios":
             from threatfusion.api.live_soc_console import (
                 correlate_stored_attacks,
+                ensure_notable_bridge_row,
+                ensure_recorded_attack_row,
                 replay_live_scenarios,
             )
 
             result = replay_live_scenarios(self._live_db_path(), repo_root=REPO_ROOT)
             if result.get("member_count"):
+                attack = ensure_recorded_attack_row(self._live_db_path(), repo_root=REPO_ROOT)
+                bridge = ensure_notable_bridge_row(self._live_db_path(), repo_root=REPO_ROOT)
+                result["recorded_attack_present"] = attack.get("present") is True
+                result["notable_bridge_present"] = bridge.get("present") is True
                 result["correlation"] = correlate_stored_attacks(
                     self._live_db_path(),
                     self._incidents_db_path(),

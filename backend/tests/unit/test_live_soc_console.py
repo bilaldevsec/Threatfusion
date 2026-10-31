@@ -20,6 +20,8 @@ from threatfusion.api.live_soc_console import (
     record_triage_action,
     replay_benchmark_attack_burst,
     constitutional_health,
+    ensure_notable_bridge_row,
+    ensure_recorded_attack_row,
     replay_live_scenarios,
     score_canonical_flow,
     store_flow_provenance,
@@ -692,6 +694,59 @@ def test_four_scenario_replay_uses_the_frozen_forest(tmp_path: Path) -> None:
     script = (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")
     assert 'id="btnReplayScenarios"' in html
     assert "/api/v1/live/scenarios" in script
+
+
+class _BenignWidth14Model:
+    n_features_in_ = 14
+
+    def predict_proba(self, rows: list[list[float]]) -> list[list[float]]:
+        return [[0.8, 0.2]]
+
+
+def test_seed_and_scan_leave_an_attack_beside_a_notable_bridge(tmp_path: Path) -> None:
+    db = tmp_path / "dual.sqlite3"
+    attack = ensure_recorded_attack_row(
+        db, repo_root=REPO_ROOT, model=_Width14Model(), supply_verified=True
+    )
+    assert attack["present"] is True
+    assert attack["seeded"] is True
+    assert attack["decision"] == "Attack"
+    assert attack["production_fusion_enabled"] is False
+    again = ensure_recorded_attack_row(
+        db, repo_root=REPO_ROOT, model=_Width14Model(), supply_verified=True
+    )
+    assert again["seeded"] is False
+    assert again["reason"] == "recorded_attack_already_stored"
+    bridge = ensure_notable_bridge_row(
+        db, repo_root=REPO_ROOT, model=_BenignWidth14Model(), supply_verified=True
+    )
+    assert bridge["present"] is True
+    assert bridge["seeded"] is True
+    assert bridge["decision"] == "Benign"
+    assert bridge["production_fusion_enabled"] is False
+    repeat = ensure_notable_bridge_row(
+        db, repo_root=REPO_ROOT, model=_BenignWidth14Model(), supply_verified=True
+    )
+    assert repeat["seeded"] is False
+    assert repeat["reason"] == "notable_bridge_already_stored"
+    listed = list_live_campaigns(db)
+    attacks = [
+        flow
+        for campaign in listed["campaigns"]
+        if campaign["source_label"] in {"recorded_unsw_nb15", "live_scenario_replay"}
+        for flow in campaign["flows"]
+        if flow["decision"] == "Attack"
+    ]
+    notable = [
+        flow
+        for campaign in listed["campaigns"]
+        if campaign["source_label"] == "suricata_bridge"
+        for flow in campaign["flows"]
+        if flow["decision"] != "Attack"
+    ]
+    assert attacks
+    assert notable
+    assert listed["bridge_flow_count"] == 1
 
 
 def test_live_console_is_one_screen() -> None:

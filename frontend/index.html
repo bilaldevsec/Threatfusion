@@ -164,7 +164,7 @@
           <nav class="inspector-tab-nav" aria-label="Investigation Inspector Tabs">
             <button class="inspector-tab-btn active" data-tab-target="1" type="button">Summary</button>
             <button class="inspector-tab-btn" data-tab-target="2" type="button">Findings &amp; Telemetry</button>
-            <button class="inspector-tab-btn" data-tab-target="3" type="button">Evidence Locker (14-Feat)</button>
+            <button class="inspector-tab-btn" data-tab-target="3" type="button">Evidence Locker</button>
             <button class="inspector-tab-btn" data-tab-target="4" type="button">Remediations &amp; SOAR</button>
             <button class="inspector-tab-btn" data-tab-target="6" type="button">Notes &amp; Handoff</button>
             <button class="inspector-tab-btn" data-tab-target="5" type="button">Changelog</button>
@@ -287,31 +287,31 @@
           <div class="graph-board" id="actionGraphBoard">
             <div class="graph-col">
               <h3>Alert</h3>
-              <button class="graph-node" type="button" data-graph-node="ingest">Ingested Flow</button>
+              <button class="graph-node" type="button" data-graph-node="ingest" data-node-tone="purple"><span class="node-badge node-badge-purple">IN</span><span class="node-copy">Ingested Flow</span></button>
             </div>
             <div class="graph-col">
               <h3>Understand &amp; Strategize</h3>
-              <button class="graph-node" type="button" data-graph-node="schema">14-Feature Schema Gate</button>
-              <button class="graph-node" type="button" data-graph-node="forest">Frozen RF bd2853a6</button>
-              <button class="graph-node" type="button" data-graph-node="ae">v2 Autoencoder Ranker c8675d13</button>
+              <button class="graph-node" type="button" data-graph-node="schema" data-node-tone="cyan"><span class="node-badge node-badge-cyan">14</span><span class="node-copy">14-Feature Schema Gate</span></button>
+              <button class="graph-node is-selected" type="button" data-graph-node="forest" data-node-tone="emerald"><span class="node-badge node-badge-emerald">RF</span><span class="node-copy">Frozen RF bd2853a6</span></button>
+              <button class="graph-node" type="button" data-graph-node="ae" data-node-tone="amber"><span class="node-badge node-badge-amber">AE</span><span class="node-copy">v2 Autoencoder Ranker c8675d13</span></button>
             </div>
             <div class="graph-col">
               <h3>Collect Evidence</h3>
-              <button class="graph-node" type="button" data-graph-node="eve">Suricata EVE-JSON Telemetry</button>
-              <button class="graph-node" type="button" data-graph-node="stitch">30s/600s Campaign Stitcher</button>
-              <button class="graph-node" type="button" data-graph-node="misp">MISP RFC1918 Privacy Guard</button>
-              <button class="graph-node" type="button" data-graph-node="chroma">ChromaDB 18-Doc MITRE &amp; CVE Store</button>
+              <button class="graph-node" type="button" data-graph-node="eve" data-node-tone="cyan"><span class="node-badge node-badge-cyan">EVE</span><span class="node-copy">Suricata EVE-JSON Telemetry</span></button>
+              <button class="graph-node" type="button" data-graph-node="stitch" data-node-tone="emerald"><span class="node-badge node-badge-emerald">ST</span><span class="node-copy">30s/600s Campaign Stitcher</span></button>
+              <button class="graph-node" type="button" data-graph-node="misp" data-node-tone="purple"><span class="node-badge node-badge-purple">MISP</span><span class="node-copy">MISP RFC1918 Privacy Guard</span></button>
+              <button class="graph-node" type="button" data-graph-node="chroma" data-node-tone="amber"><span class="node-badge node-badge-amber">RAG</span><span class="node-copy">ChromaDB 18-Doc MITRE &amp; CVE Store</span></button>
             </div>
             <div class="graph-col">
               <h3>Analyze</h3>
-              <button class="graph-node" type="button" data-graph-node="ground">verify_explanation_groundedness()</button>
-              <button class="graph-node" type="button" data-graph-node="gemini">Gemini 2.5 Flash Copilot</button>
+              <button class="graph-node" type="button" data-graph-node="ground" data-node-tone="cyan"><span class="node-badge node-badge-cyan">GND</span><span class="node-copy">verify_explanation_groundedness()</span></button>
+              <button class="graph-node" type="button" data-graph-node="gemini" data-node-tone="purple"><span class="node-badge node-badge-purple">AI</span><span class="node-copy">Gemini 2.5 Flash Copilot</span></button>
             </div>
             <div class="graph-col">
               <h3>Report &amp; Respond</h3>
-              <button class="graph-node" type="button" data-graph-node="verdict">Analyst Verdict</button>
-              <button class="graph-node" type="button" data-graph-node="chain">threatfusion-live-soar.sqlite3 Hash Chain</button>
-              <button class="graph-node" type="button" data-graph-node="respond">Live n8n Callback &amp; Victim Firewall</button>
+              <button class="graph-node" type="button" data-graph-node="verdict" data-node-tone="emerald"><span class="node-badge node-badge-emerald">V</span><span class="node-copy">Analyst Verdict</span></button>
+              <button class="graph-node" type="button" data-graph-node="chain" data-node-tone="amber"><span class="node-badge node-badge-amber">SHA</span><span class="node-copy">threatfusion-live-soar.sqlite3 Hash Chain</span></button>
+              <button class="graph-node" type="button" data-graph-node="respond" data-node-tone="cyan"><span class="node-badge node-badge-cyan">n8n</span><span class="node-copy">Live n8n Callback &amp; Victim Firewall</span></button>
             </div>
           </div>
           <aside class="kpi-rail" aria-label="Graph KPI rail">
@@ -324,7 +324,14 @@
             <div class="kpi-item"><span>Entities Extracted</span><strong id="kpiEntities">0</strong></div>
             <div class="kpi-item"><span>SOAR Receipts</span><strong id="kpiSoarReceipts">0</strong></div>
           </aside>
-          <div id="graphNodePopover" class="graph-popover" role="dialog" aria-label="Node inspector"></div>
+          <aside id="graphNodePopover" class="graph-popover is-open" role="dialog" aria-label="Selected Node Inspector">
+            <h3>Selected Node Inspector</h3>
+            <strong>Frozen RF bd2853a6</strong>
+            <div><span class="status-dot status-verified"></span>Verified</div>
+            <p>Input: the selected stored flow.</p>
+            <p>Rule: forest uses only stored fields.</p>
+            <p>Output: Frozen Random Forest decision for the selected flow. production_fusion_enabled is false.</p>
+          </aside>
         </div>
         <section class="architecture-ribbon-bar" data-layer="architecture-ribbon" aria-label="Layer 2 6-Stage Pipeline Architecture Ribbon">
           <div class="arch-stage" data-pipeline-stage="1"><span class="stage-num-badge">1</span><span>Suricata/UNSW 14-Feature mTLS</span></div>

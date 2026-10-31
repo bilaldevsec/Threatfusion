@@ -768,6 +768,11 @@
     return { dot: 'status-verified', label: 'Verified', output: 'Stored field checked for ' + inc.id + '.' };
   }
 
+  function graphNodeLabel(node) {
+    const copy = node.querySelector('.node-copy');
+    return copy ? copy.textContent : node.textContent;
+  }
+
   function renderActionGraph() {
     const inc = selectedIncident();
     const entities = document.getElementById('kpiEntities');
@@ -779,6 +784,9 @@
       node.dataset.statusLabel = status.label;
       node.dataset.statusOutput = status.output;
     });
+    const selected = document.querySelector('.graph-node.is-selected')
+      || document.querySelector('[data-graph-node="forest"]');
+    if (selected) showGraphPopover(selected);
   }
 
   function showGraphPopover(node) {
@@ -786,8 +794,12 @@
     if (!popover || !node) return;
     const key = node.getAttribute('data-graph-node');
     const status = graphStatus(selectedIncident(), key);
+    document.querySelectorAll('[data-graph-node]').forEach(item => {
+      item.classList.toggle('is-selected', item === node);
+    });
     popover.classList.add('is-open');
-    popover.innerHTML = '<strong>' + escapeHtml(node.textContent) + '</strong>'
+    popover.innerHTML = '<h3>Selected Node Inspector</h3>'
+      + '<strong>' + escapeHtml(graphNodeLabel(node)) + '</strong>'
       + '<div><span class="status-dot ' + status.dot + '"></span>' + escapeHtml(status.label) + '</div>'
       + '<p>Input: the selected stored flow.</p>'
       + '<p>Rule: ' + escapeHtml(key) + ' uses only stored fields.</p>'
@@ -1797,6 +1809,9 @@
     }
     renderIncidentQueue();
     renderForensicDrawer();
+    if (document.querySelector('.soc-view.is-active[data-soc-view="graph"]')) {
+      renderActionGraph();
+    }
   }
 
   async function runConstitutionalHealth() {
