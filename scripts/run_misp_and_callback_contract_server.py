@@ -415,6 +415,31 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         content_length = int(str(self.headers.get("Content-Length")).strip())
         body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
 
+        if path == "/api/v1/live/purge-bridge-noise":
+            from threatfusion.api.live_soc_console import purge_bridge_noise_rows
+
+            removed = purge_bridge_noise_rows(self._live_db_path())
+            self._send_json(
+                200,
+                {
+                    "evidence_state": "verified",
+                    "removed_noise": removed,
+                    "production_fusion_enabled": False,
+                },
+            )
+            return
+
+        if path == "/api/v1/live/range-scan":
+            from threatfusion.api.live_soc_console import run_live_range_scan
+
+            result = run_live_range_scan(
+                self._live_db_path(),
+                eve_path=REPO_ROOT / "docker" / "range" / "eve" / "eve.json",
+            )
+            status = 200 if result.get("ingested") else 409
+            self._send_json(status, result)
+            return
+
         if path == "/api/v1/live/sensor":
             from threatfusion.api.live_soc_console import (
                 correlate_stored_attacks,

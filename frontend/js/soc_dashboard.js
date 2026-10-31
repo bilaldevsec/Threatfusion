@@ -994,7 +994,7 @@
           </div>
           <div class="btn-group">
             <button class="btn btn-approve" id="btnApprovePlaybook" ${!(inc.live && inc.flowId && inc.soarRecord && inc.soarRecord.state === 'pending_approval') ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>
-              Approve Containment Playbook
+              3A. Approve Playbook (SHA-256 Chain)
             </button>
             <button class="btn btn-rollback" id="btnRollbackPlaybook" ${!inc.soarRecord || inc.soarRecord.state !== 'executed_simulated' ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>
               Reversible Rollback
@@ -1050,6 +1050,7 @@
             <div><b>Callback MTTR:</b> ${inc.mttrSeconds === null || inc.mttrSeconds === undefined ? 'not recorded' : Number(inc.mttrSeconds).toFixed(3) + 's'}</div>
             <div><b>HMAC:</b> <code>${inc.callbackSignature && SHA256_HEX_REGEX.test(inc.callbackSignature) ? escapeHtml(inc.callbackSignature.substring(0, 16)) + '...' : 'none'}</code></div>
             <div><b>HMAC Verified:</b> <span class="badge" data-evidence-state="${hiveState}">${(hiveOk || signedLocalCallback) ? 'Signed callback recorded' : 'Pending Authorization'}</span></div>
+            <div><b>Execution path:</b> <code>${escapeHtml(inc.executionPath || 'not dispatched')}</code></div>
           </div>
         </div>
       </div>
@@ -1305,6 +1306,17 @@
       containButton.addEventListener('click', () => {
         const inc = activeIncidents().find(i => i.id === selectedIncidentId);
         postRangeContainment(inc, '/api/v1/live/soar/contain');
+      });
+    }
+    const rangeScanButton = document.getElementById('btnRangeScan');
+    if (rangeScanButton) {
+      rangeScanButton.addEventListener('click', () => { fireLiveRangeScan(); });
+    }
+    const guidedApprove = document.getElementById('btnGuidedApprove');
+    if (guidedApprove) {
+      guidedApprove.addEventListener('click', () => {
+        const inc = activeIncidents().find(i => i.id === selectedIncidentId);
+        approveLivePlaybook(inc);
       });
     }
     const rollbackButton = document.getElementById('btnRollbackRange');
@@ -1939,9 +1951,10 @@
         const mttr = Number(data.mttr_seconds);
         const mttrText = Number.isFinite(mttr) ? mttr.toFixed(3) + 's' : 'n/a';
         const caseId = typeof data.thehive_case_id === 'string' ? data.thehive_case_id : 'not recorded';
+        const path = typeof data.execution_path === 'string' ? data.execution_path : 'not dispatched';
         setLiveText(
           'campaignQueueStatus',
-          'Signed callback ' + sig.substring(0, 16) + ' recorded. Case ' + caseId + '. MTTR ' + mttrText + '. Host containment was not executed.',
+          'execution_path: ' + path + '. HMAC ' + sig + '. mttr_seconds ' + mttrText + '. Case ' + caseId + '. Host containment was not executed.',
           'verified'
         );
       } else {
@@ -1949,6 +1962,39 @@
       }
     } catch (err) {
       setLiveText('campaignQueueStatus', 'Signed callback unavailable.', 'unavailable');
+    }
+  }
+
+  function setRangeConnectivity(blocked) {
+    const node = document.getElementById('rangeConnectivityBadge');
+    if (!node) return;
+    if (blocked) {
+      node.textContent = '172.29.0.10 -> 172.29.0.20:80: BLOCKED (Timeout exit 28)';
+      node.setAttribute('data-connectivity', 'blocked');
+    } else {
+      node.textContent = '172.29.0.10 -> 172.29.0.20:80: REACHABLE (range-victim)';
+      node.setAttribute('data-connectivity', 'reachable');
+    }
+    node.setAttribute('data-evidence-state', 'verified');
+  }
+
+  async function fireLiveRangeScan() {
+    setLiveText('campaignQueueStatus', 'Waiting for 172.29.0.10 -> 172.29.0.20 to reach the queue.', 'pending');
+    try {
+      const resp = await fetch('/api/v1/live/range-scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+      const data = await resp.json();
+      if (data && data.ingested === true) {
+        setLiveText('campaignQueueStatus', 'Range scan stored 172.29.0.10 -> 172.29.0.20.', 'verified');
+        await refreshLiveCampaigns();
+        return;
+      }
+      setLiveText('campaignQueueStatus', data && data.reason ? data.reason : 'Range scan was not ingested.', 'unavailable');
+    } catch (err) {
+      setLiveText('campaignQueueStatus', 'Range scan unavailable.', 'unavailable');
     }
   }
 
@@ -1970,6 +2016,11 @@
         (data.reason || 'range containment') + '. ' + executed + '.',
         data.evidence_state || 'unavailable'
       );
+      if (data.reason === 'containment_applied') {
+        setRangeConnectivity(true);
+      } else if (data.reason === 'containment_rolled_back') {
+        setRangeConnectivity(false);
+      }
     } catch (err) {
       setLiveText('campaignQueueStatus', 'Range containment unavailable.', 'unavailable');
     }

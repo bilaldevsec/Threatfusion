@@ -22,6 +22,7 @@ if str(SOURCE_ROOT) not in sys.path:
 
 from threatfusion.datasets.adapters.base import SourceRowValidationError  # noqa: E402
 from threatfusion.datasets.adapters.suricata_flow import SuricataFlowAdapter  # noqa: E402
+from threatfusion.operations.bridge_noise import is_lab_bridge_noise  # noqa: E402
 
 SENSOR_NAMESPACE = "lab:range-bridge-01"
 SENSOR_SOURCE_LABEL = "suricata_bridge"
@@ -141,6 +142,8 @@ def handle_line(
         return "alert"
     if event_type != "flow":
         return "ignored"
+    if _flow_record_is_noise(record):
+        return "noise"
     try:
         payload = sensor_payload(record, cache)
     except (SourceRowValidationError, KeyError, TypeError, ValueError) as exc:
@@ -158,10 +161,26 @@ def handle_line(
         flush=True,
     )
     if status != 200:
+        if body.get("reason") == "bridge_noise_ignored":
+            return "noise"
         raise RuntimeError(
             f"sensor post failed: {status} {body.get('reason') or body.get('error')}"
         )
     return "posted"
+
+
+def _flow_record_is_noise(record: dict[str, Any]) -> bool:
+    try:
+        src_port = int(record.get("src_port") or 0)
+        dst_port = int(record.get("dest_port") or record.get("dst_port") or 0)
+    except (TypeError, ValueError):
+        return False
+    return is_lab_bridge_noise(
+        str(record.get("src_ip") or ""),
+        str(record.get("dest_ip") or record.get("dst_ip") or ""),
+        src_port,
+        dst_port,
+    )
 
 
 def follow_eve(path: Path, url: str, timeout: float) -> None:

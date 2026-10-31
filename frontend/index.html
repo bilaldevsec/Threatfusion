@@ -63,7 +63,7 @@
       <div class="hero-investor-card" id="liveSocConsole" style="background: #111827;">
         <div style="font-size: 0.82rem; font-weight: 700; color: var(--text-secondary); text-transform: uppercase;">Live Queue, Copilot, and Drift</div>
         <p style="font-size: 0.75rem; color: var(--text-secondary);">Scores use the frozen Random Forest only when the feature contract matches. The autoencoder does not decide the alert. Containment stays unauthorized.</p>
-        <p id="sourceQualification" data-evidence-state="verified">UNSW-NB15 and CIC byte layers are not interchangeable. CIC is not a validated compatible external test. This console scores recorded UNSW-NB15 features with the frozen Random Forest. January and February outcomes were already inspected. TF-012 and TF-002 stay open.</p>
+        <p id="sourceQualification" class="qualification-bar" data-evidence-state="verified">UNSW-NB15 and CIC byte layers are not interchangeable. CIC is not a validated compatible external test. This console scores recorded UNSW-NB15 features with the frozen Random Forest. January and February outcomes were already inspected. TF-012 and TF-002 stay open.</p>
         <div id="liveQueueStatus" data-evidence-state="unavailable">Live queue has not been loaded.</div>
         <label for="liveCopilotQuestion">MITRE question</label>
         <input id="liveCopilotQuestion" type="text" value="command and control beacon">
@@ -242,46 +242,63 @@
           <h2 class="card-title">Stitched Campaigns Queue</h2>
           <span class="badge badge-state" id="queueCountBadge">Stored campaigns</span>
         </div>
-        <div style="padding: 0.35rem 0.15rem 0.15rem;">
-          <button id="btnReplayBenchmarkBurst" type="button">Replay Benchmark Attack Burst</button>
-          <button id="btnReplayScenarios" type="button">Replay four scenarios</button>
-          <button id="btnConstitutionalHealth" type="button">Run constitutional health</button>
-          <pre id="constitutionalHealth" data-evidence-state="unavailable">Constitutional health has not been run.</pre>
-          <button id="btnDispatchCallback" type="button">Dispatch signed callback</button>
-          <button id="btnContainRange" type="button">Drop 172.29.0.10 in victim</button>
-          <button id="btnRollbackRange" type="button">Roll back victim drop</button>
-          <button id="btnStitchWindows" type="button">Stitch verified windows</button>
-          <button id="btnPrivateIpGuard" type="button">Check private IP guard</button>
-          <button id="btnAcknowledge" type="button">Acknowledge</button>
-          <button id="btnEscalate" type="button">Escalate</button>
-          <button id="btnDismiss" type="button">Dismiss</button>
-          <label for="operatorActor" style="display:block;margin-top:0.45rem;font-size:0.75rem;color:var(--text-secondary);">Operator label</label>
-          <input id="operatorActor" type="text" value="analyst_a" maxlength="64" autocomplete="off">
-          <button id="btnEnrollOperator" type="button">Enroll lab certificate</button>
-          <label for="analystVerdictSelect" style="display:block;margin-top:0.45rem;font-size:0.75rem;color:var(--text-secondary);">Analyst verdict</label>
-          <select id="analystVerdictSelect">
-            <option value="true_positive">true_positive</option>
-            <option value="false_positive">false_positive</option>
-            <option value="inconclusive">inconclusive</option>
-          </select>
-          <label for="analystRationale" style="display:block;margin-top:0.35rem;font-size:0.75rem;color:var(--text-secondary);">Grounded rationale</label>
-          <textarea id="analystRationale" rows="2" placeholder="Stored separately from the frozen Random Forest decision. An address must already be on this flow." style="width:100%;margin-top:0.2rem;"></textarea>
-          <button id="btnSaveVerdict" type="button">Save analyst verdict</button>
-          <div id="analystVerdictDisplay" data-evidence-state="unavailable">No analyst verdict stored.</div>
-          <label for="caseAssignee" style="display:block;margin-top:0.45rem;font-size:0.75rem;color:var(--text-secondary);">Assignee</label>
-          <input id="caseAssignee" type="text" value="">
-          <label for="reviewStatusSelect" style="display:block;margin-top:0.35rem;font-size:0.75rem;color:var(--text-secondary);">Review status</label>
-          <select id="reviewStatusSelect">
-            <option value="unassigned">unassigned</option>
-            <option value="in_review">in_review</option>
-            <option value="reviewed">reviewed</option>
-          </select>
-          <button id="btnSaveAssignment" type="button">Save assignment</button>
-          <div id="caseAssignmentDisplay" data-evidence-state="unavailable">No assignee stored.</div>
-          <button id="btnExportHandoff" type="button">Export Shift Handoff / 4-Block Incident Report</button>
-          <label for="shiftHandoffNote" style="display:block;margin-top:0.45rem;font-size:0.75rem;color:var(--text-secondary);">Shift note</label>
-          <textarea id="shiftHandoffNote" rows="2" placeholder="Optional. An address must already be stored on this flow." style="width:100%;margin-top:0.2rem;"></textarea>
-          <pre id="shiftHandoffReport" data-evidence-state="unavailable" style="white-space:pre-wrap;font-size:0.78rem;">No shift handoff exported yet.</pre>
+        <div class="demo-panel">
+          <section class="demo-step" data-demo-step="1">
+            <h3>Step 1 — Traffic and attack ingestion</h3>
+            <button id="btnRangeScan" type="button">1A. Fire Live Docker Range Scan (172.29.0.10 -&gt; 172.29.0.20)</button>
+            <button id="btnReplayScenarios" type="button">1B. Load 4 Scenario Replays</button>
+            <button id="btnReplayBenchmarkBurst" type="button">1C. Load 5 UNSW Study Vectors</button>
+          </section>
+          <section class="demo-step" data-demo-step="2">
+            <h3>Step 2 — Operator identity and analyst triage</h3>
+            <label for="operatorActor">Operator label</label>
+            <input id="operatorActor" type="text" value="analyst_a" maxlength="64" autocomplete="off">
+            <button id="btnEnrollOperator" type="button">2A. Enroll X.509 Lab Operator Certificate</button>
+            <label for="analystVerdictSelect">Analyst verdict</label>
+            <select id="analystVerdictSelect">
+              <option value="true_positive">true_positive</option>
+              <option value="false_positive">false_positive</option>
+              <option value="inconclusive">inconclusive</option>
+            </select>
+            <label for="analystRationale">Grounded rationale</label>
+            <textarea id="analystRationale" rows="2" placeholder="Stored separately from the frozen Random Forest decision. An address must already be on this flow."></textarea>
+            <button id="btnSaveVerdict" type="button">Save analyst verdict</button>
+            <div id="analystVerdictDisplay" data-evidence-state="unavailable">No analyst verdict stored.</div>
+            <label for="caseAssignee">Assignee</label>
+            <input id="caseAssignee" type="text" value="">
+            <label for="reviewStatusSelect">Review status</label>
+            <select id="reviewStatusSelect">
+              <option value="unassigned">unassigned</option>
+              <option value="in_review">in_review</option>
+              <option value="reviewed">reviewed</option>
+            </select>
+            <button id="btnSaveAssignment" type="button">Save assignment</button>
+            <div id="caseAssignmentDisplay" data-evidence-state="unavailable">No assignee stored.</div>
+            <button id="btnAcknowledge" type="button">Acknowledge</button>
+            <button id="btnEscalate" type="button">Escalate</button>
+            <button id="btnDismiss" type="button">Dismiss</button>
+          </section>
+          <section class="demo-step" data-demo-step="3">
+            <h3>Step 3 — Cryptographic SOAR approval and live n8n</h3>
+            <button id="btnGuidedApprove" type="button">3A. Approve Playbook (SHA-256 Chain)</button>
+            <button id="btnDispatchCallback" type="button">3B. Dispatch via Live n8n Container</button>
+          </section>
+          <section class="demo-step" data-demo-step="4">
+            <h3>Step 4 — Isolated victim firewall containment and rollback (172.29.0.10)</h3>
+            <button id="btnContainRange" type="button">4A. Drop Attacker 172.29.0.10 in Victim Firewall</button>
+            <button id="btnRollbackRange" type="button">4B. Rollback Victim Firewall Drop</button>
+          </section>
+          <details class="demo-more">
+            <summary>More checks</summary>
+            <button id="btnConstitutionalHealth" type="button">Run constitutional health</button>
+            <pre id="constitutionalHealth" data-evidence-state="unavailable">Constitutional health has not been run.</pre>
+            <button id="btnStitchWindows" type="button">Stitch verified windows</button>
+            <button id="btnPrivateIpGuard" type="button">Check private IP guard</button>
+            <button id="btnExportHandoff" type="button">Export Shift Handoff / 4-Block Incident Report</button>
+            <label for="shiftHandoffNote">Shift note</label>
+            <textarea id="shiftHandoffNote" rows="2" placeholder="Optional. An address must already be stored on this flow."></textarea>
+            <pre id="shiftHandoffReport" data-evidence-state="unavailable">No shift handoff exported yet.</pre>
+          </details>
           <div id="liveTimeline" data-evidence-state="unavailable">No correlated timeline yet.</div>
           <div id="liveTimelineDrawer" data-evidence-state="unavailable" data-correlated-flow-count="0">No unified timeline yet.</div>
           <div id="campaignQueueStatus" data-evidence-state="unavailable">Stored campaigns have not been loaded.</div>
@@ -457,35 +474,34 @@
       </section>
     </main>
 
-    <!-- Live Cyber-Range, n8n Workflow Studio & Threat Intelligence Panels -->
-    <div class="studio-grid" data-sample-only="true" hidden>
-      <!-- Live Cyber-Range Panel -->
-      <section class="card" aria-label="Live Cyber-Range Topology">
-        <div class="card-header">
-          <h2 class="card-title">Live Cyber-Range Network Topology</h2>
-          <span class="badge badge-auth">mTLS 1.3 Active</span>
+    <section class="card" id="liveRangeTopology" aria-label="Live Cyber-Range Topology">
+      <div class="card-header">
+        <h2 class="card-title">Live Cyber-Range Network Topology</h2>
+        <span class="badge" id="rangeConnectivityBadge" data-evidence-state="unavailable">172.29.0.10 -&gt; 172.29.0.20:80: waiting for a probe</span>
+      </div>
+      <div class="topology-view">
+        <div class="topo-node attacker">
+          <div class="topo-icon">&lArr;</div>
+          <div class="topo-name">Attacker</div>
+          <div class="topo-ip"><code>172.29.0.10</code></div>
+          <div class="topo-role">Docker range scanner</div>
         </div>
-        <div class="topology-view">
-          <div class="topo-node attacker">
-            <div class="topo-icon">&lArr;</div>
-            <div class="topo-name">Attacker VM</div>
-            <div class="topo-ip"><code>10.0.0.4</code></div>
-            <div class="topo-role">Port Scanner / Kali Linux</div>
-          </div>
-          <div class="topo-link">
-            <span class="topo-link-speed">Suricata EVE-JSON Capture</span>
-            <div class="topo-link-line"></div>
-            <span class="topo-packet-dot"></span>
-          </div>
-          <div class="topo-node victim">
-            <div class="topo-icon">&rArr;</div>
-            <div class="topo-name">Victim VM</div>
-            <div class="topo-ip"><code>10.0.0.5</code></div>
-            <div class="topo-role">Internal Web/DB Server</div>
-          </div>
+        <div class="topo-link">
+          <span class="topo-link-speed">Suricata EVE-JSON Bridge</span>
+          <div class="topo-link-line"></div>
+          <span class="topo-packet-dot"></span>
         </div>
-      </section>
+        <div class="topo-node victim">
+          <div class="topo-icon">&rArr;</div>
+          <div class="topo-name">Victim</div>
+          <div class="topo-ip"><code>172.29.0.20</code></div>
+          <div class="topo-role">nginx and the victim firewall</div>
+        </div>
+      </div>
+    </section>
 
+    <!-- Sample studio panels stay hidden once the live queue loads. -->
+    <div class="studio-grid" data-sample-only="true" hidden>
       <!-- 6-Node Visual n8n Workflow Studio -->
       <section class="card" aria-label="6-Node Visual n8n Workflow Studio">
         <div class="card-header">

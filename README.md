@@ -47,7 +47,7 @@ The lab HMAC and MISP values are not production credentials. Replace them before
 
 ## Range demo
 
-`scripts/run_full_range_demo.sh --up` starts the console, `docker/docker-compose.n8n.yml`, the private `172.29.0.0/24` range, and the eve follower. It waits until Suricata logs `Engine started`. Open `http://127.0.0.1:8766/`. The process listens beyond loopback so the n8n container can call `http://host.docker.internal:8766`. `--scan` runs non-interactive `curl` and `ssh -o BatchMode=yes` from `172.29.0.10`. `--down` stops the follower, the console, n8n, and the range. The host firewall is not changed. No Azure resources are created.
+`scripts/run_full_range_demo.sh --up` starts the console, `docker/docker-compose.n8n.yml`, the private `172.29.0.0/24` range, and the eve follower. It waits until Suricata logs `Engine started`. Open `http://127.0.0.1:8766/`. The process listens beyond loopback so the n8n container can call `http://host.docker.internal:8766`. `--scan` runs non-interactive `curl` and `ssh -o BatchMode=yes` from `172.29.0.10` and waits until a new `172.29.0.10 -> 172.29.0.20` row is stored. Multicast, link-local, broadcast, and port 5353 are not ingested. The console groups the same actions into four demo steps. `--down` stops the follower, the console, n8n, and the range. The host firewall is not changed. No Azure resources are created.
 
 ## Analyst workflow
 

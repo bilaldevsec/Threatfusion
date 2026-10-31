@@ -1296,3 +1296,139 @@ a:hover {
   z-index: 100;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
 }
+
+.qualification-bar,
+#sourceQualification[data-evidence-state="verified"] {
+  background: #111827 !important;
+  color: #c9d1d9 !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-left: 3px solid #06B6D4 !important;
+  box-shadow: none !important;
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.demo-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding: 0.35rem 0.1rem 0.5rem;
+}
+
+.demo-step {
+  background: #090D16;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem 0.65rem;
+}
+
+.demo-step h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.78rem;
+  color: #8b949e;
+  font-weight: 650;
+}
+
+.demo-step[data-demo-step="1"] { border-top: 2px solid #06B6D4; }
+.demo-step[data-demo-step="2"] { border-top: 2px solid #10B981; }
+.demo-step[data-demo-step="3"] { border-top: 2px solid #F59E0B; }
+.demo-step[data-demo-step="4"] { border-top: 2px solid #EF4444; }
+
+.soc-shell button,
+.demo-panel button,
+.hero-investor-card button,
+.card button {
+  background: #111827;
+  color: #e6edf3;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 0.42rem 0.7rem;
+  margin: 0.18rem 0.28rem 0.18rem 0;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.soc-shell button:hover,
+.demo-panel button:hover,
+.hero-investor-card button:hover,
+.card button:hover {
+  border-color: #06B6D4;
+}
+
+.soc-shell input,
+.soc-shell textarea,
+.soc-shell select,
+.demo-panel input,
+.demo-panel textarea,
+.demo-panel select,
+.hero-investor-card input,
+.hero-investor-card textarea,
+.hero-investor-card select {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  background: #090D16;
+  color: #e6edf3;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 0.4rem 0.55rem;
+  margin: 0.15rem 0 0.35rem;
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+.demo-panel label,
+.hero-investor-card label {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.75rem;
+  color: #8b949e;
+}
+
+.demo-more {
+  color: #8b949e;
+  font-size: 0.78rem;
+}
+
+.demo-more summary {
+  cursor: pointer;
+  margin-bottom: 0.35rem;
+}
+
+#rangeConnectivityBadge[data-evidence-state="verified"],
+#rangeConnectivityBadge[data-evidence-state="unavailable"] {
+  background: #090D16 !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  box-shadow: none !important;
+}
+
+#rangeConnectivityBadge[data-connectivity="reachable"] {
+  color: #10B981 !important;
+}
+
+#rangeConnectivityBadge[data-connectivity="blocked"] {
+  color: #EF4444 !important;
+}
+
+.queue-filter-bar .filter-btn {
+  width: auto;
+  margin: 0;
+  background: #090D16;
+  color: #8b949e;
+}
+
+.queue-filter-bar .filter-btn.active {
+  background: #111827;
+  border-color: #06B6D4;
+  color: #e6edf3;
+}
+
+.card .btn-approve {
+  border-color: #10B981;
+  color: #10B981;
+  background: #111827;
+}

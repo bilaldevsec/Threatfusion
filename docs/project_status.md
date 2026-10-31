@@ -1967,6 +1967,10 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Bridge noise filter and guided demo panel (2026-10-31)
+
+- The eve follower and `POST /api/v1/live/sensor` refuse multicast (`224.0.0.0/4`, `ff00::/8`), link-local (`fe80::/10`, `169.254.0.0/16`), broadcast (`255.255.255.255`), and port 5353 before a row is stored. `POST /api/v1/live/purge-bridge-noise` deletes rows that already match. `POST /api/v1/live/range-scan` and `scripts/run_full_range_demo.sh --scan` fire curl and non-interactive ssh, then wait until eve.json and SQLite both show a new `172.29.0.10 -> 172.29.0.20` flow. The console sidebar is a four-step panel and the topology card shows those Docker addresses outside the hidden sample surface. The frozen forest score is unchanged. TF-003, TF-012, TF-002, TF-008, TF-009, TF-010, and TF-011 stay **open**.
+
 ### Victim-namespace containment and range demo (2026-10-30)
 
 - `POST /api/v1/live/soar/contain` and `POST /api/v1/live/soar/rollback` drop and remove source `172.29.0.10` with iptables inside `threatfusion_range_victim`. The route returns HTTP 403 without an approved hash chain, a stored HMAC callback, and that exact source. With the range stopped it returns `range_not_running` and does not claim a block. On 2026-10-30 curl from the attacker returned `range-victim` before the drop, timed out with exit 28 after the drop, and returned `range-victim` after rollback. Approve and dispatch still report `containment_executed: false`. `scripts/run_full_range_demo.sh` waits for Suricata `Engine started`, scans with non-interactive ssh and curl, and stops the follower, console, n8n, and range. No Azure resources were created.

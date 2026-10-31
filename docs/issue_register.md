@@ -938,6 +938,10 @@ A 1,527-test pytest run and the corrupt-database classification fix do not satis
 
 Stored triage actions, the shift-handoff timeline, and the grounded-note refusal do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. Containment stays unauthorized. All four issues remain **open**.
 
+### Bridge noise filter and guided demo panel, 2026-10-31
+
+Dropping multicast, link-local, broadcast, and mDNS from the bridge queue does not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. It does not close TF-003, TF-012, or TF-002. All four external gates remain **open**.
+
 ### Victim-namespace containment, 2026-10-30
 
 The victim-container drop and `scripts/run_full_range_demo.sh` do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. They do not close TF-003, TF-012, or TF-002. All four external gates remain **open**.

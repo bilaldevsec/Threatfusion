@@ -93,6 +93,8 @@ cmd_up() {
     "$PYTHON" "${ROOT}/scripts/follow_suricata_eve.py" \
     >"$FOLLOWER_LOG" 2>&1 &
   echo $! >"$FOLLOWER_PIDFILE"
+  curl -fsS -X POST "http://127.0.0.1:${PORT}/api/v1/live/purge-bridge-noise" \
+    -H 'Content-Type: application/json' -d '{}' >/dev/null
   echo "Analyst URL: http://127.0.0.1:${PORT}/"
   echo "Suricata engine started. Follower pid $(cat "$FOLLOWER_PIDFILE")."
 }
@@ -101,15 +103,13 @@ cmd_scan() {
   require_tools
   docker inspect -f '{{.State.Running}}' threatfusion_range_attacker | grep -qx true \
     || die "attacker container is not running; use --up first"
-  echo "curl from 172.29.0.10 to 172.29.0.20"
-  docker exec threatfusion_range_attacker \
-    curl -fsS --max-time 5 "http://172.29.0.20/" || true
-  echo
-  echo "ssh BatchMode from 172.29.0.10 to 172.29.0.20"
-  docker exec threatfusion_range_attacker \
-    ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-      -o ConnectTimeout=5 root@172.29.0.20 exit || true
-  echo "scan finished. A refused ssh login still produces a flow."
+  echo "waiting for 172.29.0.10 -> 172.29.0.20 in eve.json and the live queue"
+  local response
+  response="$(curl -fsS -X POST "http://127.0.0.1:${PORT}/api/v1/live/range-scan" \
+    -H 'Content-Type: application/json' -d '{}')" || die "range scan was not ingested"
+  printf '%s\n' "$response"
+  printf '%s\n' "$response" | grep -q '"ingested": true' \
+    || die "range scan did not store 172.29.0.10 -> 172.29.0.20"
 }
 
 cmd_down() {

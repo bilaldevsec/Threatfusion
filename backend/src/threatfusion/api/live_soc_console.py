@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from threatfusion.advisory.chromadb_mitre_rag import ChromaDbMitrePlaybookRag
+from threatfusion.operations.bridge_noise import is_lab_bridge_noise
 from threatfusion.models.drift_and_supply_chain import (
     CANONICAL_14_FEATURES,
     FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY,
@@ -375,6 +376,8 @@ def _validate_sensor_request(
     signature = observation.get("signature")
     if signature is not None and not isinstance(signature, str):
         return "invalid_sensor_observation"
+    if is_lab_bridge_noise(src, dst, src_port, dst_port):
+        return "bridge_noise_ignored"
     return None
 
 
@@ -2986,3 +2989,166 @@ def rollback_range_source(
         "rollback_at": recorded_at,
         "http_status": 200,
     }
+
+
+def purge_bridge_noise_rows(db_path: Path) -> int:
+    """Delete stored bridge rows that are multicast, link-local, broadcast, or mDNS."""
+    if not db_path.is_file():
+        return 0
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT flow_id, src_entity_id, dst_entity_id, service_or_port,
+                   sensor_observation_json
+            FROM live_flows
+            WHERE source_label = ?
+            """,
+            (SENSOR_BRIDGE_SOURCE,),
+        ).fetchall()
+        doomed: list[int] = []
+        for row in rows:
+            raw_port = str(row["service_or_port"] or "0")
+            try:
+                dst_port = int(raw_port)
+            except ValueError:
+                dst_port = 0
+            src = str(row["src_entity_id"] or "")
+            dst = str(row["dst_entity_id"] or "")
+            observation = str(row["sensor_observation_json"] or "")
+            if (
+                is_lab_bridge_noise(src, dst, 0, dst_port)
+                or "224.0.0.251" in observation
+                or "ff02::" in observation
+                or "ff02::" in src
+                or "ff02::" in dst
+            ):
+                doomed.append(int(row["flow_id"]))
+        for flow_id in doomed:
+            conn.execute("DELETE FROM live_flows WHERE flow_id = ?", (flow_id,))
+    return len(doomed)
+
+
+def _latest_range_pair(db_path: Path, after_flow_id: int) -> sqlite3.Row | None:
+    if not db_path.is_file():
+        return None
+    with _connect(db_path) as conn:
+        return conn.execute(
+            """
+            SELECT flow_id, src_entity_id, dst_entity_id, service_or_port
+            FROM live_flows
+            WHERE source_label = ?
+              AND src_entity_id = ?
+              AND dst_entity_id = ?
+              AND flow_id > ?
+            ORDER BY flow_id DESC
+            LIMIT 1
+            """,
+            (SENSOR_BRIDGE_SOURCE, "172.29.0.10", "172.29.0.20", after_flow_id),
+        ).fetchone()
+
+
+def _max_flow_id(db_path: Path) -> int:
+    if not db_path.is_file():
+        return 0
+    with _connect(db_path) as conn:
+        row = conn.execute("SELECT COALESCE(MAX(flow_id), 0) FROM live_flows").fetchone()
+    return int(row[0] if row is not None else 0)
+
+
+def _docker_range_scan() -> None:
+    import subprocess
+
+    commands = (
+        (
+            "docker",
+            "exec",
+            RANGE_ATTACKER_CONTAINER,
+            "curl",
+            "-fsS",
+            "--max-time",
+            "5",
+            f"http://{RANGE_VICTIM_ADDRESS}/",
+        ),
+        (
+            "docker",
+            "exec",
+            RANGE_ATTACKER_CONTAINER,
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "ConnectTimeout=5",
+            f"root@{RANGE_VICTIM_ADDRESS}",
+            "exit",
+        ),
+    )
+    for command in commands:
+        subprocess.run(command, capture_output=True, text=True, timeout=20, check=False)
+
+
+def run_live_range_scan(
+    db_path: Path,
+    *,
+    runner: Any | None = None,
+    timeout_seconds: float = 30.0,
+    eve_path: Path | None = None,
+) -> dict[str, Any]:
+    """Fire the lab scan and wait until a new unicast bridge row is stored."""
+    import time
+
+    removed = purge_bridge_noise_rows(db_path)
+    before = _max_flow_id(db_path)
+    try:
+        if runner is None:
+            _docker_range_scan()
+        else:
+            runner()
+    except (OSError, TimeoutError):
+        return {
+            "evidence_state": "unavailable",
+            "reason": "range_not_running",
+            "removed_noise": removed,
+            "ingested": False,
+            "containment_executed": False,
+            "production_fusion_enabled": False,
+        }
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        row = _latest_range_pair(db_path, before)
+        eve_seen = _eve_has_range_pair(eve_path)
+        eve_ready = eve_path is None or eve_seen
+        if row is not None and eve_ready:
+            return {
+                "evidence_state": "verified",
+                "reason": "range_scan_ingested",
+                "removed_noise": removed,
+                "ingested": True,
+                "flow_id": int(row["flow_id"]),
+                "src_entity_id": "172.29.0.10",
+                "dst_entity_id": "172.29.0.20",
+                "eve_seen": eve_seen,
+                "containment_executed": False,
+                "production_fusion_enabled": False,
+            }
+        if time.monotonic() >= deadline:
+            return {
+                "evidence_state": "unavailable",
+                "reason": "scan_not_ingested",
+                "removed_noise": removed,
+                "ingested": False,
+                "eve_seen": eve_seen,
+                "containment_executed": False,
+                "production_fusion_enabled": False,
+            }
+        time.sleep(0.4)
+
+
+def _eve_has_range_pair(eve_path: Path | None) -> bool:
+    if eve_path is None or not eve_path.is_file():
+        return False
+    tail = eve_path.read_bytes()[-262144:].decode("utf-8", "replace")
+    return "172.29.0.10" in tail and "172.29.0.20" in tail
