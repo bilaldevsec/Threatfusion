@@ -17,6 +17,7 @@ import os
 import re
 import sqlite3
 import stat
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -86,60 +87,71 @@ _FLOW_EXTRA_COLUMNS: tuple[tuple[str, str], ...] = (
     ("rollback_at", "TEXT"),
 )
 
+_SCHEMA_LOCK = threading.Lock()
 _ANALYST_VERDICTS = frozenset({"true_positive", "false_positive", "inconclusive"})
 _REVIEW_STATUSES = frozenset({"unassigned", "in_review", "reviewed"})
 _LOCAL_ACTOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _add_missing_flow_columns(conn: sqlite3.Connection, existing: set[str]) -> None:
+    for name, declaration in _FLOW_EXTRA_COLUMNS:
+        if name not in existing:
+            try:
+                conn.execute(f"ALTER TABLE live_flows ADD COLUMN {name} {declaration}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), timeout=5.0)
     conn.row_factory = sqlite3.Row
-    previous = conn.isolation_level
-    conn.isolation_level = None
-    conn.execute("PRAGMA busy_timeout = 5000")
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.isolation_level = previous
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS live_flows (
-            flow_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            observed_at_utc TEXT NOT NULL,
-            features_json TEXT NOT NULL,
-            rf_attack_probability REAL,
-            decision TEXT NOT NULL,
-            evidence_state TEXT NOT NULL,
-            reason TEXT NOT NULL,
-            model_sha256 TEXT NOT NULL,
-            production_fusion_enabled INTEGER NOT NULL
-        )
-        """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS analyst_notes (
-            note_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            flow_id INTEGER,
-            author_id TEXT NOT NULL,
-            note_text TEXT NOT NULL,
-            created_at_utc TEXT NOT NULL
-        )
-        """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS live_campaigns (
-            campaign_id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            source_label TEXT NOT NULL,
-            created_at_utc TEXT NOT NULL,
-            member_count INTEGER NOT NULL
-        )
-        """)
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(live_flows)")}
-    for name, declaration in _FLOW_EXTRA_COLUMNS:
-        if name not in existing:
-            conn.execute(f"ALTER TABLE live_flows ADD COLUMN {name} {declaration}")
-    conn.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS live_flows_source_event_id
-        ON live_flows(source_event_id)
-        WHERE source_event_id IS NOT NULL
-        """)
+    with _SCHEMA_LOCK:
+        previous = conn.isolation_level
+        conn.isolation_level = None
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.isolation_level = previous
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS live_flows (
+                flow_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                observed_at_utc TEXT NOT NULL,
+                features_json TEXT NOT NULL,
+                rf_attack_probability REAL,
+                decision TEXT NOT NULL,
+                evidence_state TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                model_sha256 TEXT NOT NULL,
+                production_fusion_enabled INTEGER NOT NULL
+            )
+            """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS analyst_notes (
+                note_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                flow_id INTEGER,
+                author_id TEXT NOT NULL,
+                note_text TEXT NOT NULL,
+                created_at_utc TEXT NOT NULL
+            )
+            """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS live_campaigns (
+                campaign_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                source_label TEXT NOT NULL,
+                created_at_utc TEXT NOT NULL,
+                member_count INTEGER NOT NULL
+            )
+            """)
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(live_flows)")}
+        _add_missing_flow_columns(conn, existing)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS live_flows_source_event_id
+            ON live_flows(source_event_id)
+            WHERE source_event_id IS NOT NULL
+            """)
+        conn.commit()
     if db_path.exists():
         os.chmod(db_path, stat.S_IRUSR | stat.S_IWUSR)
     return conn
@@ -3193,51 +3205,63 @@ def run_live_range_scan(
     """Fire the lab scan and wait until a new unicast bridge row is stored."""
     import time
 
-    removed = purge_bridge_noise_rows(db_path)
-    before = _max_flow_id(db_path)
     try:
-        if runner is None:
-            _docker_range_scan()
-        else:
-            runner()
-    except (OSError, TimeoutError):
+        removed = purge_bridge_noise_rows(db_path)
+        before = _max_flow_id(db_path)
+        try:
+            if runner is None:
+                _docker_range_scan()
+            else:
+                runner()
+        except (OSError, TimeoutError):
+            return {
+                "evidence_state": "unavailable",
+                "reason": "range_not_running",
+                "removed_noise": removed,
+                "ingested": False,
+                "containment_executed": False,
+                "production_fusion_enabled": False,
+            }
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            row = _latest_range_pair(db_path, before)
+            eve_seen = _eve_has_range_pair(eve_path)
+            eve_ready = eve_path is None or eve_seen
+            if row is not None and eve_ready:
+                return {
+                    "evidence_state": "verified",
+                    "reason": "range_scan_ingested",
+                    "removed_noise": removed,
+                    "ingested": True,
+                    "flow_id": int(row["flow_id"]),
+                    "src_entity_id": "172.29.0.10",
+                    "dst_entity_id": "172.29.0.20",
+                    "eve_seen": eve_seen,
+                    "containment_executed": False,
+                    "production_fusion_enabled": False,
+                }
+            if time.monotonic() >= deadline:
+                return {
+                    "evidence_state": "unavailable",
+                    "reason": "scan_not_ingested",
+                    "http_status": 409,
+                    "removed_noise": removed,
+                    "ingested": False,
+                    "eve_seen": eve_seen,
+                    "containment_executed": False,
+                    "production_fusion_enabled": False,
+                }
+            time.sleep(0.4)
+    except sqlite3.OperationalError:
         return {
             "evidence_state": "unavailable",
-            "reason": "range_not_running",
-            "removed_noise": removed,
+            "reason": "database_unavailable",
+            "http_status": 503,
             "ingested": False,
+            "removed_noise": 0,
             "containment_executed": False,
             "production_fusion_enabled": False,
         }
-    deadline = time.monotonic() + timeout_seconds
-    while True:
-        row = _latest_range_pair(db_path, before)
-        eve_seen = _eve_has_range_pair(eve_path)
-        eve_ready = eve_path is None or eve_seen
-        if row is not None and eve_ready:
-            return {
-                "evidence_state": "verified",
-                "reason": "range_scan_ingested",
-                "removed_noise": removed,
-                "ingested": True,
-                "flow_id": int(row["flow_id"]),
-                "src_entity_id": "172.29.0.10",
-                "dst_entity_id": "172.29.0.20",
-                "eve_seen": eve_seen,
-                "containment_executed": False,
-                "production_fusion_enabled": False,
-            }
-        if time.monotonic() >= deadline:
-            return {
-                "evidence_state": "unavailable",
-                "reason": "scan_not_ingested",
-                "removed_noise": removed,
-                "ingested": False,
-                "eve_seen": eve_seen,
-                "containment_executed": False,
-                "production_fusion_enabled": False,
-            }
-        time.sleep(0.4)
 
 
 def _eve_has_range_pair(eve_path: Path | None) -> bool:

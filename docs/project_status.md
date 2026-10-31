@@ -1967,6 +1967,10 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Range-scan schema race (2026-10-31)
+
+- `POST /api/v1/live/range-scan` and `POST /api/v1/live/sensor` both open the live database. A second `ALTER TABLE` for `mttr_seconds` raised `sqlite3.OperationalError: duplicate column name`, and the request thread closed the socket with no HTTP body (`curl: (52) Empty reply from server`). Schema migration now runs under one lock, and a duplicate-column error is treated as already migrated. Any other `sqlite3.OperationalError` in the scan returns HTTP 503 `database_unavailable`. Compose uses `-p threatfusion-n8n` and `-p threatfusion-range` with `--remove-orphans`, so the range project does not remove `threatfusion_n8n_live`. On 2026-10-31 `--scan` stored `172.29.0.10 -> 172.29.0.20` as flow 3 (`range_scan_ingested`, `eve_seen: true`) and `http://127.0.0.1:8766/` stayed HTTP 200. The follower recorded the curl flow as Benign `0.22812216911732502` and the ssh flow as Benign `0.329237969983126`. TF-003, TF-012, TF-002, TF-008, TF-009, TF-010, and TF-011 stay **open**.
+
 ### Master-detail console, Gemini copilot, CVE corpus, and agy probe (2026-10-31)
 
 - The live console uses a 40/60 queue and investigation pane. `99.9889%` and `1.25s` stay labeled as the inspected January benchmark. A live MTTR is shown only from a stored n8n callback. `Muhammad Bilal` shows a verified `lab_operator` badge only when the enrolled certificate stamp is verified. `GEMINI_MODEL` selects the advisory model and the unset default remains `gemini-2.5-flash`. A missing key, a network failure, a groundedness miss, or the $5.00 ceiling returns the local corpus. Eight CVE playbooks were appended beside the original ten techniques. `scripts/run_adversarial_redteam_probe.py` runs five refusals on a temporary database. Screenshot 02 shows the local engine because no `GEMINI_API_KEY` was set. After the console title and the 18-document corpus count were aligned, `pytest -q` exited 0 and the range was stopped. TF-003, TF-012, TF-002, TF-008, TF-009, TF-010, and TF-011 stay **open**.

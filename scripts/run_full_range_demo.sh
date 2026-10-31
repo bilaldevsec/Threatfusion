@@ -77,8 +77,8 @@ cmd_up() {
     sleep 0.2
   done
   [[ "$ready" == 1 ]] || die "console did not become ready on 127.0.0.1:${PORT}"
-  docker compose -f docker/docker-compose.n8n.yml up -d
-  docker compose -f docker/docker-compose.range.yml up -d
+  docker compose -p threatfusion-n8n -f docker/docker-compose.n8n.yml up -d --remove-orphans
+  docker compose -p threatfusion-range -f docker/docker-compose.range.yml up -d --remove-orphans
   local deadline=$((SECONDS + 120))
   local engine=0
   while (( SECONDS < deadline )); do
@@ -119,8 +119,8 @@ cmd_down() {
   if command -v fuser >/dev/null 2>&1; then
     fuser -k "${PORT}/tcp" >/dev/null 2>&1 || true
   fi
-  docker compose -f docker/docker-compose.n8n.yml down
-  docker compose -f docker/docker-compose.range.yml down
+  docker compose -p threatfusion-n8n -f docker/docker-compose.n8n.yml down --remove-orphans
+  docker compose -p threatfusion-range -f docker/docker-compose.range.yml down --remove-orphans
   echo "follower, console, n8n, and range stopped"
 }
 

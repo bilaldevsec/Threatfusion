@@ -436,7 +436,12 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 self._live_db_path(),
                 eve_path=REPO_ROOT / "docker" / "range" / "eve" / "eve.json",
             )
-            status = 200 if result.get("ingested") else 409
+            if result.get("ingested"):
+                status = 200
+            elif result.get("http_status") == 503:
+                status = 503
+            else:
+                status = 409
             self._send_json(status, result)
             return
 

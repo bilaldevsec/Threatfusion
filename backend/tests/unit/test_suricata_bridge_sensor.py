@@ -6,6 +6,7 @@ The frozen forest score is stored as its own fact. Alert signatures stay display
 from __future__ import annotations
 
 import json
+import sqlite3
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 import threading
@@ -18,6 +19,8 @@ from scripts.follow_suricata_eve import handle_line, remember_alert, sensor_payl
 from scripts.run_misp_and_callback_contract_server import MispAndCallbackContractHandler
 from threatfusion.api.live_soc_console import (
     CANONICAL_14_FEATURES,
+    _add_missing_flow_columns,
+    _connect,
     list_live_campaigns,
     persist_scored_flow,
     purge_bridge_noise_rows,
@@ -381,3 +384,53 @@ def test_range_scan_does_not_invent_a_row_when_the_runner_fails(tmp_path: Path) 
     assert result["reason"] == "range_not_running"
     assert result["ingested"] is False
     assert not db.exists()
+
+
+def test_concurrent_connect_migrates_one_schema(tmp_path: Path) -> None:
+    db = tmp_path / "live.sqlite3"
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            connection = _connect(db)
+            connection.close()
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(12)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert errors == []
+    assert all(not thread.is_alive() for thread in threads)
+    connection = _connect(db)
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(live_flows)")}
+    connection.close()
+    assert "mttr_seconds" in columns
+    assert "containment_state" in columns
+
+
+def test_connect_treats_duplicate_column_name_as_already_migrated(tmp_path: Path) -> None:
+    db = tmp_path / "live.sqlite3"
+    connection = _connect(db)
+    _add_missing_flow_columns(connection, set())
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(live_flows)")}
+    connection.close()
+    assert "mttr_seconds" in columns
+    assert "containment_state" in columns
+
+
+def test_range_scan_http_returns_503_json_when_sqlite_fails(
+    live_http: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def locked(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr("threatfusion.api.live_soc_console._docker_range_scan", lambda: None)
+    monkeypatch.setattr("threatfusion.api.live_soc_console._latest_range_pair", locked)
+    status, body = _post(live_http, "/api/v1/live/range-scan", {})
+    assert status == 503
+    assert body["reason"] == "database_unavailable"
+    assert body["ingested"] is False
+    assert body["evidence_state"] == "unavailable"
