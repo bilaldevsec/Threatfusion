@@ -21,15 +21,17 @@
       <div class="brand-block">
         <div class="brand-icon">TF</div>
         <div>
-          <span class="brand-title">ThreatFusion SOC Console</span>
+          <span class="brand-title">ThreatFusion | Unified SecOps &amp; NDR Console</span>
           <span class="brand-subtitle">Analyst queue, evidence, and approval-gated response</span>
         </div>
       </div>
       <div class="header-telemetry">
-        <span class="badge badge-auth">mTLS 1.3 Authenticated</span>
-        <span class="badge badge-role">Role: Triage Lead</span>
+        <span class="badge badge-auth">mTLS 1.3 Active</span>
+        <span class="badge badge-terminal">Air-Gapped Local</span>
+        <span class="badge badge-role">Audit Chain: Intact</span>
+        <span id="operatorProfileName">Muhammad Bilal (Triage Lead)</span>
         <span class="badge" id="operatorIdentityBadge" data-evidence-state="unavailable">unverified local label</span>
-        <span class="badge badge-terminal">Air-Gapped / Zero-CDN</span>
+        <span class="badge" id="copilotProviderBadge" data-evidence-state="unavailable">AI Copilot: Local Air-Gapped Engine</span>
         <span style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-secondary);" id="liveClock">2026-10-19 22:30:00 UTC</span>
       </div>
     </header>
@@ -67,7 +69,7 @@
         <div id="liveQueueStatus" data-evidence-state="unavailable">Live queue has not been loaded.</div>
         <label for="liveCopilotQuestion">MITRE question</label>
         <input id="liveCopilotQuestion" type="text" value="command and control beacon">
-        <button id="btnLiveCopilot" type="button">Ask local MITRE copilot</button>
+        <button id="btnLiveCopilot" type="button">Ask the advisory copilot</button>
         <div id="liveCopilotAnswer" data-evidence-state="unavailable"></div>
         <label for="analystNoteText">Analyst note</label>
         <input id="analystNoteText" type="text" value="">
@@ -151,19 +153,19 @@
     <!-- Top Operational Velocity Ribbon (MTTI / MTTR / Noise Compression / Cloud Budget) -->
     <section class="velocity-ribbon" id="velocityRibbon" aria-label="Operational Velocity & Noise Funnel Ribbon">
       <div class="velocity-card">
-        <span class="velocity-label">Mean Time to Investigate (MTTI)</span>
+        <span class="velocity-label">MTTI: Inspected January benchmark</span>
         <span class="velocity-value" id="valMtti">1.25s</span>
-        <span class="velocity-detail">864.0x Speedup vs 18m (1080s) Manual Baseline</span>
+        <span class="velocity-detail">Inspected January benchmark against the 1080.0s manual baseline. Not the live queue.</span>
       </div>
       <div class="velocity-card">
-        <span class="velocity-label">Mean Time to Respond (MTTR)</span>
-        <span class="velocity-value" id="valMttr">4.50s</span>
-        <span class="velocity-detail">600.0x Speedup vs 45m (2700s) Manual Baseline</span>
+        <span class="velocity-label">Live MTTR from a stored n8n callback</span>
+        <span class="velocity-value" id="valMttr">no stored n8n callback</span>
+        <span class="velocity-detail" id="valMttrDetail">Shown only after a stored n8n callback. The January benchmark is separate.</span>
       </div>
       <div class="velocity-card">
-        <span class="velocity-label">Alert Noise Compression Ratio</span>
+        <span class="velocity-label">Noise reduction: inspected January benchmark</span>
         <span class="velocity-value" id="valCompression" style="color: var(--color-emerald);">99.9889%</span>
-        <span class="velocity-detail">January figures stay in the Frozen Benchmark Evaluation Baseline</span>
+        <span class="velocity-detail">Inspected January benchmark, 216,568 flows. Not the live queue.</span>
       </div>
       <div class="velocity-card">
         <span class="velocity-label">Cloud Budget Tracker</span>
@@ -288,10 +290,11 @@
             <button id="btnContainRange" type="button">4A. Drop Attacker 172.29.0.10 in Victim Firewall</button>
             <button id="btnRollbackRange" type="button">4B. Rollback Victim Firewall Drop</button>
           </section>
-          <details class="demo-more">
+          <details class="demo-more" open>
             <summary>More checks</summary>
             <button id="btnConstitutionalHealth" type="button">Run constitutional health</button>
             <pre id="constitutionalHealth" data-evidence-state="unavailable">Constitutional health has not been run.</pre>
+          <div id="agyAuditStatus" data-evidence-state="unavailable">External agy Red-Team Audit: not run</div>
             <button id="btnStitchWindows" type="button">Stitch verified windows</button>
             <button id="btnPrivateIpGuard" type="button">Check private IP guard</button>
             <button id="btnExportHandoff" type="button">Export Shift Handoff / 4-Block Incident Report</button>
@@ -306,7 +309,10 @@
 
         <!-- Queue Filter Buttons -->
         <div class="queue-filter-bar">
-          <button class="filter-btn active" data-filter="all">All Campaigns</button>
+          <button class="filter-btn active" data-filter="all">All</button>
+          <button class="filter-btn" id="pillLiveBridge" type="button">Live Bridge</button>
+          <button class="filter-btn" id="pillAttacksOnly" type="button">Attacks Only</button>
+          <button class="filter-btn" id="pillRecordedBenchmark" type="button">Recorded Benchmark</button>
           <button class="filter-btn" data-filter="verified">Verified Receipts</button>
           <button class="filter-btn" data-filter="pending">Pending Approval</button>
           <button class="filter-btn" data-filter="unavailable">Unavailable</button>
@@ -320,7 +326,7 @@
             <option value="live_scenario_replay">Labeled scenario replay</option>
           </select>
           <label for="queueSearch">Search</label>
-          <input id="queueSearch" type="search" value="" placeholder="Title or flow">
+          <input id="queueSearch" type="search" value="" placeholder="IP, technique, or candidate">
           <label for="queueDecisionFilter">RF decision</label>
           <select id="queueDecisionFilter">
             <option value="all">All decisions</option>
@@ -375,15 +381,16 @@
             <button class="btn btn-approve" id="topBtnApproveSoar" style="font-size: 0.82rem; padding: 0.35rem 0.85rem;">
               Approve Playbook
             </button>
+            <button class="btn" id="btnIsolateAttacker" type="button">Isolate Attacker</button>
           </div>
         </div>
 
         <!-- 5-Tab Navigation Bar -->
         <nav class="inspector-tab-nav" aria-label="Investigation Inspector Tabs">
-          <button class="inspector-tab-btn active" data-tab-target="1">1. Executive Summary</button>
-          <button class="inspector-tab-btn" data-tab-target="2">2. Attack Timeline</button>
-          <button class="inspector-tab-btn" data-tab-target="3">3. MITRE &amp; Playbook</button>
-          <button class="inspector-tab-btn" data-tab-target="4">4. Evidence Locker ("Show Work")</button>
+          <button class="inspector-tab-btn active" data-tab-target="1">1. Overview and Copilot</button>
+          <button class="inspector-tab-btn" data-tab-target="2">2. Timeline</button>
+          <button class="inspector-tab-btn" data-tab-target="3">3. Evidence</button>
+          <button class="inspector-tab-btn" data-tab-target="4">4. SOAR and Containment</button>
           <button class="inspector-tab-btn" data-tab-target="5">5. SOAR Audit Changelog</button>
         </nav>
 

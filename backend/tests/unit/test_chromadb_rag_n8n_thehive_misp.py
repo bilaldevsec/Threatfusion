@@ -75,8 +75,8 @@ class TestChromaDbMitreRag:
     """Tests for ChromaDB Semantic Vector RAG over MITRE ATT&CK & Playbooks."""
 
     def test_mitre_corpus_and_document_structure(self) -> None:
-        """Verify canonical corpus has 10 enterprise techniques and valid structure."""
-        assert len(CANONICAL_MITRE_AND_PLAYBOOK_CORPUS) == 10
+        """Verify canonical corpus has the original techniques plus the CVE playbooks."""
+        assert len(CANONICAL_MITRE_AND_PLAYBOOK_CORPUS) == 18
         expected_techniques = {
             "T1046",
             "T1190",
@@ -88,6 +88,11 @@ class TestChromaDbMitreRag:
             "T1021",
             "T1059",
             "T1133",
+            "T1557",
+            "T1499",
+            "T1552",
+            "T1210",
+            "T1048",
         }
         actual_techniques = {doc.technique_id for doc in CANONICAL_MITRE_AND_PLAYBOOK_CORPUS}
         assert actual_techniques == expected_techniques
@@ -144,7 +149,7 @@ class TestChromaDbMitreRag:
         with rag._get_connection() as conn:
             cur = conn.execute("SELECT COUNT(*) AS cnt FROM chroma_embeddings")
             count = cur.fetchone()["cnt"]
-            assert count == 10
+            assert count == 18
 
     def test_chromadb_rag_semantic_queries(self, tmp_path: Path) -> None:
         """Verify semantic vector queries return ranked hits by cosine similarity."""
@@ -1422,7 +1427,7 @@ class TestMilestone36ArchitecturalElevation:
                 assert resp.status == 200
                 assert "text/html" in resp.headers.get("Content-Type", "")
                 html_body = resp.read().decode("utf-8")
-                assert "ThreatFusion SOC Console" in html_body
+                assert "ThreatFusion | Unified SecOps" in html_body
                 assert "velocityRibbon" in html_body
 
             # 6b. GET /css/soc_unicorn.css serves CSS
@@ -1761,7 +1766,9 @@ class TestMilestone36ArchitecturalElevation:
         for k in ("css", "index_html", "js"):
             assert re.fullmatch(r"^[0-9a-f]{64}$", result["sha256"][k])
 
-        backend_code = Path("backend/src/threatfusion/api/analyst_dashboard.py").read_text(encoding="utf-8")
+        backend_code = Path("backend/src/threatfusion/api/analyst_dashboard.py").read_text(
+            encoding="utf-8"
+        )
         assert "data-copy-hash" in backend_code
 
         # 2. Defective bundle missing required markers raises ValueError
@@ -1827,7 +1834,10 @@ class TestMilestone36ArchitecturalElevation:
             alert_candidate_id="cand_m37_02",
             source_ip="10.0.0.4",
             dest_ip="10.0.0.5",
-            soar_receipt={"execution_id": "exec_fake", "signature_sha256": "not-a-valid-sha256-hash"},
+            soar_receipt={
+                "execution_id": "exec_fake",
+                "signature_sha256": "not-a-valid-sha256-hash",
+            },
             audit_chain=valid_chain,
         )
         insp_forged = build_five_tab_investigation_inspector(card_forged_receipt)
@@ -1890,7 +1900,10 @@ class TestMilestone36ArchitecturalElevation:
         # Layer 1 Hero Strip hooks
         assert 'data-layer="hero-investor-hook"' in html
         assert "99%+ Alert Noise Eliminated" in html
-        assert "TTD (Time to Detect, ms) + TTA (Time to Acknowledge, ms) + TTI (Time to Investigate, s) = Total Time to Conclusion" in html
+        assert (
+            "TTD (Time to Detect, ms) + TTA (Time to Acknowledge, ms) + TTI (Time to Investigate, s) = Total Time to Conclusion"
+            in html
+        )
         assert "900.0s" in html
         assert "mTLS 1.3 Active" in html
         assert "Model Weights Frozen &amp; Verified" in html
@@ -1921,7 +1934,9 @@ class TestMilestone36ArchitecturalElevation:
         assert "data-copy-hash" in html
         assert 'title="Click to copy SHA-256 digest"' in html
         assert "navigator.clipboard.writeText" in html
-        assert "data-copy-hash" in Path("backend/src/threatfusion/api/analyst_dashboard.py").read_text(encoding="utf-8")
+        assert "data-copy-hash" in Path(
+            "backend/src/threatfusion/api/analyst_dashboard.py"
+        ).read_text(encoding="utf-8")
 
 
 class TestMegaMilestone38FailClosedEvidence:
@@ -2059,7 +2074,9 @@ class TestMegaMilestone38FailClosedEvidence:
 
         from threatfusion.alerts.correlation_engine import IncidentSqliteRepository
         from threatfusion.db.alert_repository import AlertCandidateRepository
-        from threatfusion.operations.cloud_live_telemetry import process_suricata_eve_stream_resilient
+        from threatfusion.operations.cloud_live_telemetry import (
+            process_suricata_eve_stream_resilient,
+        )
         from threatfusion.soar.playbook_ledger import (
             ApprovalGatedSoarEngine,
             SoarPlaybookSqliteRepository,
@@ -2075,7 +2092,9 @@ class TestMegaMilestone38FailClosedEvidence:
         assert parser.parse_args(["--bind", "0.0.0.0"]).bind == "0.0.0.0"
         assert parser.parse_args([]).bind == "127.0.0.1"
         assert MAX_POST_BODY_BYTES == 1048576
-        compose = (REPO_ROOT / "docker" / "docker-compose.soc-stack.yml").read_text(encoding="utf-8")
+        compose = (REPO_ROOT / "docker" / "docker-compose.soc-stack.yml").read_text(
+            encoding="utf-8"
+        )
         assert "--bind 0.0.0.0" in compose
 
         alerts = AlertCandidateRepository(tmp_path / "alerts.sqlite3")
@@ -2132,7 +2151,9 @@ class TestMegaMilestone38FailClosedEvidence:
 
         def _serve() -> tuple[http.server.HTTPServer, int]:
             MispAndCallbackContractHandler.soar_db_path = str(db_path)
-            MispAndCallbackContractHandler.misp_api_key = "threatfusion_soc_test_misp_key_2026_secure"
+            MispAndCallbackContractHandler.misp_api_key = (
+                "threatfusion_soc_test_misp_key_2026_secure"
+            )
             MispAndCallbackContractHandler.seen_verify_idempotency_keys.clear()
             MispAndCallbackContractHandler.seen_callback_idempotency_keys.clear()
             server = http.server.HTTPServer(("127.0.0.1", 0), MispAndCallbackContractHandler)
@@ -2324,7 +2345,9 @@ class TestMegaMilestone39ResponsePlaneFollowupHandoff:
         with pytest.raises(StorageBackupError, match="snapshot_incomplete"):
             create_soc_response_plane_snapshot(tmp_path / "empty")
         with pytest.raises(StorageBackupError, match="database_corrupt"):
-            create_soc_response_plane_snapshot(tmp_path / "missing", soar_db=tmp_path / "absent.sqlite3")
+            create_soc_response_plane_snapshot(
+                tmp_path / "missing", soar_db=tmp_path / "absent.sqlite3"
+            )
 
     def test_citation_locked_followup_refuses_unknown_entity_and_containment(self) -> None:
         bundle = AdvisoryEvidenceBundle(
@@ -2335,7 +2358,9 @@ class TestMegaMilestone39ResponsePlaneFollowupHandoff:
             rf_threshold=0.5,
             top_feature_signals={"sbytes": 0.4},
         )
-        grounded = answer_citation_locked_followup("What is the frozen Random Forest probability?", bundle)
+        grounded = answer_citation_locked_followup(
+            "What is the frozen Random Forest probability?", bundle
+        )
         assert grounded["evidence_state"] == "verified"
         assert grounded["execution_authorized"] is False
         assert grounded["generation_mode"] == "deterministic_evidence_template"
@@ -2360,8 +2385,7 @@ class TestMegaMilestone39ResponsePlaneFollowupHandoff:
     def test_shift_handoff_reads_outbox_without_a_second_approval(self, tmp_path: Path) -> None:
         outbox = tmp_path / "n8n_thehive_misp_outbox.sqlite3"
         with sqlite3.connect(outbox) as conn:
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE n8n_executions (
                     execution_id TEXT PRIMARY KEY,
                     playbook_id TEXT NOT NULL,
@@ -2374,8 +2398,7 @@ class TestMegaMilestone39ResponsePlaneFollowupHandoff:
                     payload_json TEXT NOT NULL,
                     created_at_utc TEXT NOT NULL
                 )
-                """
-            )
+                """)
             conn.execute(
                 """
                 INSERT INTO n8n_executions VALUES (

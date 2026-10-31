@@ -172,9 +172,9 @@ def test_sigterm_stops_the_shared_process_and_exports_one_ledger(tmp_path: Path)
         text=True,
     )
     try:
-        page = _wait_http(f"http://127.0.0.1:{port}/", "ThreatFusion SOC Console")
+        page = _wait_http(f"http://127.0.0.1:{port}/", "ThreatFusion | Unified SecOps")
         health = _wait_http(f"http://127.0.0.1:{port}/healthz", '"status": "ok"')
-        assert "ThreatFusion SOC Console" in page
+        assert "ThreatFusion | Unified SecOps" in page
         assert "threatfusion_soc_contract_server" in health
         pid_text = (tmp_path / f"threatfusion-live-product-{port}.pid").read_text(encoding="utf-8")
         server_pid = int(pid_text.strip())

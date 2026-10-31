@@ -209,7 +209,7 @@ for _i in $(seq 1 150); do
     die "the contract server exited before the SOC console and /healthz were ready"
   fi
   if http_ok "http://${HOST}:${PORT}/healthz" '"status": "ok"' \
-    && http_ok "http://${HOST}:${PORT}/" "ThreatFusion SOC Console"; then
+    && http_ok "http://${HOST}:${PORT}/" "Unified SecOps"; then
     ready=1
     break
   fi

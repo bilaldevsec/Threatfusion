@@ -616,7 +616,7 @@ def add_analyst_note(
 
 
 def answer_mitre_copilot(question: str, rag_db_path: Path) -> dict[str, Any]:
-    """Answer from the local MITRE corpus. Containment requests are refused."""
+    """Answer from the local MITRE corpus, then an optional grounded Gemini brief."""
     if _CONTAINMENT_REQUEST.search(question or ""):
         return {
             "schema_version": "live_mitre_copilot_v1",
@@ -624,23 +624,114 @@ def answer_mitre_copilot(question: str, rag_db_path: Path) -> dict[str, Any]:
             "execution_authorized": False,
             "reason": "containment_refused",
             "hits": [],
+            "provider": "local_air_gapped",
+            "provider_label": "AI Copilot: Local Air-Gapped Engine",
+            "narrative": "",
         }
     rag = ChromaDbMitrePlaybookRag(rag_db_path)
     hits = rag.query_semantic_rag(question or "", top_k=3)
+    hit_rows = [
+        {
+            "technique_id": hit.technique_id,
+            "technique_name": hit.technique_name,
+            "playbook_id": hit.playbook_id,
+            "cosine_similarity": hit.cosine_similarity,
+        }
+        for hit in hits
+    ]
+    narrative = _grounded_gemini_narrative(question or "", hit_rows)
+    provider = str(narrative.get("provider") or "local_air_gapped")
     return {
         "schema_version": "live_mitre_copilot_v1",
-        "evidence_state": "verified" if hits else "unavailable",
+        "evidence_state": "verified" if hits or narrative.get("narrative") else "unavailable",
         "execution_authorized": False,
-        "reason": "local_corpus" if hits else "no_corpus_hit",
-        "hits": [
-            {
-                "technique_id": hit.technique_id,
-                "technique_name": hit.technique_name,
-                "playbook_id": hit.playbook_id,
-                "cosine_similarity": hit.cosine_similarity,
-            }
-            for hit in hits
-        ],
+        "reason": (
+            "gemini_grounded"
+            if narrative.get("narrative")
+            else ("local_corpus" if hits else "no_corpus_hit")
+        ),
+        "hits": hit_rows,
+        "provider": provider,
+        "provider_label": narrative.get("provider_label"),
+        "narrative": narrative.get("narrative") or "",
+        "production_fusion_enabled": False,
+    }
+
+
+def _handoff_brief_or_local(
+    default_brief: str,
+    addresses: list[str],
+    bundle: Any,
+) -> str:
+    """Use a grounded Gemini brief when a key is configured. Otherwise keep the local brief."""
+    from threatfusion.advisory.explanation_engine import verify_explanation_groundedness
+    from threatfusion.advisory.gemini_client import (
+        GeminiAdvisoryCallable,
+        GeminiAdvisoryUnavailableError,
+        advisory_provider_status,
+    )
+
+    if not advisory_provider_status().get("live_call_allowed"):
+        return default_brief
+    evidence = default_brief
+    if addresses:
+        evidence = f"{default_brief} Stored addresses: {', '.join(addresses)}."
+    try:
+        text = GeminiAdvisoryCallable().generate_copilot_text(evidence)
+    except (GeminiAdvisoryUnavailableError, OSError, TimeoutError):
+        return default_brief
+    if verify_explanation_groundedness(text, bundle):
+        return text
+    return default_brief
+
+
+def _grounded_gemini_narrative(question: str, hits: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return a Gemini sentence only when it names no address outside the evidence."""
+    from threatfusion.advisory.explanation_engine import (
+        AdvisoryEvidenceBundle,
+        verify_explanation_groundedness,
+    )
+    from threatfusion.advisory.gemini_client import (
+        GeminiAdvisoryCallable,
+        GeminiAdvisoryUnavailableError,
+        advisory_provider_status,
+    )
+
+    status = advisory_provider_status()
+    local = {
+        "provider": "local_air_gapped",
+        "provider_label": "AI Copilot: Local Air-Gapped Engine",
+        "narrative": "",
+    }
+    if not status.get("live_call_allowed"):
+        return local
+    lines = [f"Analyst question: {question}"]
+    for hit in hits:
+        lines.append(
+            f"Retrieved candidate technique {hit.get('technique_id')} "
+            f"{hit.get('technique_name')} playbook {hit.get('playbook_id')}."
+        )
+    if not hits:
+        lines.append("No local corpus hit.")
+    evidence = "\n".join(lines)
+    try:
+        text = GeminiAdvisoryCallable().generate_copilot_text(evidence)
+    except (GeminiAdvisoryUnavailableError, OSError, TimeoutError):
+        return local
+    bundle = AdvisoryEvidenceBundle(
+        candidate_id="live_copilot",
+        record_id="live_copilot",
+        rf_model_version="network_random_forest_baseline_v1",
+        rf_attack_probability=0.0,
+        rf_threshold=0.5,
+        top_feature_signals={},
+    )
+    if not verify_explanation_groundedness(text, bundle):
+        return local
+    return {
+        "provider": "gemini",
+        "provider_label": status.get("label"),
+        "narrative": text,
     }
 
 
@@ -713,7 +804,7 @@ def _flow_rows(db_path: Path, *, limit: int) -> list[dict[str, Any]]:
                    analyst_verdict_at, assignee_id, review_status,
                    correlation_window_checked, source_event_id, sensor_observation_json,
                    execution_path, operator_id, cert_sha256_prefix,
-                   identity_verified, identity_label
+                   identity_verified, identity_label, containment_state
             FROM live_flows
             ORDER BY flow_id DESC
             LIMIT ?
@@ -2671,6 +2762,8 @@ def export_grounded_handoff(
         observed_at=stored["observed_at_utc"],
         enrichment_result=enrichment,
     )
+    if not supplied:
+        checked = _handoff_brief_or_local(default_brief, addresses, bundle)
     if not verify_explanation_groundedness(checked, bundle):
         refused["reason"] = "explanation_not_grounded"
         return refused

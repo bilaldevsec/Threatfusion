@@ -28,6 +28,61 @@ from threatfusion.advisory.explanation_engine import (
     EvidenceBoundExplanation,
 )
 
+SOC_COPILOT_SYSTEM_PROMPT = (
+    "You are the ThreatFusion Enterprise SOC Copilot. Base your analysis STRICTLY "
+    "on the verified telemetry provided in the evidence block. Never invent or "
+    "hallucinate IP addresses, ports, or facts not present in the evidence."
+)
+
+_MODEL_LABELS = {
+    "gemini-2.5-flash": "Gemini 2.5 Flash",
+    "gemini-2.0-flash": "Gemini 2.0 Flash",
+    "gemini-1.5-pro": "Gemini 1.5 Pro",
+}
+
+
+def resolve_gemini_model(explicit: str | None = None) -> str:
+    """Return an explicit model, else GEMINI_MODEL, else gemini-2.5-flash."""
+    if explicit and explicit.strip():
+        return explicit.strip()
+    configured = os.environ.get("GEMINI_MODEL", "").strip()
+    return configured or "gemini-2.5-flash"
+
+
+def model_display_name(model_name: str) -> str:
+    return _MODEL_LABELS.get(model_name, model_name)
+
+
+def copilot_budget_blocks_live_call() -> bool:
+    """True when recorded spend is missing, malformed, or at the $5.00 ceiling."""
+    raw = os.environ.get("THREATFUSION_CLOUD_SPEND_USD", "0").strip() or "0"
+    try:
+        spend = float(raw)
+    except ValueError:
+        spend = -1.0
+    from threatfusion.operations.cloud_live_telemetry import evaluate_budget_kill_switch
+
+    return bool(evaluate_budget_kill_switch(spend).get("should_detach_billing"))
+
+
+def advisory_provider_status() -> dict[str, Any]:
+    """Describe the copilot the console will use. This does not call the network."""
+    model_name = resolve_gemini_model()
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not key or copilot_budget_blocks_live_call():
+        return {
+            "provider": "local_air_gapped",
+            "model_name": model_name,
+            "label": "AI Copilot: Local Air-Gapped Engine",
+            "live_call_allowed": False,
+        }
+    return {
+        "provider": "gemini",
+        "model_name": model_name,
+        "label": f"AI Copilot: {model_display_name(model_name)} (Live Connected)",
+        "live_call_allowed": True,
+    }
+
 
 @dataclass(frozen=True, slots=True)
 class GeminiAdvisoryConfig:
@@ -116,7 +171,9 @@ def build_grounded_gemini_prompt(bundle: AdvisoryEvidenceBundle) -> str:
 
     evidence_json = json.dumps(evidence_payload, indent=2)
 
-    prompt = f"""You are an evidence-bound advisory cybersecurity debrief assistant for ThreatFusion SOC analysts.
+    prompt = f"""{SOC_COPILOT_SYSTEM_PROMPT}
+
+You are an evidence-bound advisory cybersecurity debrief assistant for ThreatFusion SOC analysts.
 Your debrief is strictly advisory and non-authoritative.
 
 CRITICAL GROUNDEDNESS & ANTI-HALLUCINATION RULES:
@@ -159,11 +216,18 @@ class GeminiAdvisoryCallable:
         *,
         transport_callable: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
-        self.config = config if config is not None else GeminiAdvisoryConfig()
+        if config is None:
+            self.config = GeminiAdvisoryConfig(model_name=resolve_gemini_model())
+        else:
+            self.config = config
         self._transport_callable = transport_callable
 
     def __call__(self, bundle: AdvisoryEvidenceBundle) -> EvidenceBoundExplanation:
         """Generate an advisory explanation from bundle using Gemini REST API."""
+        if copilot_budget_blocks_live_call():
+            raise GeminiAdvisoryUnavailableError(
+                "Cloud budget kill switch is active at the $5.00 ceiling."
+            )
         if self._transport_callable is None:
             api_key = os.environ.get(self.config.api_key_env_var, "").strip()
             if not api_key:
@@ -317,3 +381,62 @@ class GeminiAdvisoryCallable:
             cited_evidence_keys=cited_keys,
             groundedness_verified=True,
         )
+
+    def generate_copilot_text(self, evidence_text: str) -> str:
+        """Ask Gemini for a short brief. The caller must check groundedness."""
+        if copilot_budget_blocks_live_call():
+            raise GeminiAdvisoryUnavailableError(
+                "Cloud budget kill switch is active at the $5.00 ceiling."
+            )
+        api_key = os.environ.get(self.config.api_key_env_var, "").strip()
+        if self._transport_callable is None and not api_key:
+            raise GeminiAdvisoryUnavailableError(
+                f"Gemini API key environment variable '{self.config.api_key_env_var}' is unset or empty."
+            )
+        prompt = (
+            f"{SOC_COPILOT_SYSTEM_PROMPT}\n\nEVIDENCE BLOCK:\n{evidence_text}\n\n"
+            "Reply in plain sentences. Do not add an address or port that is absent above."
+        )
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.0,
+                "maxOutputTokens": self.config.max_output_tokens,
+            },
+        }
+        endpoint_url = self.config.get_endpoint_url(api_key or "mock-api-key")
+        if self._transport_callable is not None:
+            response_dict = self._transport_callable(endpoint_url, payload)
+        else:
+            request = urllib.request.Request(
+                endpoint_url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as resp:
+                    response_dict = json.loads(resp.read().decode("utf-8"))
+            except (
+                urllib.error.HTTPError,
+                urllib.error.URLError,
+                TimeoutError,
+                OSError,
+                json.JSONDecodeError,
+            ) as exc:
+                raise GeminiAdvisoryUnavailableError(
+                    f"Gemini copilot request failed: {exc}"
+                ) from exc
+        if not isinstance(response_dict, dict):
+            raise GeminiAdvisoryUnavailableError("Gemini copilot response was not an object.")
+        candidates = response_dict.get("candidates")
+        if not isinstance(candidates, list) or not candidates:
+            raise GeminiAdvisoryUnavailableError("Gemini copilot response contains no candidates.")
+        content = candidates[0].get("content") if isinstance(candidates[0], dict) else None
+        parts = content.get("parts") if isinstance(content, dict) else None
+        if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict):
+            raise GeminiAdvisoryUnavailableError("Gemini copilot response has no text.")
+        text = str(parts[0].get("text") or "").strip()
+        if not text:
+            raise GeminiAdvisoryUnavailableError("Gemini copilot response text is empty.")
+        return text

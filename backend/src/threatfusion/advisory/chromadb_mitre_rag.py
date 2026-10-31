@@ -6,7 +6,8 @@ Enterprise techniques and incident response playbooks:
    Immutable dataclasses for knowledge corpus entries and ranked search hits.
 2. CANONICAL_MITRE_AND_PLAYBOOK_CORPUS:
    Authoritative corpus of 10 enterprise techniques (T1046, T1190, T1498, T1071.001,
-   T1595, T1110, T1041, T1021, T1059, T1133) and structured SOC playbooks.
+   T1595, T1110, T1041, T1021, T1059, T1133) plus 8 CVE playbooks
+   (T1557, T1499, T1190, T1552, T1059, T1048, T1210) and structured SOC playbooks.
 3. DeterministicMitreEmbeddingFunction:
    Computes deterministic L2-normalized 64-dimensional dense float vector embeddings
    from domain security tokens and character trigrams without external model downloads.
@@ -277,6 +278,151 @@ CANONICAL_MITRE_AND_PLAYBOOK_CORPUS: tuple[MitrePlaybookRagDocument, ...] = (
             "2. Terminate anomalous active remote VPN/portal session.",
             "3. Invalidate credentials and reset authentication secrets for target user.",
             "4. Queue SOAR perimeter firewall rule update in approval ledger.",
+        ),
+    ),
+    MitrePlaybookRagDocument(
+        doc_id="mitre_doc_cve_2023_48795",
+        technique_id="T1557",
+        technique_name="CVE-2023-48795 Terrapin SSH Prefix Truncation",
+        tactic="Credential Access",
+        description=(
+            "CVE-2023-48795 Terrapin truncates the SSH extension negotiation prefix, weakening "
+            "integrity of the handshake. Related techniques T1557 and T1110. Flow signature: TCP "
+            "port 22, a completed handshake with an unusual sequence of SSH_MSG_EXT_INFO, and a "
+            "low packet rate rather than a volumetric flood."
+        ),
+        playbook_id="pb-cve-2023-48795-terrapin-v1",
+        deterministic_playbook_steps=(
+            "1. Confirm the SSH peer implements a Terrapin-resistant protocol version.",
+            "2. Disable the affected cipher and MAC combinations on the SSH service.",
+            "3. Review TCP port 22 sessions for truncated extension negotiation.",
+            "4. Require a human approval before any host containment playbook.",
+        ),
+    ),
+    MitrePlaybookRagDocument(
+        doc_id="mitre_doc_cve_2023_44487",
+        technique_id="T1499",
+        technique_name="CVE-2023-44487 HTTP/2 Rapid Reset",
+        tactic="Impact",
+        description=(
+            "CVE-2023-44487 HTTP/2 Rapid Reset opens and cancels streams at a high packet rate. "
+            "Related techniques T1498 and T1499. Flow signature: TCP port 443, HTTP/2, many short "
+            "flows, and a packet rate far above a normal request."
+        ),
+        playbook_id="pb-cve-2023-44487-rapid-reset-v1",
+        deterministic_playbook_steps=(
+            "1. Measure HTTP/2 stream resets per second on TCP port 443.",
+            "2. Apply the vendor rapid-reset limit on the public web service.",
+            "3. Keep the source address on the local evidence record.",
+            "4. Queue rate limiting only after an analyst approves the playbook.",
+        ),
+    ),
+    MitrePlaybookRagDocument(
+        doc_id="mitre_doc_cve_2021_44228",
+        technique_id="T1190",
+        technique_name="CVE-2021-44228 Log4Shell JNDI RCE",
+        tactic="Initial Access",
+        description=(
+            "CVE-2021-44228 Log4Shell sends a JNDI lookup in a header or parameter to a Java "
+            "service. Technique T1190. Flow signature: TCP ports 80 or 443, then an outbound "
+            "LDAP or RMI connection, with a small packet count on the callback."
+        ),
+        playbook_id="pb-cve-2021-44228-log4shell-v1",
+        deterministic_playbook_steps=(
+            "1. Search access logs for a JNDI lookup string on the public application.",
+            "2. Block outbound LDAP and RMI from the application host at the allowlisted proxy.",
+            "3. Patch Log4j to a vendor release that disables the lookup.",
+            "4. Record the retrieved candidate technique without changing the forest score.",
+        ),
+    ),
+    MitrePlaybookRagDocument(
+        doc_id="mitre_doc_cve_2023_4966",
+        technique_id="T1552",
+        technique_name="CVE-2023-4966 CitrixBleed Session Hijack",
+        tactic="Credential Access",
+        description=(
+            "CVE-2023-4966 CitrixBleed reads session tokens from a Citrix gateway memory buffer. "
+            "Related techniques T1190 and T1552. Flow signature: TCP port 443, a short HTTPS "
+            "request, and reuse of a stolen session cookie from a new source."
+        ),
+        playbook_id="pb-cve-2023-4966-citrixbleed-v1",
+        deterministic_playbook_steps=(
+            "1. Identify Citrix gateway sessions created without a matching authentication event.",
+            "2. Invalidate active gateway sessions and rotate the affected secrets.",
+            "3. Apply the vendor CitrixBleed patch before returning the gateway to service.",
+            "4. Keep containment approval-gated and reversible.",
+        ),
+    ),
+    MitrePlaybookRagDocument(
+        doc_id="mitre_doc_cve_2024_3400",
+        technique_id="T1059",
+        technique_name="CVE-2024-3400 PAN-OS Command Injection",
+        tactic="Execution",
+        description=(
+            "CVE-2024-3400 injects a command through the PAN-OS GlobalProtect path. Related "
+            "techniques T1190 and T1059. Flow signature: TCP port 443, a crafted HTTPS request, "
+            "and a following shell-like outbound connection with a low packet rate."
+        ),
+        playbook_id="pb-cve-2024-3400-panos-v1",
+        deterministic_playbook_steps=(
+            "1. Check GlobalProtect telemetry for the command-injection request pattern.",
+            "2. Apply the PAN-OS hotfix that closes the injection path.",
+            "3. Review new processes on the firewall management plane.",
+            "4. Do not treat the retrieved playbook as an executed containment.",
+        ),
+    ),
+    MitrePlaybookRagDocument(
+        doc_id="mitre_doc_cve_2023_34362",
+        technique_id="T1048",
+        technique_name="CVE-2023-34362 MOVEit SQL Injection and Exfiltration",
+        tactic="Exfiltration",
+        description=(
+            "CVE-2023-34362 abuses a MOVEit SQL injection to steal files. Related techniques "
+            "T1190 and T1048. Flow signature: TCP port 443, a human-paced HTTPS session, then "
+            "a larger outbound byte count than the inbound request."
+        ),
+        playbook_id="pb-cve-2023-34362-moveit-v1",
+        deterministic_playbook_steps=(
+            "1. Review MOVEit transfer logs for unexpected SQL error strings.",
+            "2. Disable the vulnerable web path and rotate service credentials.",
+            "3. Compare outbound byte counts on TCP port 443 with the normal transfer baseline.",
+            "4. Open a case only from stored evidence and a human approval.",
+        ),
+    ),
+    MitrePlaybookRagDocument(
+        doc_id="mitre_doc_cve_2023_22515",
+        technique_id="T1190",
+        technique_name="CVE-2023-22515 Confluence Broken Authentication",
+        tactic="Initial Access",
+        description=(
+            "CVE-2023-22515 lets an unauthenticated caller create a Confluence administrator. "
+            "Technique T1190. Flow signature: TCP port 8090 or 443, a short setup request, and "
+            "a new privileged session with a normal packet rate."
+        ),
+        playbook_id="pb-cve-2023-22515-confluence-v1",
+        deterministic_playbook_steps=(
+            "1. List Confluence administrators created outside the change window.",
+            "2. Remove the unauthorized administrator and restore the setup lock.",
+            "3. Patch Confluence before exposing TCP port 8090 again.",
+            "4. Store the action on the approval ledger.",
+        ),
+    ),
+    MitrePlaybookRagDocument(
+        doc_id="mitre_doc_cve_2017_0144",
+        technique_id="T1210",
+        technique_name="CVE-2017-0144 EternalBlue SMB Remote Exploit",
+        tactic="Lateral Movement",
+        description=(
+            "CVE-2017-0144 EternalBlue exploits SMBv1 on TCP port 445. Related techniques "
+            "T1210 and T1046. Flow signature: TCP port 445, a small number of specially sized "
+            "packets, then a service connection from the same source."
+        ),
+        playbook_id="pb-cve-2017-0144-eternalblue-v1",
+        deterministic_playbook_steps=(
+            "1. Confirm SMBv1 is disabled and TCP port 445 is not exposed beyond the segment.",
+            "2. Patch the affected Windows host to a release that closes MS17-010.",
+            "3. Review the source for a preceding port scan on TCP port 445.",
+            "4. Keep any isolation playbook pending until an analyst approves it.",
         ),
     ),
 )

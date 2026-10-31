@@ -536,6 +536,37 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             self._send_json(status, result)
             return
 
+        if path == "/api/v1/live/advisory-status":
+            from threatfusion.advisory.gemini_client import advisory_provider_status
+
+            self._send_json(200, advisory_provider_status())
+            return
+
+        if path == "/api/v1/live/agy-audit":
+            audit_path = Path(
+                os.environ.get("THREATFUSION_AGY_AUDIT_PATH", "").strip()
+                or (Path(os.environ.get("TMPDIR", "/tmp")) / "threatfusion-agy-audit.json")
+            )
+            if not audit_path.is_file():
+                self._send_json(
+                    200,
+                    {
+                        "evidence_state": "unavailable",
+                        "label": "External agy Red-Team Audit: not run",
+                        "passed": 0,
+                        "total": 5,
+                    },
+                )
+                return
+            try:
+                payload = json.loads(audit_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            self._send_json(200, payload)
+            return
+
         if path == "/api/v1/live/copilot":
             from threatfusion.api.live_soc_console import answer_mitre_copilot
 
@@ -792,7 +823,12 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 outbox_db_path=self._live_db_path().with_name("threatfusion-live-thehive.sqlite3"),
                 n8n_webhook_url=os.environ.get("THREATFUSION_N8N_WEBHOOK_URL", ""),
             )
-            status = 200 if result.get("evidence_state") == "verified" else 400
+            if result.get("reason") == "playbook_not_approved":
+                status = 403
+            elif result.get("evidence_state") == "verified":
+                status = 200
+            else:
+                status = 400
             self._send_json(status, result)
             return
 

@@ -1967,6 +1967,10 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Master-detail console, Gemini copilot, CVE corpus, and agy probe (2026-10-31)
+
+- The live console uses a 40/60 queue and investigation pane. `99.9889%` and `1.25s` stay labeled as the inspected January benchmark. A live MTTR is shown only from a stored n8n callback. `Muhammad Bilal` shows a verified `lab_operator` badge only when the enrolled certificate stamp is verified. `GEMINI_MODEL` selects the advisory model and the unset default remains `gemini-2.5-flash`. A missing key, a network failure, a groundedness miss, or the $5.00 ceiling returns the local corpus. Eight CVE playbooks were appended beside the original ten techniques. `scripts/run_adversarial_redteam_probe.py` runs five refusals on a temporary database. Screenshot 02 shows the local engine because no `GEMINI_API_KEY` was set. After the console title and the 18-document corpus count were aligned, `pytest -q` exited 0 and the range was stopped. TF-003, TF-012, TF-002, TF-008, TF-009, TF-010, and TF-011 stay **open**.
+
 ### Bridge noise filter and guided demo panel (2026-10-31)
 
 - The eve follower and `POST /api/v1/live/sensor` refuse multicast (`224.0.0.0/4`, `ff00::/8`), link-local (`fe80::/10`, `169.254.0.0/16`), broadcast (`255.255.255.255`), and port 5353 before a row is stored. `POST /api/v1/live/purge-bridge-noise` deletes rows that already match. `POST /api/v1/live/range-scan` and `scripts/run_full_range_demo.sh --scan` fire curl and non-interactive ssh, then wait until eve.json and SQLite both show a new `172.29.0.10 -> 172.29.0.20` flow. The console sidebar is a four-step panel and the topology card shows those Docker addresses outside the hidden sample surface. The frozen forest score is unchanged. TF-003, TF-012, TF-002, TF-008, TF-009, TF-010, and TF-011 stay **open**.

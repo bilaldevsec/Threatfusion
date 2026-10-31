@@ -815,7 +815,7 @@ def test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr(
         unapproved_status, unapproved = _post_json(
             f"{base}/api/v1/live/soar/dispatch", {"flow_id": other["flow_id"]}
         )
-        assert unapproved_status == 400
+        assert unapproved_status == 403
         assert unapproved["reason"] == "playbook_not_approved"
         assert unapproved["containment_executed"] is False
         time.sleep(0.05)

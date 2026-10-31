@@ -407,11 +407,11 @@
           const t3El = document.getElementById('tier3Count');
           const t4El = document.getElementById('tier4Count');
 
-          if (mttiEl && data.mtti_seconds_mean !== undefined) {
+          if (mttiEl && data.telemetry_source === 'live_measured' && data.mtti_seconds_mean !== undefined) {
             mttiEl.textContent = `${Number(data.mtti_seconds_mean).toFixed(2)}s`;
           }
-          if (mttrEl && data.mttr_seconds_mean !== undefined) {
-            mttrEl.textContent = `${Number(data.mttr_seconds_mean).toFixed(2)}s`;
+          if (mttrEl && data.telemetry_source === 'live_measured' && data.mttr_seconds_mean !== undefined) {
+            mttrEl.textContent = `${Number(data.mttr_seconds_mean).toFixed(3)}s`;
           }
           if (data.noise_reduction_funnel) {
             const fn = data.noise_reduction_funnel;
@@ -543,13 +543,24 @@
     return 'pending_approval';
   }
 
+  function openInspectorHash() {
+    const names = { overview: '1', timeline: '2', evidence: '3', soar: '4', audit: '5' };
+    const target = names[(location.hash || '').replace('#', '')];
+    if (!target) return;
+    const button = document.querySelector('.inspector-tab-btn[data-tab-target="' + target + '"]');
+    if (button) button.click();
+  }
+
   function initApp() {
     renderIncidentQueue();
     renderForensicDrawer();
     initWalkthroughTimeline();
     setupEventListeners();
     refreshOperationalVelocity();
+    refreshAdvisoryStatus();
+    refreshAgyAudit();
     refreshLiveCampaigns();
+    openInspectorHash();
     setInterval(refreshLiveCampaigns, 3000);
   }
 
@@ -1308,6 +1319,37 @@
         postRangeContainment(inc, '/api/v1/live/soar/contain');
       });
     }
+    const isolateButton = document.getElementById('btnIsolateAttacker');
+    if (isolateButton) {
+      isolateButton.addEventListener('click', () => {
+        const inc = activeIncidents().find(i => i.id === selectedIncidentId);
+        postRangeContainment(inc, '/api/v1/live/soar/contain');
+      });
+    }
+    const liveBridgePill = document.getElementById('pillLiveBridge');
+    if (liveBridgePill) {
+      liveBridgePill.addEventListener('click', () => {
+        const source = document.getElementById('queueSourceFilter');
+        if (source) source.value = 'suricata_bridge';
+        if (source) source.dispatchEvent(new Event('change'));
+      });
+    }
+    const attacksPill = document.getElementById('pillAttacksOnly');
+    if (attacksPill) {
+      attacksPill.addEventListener('click', () => {
+        const decision = document.getElementById('queueDecisionFilter');
+        if (decision) decision.value = 'Attack';
+        if (decision) decision.dispatchEvent(new Event('change'));
+      });
+    }
+    const benchmarkPill = document.getElementById('pillRecordedBenchmark');
+    if (benchmarkPill) {
+      benchmarkPill.addEventListener('click', () => {
+        const source = document.getElementById('queueSourceFilter');
+        if (source) source.value = 'recorded_unsw_nb15';
+        if (source) source.dispatchEvent(new Event('change'));
+      });
+    }
     const rangeScanButton = document.getElementById('btnRangeScan');
     if (rangeScanButton) {
       rangeScanButton.addEventListener('click', () => { fireLiveRangeScan(); });
@@ -1421,6 +1463,7 @@
       identityLabel: flow.identity_label || 'unverified_local_label',
       thehiveCaseId: flow.thehive_case_id || '',
       mttrSeconds: flow.mttr_seconds,
+      containmentState: flow.containment_state || '',
       triageState: flow.triage_state || 'unreviewed',
       analystVerdict: flow.analyst_verdict || '',
       analystRationale: flow.analyst_rationale || '',
@@ -1483,6 +1526,66 @@
     };
   }
 
+  function showStoredContainment(views) {
+    const blocked = (views || []).some(item => item.containmentState === 'applied');
+    const rolled = (views || []).some(item => item.containmentState === 'rolled_back');
+    if (blocked) setRangeConnectivity(true);
+    else if (rolled) setRangeConnectivity(false);
+  }
+
+  function showStoredN8nMttr(views) {
+    const node = document.getElementById('valMttr');
+    const detail = document.getElementById('valMttrDetail');
+    if (!node) return;
+    const hit = (views || []).find(item =>
+      item.executionPath === 'n8n_live_container' && Number.isFinite(Number(item.mttrSeconds))
+    );
+    if (!hit) {
+      node.textContent = 'no stored n8n callback';
+      if (detail) detail.textContent = 'Shown only after a stored n8n callback. The January benchmark is separate.';
+      return;
+    }
+    node.textContent = Number(hit.mttrSeconds).toFixed(3) + 's';
+    if (detail) detail.textContent = 'Stored n8n callback on this queue. Not the January benchmark.';
+  }
+
+  async function refreshAdvisoryStatus() {
+    try {
+      const resp = await fetch('/api/v1/live/advisory-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+      const data = await resp.json();
+      const badge = document.getElementById('copilotProviderBadge');
+      if (badge && data.label) {
+        badge.textContent = data.label;
+        badge.setAttribute('data-evidence-state', data.provider === 'gemini' ? 'verified' : 'unavailable');
+      }
+    } catch (err) {
+      const badge = document.getElementById('copilotProviderBadge');
+      if (badge) badge.textContent = 'AI Copilot: Local Air-Gapped Engine';
+    }
+  }
+
+  async function refreshAgyAudit() {
+    try {
+      const resp = await fetch('/api/v1/live/agy-audit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+      const data = await resp.json();
+      const node = document.getElementById('agyAuditStatus');
+      if (!node) return;
+      node.textContent = data.label || 'External agy Red-Team Audit: not run';
+      node.setAttribute('data-evidence-state', data.passed === 5 ? 'verified' : 'unavailable');
+    } catch (err) {
+      const node = document.getElementById('agyAuditStatus');
+      if (node) node.textContent = 'External agy Red-Team Audit: not run';
+    }
+  }
+
   async function refreshLiveCampaigns() {
     try {
       const resp = await fetch('/api/v1/live/campaigns');
@@ -1496,6 +1599,8 @@
       });
       (data.incidents || []).forEach(row => views.push(incidentRowToView(row)));
       liveCampaignIncidents = views;
+      showStoredN8nMttr(views);
+      showStoredContainment(views);
       liveQueueLoaded = true;
       campaignFetchSettled = true;
       setSampleSurfacesHidden(true);
@@ -1634,8 +1739,8 @@
     const label = stamp.identity_label || stamp.identityLabel || '';
     const operatorId = stamp.operator_id || stamp.operatorId || '';
     const prefix = stamp.cert_sha256_prefix || stamp.certSha256Prefix || '';
-    if (verified && label !== 'unverified_local_label' && operatorId && prefix) {
-      node.textContent = 'verified operator ' + operatorId + ' ' + prefix;
+    if (verified && label !== 'unverified_local_label' && operatorId === 'lab_operator' && prefix) {
+      node.textContent = 'verified lab_operator ' + prefix;
       node.setAttribute('data-evidence-state', 'verified');
       return;
     }
@@ -2091,10 +2196,17 @@
         return;
       }
       const hit = data.hits && data.hits[0];
-      const label = hit
+      const retrieved = hit
         ? ('retrieved candidate technique ' + hit.technique_id + ' ' + hit.technique_name)
         : 'No local corpus hit.';
-      setLiveText('liveCopilotAnswer', label, data.evidence_state || 'unavailable');
+      const narrative = typeof data.narrative === 'string' && data.narrative ? data.narrative : retrieved;
+      const provider = data.provider_label || 'AI Copilot: Local Air-Gapped Engine';
+      setLiveText('liveCopilotAnswer', provider + '. ' + narrative, data.evidence_state || 'unavailable');
+      const badge = document.getElementById('copilotProviderBadge');
+      if (badge) {
+        badge.textContent = provider;
+        badge.setAttribute('data-evidence-state', data.provider === 'gemini' ? 'verified' : 'unavailable');
+      }
     } catch (err) {
       setLiveText('liveCopilotAnswer', 'Copilot unavailable.', 'unavailable');
     }
