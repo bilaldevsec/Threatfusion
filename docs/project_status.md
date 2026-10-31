@@ -1967,6 +1967,10 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Four-view console (2026-10-31)
+
+- The live console is four full-screen views: Investigations, Investigation Detail, AI Action Graph, and AI Threat Hunter. Simulation controls sit in the lab drawer. Required element ids and the UNSW/CIC qualification sentence stay in the DOM. `frontend/index.html` still has no `http://` or `https://` string. On 2026-10-31 `--scan` stored flow 1, `172.29.0.10 -> 172.29.0.20`, and the investigations table showed two Benign bridge rows. TF-003, TF-012, TF-002, TF-008, TF-009, TF-010, and TF-011 stay **open**.
+
 ### Range-scan schema race (2026-10-31)
 
 - `POST /api/v1/live/range-scan` and `POST /api/v1/live/sensor` both open the live database. A second `ALTER TABLE` for `mttr_seconds` raised `sqlite3.OperationalError: duplicate column name`, and the request thread closed the socket with no HTTP body (`curl: (52) Empty reply from server`). Schema migration now runs under one lock, and a duplicate-column error is treated as already migrated. Any other `sqlite3.OperationalError` in the scan returns HTTP 503 `database_unavailable`. Compose uses `-p threatfusion-n8n` and `-p threatfusion-range` with `--remove-orphans`, so the range project does not remove `threatfusion_n8n_live`. On 2026-10-31 `--scan` stored `172.29.0.10 -> 172.29.0.20` as flow 3 (`range_scan_ingested`, `eve_seen: true`) and `http://127.0.0.1:8766/` stayed HTTP 200. The follower recorded the curl flow as Benign `0.22812216911732502` and the ssh flow as Benign `0.329237969983126`. TF-003, TF-012, TF-002, TF-008, TF-009, TF-010, and TF-011 stay **open**.

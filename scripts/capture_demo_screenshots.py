@@ -18,12 +18,12 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "docs" / "screenshots"
 BASE = "http://127.0.0.1:8766/"
 SHOTS = (
-    ("01_master_detail_dashboard.png", ""),
-    ("02_gemini_threat_copilot.png", "#overview"),
-    ("03_glassbox_evidence_checklist.png", "#evidence"),
-    ("04_n8n_soar_callback.png", "#soar"),
-    ("05_victim_firewall_containment.png", "#soar"),
-    ("06_agy_adversarial_audit.png", "#audit"),
+    ("01_master_detail_dashboard.png", "#investigations"),
+    ("02_gemini_threat_copilot.png", "#detail"),
+    ("03_glassbox_evidence_checklist.png", "#graph"),
+    ("04_n8n_soar_callback.png", "#hunter"),
+    ("05_victim_firewall_containment.png", "#detail-soar"),
+    ("06_agy_adversarial_audit.png", "#lab"),
 )
 
 

@@ -938,6 +938,10 @@ A 1,527-test pytest run and the corrupt-database classification fix do not satis
 
 Stored triage actions, the shift-handoff timeline, and the grounded-note refusal do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. Containment stays unauthorized. All four issues remain **open**.
 
+### Four-view console, 2026-10-31
+
+The investigations table, detail workspace, action graph, threat hunter, and lab drawer do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. They do not close TF-003, TF-012, or TF-002. All four external gates remain **open**.
+
 ### Range-scan schema race, 2026-10-31
 
 Serializing the live schema migration and splitting the Compose project names do not satisfy the closure tests for TF-008, TF-009, TF-010, or TF-011. They do not close TF-003, TF-012, or TF-002. All four external gates remain **open**.

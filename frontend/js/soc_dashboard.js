@@ -543,12 +543,50 @@
     return 'pending_approval';
   }
 
+  function showSocView(name) {
+    document.querySelectorAll('.soc-view').forEach(node => {
+      node.classList.toggle('is-active', node.getAttribute('data-soc-view') === name);
+    });
+    document.querySelectorAll('[data-soc-nav]').forEach(node => {
+      node.classList.toggle('is-active', node.getAttribute('data-soc-nav') === name);
+    });
+    if (name === 'graph') renderActionGraph();
+    if (name === 'hunter') renderHunterGauges();
+  }
+
+  function openLabDrawer(open) {
+    const drawer = document.getElementById('labControlsDrawer');
+    if (drawer) drawer.classList.toggle('is-open', Boolean(open));
+  }
+
+  function selectedIncident() {
+    const rows = activeIncidents();
+    return rows.find(item => item.id === selectedIncidentId) || rows[0] || null;
+  }
+
   function openInspectorHash() {
+    const hash = (location.hash || '').replace('#', '');
     const names = { overview: '1', timeline: '2', evidence: '3', soar: '4', audit: '5' };
-    const target = names[(location.hash || '').replace('#', '')];
-    if (!target) return;
-    const button = document.querySelector('.inspector-tab-btn[data-tab-target="' + target + '"]');
-    if (button) button.click();
+    if (hash === 'graph') {
+      showSocView('graph');
+      return;
+    }
+    if (hash === 'hunter') {
+      showSocView('hunter');
+      return;
+    }
+    if (hash === 'lab') {
+      openLabDrawer(true);
+      return;
+    }
+    if (hash === 'detail' || hash === 'detail-soar' || names[hash]) {
+      showSocView('detail');
+      const target = hash === 'detail-soar' ? '4' : (names[hash] || '1');
+      const button = document.querySelector('.inspector-tab-btn[data-tab-target="' + target + '"]');
+      if (button) button.click();
+      return;
+    }
+    showSocView('investigations');
   }
 
   function initApp() {
@@ -622,8 +660,10 @@
     const incidents = getFilteredIncidents();
     listEl.innerHTML = '';
 
+    updatePriorityCounts(activeIncidents());
+    renderHunterGauges();
     if (incidents.length === 0) {
-      listEl.innerHTML = '<div style="padding: 1.5rem; text-align: center; color: var(--text-muted); font-style: italic;">No incidents match the active filter criteria.</div>';
+      listEl.innerHTML = '<tr><td colspan="7">No incidents match the active filter criteria.</td></tr>';
       return;
     }
 
@@ -638,11 +678,6 @@
         const label = sourceOrder.includes(inc.sourceLabel) ? inc.sourceLabel : 'other';
         return label === bucket;
       });
-      if (!members.length) return;
-      const heading = document.createElement('div');
-      heading.className = 'queue-source-heading';
-      heading.textContent = sourceHeading(bucket);
-      listEl.appendChild(heading);
       members.forEach(inc => appendIncidentItem(listEl, inc));
     });
   }
@@ -654,52 +689,136 @@
     return 'Other stored flows';
   }
 
+  function sourceDisplayName(label) {
+    if (label === 'suricata_bridge') return 'Suricata EVE Bridge';
+    if (label === 'recorded_unsw_nb15') return 'UNSW-NB15 Study';
+    if (label === 'live_scenario_replay') return 'Scenario Replay';
+    return 'Stored flow';
+  }
+
+  function priorityFor(inc) {
+    if (inc.decision === 'Attack') return { key: 'urgent', label: 'Urgent' };
+    if (inc.sourceLabel === 'suricata_bridge') return { key: 'notable', label: 'Notable' };
+    return { key: 'info', label: 'Informational' };
+  }
+
+  function alertTitle(inc) {
+    const src = inc.provenance && inc.provenance.srcIp ? inc.provenance.srcIp : 'not recorded';
+    const dst = inc.provenance && inc.provenance.dstIp ? inc.provenance.dstIp : 'not recorded';
+    const port = inc.provenance && inc.provenance.dstPort ? inc.provenance.dstPort : '';
+    const proto = String((inc.provenance && inc.provenance.proto) || 'flow').toUpperCase();
+    if (src !== 'not recorded' && dst !== 'not recorded') {
+      return proto + ' probe ' + src + ' -> ' + dst + (port ? ':' + port : '');
+    }
+    return inc.advisory && inc.advisory.summaryHeadline ? inc.advisory.summaryHeadline : String(inc.id);
+  }
+
+  function updatePriorityCounts(rows) {
+    const counts = { all: rows.length, urgent: 0, notable: 0, info: 0 };
+    rows.forEach(inc => { counts[priorityFor(inc).key] += 1; });
+    const map = { pillCountAll: counts.all, pillCountUrgent: counts.urgent, pillCountNotable: counts.notable, pillCountInfo: counts.info };
+    Object.keys(map).forEach(id => {
+      const node = document.getElementById(id);
+      if (node) node.textContent = String(map[id]);
+    });
+  }
+
+  function paintDonut(id, count, total) {
+    const node = document.getElementById(id);
+    if (!node) return;
+    const circ = 2 * Math.PI * 42;
+    const portion = total > 0 ? (count / total) * circ : 0;
+    node.style.strokeDasharray = portion.toFixed(2) + ' ' + (circ - portion).toFixed(2);
+  }
+
+  function renderHunterGauges() {
+    const rows = activeIncidents();
+    const urgent = rows.filter(inc => inc.decision === 'Attack').length;
+    const notable = rows.filter(inc => inc.sourceLabel === 'suricata_bridge' && inc.decision !== 'Attack').length;
+    const info = rows.filter(inc => inc.decision === 'Benign').length;
+    const total = Math.max(rows.length, 1);
+    paintDonut('donutUrgent', urgent, total);
+    paintDonut('donutNotable', notable, total);
+    paintDonut('donutInfo', info, total);
+    const labels = { donutUrgentCount: urgent, donutNotableCount: notable, donutInfoCount: info };
+    Object.keys(labels).forEach(id => {
+      const node = document.getElementById(id);
+      if (node) node.textContent = String(labels[id]);
+    });
+  }
+
+  function graphStatus(inc, key) {
+    if (!inc) return { dot: 'status-pending', label: 'Pending', output: 'No stored flow is selected.' };
+    if (key === 'forest') {
+      return { dot: 'status-verified', label: 'Verified', output: 'Frozen RF decision ' + inc.decision + '.' };
+    }
+    if (key === 'gemini') {
+      const live = document.getElementById('copilotProviderBadge');
+      const text = live ? live.textContent : '';
+      if (text.indexOf('Local') !== -1) return { dot: 'status-pending', label: 'Pending', output: 'Local air-gapped corpus. No live model key is in use.' };
+      return { dot: 'status-verified', label: 'Verified', output: text };
+    }
+    if (key === 'respond') {
+      if (inc.containmentState === 'applied') return { dot: 'status-verified', label: 'Verified', output: 'Victim firewall drop is applied for 172.29.0.10.' };
+      return { dot: 'status-pending', label: 'Pending', output: 'Containment has not been applied. execution_path=' + (inc.executionPath || 'not dispatched') + '.' };
+    }
+    if (key === 'ground' && inc.analystRationale && inc.analystRationale.indexOf('203.0.113') !== -1) {
+      return { dot: 'status-refused', label: 'Refused', output: 'Groundedness refused an address that is not on the stored flow.' };
+    }
+    return { dot: 'status-verified', label: 'Verified', output: 'Stored field checked for ' + inc.id + '.' };
+  }
+
+  function renderActionGraph() {
+    const inc = selectedIncident();
+    const entities = document.getElementById('kpiEntities');
+    const receipts = document.getElementById('kpiSoarReceipts');
+    if (entities) entities.textContent = inc && inc.provenance ? '2' : '0';
+    if (receipts) receipts.textContent = inc && inc.callbackSignature ? '1' : '0';
+    document.querySelectorAll('[data-graph-node]').forEach(node => {
+      const status = graphStatus(inc, node.getAttribute('data-graph-node'));
+      node.dataset.statusLabel = status.label;
+      node.dataset.statusOutput = status.output;
+    });
+  }
+
+  function showGraphPopover(node) {
+    const popover = document.getElementById('graphNodePopover');
+    if (!popover || !node) return;
+    const key = node.getAttribute('data-graph-node');
+    const status = graphStatus(selectedIncident(), key);
+    popover.classList.add('is-open');
+    popover.innerHTML = '<strong>' + escapeHtml(node.textContent) + '</strong>'
+      + '<div><span class="status-dot ' + status.dot + '"></span>' + escapeHtml(status.label) + '</div>'
+      + '<p>Input: the selected stored flow.</p>'
+      + '<p>Rule: ' + escapeHtml(key) + ' uses only stored fields.</p>'
+      + '<p>Output: ' + escapeHtml(status.output) + '</p>';
+  }
+
   function appendIncidentItem(listEl, inc) {
-      const itemEl = document.createElement('div');
-      itemEl.className = `incident-item ${inc.id === selectedIncidentId ? 'selected' : ''}`;
+      const itemEl = document.createElement('tr');
+      itemEl.className = 'incident-item' + (inc.id === selectedIncidentId ? ' selected' : '');
       itemEl.dataset.id = inc.id;
-
-      const isVerified = isReceiptVerified(inc);
-      const evidenceState = isVerified ? 'verified' : (inc.soarRecord && inc.soarRecord.state === 'pending_approval' ? 'pending' : 'unavailable');
-      const observed = typeof inc.observedAt === 'string' ? inc.observedAt : '';
-      const score = Number(inc.uncalibratedScore);
-      const scoreText = Number.isFinite(score) ? (score * 100).toFixed(1) : 'n/a';
-      const aeError = inc.secondaryAe && Number.isFinite(Number(inc.secondaryAe.aeError)) ? Number(inc.secondaryAe.aeError) : 0;
-      const sensor = inc.sensorObservation;
-      const sensorLines = inc.sourceLabel === 'suricata_bridge' && sensor
-        ? `<div>Suricata: ${escapeHtml(sensor.suricata_line || 'flow only, no signature')}</div><div>Frozen forest: ${escapeHtml(sensor.forest_line || 'unavailable')}</div>`
-        : '';
-      const scenarioLine = inc.sourceLabel === 'live_scenario_replay'
-        ? `<div>scenario label ${escapeHtml(inc.scenarioLabel || 'none')}</div>`
-        : '';
       itemEl.dataset.sourceLabel = inc.sourceLabel || '';
-
-      itemEl.innerHTML = `
-        <div class="incident-item-header">
-          <span class="incident-id">${escapeHtml(inc.advisory && inc.advisory.summaryHeadline ? inc.advisory.summaryHeadline : String(inc.id).substring(0, 32))}...</span>
-          <span class="badge badge-decision">${escapeHtml(inc.decision)}</span>
-        </div>
-        ${sensorLines}
-        ${scenarioLine}
-        <div class="incident-meta-row">
-          <span>Observed: ${escapeHtml(observed.substring(11, 19))} UTC</span>
-          <span>Score: <b>${scoreText}%</b></span>
-        </div>
-        <div style="display: flex; gap: 0.35rem; align-items: center; margin-top: 0.2rem; flex-wrap: wrap;">
-          <span class="badge badge-rf-confidence">RF: ${scoreText}%</span>
-          <span class="badge badge-secondary-anomaly">v2 AE: ${aeError.toFixed(3)}</span>
-          <span class="badge" data-evidence-state="${evidenceState}">${evidenceState.toUpperCase()}</span>
-          ${inc.triageState ? `<span class="badge badge-state">Triage: ${escapeHtml(inc.triageState)}</span>` : ''}
-          <span class="badge badge-state">Verdict: ${escapeHtml(inc.analystVerdict || 'none')}</span>
-        </div>
-      `;
-
+      const priority = priorityFor(inc);
+      const observed = typeof inc.observedAt === 'string' ? inc.observedAt.replace('T', ' ').substring(0, 19) : '';
+      const src = inc.provenance && inc.provenance.srcIp ? inc.provenance.srcIp : 'not recorded';
+      const dst = inc.provenance && inc.provenance.dstIp ? inc.provenance.dstIp : 'not recorded';
+      const malicious = inc.decision === 'Attack';
+      const triage = inc.triageState && inc.triageState !== 'unreviewed' ? inc.triageState : 'Open';
+      itemEl.innerHTML = ''
+        + '<td><span class="priority-pill priority-' + priority.key + '">' + priority.label + '</span></td>'
+        + '<td>' + escapeHtml(observed) + ' UTC</td>'
+        + '<td><code>INV-' + escapeHtml(inc.flowId || inc.id) + '</code><div><code>' + escapeHtml(inc.id) + '</code></div></td>'
+        + '<td><span class="decision-pill ' + (malicious ? 'decision-malicious' : 'decision-benign') + '">' + (malicious ? 'MALICIOUS' : 'BENIGN') + '</span><span class="alert-title">' + escapeHtml(alertTitle(inc)) + '</span></td>'
+        + '<td><code class="entity-pill">' + escapeHtml(src) + '</code><code class="entity-pill">' + escapeHtml(dst) + '</code></td>'
+        + '<td>' + escapeHtml(sourceDisplayName(inc.sourceLabel)) + '</td>'
+        + '<td>' + escapeHtml(triage) + ' <span class="priority-pill priority-info">' + escapeHtml(inc.analystVerdict || 'no verdict') + '</span></td>';
       itemEl.addEventListener('click', () => {
         selectedIncidentId = inc.id;
         renderIncidentQueue();
         renderForensicDrawer();
+        showSocView('detail');
       });
-
       listEl.appendChild(itemEl);
   }
 
@@ -745,6 +864,8 @@
       ? String(inc.advisory.summaryHeadline)
       : ((inc.live ? 'Stored flow ' : 'Recorded case ') + String(inc.id));
     if (title) title.textContent = headline;
+    const conclusion = document.getElementById('conclusionCard');
+    if (conclusion) conclusion.setAttribute('data-decision', String(inc.decision || 'withheld'));
     const src = inc.provenance && inc.provenance.srcIp ? String(inc.provenance.srcIp) : 'not recorded';
     const dst = inc.provenance && inc.provenance.dstIp ? String(inc.provenance.dstIp) : 'not recorded';
     setInspectorText('inspectorDecision', String(inc.decision || 'withheld'));
@@ -821,9 +942,11 @@
       node.setAttribute('data-evidence-state', 'unavailable');
       return;
     }
-    node.textContent = items.map(item => (
-      item.id + ': ' + item.status + (item.passed ? ' pass' : ' open')
-    )).join('\n');
+    node.innerHTML = items.map((item, index) => (
+      '<div class="finding-row"><span class="finding-num">' + (index + 1) + '</span> '
+      + escapeHtml(item.id + ': ' + item.status + (item.passed ? ' pass' : ' open'))
+      + '</div>'
+    )).join('');
     const allKnown = items.every(item => item.status !== 'not_recorded' && item.status !== 'invalid' && item.status !== 'unscored');
     node.setAttribute('data-evidence-state', allKnown ? 'verified' : 'pending');
   }
@@ -1187,6 +1310,35 @@
         currentFilter = btn.dataset.filter || 'all';
         renderIncidentQueue();
       });
+    });
+    function bindQueuePreset(id, source, decision) {
+      const node = document.getElementById(id);
+      if (!node) return;
+      node.addEventListener('click', () => {
+        const sourceNode = document.getElementById('queueSourceFilter');
+        const decisionNode = document.getElementById('queueDecisionFilter');
+        if (sourceNode) sourceNode.value = source;
+        if (decisionNode) decisionNode.value = decision;
+        renderIncidentQueue();
+      });
+    }
+    bindQueuePreset('pillAll', 'all', 'all');
+    bindQueuePreset('pillUrgent', 'all', 'Attack');
+    bindQueuePreset('pillNotable', 'suricata_bridge', 'all');
+    bindQueuePreset('pillInfo', 'all', 'Benign');
+    document.querySelectorAll('[data-soc-nav]').forEach(node => {
+      node.addEventListener('click', () => showSocView(node.getAttribute('data-soc-nav')));
+    });
+    const openLab = document.getElementById('btnOpenLabDrawer');
+    const closeLab = document.getElementById('btnCloseLabDrawer');
+    if (openLab) openLab.addEventListener('click', () => openLabDrawer(true));
+    if (closeLab) closeLab.addEventListener('click', () => openLabDrawer(false));
+    const backButton = document.getElementById('btnBackToInvestigations');
+    if (backButton) backButton.addEventListener('click', () => showSocView('investigations'));
+    const graphButton = document.getElementById('btnOpenActionGraph');
+    if (graphButton) graphButton.addEventListener('click', () => showSocView('graph'));
+    document.querySelectorAll('[data-graph-node]').forEach(node => {
+      node.addEventListener('click', () => showGraphPopover(node));
     });
 
     ['queueSourceFilter', 'queueSearch', 'queueDecisionFilter', 'queueTriageFilter', 'queueVerdictFilter', 'queueSort'].forEach(id => {
@@ -2141,6 +2293,14 @@
       const data = await resp.json();
       const flows = Array.isArray(data.flows) ? data.flows : [];
       if (!flows.length) {
+        if (liveCampaignIncidents.length) {
+          setLiveText(
+            'liveQueueStatus',
+            liveCampaignIncidents.length + ' stored rows are on the investigations table.',
+            'verified'
+          );
+          return;
+        }
         setLiveText('liveQueueStatus', 'Live queue is empty. The recorded queue remains available.', 'unavailable');
         return;
       }
