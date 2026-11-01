@@ -27,6 +27,7 @@ import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import urllib.parse
 from pathlib import Path
 import re
 import signal
@@ -331,8 +332,36 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 list_live_campaigns(
                     self._live_db_path(),
                     incidents_db_path=self._incidents_db_path(),
+                    soar_db_path=self._live_soar_path(),
                 ),
             )
+            return
+        if path == "/api/v1/live/assets":
+            from threatfusion.api.live_soc_console import list_digital_assets
+
+            self._send_json(200, list_digital_assets(self._live_db_path()))
+            return
+        if path == "/api/v1/live/context-memory":
+            from threatfusion.api.live_soc_console import list_context_memory
+
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            raw_flow = (query.get("flow_id") or [""])[0]
+            try:
+                flow_id = int(raw_flow)
+            except (TypeError, ValueError):
+                self._send_json(
+                    400,
+                    {
+                        "evidence_state": "unavailable",
+                        "reason": "flow_id_required",
+                        "entries": [],
+                        "production_fusion_enabled": False,
+                    },
+                )
+                return
+            result = list_context_memory(self._live_db_path(), flow_id)
+            status = 200 if result.get("evidence_state") == "verified" else 400
+            self._send_json(status, result)
             return
         if path == "/api/v1/metrics/operational-velocity":
             from threatfusion.api.analyst_dashboard import compute_alert_noise_reduction_funnel
@@ -455,10 +484,21 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
         if path == "/api/v1/live/sensor":
             from threatfusion.api.live_soc_console import (
+                authorize_sensor_ingest,
                 correlate_stored_attacks,
                 record_suricata_bridge_flow,
             )
 
+            if not authorize_sensor_ingest(self.headers.get("Authorization")):
+                self._send_json(
+                    401,
+                    {
+                        "error": "sensor_ingest_unauthorized",
+                        "evidence_state": "unavailable",
+                        "production_fusion_enabled": False,
+                    },
+                )
+                return
             try:
                 req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
             except json.JSONDecodeError:
@@ -470,6 +510,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             observed_at = req_data.get("observed_at_utc")
             provenance = req_data.get("provenance")
             observation = req_data.get("sensor_observation")
+            sensor_node = req_data.get("sensor_node")
             stored = record_suricata_bridge_flow(
                 self._live_db_path(),
                 req_data.get("features"),
@@ -478,6 +519,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 sensor_observation=observation if isinstance(observation, dict) else None,
                 source_event_id=req_data.get("source_event_id"),
                 observed_at_utc=observed_at if isinstance(observed_at, str) else None,
+                sensor_node=sensor_node if isinstance(sensor_node, str) else None,
             )
             if stored.get("evidence_state") != "verified":
                 self._send_json(400, stored)
@@ -637,6 +679,32 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 rationale=str(req_data.get("rationale") or ""),
                 actor_id=str(req_data.get("actor_id") or ""),
                 policy_dir=_operator_policy_dir(),
+            )
+            status = 200 if result.get("evidence_state") == "verified" else 400
+            self._send_json(status, result)
+            return
+
+        if path == "/api/v1/live/context-memory":
+            from threatfusion.api.live_soc_console import save_context_memory
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            raw_flow = req_data.get("flow_id")
+            entity = req_data.get("entity_ip_or_subnet")
+            service = req_data.get("service_or_port")
+            result = save_context_memory(
+                self._live_db_path(),
+                flow_id=raw_flow if isinstance(raw_flow, int) else 0,
+                rule=str(req_data.get("expected_behavior_rule") or ""),
+                operator_id=str(req_data.get("operator_id") or ""),
+                entity_ip_or_subnet=entity if isinstance(entity, str) else None,
+                service_or_port=service if isinstance(service, str) else None,
             )
             status = 200 if result.get("evidence_state") == "verified" else 400
             self._send_json(status, result)

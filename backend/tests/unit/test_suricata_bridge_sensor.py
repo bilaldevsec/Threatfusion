@@ -233,6 +233,44 @@ def live_http(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         server.server_close()
 
 
+def test_sensor_token_rejects_a_mismatch_and_accepts_a_cloud_node(
+    live_http: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("THREATFUSION_SENSOR_INGEST_TOKEN", "lab-sensor-token")
+    payload = sensor_payload(_flow(src_port=44122), {})
+    payload["sensor_node"] = "aws_cloud_sensor"
+    body = json.dumps(payload).encode("utf-8")
+
+    def _send(header: str | None) -> tuple[int, dict[str, object]]:
+        headers = {"Content-Type": "application/json"}
+        if header is not None:
+            headers["Authorization"] = header
+        request = urllib.request.Request(
+            f"{live_http}/api/v1/live/sensor",
+            data=body,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    missing_status, missing = _send(None)
+    assert missing_status == 401
+    assert missing["error"] == "sensor_ingest_unauthorized"
+    wrong_status, wrong = _send("Bearer other-token")
+    assert wrong_status == 401
+    assert wrong["error"] == "sensor_ingest_unauthorized"
+    status, stored = _send("Bearer lab-sensor-token")
+    assert status == 200
+    assert stored["sensor_node"] == "aws_cloud_sensor"
+    assert stored["source_label"] == "suricata_bridge"
+    assert stored["production_fusion_enabled"] is False
+    assert stored["decision"] in {"Attack", "Benign"}
+
+
 def test_http_sensor_route_stores_the_bridge_row(live_http: str) -> None:
     payload = sensor_payload(_flow(src_port=44121), {})
     status, stored = _post(live_http, "/api/v1/live/sensor", payload)

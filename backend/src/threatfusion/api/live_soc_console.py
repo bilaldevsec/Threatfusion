@@ -85,6 +85,7 @@ _FLOW_EXTRA_COLUMNS: tuple[tuple[str, str], ...] = (
     ("containment_state", "TEXT"),
     ("containment_at", "TEXT"),
     ("rollback_at", "TEXT"),
+    ("sensor_node", "TEXT"),
 )
 
 _SCHEMA_LOCK = threading.Lock()
@@ -142,6 +143,18 @@ def _connect(db_path: Path) -> sqlite3.Connection:
                 source_label TEXT NOT NULL,
                 created_at_utc TEXT NOT NULL,
                 member_count INTEGER NOT NULL
+            )
+            """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS context_memory (
+                memory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_ip_or_subnet TEXT NOT NULL,
+                service_or_port TEXT NOT NULL DEFAULT '',
+                expected_behavior_rule TEXT NOT NULL,
+                created_from_flow_id INTEGER,
+                operator_id TEXT NOT NULL,
+                created_at_utc TEXT NOT NULL,
+                UNIQUE(entity_ip_or_subnet, service_or_port)
             )
             """)
         existing = {row[1] for row in conn.execute("PRAGMA table_info(live_flows)")}
@@ -280,6 +293,7 @@ def _provenance_fields(
 
 SENSOR_BRIDGE_SOURCE = "suricata_bridge"
 SENSOR_BRIDGE_NAMESPACE = "lab:range-bridge-01"
+_SENSOR_NODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SENSOR_EVENT_ID = re.compile(r"^suricata_flow_v1:[0-9a-f]{64}$")
 _ENTITY_ID_PREFIXES = (
     "attacker:",
@@ -292,6 +306,29 @@ _ENTITY_ID_PREFIXES = (
     "vm:",
 )
 _SENSOR_PROTOCOLS = frozenset({"tcp", "udp", "icmp", "other"})
+
+
+def _normalize_sensor_node(value: str | None) -> str | None:
+    """Default a missing tag to the lab bridge. Refuse tags outside the local alphabet."""
+    if value is None or not str(value).strip():
+        return SENSOR_BRIDGE_SOURCE
+    text = str(value).strip()
+    if _SENSOR_NODE.fullmatch(text) is None:
+        return None
+    return text
+
+
+def authorize_sensor_ingest(authorization_header: str | None) -> bool:
+    """Allow ingest when no token is configured. A configured token must match."""
+    expected = os.environ.get("THREATFUSION_SENSOR_INGEST_TOKEN", "").strip()
+    if not expected:
+        return True
+    presented = ""
+    if isinstance(authorization_header, str):
+        prefix, separator, token = authorization_header.partition(" ")
+        if separator and prefix.lower() == "bearer":
+            presented = token.strip()
+    return hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
 
 
 def _probability_text(value: Any) -> str:
@@ -418,6 +455,7 @@ def persist_scored_flow(
     provenance: Mapping[str, Any] | None = None,
     source_event_id: str | None = None,
     sensor_observation_json: str | None = None,
+    sensor_node: str | None = None,
 ) -> dict[str, Any]:
     """Append one scored flow to the live WAL queue."""
     observed = _coerce_observed_at(observed_at_utc)
@@ -440,8 +478,8 @@ def persist_scored_flow(
                 campaign_id, source_label, case_title,
                 entity_namespace_id, src_entity_id, dst_entity_id,
                 flow_protocol, service_or_port, clock_synchronized,
-                source_event_id, sensor_observation_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_event_id, sensor_observation_json, sensor_node
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 observed,
@@ -463,6 +501,7 @@ def persist_scored_flow(
                 clock,
                 source_event_id,
                 sensor_observation_json,
+                sensor_node,
             ),
         )
         flow_id = int(cursor.lastrowid)
@@ -473,6 +512,7 @@ def persist_scored_flow(
     stored["source_label"] = source_label
     stored["case_title"] = case_title
     stored["source_event_id"] = source_event_id
+    stored["sensor_node"] = sensor_node
     stored["production_fusion_enabled"] = False
     if sensor_observation_json:
         try:
@@ -493,12 +533,17 @@ def record_suricata_bridge_flow(
     observed_at_utc: str | None = None,
     model: Any | None = None,
     supply_verified: bool | None = None,
+    sensor_node: str | None = None,
 ) -> dict[str, Any]:
     """Score one adapted Suricata flow and store it under its own bridge campaign.
 
     The forest score is whatever the frozen model returns. The Suricata line is
-    display text. No technique id is written onto the row.
+    display text. No technique id is written onto the row. sensor_node records
+    which forwarder sent the flow and does not change the score.
     """
+    node = _normalize_sensor_node(sensor_node)
+    if node is None:
+        return _refused_sensor("invalid_sensor_node")
     reason = _validate_sensor_request(features, provenance, sensor_observation, source_event_id)
     if reason is not None or provenance is None or sensor_observation is None:
         return _refused_sensor(reason or "sensor_observation_required")
@@ -510,7 +555,7 @@ def record_suricata_bridge_flow(
             """
             SELECT flow_id, decision, rf_attack_probability, reason, evidence_state,
                    campaign_id, source_label, case_title, sensor_observation_json,
-                   observed_at_utc
+                   observed_at_utc, sensor_node
             FROM live_flows
             WHERE source_event_id = ?
             """,
@@ -530,6 +575,7 @@ def record_suricata_bridge_flow(
             "flow_id": int(existing["flow_id"]),
             "observed_at_utc": existing["observed_at_utc"],
             "source_event_id": source_event_id,
+            "sensor_node": existing["sensor_node"] or SENSOR_BRIDGE_SOURCE,
             "duplicate": True,
         }
         raw_observation = existing["sensor_observation_json"]
@@ -561,6 +607,7 @@ def record_suricata_bridge_flow(
         provenance=provenance,
         source_event_id=source_event_id,
         sensor_observation_json=json.dumps(observation, sort_keys=True),
+        sensor_node=node,
     )
     if stored.get("reason") == "invalid_observed_at":
         return _refused_sensor("invalid_observed_at")
@@ -576,6 +623,7 @@ def record_suricata_bridge_flow(
         )
     stored["schema_version"] = "live_sensor_flow_v1"
     stored["duplicate"] = False
+    stored["sensor_node"] = node
     stored["sensor_observation"] = observation
     stored["case_title"] = None
     return stored
@@ -816,7 +864,7 @@ def _flow_rows(db_path: Path, *, limit: int) -> list[dict[str, Any]]:
                    analyst_verdict_at, assignee_id, review_status,
                    correlation_window_checked, source_event_id, sensor_observation_json,
                    execution_path, operator_id, cert_sha256_prefix,
-                   identity_verified, identity_label, containment_state
+                   identity_verified, identity_label, containment_state, sensor_node
             FROM live_flows
             ORDER BY flow_id DESC
             LIMIT ?
@@ -878,14 +926,383 @@ def _read_stored_incidents(incidents_db_path: Path | None, *, limit: int) -> lis
     return [dict(row) for row in rows]
 
 
+def _flow_entities(stored: Mapping[str, Any] | sqlite3.Row) -> list[str]:
+    entities: list[str] = []
+    for key in ("src_entity_id", "dst_entity_id"):
+        if hasattr(stored, "get"):
+            value = stored.get(key)
+        else:
+            value = stored[key] if key in stored.keys() else None
+        if isinstance(value, str):
+            text = value.strip()
+            if text and text not in entities:
+                entities.append(text)
+    return entities
+
+
+def _memory_rows_for_entities(db_path: Path, entities: Sequence[str]) -> list[dict[str, Any]]:
+    if not entities or not db_path.is_file():
+        return []
+    placeholders = ",".join("?" for _ in entities)
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT memory_id, entity_ip_or_subnet, service_or_port,
+                   expected_behavior_rule, created_from_flow_id, operator_id,
+                   created_at_utc
+            FROM context_memory
+            WHERE entity_ip_or_subnet IN ({placeholders})
+            ORDER BY memory_id ASC
+            """,
+            tuple(entities),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _upsert_context_memory_rows(
+    db_path: Path,
+    *,
+    entities: Sequence[str],
+    service_or_port: str,
+    rule: str,
+    flow_id: int,
+    operator_id: str,
+    recorded_at: str,
+) -> list[dict[str, Any]]:
+    """Remember one rule per entity and service. The forest columns are not written."""
+    service = service_or_port.strip()
+    with _connect(db_path) as conn:
+        for entity in entities:
+            conn.execute(
+                """
+                INSERT INTO context_memory (
+                    entity_ip_or_subnet, service_or_port, expected_behavior_rule,
+                    created_from_flow_id, operator_id, created_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(entity_ip_or_subnet, service_or_port) DO UPDATE SET
+                    expected_behavior_rule = excluded.expected_behavior_rule,
+                    created_from_flow_id = excluded.created_from_flow_id,
+                    operator_id = excluded.operator_id,
+                    created_at_utc = excluded.created_at_utc
+                """,
+                (entity, service, rule, flow_id, operator_id, recorded_at),
+            )
+    return _memory_rows_for_entities(db_path, entities)
+
+
+def list_context_memory(db_path: Path, flow_id: int) -> dict[str, Any]:
+    """Return institutional rules whose entity is on the stored flow."""
+    refused = {
+        "schema_version": "context_memory_v1",
+        "evidence_state": "unavailable",
+        "production_fusion_enabled": False,
+        "entries": [],
+    }
+    if flow_id <= 0 or not db_path.is_file():
+        refused["reason"] = "flow_not_stored"
+        return refused
+    stored = _load_flow_row(db_path, flow_id)
+    if stored is None:
+        refused["reason"] = "flow_not_stored"
+        return refused
+    entities = _flow_entities(stored)
+    return {
+        "schema_version": "context_memory_v1",
+        "evidence_state": "verified",
+        "reason": "stored_context_memory",
+        "flow_id": flow_id,
+        "production_fusion_enabled": False,
+        "frozen_rf_decision": stored["decision"],
+        "rf_attack_probability": stored["rf_attack_probability"],
+        "entries": _memory_rows_for_entities(db_path, entities),
+    }
+
+
+def save_context_memory(
+    db_path: Path,
+    *,
+    flow_id: int,
+    rule: str,
+    operator_id: str,
+    entity_ip_or_subnet: str | None = None,
+    service_or_port: str | None = None,
+) -> dict[str, Any]:
+    """Store one institutional rule for entities already on the flow."""
+    text = rule.strip()
+    actor = operator_id.strip()
+    refused = {
+        "schema_version": "context_memory_v1",
+        "evidence_state": "unavailable",
+        "production_fusion_enabled": False,
+        "execution_authorized": False,
+        "entries": [],
+    }
+    if flow_id <= 0 or not text or len(text) > 500 or _LOCAL_ACTOR.match(actor) is None:
+        refused["reason"] = "context_memory_incomplete"
+        return refused
+    if not db_path.is_file():
+        refused["reason"] = "flow_not_stored"
+        return refused
+    stored = _load_flow_row(db_path, flow_id)
+    if stored is None:
+        refused["reason"] = "flow_not_stored"
+        return refused
+    if not _rationale_stays_on_stored_flow(text, stored):
+        refused["reason"] = "explanation_not_grounded"
+        return refused
+    known = _flow_entities(stored)
+    if entity_ip_or_subnet is None or not str(entity_ip_or_subnet).strip():
+        entities = known
+    else:
+        chosen = str(entity_ip_or_subnet).strip()
+        if chosen not in known:
+            refused["reason"] = "entity_not_on_flow"
+            return refused
+        entities = [chosen]
+    if not entities:
+        refused["reason"] = "entity_not_on_flow"
+        return refused
+    if service_or_port is None:
+        service = str(stored.get("service_or_port") or "")
+    else:
+        service = str(service_or_port).strip()
+        if len(service) > 64:
+            refused["reason"] = "context_memory_incomplete"
+            return refused
+    recorded_at = datetime.now(UTC).isoformat()
+    entries = _upsert_context_memory_rows(
+        db_path,
+        entities=entities,
+        service_or_port=service,
+        rule=text,
+        flow_id=flow_id,
+        operator_id=actor,
+        recorded_at=recorded_at,
+    )
+    confirmed = _load_flow_row(db_path, flow_id) or stored
+    return {
+        "schema_version": "context_memory_v1",
+        "evidence_state": "verified",
+        "reason": "context_memory_stored",
+        "flow_id": flow_id,
+        "production_fusion_enabled": False,
+        "execution_authorized": False,
+        "frozen_rf_decision": confirmed["decision"],
+        "rf_attack_probability": confirmed["rf_attack_probability"],
+        "decision_unchanged": confirmed["decision"] == stored["decision"],
+        "entries": entries,
+    }
+
+
+def _soar_receipt_status(soar_db_path: Path | None, flow_id: int) -> dict[str, str]:
+    """Read the current playbook state for this flow. A missing ledger stays unavailable."""
+    unavailable = {"status": "unavailable", "evidence_state": "unavailable"}
+    if soar_db_path is None or not soar_db_path.is_file():
+        return unavailable
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(f"file:{soar_db_path}?mode=ro", uri=True, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        if "soar_playbook_records" not in tables:
+            return unavailable
+        row = conn.execute(
+            """
+            SELECT state FROM soar_playbook_records
+            WHERE candidate_id = ?
+            ORDER BY updated_at_utc DESC
+            LIMIT 1
+            """,
+            (f"live_flow:{flow_id}",),
+        ).fetchone()
+    except sqlite3.Error:
+        return unavailable
+    finally:
+        if conn is not None:
+            conn.close()
+    if row is None:
+        return {"status": "no_receipt", "evidence_state": "unavailable"}
+    return {"status": str(row["state"]), "evidence_state": "verified"}
+
+
+def evidence_locker_queries(
+    db_path: Path, flow_id: int, soar_db_path: Path | None = None
+) -> dict[str, Any]:
+    """Run the three stored-flow queries for one Evidence Locker tab."""
+    refused: dict[str, Any] = {
+        "schema_version": "evidence_locker_queries_v1",
+        "evidence_state": "unavailable",
+        "production_fusion_enabled": False,
+        "queries": [],
+    }
+    if flow_id <= 0 or not db_path.is_file():
+        refused["reason"] = "flow_not_stored"
+        return refused
+    with _connect(db_path) as conn:
+        flow = conn.execute(
+            """
+            SELECT flow_id, src_entity_id, dst_entity_id, service_or_port,
+                   flow_protocol, campaign_id, decision, rf_attack_probability
+            FROM live_flows
+            WHERE flow_id = ?
+            """,
+            (flow_id,),
+        ).fetchone()
+        if flow is None:
+            refused["reason"] = "flow_not_stored"
+            return refused
+        entities = _flow_entities(flow)
+        if entities:
+            placeholders = ",".join("?" for _ in entities)
+            entity_count = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM live_flows
+                    WHERE src_entity_id IN ({placeholders})
+                       OR dst_entity_id IN ({placeholders})
+                    """,
+                    (*entities, *entities),
+                ).fetchone()[0]
+            )
+        else:
+            entity_count = 0
+        baseline = conn.execute(
+            """
+            SELECT COUNT(*) AS flow_count, AVG(rf_attack_probability) AS avg_rf
+            FROM live_flows
+            WHERE service_or_port IS ? AND flow_protocol IS ?
+            """,
+            (flow["service_or_port"], flow["flow_protocol"]),
+        ).fetchone()
+        campaign_id = flow["campaign_id"]
+        if isinstance(campaign_id, str) and campaign_id:
+            campaign_count = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM live_flows WHERE campaign_id = ?",
+                    (campaign_id,),
+                ).fetchone()[0]
+            )
+        else:
+            campaign_count = 0
+        frozen_decision = flow["decision"]
+        frozen_score = flow["rf_attack_probability"]
+        service = flow["service_or_port"]
+        protocol = flow["flow_protocol"]
+        baseline_count = int(baseline["flow_count"] or 0)
+        average = baseline["avg_rf"]
+        if average is not None:
+            average = float(average)
+    receipt = _soar_receipt_status(soar_db_path, flow_id)
+    return {
+        "schema_version": "evidence_locker_queries_v1",
+        "evidence_state": "verified",
+        "reason": "stored_flow_queries",
+        "flow_id": flow_id,
+        "production_fusion_enabled": False,
+        "frozen_rf_decision": frozen_decision,
+        "rf_attack_probability": frozen_score,
+        "queries": [
+            {
+                "query_id": "entity_historical_frequency",
+                "title": "Entity Historical Frequency",
+                "entity_count": entity_count,
+                "entities": entities,
+            },
+            {
+                "query_id": "destination_port_protocol_baseline",
+                "title": "Destination Port & Protocol Baseline",
+                "flow_count": baseline_count,
+                "average_rf_attack_probability": average,
+                "service_or_port": service,
+                "flow_protocol": protocol,
+            },
+            {
+                "query_id": "correlated_campaign_soar_ledger",
+                "title": "Correlated Campaign & SOAR Ledger State",
+                "campaign_id": campaign_id,
+                "stitched_flow_count": campaign_count,
+                "soar_receipt_status": receipt["status"],
+                "soar_evidence_state": receipt["evidence_state"],
+            },
+        ],
+    }
+
+
+def _asset_classification(entity: str) -> str:
+    from threatfusion.soar.n8n_thehive_misp_stack import is_rfc1918_or_loopback_ip
+
+    if is_rfc1918_or_loopback_ip(entity):
+        return "RFC1918 Internal"
+    return "External WAN"
+
+
+def list_digital_assets(db_path: Path) -> dict[str, Any]:
+    """Inventory every stored source and destination entity."""
+    if not db_path.is_file():
+        return {
+            "schema_version": "digital_asset_inventory_v1",
+            "evidence_state": "unavailable",
+            "reason": "no_stored_flows",
+            "production_fusion_enabled": False,
+            "assets": [],
+        }
+    with _connect(db_path) as conn:
+        rows = conn.execute("""
+            SELECT entity AS entity_ip,
+                   MIN(observed_at_utc) AS first_seen_utc,
+                   MAX(observed_at_utc) AS last_seen_utc,
+                   COUNT(DISTINCT flow_id) AS flow_count
+            FROM (
+                SELECT flow_id, src_entity_id AS entity, observed_at_utc
+                FROM live_flows
+                WHERE src_entity_id IS NOT NULL AND TRIM(src_entity_id) != ''
+                UNION
+                SELECT flow_id, dst_entity_id AS entity, observed_at_utc
+                FROM live_flows
+                WHERE dst_entity_id IS NOT NULL AND TRIM(dst_entity_id) != ''
+            )
+            GROUP BY entity
+            ORDER BY entity ASC
+            """).fetchall()
+    assets: list[dict[str, Any]] = []
+    for row in rows:
+        entity = str(row["entity_ip"])
+        guard_status, _payload = private_ip_guard_response(entity)
+        assets.append(
+            {
+                "entity_ip": entity,
+                "classification": _asset_classification(entity),
+                "first_seen_utc": row["first_seen_utc"],
+                "last_seen_utc": row["last_seen_utc"],
+                "flow_count": int(row["flow_count"]),
+                "misp_guard_status": guard_status,
+                "context_memory_count": len(_memory_rows_for_entities(db_path, [entity])),
+            }
+        )
+    return {
+        "schema_version": "digital_asset_inventory_v1",
+        "evidence_state": "verified" if assets else "unavailable",
+        "reason": "stored_entities" if assets else "no_stored_entities",
+        "production_fusion_enabled": False,
+        "assets": assets,
+    }
+
+
 def list_live_campaigns(
     db_path: Path,
     *,
     incidents_db_path: Path | None = None,
+    soar_db_path: Path | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
     """Return stored flow campaigns and any incident rows already on disk."""
     flows = _flow_rows(db_path, limit=limit)
+    for row in flows:
+        flow_id = int(row["flow_id"])
+        row["evidence_locker"] = evidence_locker_queries(db_path, flow_id, soar_db_path)
+        row["context_memory"] = _memory_rows_for_entities(db_path, _flow_entities(row))
     incidents = _read_stored_incidents(incidents_db_path, limit=limit)
     grouped: dict[str, list[dict[str, Any]]] = {}
     order: list[str] = []
@@ -1183,23 +1600,21 @@ def replay_live_scenarios(
     }
 
 
-_NOTABLE_BRIDGE_EVENT_ID = "suricata_flow_v1:" + hashlib.sha256(
-    b"threatfusion-seed-notable-bridge-v1"
-).hexdigest()
+_NOTABLE_BRIDGE_EVENT_ID = (
+    "suricata_flow_v1:" + hashlib.sha256(b"threatfusion-seed-notable-bridge-v1").hexdigest()
+)
 
 
 def _queue_has_recorded_attack(db_path: Path) -> bool:
     if not db_path.is_file():
         return False
     with _connect(db_path) as conn:
-        row = conn.execute(
-            """
+        row = conn.execute("""
             SELECT 1 FROM live_flows
             WHERE decision = 'Attack'
               AND source_label IN ('recorded_unsw_nb15', 'live_scenario_replay')
             LIMIT 1
-            """
-        ).fetchone()
+            """).fetchone()
     return row is not None
 
 
@@ -1252,7 +1667,10 @@ def ensure_recorded_attack_row(
             model=model,
             supply_verified=supply_verified,
         )
-        if score.get("decision") != "Attack" or score.get("reason") != "frozen_random_forest_scored":
+        if (
+            score.get("decision") != "Attack"
+            or score.get("reason") != "frozen_random_forest_scored"
+        ):
             continue
         persist_scored_flow(
             db_path,
@@ -1374,11 +1792,17 @@ def ensure_notable_bridge_row(
         model=model,
         supply_verified=supply_verified,
     )
-    present = stored.get("source_label") == SENSOR_BRIDGE_SOURCE and stored.get("decision") != "Attack"
+    present = (
+        stored.get("source_label") == SENSOR_BRIDGE_SOURCE and stored.get("decision") != "Attack"
+    )
     return {
         "present": present,
         "seeded": present and stored.get("duplicate") is not True,
-        "reason": "notable_bridge_seeded" if present else str(stored.get("reason") or "notable_bridge_refused"),
+        "reason": (
+            "notable_bridge_seeded"
+            if present
+            else str(stored.get("reason") or "notable_bridge_refused")
+        ),
         "decision": stored.get("decision"),
         "production_fusion_enabled": False,
     }
@@ -2821,6 +3245,17 @@ def record_analyst_verdict(
     frozen_decision = None if decision is None else decision["decision"]
     stamp = operator_stamp(actor, policy_dir)
     _store_operator_stamp(db_path, flow_id, stamp)
+    memory_rule = f"Analyst verdict {chosen}. {text}"[:500]
+    memories = _upsert_context_memory_rows(
+        db_path,
+        entities=_flow_entities(stored),
+        service_or_port=str(stored.get("service_or_port") or ""),
+        rule=memory_rule,
+        flow_id=flow_id,
+        operator_id=actor,
+        recorded_at=recorded_at,
+    )
+    confirmed = _load_flow_row(db_path, flow_id) or stored
     return {
         "evidence_state": "verified",
         "reason": "analyst_verdict_stored",
@@ -2829,8 +3264,14 @@ def record_analyst_verdict(
         "analyst_rationale": text,
         "actor_id": actor,
         "recorded_at_utc": recorded_at,
-        "frozen_rf_decision": frozen_decision,
-        "decision_unchanged": frozen_decision == stored["decision"],
+        "frozen_rf_decision": confirmed["decision"],
+        "rf_attack_probability": confirmed["rf_attack_probability"],
+        "decision_unchanged": (
+            confirmed["decision"] == stored["decision"]
+            and confirmed["rf_attack_probability"] == stored["rf_attack_probability"]
+            and frozen_decision == stored["decision"]
+        ),
+        "context_memory": memories,
         "execution_authorized": False,
         "containment_executed": False,
         "production_fusion_enabled": False,

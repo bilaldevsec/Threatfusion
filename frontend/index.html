@@ -195,6 +195,13 @@
                     </ol>
                     <div id="glassBoxChecklist" data-evidence-state="unavailable">Glass-box checklist waiting for a stored flow.</div>
                   </article>
+                  <article class="card" id="contextMemoryPanel" data-context-memory-panel style="background: #111827;">
+                    <h3>Context Memory &amp; Institutional Knowledge</h3>
+                    <div id="contextMemoryList" data-context-memory-list data-evidence-state="unavailable">No institutional memory stored for this flow.</div>
+                    <label for="contextMemoryRule">Expected behavior rule</label>
+                    <input id="contextMemoryRule" type="text" value="">
+                    <button id="btnSaveContextMemory" type="button">Save context memory</button>
+                  </article>
                 </div>
                 <aside class="detail-side">
                   <article class="card conclusion-card" id="conclusionCard" style="background: #111827;">
@@ -245,6 +252,7 @@
                 <h3>Evidence Locker (14-Feat)</h3>
                 <div>Canonical 14 UNSW-NB15 / Suricata Features</div>
                 <div id="inspectorEvidenceNote">The 14 canonical features stay on the stored flow. This tab does not invent a packet count.</div>
+                <div id="evidenceLockerQueries" data-evidence-state="unavailable">Queries Run: waiting for a stored flow.</div>
                 <div>MISP Source: Local Verified Snapshot Fallback</div>
                 <div><b>Primary decision authority:</b> <span class="badge badge-rf-confidence">Frozen Random Forest</span></div>
                 <div id="forensicDrawer"></div>
@@ -362,6 +370,30 @@
             <h3>Recommendations</h3>
             <p id="liveQueueStatus" data-evidence-state="unavailable">Live queue has not been loaded.</p>
             <p>Keep TF-003 and TF-012 open until Suricata byte, duration, and direction fields are shown to match UNSW-NB15. Do not treat a Benign bridge probe as an Attack.</p>
+          </article>
+          <article class="card" id="contextMemoryHunter" data-context-memory-panel style="background: #111827;">
+            <h3>Context Memory &amp; Institutional Knowledge</h3>
+            <div data-context-memory-list data-evidence-state="unavailable">No institutional memory stored for this flow.</div>
+          </article>
+          <article class="card" id="assetInventoryCard" style="background: #111827;">
+            <h3>Digital Asset &amp; IOC Inventory</h3>
+            <p id="assetInventoryStatus" data-evidence-state="unavailable">Asset inventory has not been loaded.</p>
+            <div class="inv-table-wrap">
+              <table class="inv-table">
+                <thead>
+                  <tr>
+                    <th>Entity</th>
+                    <th>Classification</th>
+                    <th>First seen</th>
+                    <th>Last seen</th>
+                    <th>Flows</th>
+                    <th>MISP guard</th>
+                    <th>Memory</th>
+                  </tr>
+                </thead>
+                <tbody id="assetInventoryBody"></tbody>
+              </table>
+            </div>
           </article>
           <article class="card" style="background: #111827;">
             <h3>Queue mix</h3>

@@ -1967,6 +1967,13 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
+### Institutional context memory, evidence-locker queries, and asset inventory (2026-11-01)
+
+- A verified analyst verdict upserts `context_memory` for the stored source and destination entities. `POST /api/v1/live/context-memory` and `GET /api/v1/live/context-memory?flow_id=` read and write those rules. The frozen Random Forest `decision` and `rf_attack_probability` are not updated.
+- `GET /api/v1/live/campaigns` attaches three SQLite queries for the Evidence Locker: entity frequency, destination port and protocol count with average forest probability, and campaign stitch count plus the `threatfusion-live-soar.sqlite3` receipt state. A missing ledger is `unavailable`.
+- `GET /api/v1/live/assets` lists observed entities as `RFC1918 Internal` or `External WAN`, with first and last seen times, flow count, MISP guard status, and context-memory count. View 4 renders that inventory. `POST /api/v1/live/sensor` stores optional `sensor_node` (`suricata_bridge` by default, including `aws_cloud_sensor`). When `THREATFUSION_SENSOR_INGEST_TOKEN` is set, a bearer mismatch returns HTTP 401 before a row is stored.
+- The four-view DOM ids, the UNSW/CIC qualification sentence, and the absence of `http://` and `https://` in `frontend/index.html` stay in place. TF-003, TF-012, TF-002, TF-008, TF-009, TF-010, and TF-011 stay **open**.
+
 ### Four-view console (2026-10-31)
 
 - The live console is four full-screen views: Investigations, Investigation Detail, AI Action Graph, and AI Threat Hunter. Simulation controls sit in the lab drawer. Required element ids and the UNSW/CIC qualification sentence stay in the DOM. `frontend/index.html` still has no `http://` or `https://` string. On 2026-10-31 `--scan` stored flow 1, `172.29.0.10 -> 172.29.0.20`, and the investigations table showed two Benign bridge rows. TF-003, TF-012, TF-002, TF-008, TF-009, TF-010, and TF-011 stay **open**.

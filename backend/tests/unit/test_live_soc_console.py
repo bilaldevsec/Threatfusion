@@ -25,9 +25,15 @@ from threatfusion.api.live_soc_console import (
     replay_live_scenarios,
     score_canonical_flow,
     store_flow_provenance,
+    authorize_sensor_ingest,
+    evidence_locker_queries,
     export_grounded_handoff,
+    list_context_memory,
+    list_digital_assets,
     record_analyst_verdict,
     record_case_assignment,
+    record_suricata_bridge_flow,
+    save_context_memory,
 )
 from threatfusion.models.drift_and_supply_chain import (
     CANONICAL_14_FEATURES,
@@ -970,3 +976,195 @@ def test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr(
     assert "Callback MTTR" in dashboard
     assert "flow.mttr_seconds" in dashboard
     assert "Host containment was not executed." in dashboard
+
+
+def _provenance(src: str, dst: str, port: str = "80") -> dict[str, object]:
+    return {
+        "entity_namespace_id": "lab:memory",
+        "src_entity_id": src,
+        "dst_entity_id": dst,
+        "protocol": "tcp",
+        "service_or_port": port,
+        "clock_synchronized": True,
+    }
+
+
+def test_context_memory_evidence_locker_and_asset_inventory(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "live.sqlite3"
+    score = score_canonical_flow(
+        _features(),
+        repo_root=REPO_ROOT,
+        model=_Width14Model(),
+        supply_verified=True,
+    )
+    first = persist_scored_flow(
+        db_path,
+        _features(),
+        score,
+        campaign_id="campaign:memory",
+        provenance=_provenance("172.29.0.10", "172.29.0.20"),
+    )
+    second = persist_scored_flow(
+        db_path,
+        _features(),
+        score,
+        campaign_id="campaign:memory",
+        provenance=_provenance("203.0.113.10", "172.29.0.20"),
+    )
+    flow_id = int(first["flow_id"])
+    original_score = first["rf_attack_probability"]
+    saved = record_analyst_verdict(
+        db_path,
+        flow_id=flow_id,
+        verdict="false_positive",
+        rationale="172.29.0.10 is an authorized lab bridge scanner.",
+        actor_id="analyst_a",
+    )
+    assert saved["evidence_state"] == "verified"
+    assert saved["decision_unchanged"] is True
+    assert saved["frozen_rf_decision"] == "Attack"
+    assert saved["rf_attack_probability"] == original_score
+    first_ids = {row["entity_ip_or_subnet"]: row["memory_id"] for row in saved["context_memory"]}
+    assert set(first_ids) == {"172.29.0.10", "172.29.0.20"}
+    again = record_analyst_verdict(
+        db_path,
+        flow_id=flow_id,
+        verdict="false_positive",
+        rationale="172.29.0.10 remains an authorized lab bridge scanner.",
+        actor_id="analyst_a",
+    )
+    again_ids = {row["entity_ip_or_subnet"]: row["memory_id"] for row in again["context_memory"]}
+    assert again_ids == first_ids
+    assert "remains an authorized" in again["context_memory"][0]["expected_behavior_rule"]
+    listed = list_context_memory(db_path, flow_id)
+    assert listed["evidence_state"] == "verified"
+    assert listed["rf_attack_probability"] == original_score
+    assert len(listed["entries"]) == 2
+    added = save_context_memory(
+        db_path,
+        flow_id=flow_id,
+        rule="172.29.0.10 is still the lab bridge scanner on this port.",
+        operator_id="analyst_a",
+        entity_ip_or_subnet="172.29.0.10",
+        service_or_port="22",
+    )
+    assert added["decision_unchanged"] is True
+    assert added["rf_attack_probability"] == original_score
+    refused_entity = save_context_memory(
+        db_path,
+        flow_id=flow_id,
+        rule="172.29.0.10 only.",
+        operator_id="analyst_a",
+        entity_ip_or_subnet="198.51.100.8",
+    )
+    assert refused_entity["reason"] == "entity_not_on_flow"
+    soar_path = tmp_path / "threatfusion-live-soar.sqlite3"
+    with sqlite3.connect(soar_path) as conn:
+        conn.execute("""
+            CREATE TABLE soar_playbook_records (
+                playbook_id TEXT PRIMARY KEY,
+                candidate_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                updated_at_utc TEXT NOT NULL
+            )
+            """)
+        conn.execute(
+            """
+            INSERT INTO soar_playbook_records (
+                playbook_id, candidate_id, state, updated_at_utc
+            ) VALUES (?, ?, ?, ?)
+            """,
+            ("pb-memory", f"live_flow:{flow_id}", "approved", "2026-11-01T00:00:00+00:00"),
+        )
+    queries = evidence_locker_queries(db_path, flow_id, soar_path)
+    by_id = {item["query_id"]: item for item in queries["queries"]}
+    assert by_id["entity_historical_frequency"]["entity_count"] == 2
+    assert by_id["destination_port_protocol_baseline"]["flow_count"] == 2
+    assert (
+        by_id["destination_port_protocol_baseline"]["average_rf_attack_probability"]
+        == original_score
+    )
+    assert by_id["correlated_campaign_soar_ledger"]["stitched_flow_count"] == 2
+    assert by_id["correlated_campaign_soar_ledger"]["soar_receipt_status"] == "approved"
+    assert queries["frozen_rf_decision"] == "Attack"
+    missing = evidence_locker_queries(db_path, int(second["flow_id"]), tmp_path / "absent.sqlite3")
+    receipt = next(
+        item for item in missing["queries"] if item["query_id"] == "correlated_campaign_soar_ledger"
+    )
+    assert receipt["soar_receipt_status"] == "unavailable"
+    assets = list_digital_assets(db_path)
+    by_entity = {row["entity_ip"]: row for row in assets["assets"]}
+    assert by_entity["172.29.0.10"]["classification"] == "RFC1918 Internal"
+    assert by_entity["172.29.0.10"]["misp_guard_status"] == 422
+    assert by_entity["172.29.0.10"]["context_memory_count"] >= 1
+    assert by_entity["172.29.0.10"]["flow_count"] == 1
+    assert by_entity["203.0.113.10"]["classification"] == "External WAN"
+    assert by_entity["203.0.113.10"]["misp_guard_status"] == 200
+    queue = list_live_campaigns(db_path, soar_db_path=soar_path)
+    queued = next(
+        flow
+        for campaign in queue["campaigns"]
+        for flow in campaign["flows"]
+        if flow["flow_id"] == flow_id
+    )
+    assert queued["evidence_locker"]["queries"][2]["soar_receipt_status"] == "approved"
+    assert len(queued["context_memory"]) >= 2
+    refused_node = record_suricata_bridge_flow(
+        tmp_path / "sensor.sqlite3",
+        {},
+        repo_root=REPO_ROOT,
+        provenance=None,
+        sensor_observation=None,
+        source_event_id=None,
+        sensor_node="Bad Node",
+    )
+    assert refused_node["reason"] == "invalid_sensor_node"
+    event_id = "suricata_flow_v1:" + ("ab" * 32)
+    sensor = record_suricata_bridge_flow(
+        tmp_path / "sensor.sqlite3",
+        _features(),
+        repo_root=REPO_ROOT,
+        provenance={
+            "entity_namespace_id": "lab:range-bridge-01",
+            "src_entity_id": "172.29.0.10",
+            "dst_entity_id": "172.29.0.20",
+            "protocol": "tcp",
+            "service_or_port": "80",
+            "clock_synchronized": True,
+        },
+        sensor_observation={
+            "proto": "tcp",
+            "src_ip": "172.29.0.10",
+            "dst_ip": "172.29.0.20",
+            "src_port": 44121,
+            "dst_port": 80,
+        },
+        source_event_id=event_id,
+        model=_Width14Model(),
+        supply_verified=True,
+        sensor_node="aws_cloud_sensor",
+    )
+    assert sensor["evidence_state"] == "verified"
+    assert sensor["sensor_node"] == "aws_cloud_sensor"
+    assert sensor["source_label"] == "suricata_bridge"
+    assert sensor["decision"] == "Attack"
+    assert sensor["rf_attack_probability"] == original_score
+    monkeypatch.setenv("THREATFUSION_SENSOR_INGEST_TOKEN", "lab-sensor-token")
+    assert authorize_sensor_ingest(None) is False
+    assert authorize_sensor_ingest("Bearer other-token") is False
+    assert authorize_sensor_ingest("Bearer lab-sensor-token") is True
+    monkeypatch.delenv("THREATFUSION_SENSOR_INGEST_TOKEN")
+    assert authorize_sensor_ingest(None) is True
+    html = (REPO_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    script = (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")
+    assert 'id="contextMemoryPanel"' in html
+    assert "Context Memory &amp; Institutional Knowledge" in html
+    assert "Digital Asset &amp; IOC Inventory" in html
+    assert 'id="assetInventoryBody"' in html
+    assert 'id="evidenceLockerQueries"' in html
+    assert "UNSW-NB15 and CIC byte layers are not interchangeable." in html
+    assert "http://" not in html
+    assert "https://" not in html
+    assert "/api/v1/live/context-memory" in script
+    assert "/api/v1/live/assets" in script
+    assert "Queries Run" in script

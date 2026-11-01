@@ -868,6 +868,8 @@
       setInspectorText('inspectorExecutionPath', 'not dispatched');
       showOperatorStamp({ identity_verified: false, identity_label: 'unverified_local_label' });
       renderGlassBox(null);
+      renderContextMemoryPanels(null);
+      renderEvidenceLockerQueries(null);
       return;
     }
     const score = Number(inc.uncalibratedScore);
@@ -943,6 +945,57 @@
       assignmentNode.setAttribute('data-evidence-state', inc.assigneeId ? 'verified' : 'unavailable');
     }
     renderGlassBox(inc.glassBox);
+    renderContextMemoryPanels(inc);
+    renderEvidenceLockerQueries(inc);
+  }
+
+  function renderContextMemoryPanels(inc) {
+    const memories = inc && Array.isArray(inc.contextMemory) ? inc.contextMemory : [];
+    document.querySelectorAll('[data-context-memory-list]').forEach(node => {
+      if (!memories.length) {
+        node.textContent = 'No institutional memory stored for this flow.';
+        node.setAttribute('data-evidence-state', 'unavailable');
+        return;
+      }
+      node.innerHTML = memories.map(item => (
+        '<div>' + escapeHtml(String(item.entity_ip_or_subnet || ''))
+        + ' / ' + escapeHtml(String(item.service_or_port || 'any'))
+        + ': ' + escapeHtml(String(item.expected_behavior_rule || ''))
+        + '</div>'
+      )).join('');
+      node.setAttribute('data-evidence-state', 'verified');
+    });
+  }
+
+  function evidenceLockerHtml(inc) {
+    const locker = inc && inc.evidenceLocker ? inc.evidenceLocker : null;
+    const queries = locker && Array.isArray(locker.queries) ? locker.queries : [];
+    if (!queries.length) {
+      return 'Queries Run: waiting for a stored flow.';
+    }
+    return queries.map(query => {
+      if (query.query_id === 'entity_historical_frequency') {
+        return '<div><b>Query 1 Entity Historical Frequency:</b> ' + escapeHtml(String(query.entity_count)) + '</div>';
+      }
+      if (query.query_id === 'destination_port_protocol_baseline') {
+        const average = query.average_rf_attack_probability == null
+          ? 'unavailable'
+          : Number(query.average_rf_attack_probability).toFixed(6);
+        return '<div><b>Query 2 Destination Port &amp; Protocol Baseline:</b> count '
+          + escapeHtml(String(query.flow_count)) + ', average RF probability ' + escapeHtml(average) + '</div>';
+      }
+      return '<div><b>Query 3 Correlated Campaign &amp; SOAR Ledger State:</b> stitched '
+        + escapeHtml(String(query.stitched_flow_count)) + ', receipt '
+        + escapeHtml(String(query.soar_receipt_status || 'unavailable')) + '</div>';
+    }).join('');
+  }
+
+  function renderEvidenceLockerQueries(inc) {
+    const node = document.getElementById('evidenceLockerQueries');
+    if (!node) return;
+    const verified = inc && inc.evidenceLocker && inc.evidenceLocker.evidence_state === 'verified';
+    node.innerHTML = evidenceLockerHtml(inc);
+    node.setAttribute('data-evidence-state', verified ? 'verified' : 'unavailable');
   }
 
   function renderGlassBox(checklist) {
@@ -1002,6 +1055,10 @@
 
     // Build Forensic Drawer HTML
     drawerEl.innerHTML = `
+      <div class="tier-section" id="evidenceLockerQueryBlock">
+        <div class="tier-header"><span class="tier-1-title">Queries Run</span></div>
+        ${evidenceLockerHtml(inc)}
+      </div>
       <!-- Tier 1: Primary Decision Signal -->
       <div class="tier-section" data-blast-ui-tier="unicorn-progressive-disclosure-v1">
         <div class="tier-header">
@@ -1362,6 +1419,8 @@
 
     const verdictButton = document.getElementById('btnSaveVerdict');
     if (verdictButton) verdictButton.addEventListener('click', saveAnalystVerdict);
+    const memoryButton = document.getElementById('btnSaveContextMemory');
+    if (memoryButton) memoryButton.addEventListener('click', saveContextMemory);
     const enrollButton = document.getElementById('btnEnrollOperator');
     if (enrollButton) enrollButton.addEventListener('click', enrollLabOperator);
     const assignmentButton = document.getElementById('btnSaveAssignment');
@@ -1634,6 +1693,9 @@
       assigneeId: flow.assignee_id || '',
       reviewStatus: flow.review_status || 'unassigned',
       glassBox: flow.glass_box || null,
+      evidenceLocker: flow.evidence_locker || null,
+      contextMemory: Array.isArray(flow.context_memory) ? flow.context_memory : [],
+      sensorNode: flow.sensor_node || '',
       thehiveCaseRecord: null,
       n8nPlaybookReceipt: null
     };
@@ -1752,6 +1814,7 @@
 
   async function refreshLiveCampaigns() {
     try {
+      await refreshAssetInventory();
       const resp = await fetch('/api/v1/live/campaigns');
       if (!resp.ok) throw new Error('campaign status');
       const data = await resp.json();
@@ -1788,7 +1851,11 @@
         item.analystVerdict,
         item.assigneeId,
         item.reviewStatus,
-        item.sensorObservation && item.sensorObservation.forest_line
+        item.sensorObservation && item.sensorObservation.forest_line,
+        (item.contextMemory || []).map(memory => memory.expected_behavior_rule).join(','),
+        item.evidenceLocker && item.evidenceLocker.queries
+          ? item.evidenceLocker.queries.map(query => query.entity_count || query.flow_count || query.stitched_flow_count || query.soar_receipt_status).join(',')
+          : ''
       ].join(':')).join('|');
       if (nextPrint === campaignFingerprint) return;
       campaignFingerprint = nextPrint;
@@ -2025,6 +2092,70 @@
       );
     } catch (err) {
       setLiveText('analystVerdictDisplay', 'Analyst verdict unavailable.', 'unavailable');
+    }
+  }
+
+  async function saveContextMemory() {
+    const flowId = selectedLiveFlowId();
+    const ruleNode = document.getElementById('contextMemoryRule');
+    const rule = ruleNode ? ruleNode.value : '';
+    if (!flowId) {
+      setLiveText('contextMemoryList', 'A stored flow is required.', 'unavailable');
+      return;
+    }
+    try {
+      const resp = await fetch('/api/v1/live/context-memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          flow_id: flowId,
+          expected_behavior_rule: rule,
+          operator_id: operatorActorId()
+        })
+      });
+      const data = await resp.json();
+      await refreshLiveCampaigns();
+      setLiveText(
+        'contextMemoryList',
+        data.evidence_state === 'verified'
+          ? ('Context memory stored. Frozen RF decision ' + data.frozen_rf_decision + '.')
+          : 'Context memory refused.',
+        data.evidence_state || 'unavailable'
+      );
+    } catch (err) {
+      setLiveText('contextMemoryList', 'Context memory unavailable.', 'unavailable');
+    }
+  }
+
+  async function refreshAssetInventory() {
+    const body = document.getElementById('assetInventoryBody');
+    const status = document.getElementById('assetInventoryStatus');
+    if (!body) return;
+    try {
+      const resp = await fetch('/api/v1/live/assets');
+      if (!resp.ok) throw new Error('asset status');
+      const data = await resp.json();
+      const assets = Array.isArray(data.assets) ? data.assets : [];
+      body.innerHTML = assets.map(asset => (
+        '<tr><td>' + escapeHtml(String(asset.entity_ip || '')) + '</td>'
+        + '<td>' + escapeHtml(String(asset.classification || '')) + '</td>'
+        + '<td>' + escapeHtml(String(asset.first_seen_utc || '')) + '</td>'
+        + '<td>' + escapeHtml(String(asset.last_seen_utc || '')) + '</td>'
+        + '<td>' + escapeHtml(String(asset.flow_count)) + '</td>'
+        + '<td>' + escapeHtml(String(asset.misp_guard_status)) + '</td>'
+        + '<td>' + escapeHtml(String(asset.context_memory_count)) + '</td></tr>'
+      )).join('');
+      if (status) {
+        status.textContent = assets.length
+          ? (assets.length + ' observed entities.')
+          : 'No stored entities yet.';
+        status.setAttribute('data-evidence-state', assets.length ? 'verified' : 'unavailable');
+      }
+    } catch (err) {
+      if (status) {
+        status.textContent = 'Asset inventory unavailable.';
+        status.setAttribute('data-evidence-state', 'unavailable');
+      }
     }
   }
 
