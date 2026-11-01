@@ -1,6 +1,68 @@
-# ThreatFusion
+<div align="center">
+
+# 🛡️ ThreatFusion (AI-FYP-2006)
+
+**Deterministic-First AI Security Operations Center (SOC) — Mitigating Alert Fatigue in Security Operations through a Unified Threat Intelligence and Analytics Interface**
+
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Ubuntu 24.04 LTS](https://img.shields.io/badge/Ubuntu-24.04%20LTS-E95420?logo=ubuntu&logoColor=white)](https://ubuntu.com/)
+[![Frozen Random Forest](https://img.shields.io/badge/Frozen%20Random%20Forest-bd2853a6-238636)](#section-8-benchmark)
+[![n8n Hash-Chained SOAR](https://img.shields.io/badge/n8n-Hash--Chained%20SOAR-EA4B71?logo=n8n&logoColor=white)](#analyst-workflow)
+[![FAST-NUCES CS492 FYP-II](https://img.shields.io/badge/FAST--NUCES-CS492%20FYP--II-0A2540)](#project)
+[![Repository Integrity Gate](https://img.shields.io/badge/Repository%20Integrity%20Gate-GO-1f6feb)](#governance)
+
+[Product tour](#product-tour) · [Architecture](#architecture) · [Quickstart](#quickstart) · [Analyst workflow](#analyst-workflow) · [Section 8 benchmark](#section-8-benchmark) · [Governance](#governance) · [Project](#project)
+
+</div>
 
 ThreatFusion is a local security operations console. A frozen Random Forest is the only alert authority. Analysts record a separate verdict, assign a case, and approve a response. The autoencoder does not change the alert decision. Host containment stays unauthorized.
+
+## Executive summary
+
+- **Sole alert authority.** The frozen Random Forest scores each 14-feature flow. `production_fusion_enabled = False`.
+- **Secondary v2 autoencoder ranker.** The autoencoder can order a queue. It does not change the forest decision.
+- **Institutional context memory.** A grounded analyst verdict remembers an entity rule beside the score. The forest probability stays as stored.
+- **Cryptographic SOAR ledger.** Approval is a SHA-256 hash chain. Dispatch records an HMAC callback. Containment of `172.29.0.10` runs only inside the lab victim after that chain and callback.
+
+## Product tour
+
+The console is four full-screen views. Simulation controls stay in the lab drawer.
+
+### Active Investigations Queue
+
+Stored rows, source filters, and the frozen-forest decision.
+
+![Active Investigations Queue](docs/screenshots/01_master_detail_dashboard.png)
+
+### Investigation Detail and Evidence Locker
+
+Sensor line, forest score, and the three stored SQL queries.
+
+![Investigation Detail and Evidence Locker](docs/screenshots/02_gemini_threat_copilot.png)
+
+### AI Action Graph and 5-column DAG
+
+Alert, understand, collect, analyze, and respond.
+
+![AI Action Graph and 5-column DAG](docs/screenshots/03_glassbox_evidence_checklist.png)
+
+### AI Threat Hunter and asset telemetry
+
+Queue mix and the digital asset inventory.
+
+![AI Threat Hunter and asset telemetry](docs/screenshots/04_n8n_soar_callback.png)
+
+### SOAR containment and reversible firewall drop
+
+Lab drop of `172.29.0.10` inside the victim namespace, then rollback.
+
+![SOAR containment and reversible firewall drop](docs/screenshots/05_victim_firewall_containment.png)
+
+### Adversarial red-team audit
+
+Five refusal probes against an isolated temporary database.
+
+![Adversarial red-team audit](docs/screenshots/06_agy_adversarial_audit.png)
 
 ## Architecture
 
@@ -8,17 +70,33 @@ One process on `127.0.0.1` serves the console and the contract routes. `scripts/
 
 ```mermaid
 flowchart LR
-  browser[Analyst browser] --> page["GET / console"]
-  page --> queue[(SQLite queue)]
-  queue --> forest[Frozen Random Forest]
-  queue --> stitch["30.0s and 600.0s windows"]
-  browser --> verdict[Analyst verdict and assignee]
-  verdict --> queue
-  browser --> approve[Hash-chained approval]
-  approve --> ledger[(Shared SOAR ledger)]
-  ledger --> callback[HMAC callback]
-  browser --> guard["RFC1918 refusal before lookup"]
+  subgraph stage12 [Stage 1 and 2 Telemetry]
+    sensor[Suricata or recorded 14-feature flow]
+    mtls[Admission and source identity]
+  end
+  subgraph stage3 [Stage 3 Scoring]
+    forest[Frozen Random Forest]
+    gate[Gate G9]
+    ae[v2 autoencoder ranker]
+  end
+  subgraph stage45 [Stage 4 and 5 Correlation and RAG]
+    stitch["30.0s burst and 600.0s campaign"]
+    rag[Local MITRE and CVE retrieval]
+    memory[Context memory]
+  end
+  subgraph stage6 [Stage 6 SOAR and Containment]
+    chain[SHA-256 approval chain]
+    callback[HMAC callback]
+    lab[Lab victim drop and rollback]
+  end
+  sensor --> mtls --> forest
+  gate --- forest
+  forest --> ae
+  forest --> stitch --> rag --> memory
+  memory --> chain --> callback --> lab
 ```
+
+`production_fusion_enabled = False`. The autoencoder does not decide the alert. Host containment stays unauthorized until an analyst approves a hash-chained playbook and a callback is recorded. The lab drop still does not mark `containment_executed` on the approval route.
 
 ```text
 Recorded 14-feature flow
@@ -45,9 +123,15 @@ Open `http://127.0.0.1:8766/`. `--seed-demo` stores four labeled scenarios and k
 
 The lab HMAC and MISP values are not production credentials. Replace them before any shared deployment.
 
-## Range demo
+### Cyber range
 
-`scripts/run_full_range_demo.sh --up` starts the console, `docker/docker-compose.n8n.yml`, the private `172.29.0.0/24` range, and the eve follower. It waits until Suricata logs `Engine started`. Open `http://127.0.0.1:8766/`. The process listens beyond loopback so the n8n container can call `http://host.docker.internal:8766`. `--scan` runs non-interactive `curl` and `ssh -o BatchMode=yes` from `172.29.0.10` and waits until a new `172.29.0.10 -> 172.29.0.20` row is stored. Multicast, link-local, broadcast, and port 5353 are not ingested. The console groups the same actions into four demo steps. `--down` stops the follower, the console, n8n, and the range. The host firewall is not changed. No Azure resources are created.
+```bash
+./scripts/run_full_range_demo.sh --up
+./scripts/run_full_range_demo.sh --scan
+./scripts/run_full_range_demo.sh --down
+```
+
+`--up` starts the console, `docker/docker-compose.n8n.yml`, the private `172.29.0.0/24` range, and the eve follower. It waits until Suricata logs `Engine started`. The process listens beyond loopback so the n8n container can call `http://host.docker.internal:8766`. `--scan` runs non-interactive `curl` and `ssh -o BatchMode=yes` from `172.29.0.10` and waits until a new `172.29.0.10 -> 172.29.0.20` row is stored. Multicast, link-local, broadcast, and port 5353 are not ingested. `--down` stops the follower, the console, n8n, and the range. The host firewall is not changed. No Azure resources are created.
 
 ## Analyst workflow
 
@@ -71,7 +155,7 @@ The queue searches, filters, and sorts stored rows by source, forest decision, t
 
 ## Section 8 benchmark
 
-January validation has 216,568 rows. The frozen Random Forest counts are TP 4,045, FP 201, TN 212,009, FN 313.
+January validation has 216,568 rows. The frozen Random Forest counts are TP 4,045, FP 201, TN 212,009, FN 313. FPR is 0.095% (201 / 212,210 benign).
 
 | Measure | Frozen Random Forest | Fusion candidate |
 |---|---|---|
@@ -79,10 +163,11 @@ January validation has 216,568 rows. The frozen Random Forest counts are TP 4,04
 | Recall | 92.818% (4,045 / 4,358) | 95.021% |
 | Precision | 95.266% | 69.997% |
 | False positives | 201 | 1,775 |
+| False positive rate | 0.095% (201 / 212,210) | — |
 | Extra attacks | — | 96 |
 | Extra false alarms | — | 1,574 |
 
-That is a +2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045). `production_fusion_enabled` stays false because those 96 extra attacks cost 1,574 extra false alarms.
+That is a +2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045). `production_fusion_enabled = False` because those 96 extra attacks cost 1,574 extra false alarms.
 
 | Model | Role | SHA-256 |
 |---|---|---|
@@ -91,12 +176,16 @@ That is a +2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increas
 | Autoencoder v2 | unfused ranker | `c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23` |
 | Rate-log1p candidate | blocked baseline | `1d02e5bba556cb28709bd0faefce5f29da424a419a2d95332ad27a8995b26f63` |
 
-## Security guarantees
+## Governance
 
 - The frozen Random Forest scores a flow only when the artifact digest matches and the input width is 14.
 - The analyst verdict, rationale, assignee, and review status are stored separately from that decision.
 - A rationale that names an address the flow does not store is refused.
 - RFC1918, loopback, link-local, and IPv6 unique-local addresses are refused before any indicator lookup.
 - The SOAR ledger is a SHA-256 hash chain. A failed timing write does not report the callback as recorded.
-- Host containment is not executed from this console.
+- Host containment stays unauthorized.
 - TF-008, TF-009, TF-010, and TF-011 remain open. Scores on unseen traffic, a human cohort of at least 10, a signed jury form, and a live feed are not done.
+
+## Project
+
+Muhammad Bilal (21K-3551), Muhammad Suhaib Shaikh (22K-4302), Muhammad Hasnain (22K-4718), Supervisor Sir Sameer Faisal — FAST-NUCES Karachi CS492 AI-FYP-2006. Documented evaluation checkpoint: 21 September 2026.
