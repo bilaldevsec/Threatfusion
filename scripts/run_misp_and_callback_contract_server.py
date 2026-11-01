@@ -706,7 +706,12 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 entity_ip_or_subnet=entity if isinstance(entity, str) else None,
                 service_or_port=service if isinstance(service, str) else None,
             )
-            status = 200 if result.get("evidence_state") == "verified" else 400
+            if result.get("evidence_state") == "verified":
+                status = 200
+            elif result.get("reason") in ("entity_not_on_flow", "explanation_not_grounded"):
+                status = 422
+            else:
+                status = 400
             self._send_json(status, result)
             return
 

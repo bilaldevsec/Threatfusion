@@ -1380,6 +1380,11 @@ a:hover {
   font-size: 0.8rem;
 }
 
+#analystRationale,
+#contextMemoryRule {
+  min-height: 76px;
+}
+
 .demo-panel label,
 .hero-investor-card label {
   display: block;
@@ -1577,6 +1582,12 @@ a:hover {
   background: #090D16;
   color: #79c0ff;
   margin-right: 0.25rem;
+}
+
+.clean-study-label {
+  font-family: var(--font-mono);
+  color: #79c0ff;
+  font-size: 0.8rem;
 }
 
 .alert-title {

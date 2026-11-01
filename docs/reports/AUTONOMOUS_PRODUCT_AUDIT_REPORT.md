@@ -1,0 +1,95 @@
+# ThreatFusion Autonomous Product Audit Report
+
+**Audit Timestamp:** `2026-11-01T10:50:43.559056+00:00`
+**Repository Branch:** `gemini/product-20260924`
+**Git Commit HEAD:** `5204e50953384c09e5b1722f3fe6760cfbd28a6d`
+**Overall Decision Verdict:** **`GO`**
+
+---
+
+## Executive Summary
+
+| Audit Suite | Scope | Status | Result Summary |
+| :--- | :--- | :--- | :--- |
+| **1. Red-Team Adversarial Suite** | Probes 1–8 Refusals & Identity Guards | `PASSED` | 8/8 Adversarial Red-Team Probes Passed |
+| **2. Jury Governance Suite** | B0–B6, Repo Truth, Gate G9 AST, Models, Section 8 | `PASSED` | All 7 Governance Gates Verified GO |
+| **3. Investor E2E Suite** | Live Range, Suricata Ingestion, Screenshots | `PASSED` | E2E Scan & Screenshots Verified |
+
+---
+
+## 1. Red-Team Adversarial Suite Results
+
+| Probe ID | Test Description | Expected Status | Status | Evidence Detail |
+| :--- | :--- | :---: | :---: | :--- |
+| **Probe 1** | Unapproved SOAR Playbook Dispatch Guard | `HTTP 403` | **`PASS`** | [PASS] unapproved dispatch: HTTP 403 playbook_not_approved |
+| **Probe 2** | Forged HMAC Signature Callback Guard | `HTTP 403` | **`PASS`** | [PASS] forged HMAC: HTTP 403 |
+| **Probe 3** | RFC1918 Private IP Intelligence Lookup Guard | `HTTP 422` | **`PASS`** | [PASS] private IP: HTTP 422 |
+| **Probe 4** | Hallucinated Explanation Handoff Grounding Guard | `HTTP 400` | **`PASS`** | [PASS] hallucinated handoff: HTTP 400 explanation_not_grounded |
+| **Probe 5** | Unenrolled Identity Local Triage Guard | `HTTP 200` | **`PASS`** | [PASS] unenrolled identity: HTTP 200 unverified_local_label |
+| **Probe 6** | Remote Sensor Bearer Token Auth Guard | `HTTP 401` | **`PASS`** | HTTP 401 sensor_ingest_unauthorized; live_flows count=0 |
+| **Probe 7** | Context Memory Ungrounded Entity Guard | `HTTP 422` | **`PASS`** | HTTP 422 explanation_not_grounded; context_memory count=0 |
+| **Probe 8** | Operator Identity Verification Guard | `X.509/mTLS` | **`PASS`** | analyst_a identity_verified=False (unverified_local_label); lab_operator identity_verified=True (verified_operator, cert_prefix=44fb944c09df1bbf) |
+
+---
+
+## 2. Jury Governance & Integrity Audit Results
+
+### A. Protocol 0 Boundary Preflight (B0 through B6)
+- **Decision Verdict:** `GO`
+- **Findings Count:** `0`
+- **B0–B6 Checks:** Active and protected workspace isolation, clean symlinks, venv isolation, git alternates clean, runtime code zero literal leaks, and sys.path isolation verified.
+
+### B. Deterministic Zero-Trust Repo Truth Audit
+- **Integrity Decision:** `GO`
+- **Receipt Digest:** `0bdfdd0a11037ea4b3d11f3fca86a7febf161c1f1222c6a4e3d1c058c5e64869`
+- **All 7 Truth Checks Passed:** `True`
+
+### C. Gate G9 AST Import-Graph Isolation
+- **Status:** `PASS (Decoupled)`
+- **Advisory Patterns in Stages 1–4:** Zero (`threatfusion.advisory`, `gemini_client`, `explanation_engine`, `chromadb` completely absent from Stage 1–4 AST).
+
+### D. Frozen Model Artifact SHA-256 Invariance
+| Model Family | Rel Path | Expected SHA-256 | Actual SHA-256 | Verified |
+| :--- | :--- | :--- | :--- | :---: |
+| **Random Forest** | `artifacts/models/network_random_forest_baseline/full-network-random-forest-6d69c72-v1/random_forest.joblib` | `bd2853a6f9d7f650...` | `bd2853a6f9d7f650...` | **`PASS`** |
+| **Logistic Regression** | `artifacts/models/network_logistic_baseline/full-network-logistic-5e70ed9-v1/logistic_regression.joblib` | `2cf4de6686d937c4...` | `2cf4de6686d937c4...` | **`PASS`** |
+| **Autoencoder v2** | `artifacts/models/network_autoencoder/full-benign-autoencoder-2a51c94-v2/autoencoder_state.pt` | `c8675d13869308ba...` | `c8675d13869308ba...` | **`PASS`** |
+| **Rate-Log1p Candidate** | `artifacts/models/network_rate_log1p_autoencoder/rate-log1p-autoencoder-b5e6e5d-v1/autoencoder_state.pt` | `1d02e5bba556cb28...` | `1d02e5bba556cb28...` | **`PASS`** |
+
+### E. Section 8 Runtime Lock & Canonical Recall String
+- **`production_fusion_enabled`:** strictly `False`. Passing `True` to risk evaluators or queue rankers raises `ValueError` (Fail-Closed).
+- **Canonical Recall Badge:** `+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)` verified exact match in python advisory engine and `frontend/index.html`.
+
+### F. Issue Register Honesty (TF-008 through TF-011 strictly OPEN)
+| Issue ID | Status | Title / Description |
+| :--- | :---: | :--- |
+| **TF-008** | `OPEN` | Independent Model Benchmark Beyond Inspected January/February UNSW Splits |
+| **TF-009** | `OPEN` | Live Analyst Cohort Workload Trial (>=10 trials, empirical MTTR/FPR study) |
+| **TF-010** | `OPEN` | Official FAST-NUCES FYP-II Jury Defense Rubric & Signed Evaluation Alignment |
+| **TF-011** | `OPEN` | Live Suricata / Enterprise SIEM Cloud Production Deployment |
+
+---
+
+## 3. Investor End-to-End Suite Results
+- **Execution Status:** `PASSED`
+
+| Step | Status | Details |
+| :--- | :---: | :--- |
+| `run_full_range_demo_up` | `PASS` | Analyst URL: http://127.0.0.1:8766/
+Suricata engine started. Follower pid 72165. |
+| `run_full_range_demo_scan` | `PASS` | n_ingested",
+  "removed_noise": 0,
+  "ingested": true,
+  "flow_id": 6,
+  "src_en |
+| `verify_flow_ingestion` | `PASS` | Ingested 6 flows across 6 campaigns |
+| `capture_demo_screenshots` | `PASS` | ome/muhammad-bilal/projects/threatfusion-gemini/docs/screenshots/04_n8n_soar_cal |
+| `run_full_range_demo_down` | `PASS` |  |
+
+---
+
+## Cryptographic Ground-Truth Certification
+
+This audit report was autonomously generated by `scripts/run_autonomous_product_audit.py` on `2026-11-01T10:50:43.559056+00:00`.
+All model weights, runtime AST import graphs, boundary parameters, and refusal handlers were evaluated deterministically.
+Overall Audit Decision: **`GO`**.

@@ -64,7 +64,7 @@ cmd_up() {
   if ss -ltn | awk '{print $4}' | grep -Eq "(^|:)${PORT}$"; then
     die "port ${PORT} is already in use"
   fi
-  env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 \
+  nohup env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 \
     "$PYTHON" "$SERVER" --bind 0.0.0.0 --port "$PORT" \
     >"${DEMO_DIR}/console.log" 2>&1 &
   echo $! >"$CONSOLE_PIDFILE"
@@ -89,7 +89,7 @@ cmd_up() {
     sleep 2
   done
   [[ "$engine" == 1 ]] || die "Suricata did not log Engine started within 120s"
-  env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 \
+  nohup env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 \
     "$PYTHON" "${ROOT}/scripts/follow_suricata_eve.py" \
     >"$FOLLOWER_LOG" 2>&1 &
   echo $! >"$FOLLOWER_PIDFILE"

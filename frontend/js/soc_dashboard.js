@@ -702,15 +702,37 @@
     return { key: 'info', label: 'Informational' };
   }
 
+  function isMissingEndpoint(val) {
+    if (!val) return true;
+    const str = String(val).trim();
+    return str === '' || str === 'not recorded' || str === 'not-recorded';
+  }
+
   function alertTitle(inc) {
-    const src = inc.provenance && inc.provenance.srcIp ? inc.provenance.srcIp : 'not recorded';
-    const dst = inc.provenance && inc.provenance.dstIp ? inc.provenance.dstIp : 'not recorded';
-    const port = inc.provenance && inc.provenance.dstPort ? inc.provenance.dstPort : '';
-    const proto = String((inc.provenance && inc.provenance.proto) || 'flow').toUpperCase();
-    if (src !== 'not recorded' && dst !== 'not recorded') {
+    if (!inc) return '';
+    const isUnsw = (inc.dataset && inc.dataset.sourceLabel === 'recorded_unsw_nb15') || (inc.sourceLabel === 'recorded_unsw_nb15');
+    const src = (inc.provenance && inc.provenance.srcIp)
+      || (inc.dataset && (inc.dataset.src_entity_id || inc.dataset.srcEntityId))
+      || (typeof inc.getAttribute === 'function' && inc.getAttribute('data-src_entity_id'))
+      || inc.src_entity_id
+      || inc.srcIp
+      || '';
+    const dst = (inc.provenance && inc.provenance.dstIp)
+      || (inc.dataset && (inc.dataset.dst_entity_id || inc.dataset.dstEntityId))
+      || (typeof inc.getAttribute === 'function' && inc.getAttribute('data-dst_entity_id'))
+      || inc.dst_entity_id
+      || inc.dstIp
+      || '';
+
+    if (isUnsw && (isMissingEndpoint(src) || isMissingEndpoint(dst))) {
+      return 'UNSW-NB15 Recorded Study Flow #' + (inc.dataset && inc.dataset.id ? inc.dataset.id : (inc.flow_id || inc.flowId || inc.id || ''));
+    }
+    if (!isMissingEndpoint(src) && !isMissingEndpoint(dst)) {
+      const port = (inc.provenance && inc.provenance.dstPort) || (inc.dataset && inc.dataset.port) || '';
+      const proto = String((inc.provenance && inc.provenance.proto) || (inc.dataset && inc.dataset.proto) || 'flow').toUpperCase();
       return proto + ' probe ' + src + ' -> ' + dst + (port ? ':' + port : '');
     }
-    return inc.advisory && inc.advisory.summaryHeadline ? inc.advisory.summaryHeadline : String(inc.id);
+    return inc.advisory && inc.advisory.summaryHeadline ? inc.advisory.summaryHeadline : String((inc.dataset && inc.dataset.id) || inc.id || '');
   }
 
   function updatePriorityCounts(rows) {
@@ -809,20 +831,48 @@
   function appendIncidentItem(listEl, inc) {
       const itemEl = document.createElement('tr');
       itemEl.className = 'incident-item' + (inc.id === selectedIncidentId ? ' selected' : '');
-      itemEl.dataset.id = inc.id;
-      itemEl.dataset.sourceLabel = inc.sourceLabel || '';
+      const incId = (inc.dataset && inc.dataset.id) || inc.id || '';
+      const sourceLabel = (inc.dataset && inc.dataset.sourceLabel) || inc.sourceLabel || '';
+      const rawSrc = (inc.dataset && (inc.dataset.src_entity_id || inc.dataset.srcEntityId))
+        || inc.src_entity_id
+        || (inc.provenance && inc.provenance.srcIp)
+        || '';
+      const rawDst = (inc.dataset && (inc.dataset.dst_entity_id || inc.dataset.dstEntityId))
+        || inc.dst_entity_id
+        || (inc.provenance && inc.provenance.dstIp)
+        || '';
+
+      itemEl.dataset.id = incId;
+      itemEl.dataset.sourceLabel = sourceLabel;
+      itemEl.dataset.src_entity_id = rawSrc;
+      itemEl.dataset.dst_entity_id = rawDst;
+      itemEl.dataset.srcEntityId = rawSrc;
+      itemEl.dataset.dstEntityId = rawDst;
+      itemEl.setAttribute('data-src_entity_id', rawSrc);
+      itemEl.setAttribute('data-dst_entity_id', rawDst);
+
       const priority = priorityFor(inc);
       const observed = typeof inc.observedAt === 'string' ? inc.observedAt.replace('T', ' ').substring(0, 19) : '';
-      const src = inc.provenance && inc.provenance.srcIp ? inc.provenance.srcIp : 'not recorded';
-      const dst = inc.provenance && inc.provenance.dstIp ? inc.provenance.dstIp : 'not recorded';
+      const src = inc.provenance && inc.provenance.srcIp ? inc.provenance.srcIp : (rawSrc || 'not recorded');
+      const dst = inc.provenance && inc.provenance.dstIp ? inc.provenance.dstIp : (rawDst || 'not recorded');
       const malicious = inc.decision === 'Attack';
       const triage = inc.triageState && inc.triageState !== 'unreviewed' ? inc.triageState : 'Open';
+      const title = alertTitle(inc);
+
+      const isUnsw = (inc.dataset && inc.dataset.sourceLabel === 'recorded_unsw_nb15') || (inc.sourceLabel === 'recorded_unsw_nb15');
+      const endpointsMissing = isMissingEndpoint(src) || isMissingEndpoint(dst);
+      const cleanStudyLabel = 'UNSW-NB15 Recorded Study Flow #' + (inc.dataset && inc.dataset.id ? inc.dataset.id : (inc.flow_id || inc.flowId || inc.id || ''));
+
+      const entitiesHtml = (isUnsw && endpointsMissing)
+        ? '<span class="clean-study-label">' + escapeHtml(cleanStudyLabel) + '</span>'
+        : '<code class="entity-pill">' + escapeHtml(src) + '</code><code class="entity-pill">' + escapeHtml(dst) + '</code>';
+
       itemEl.innerHTML = ''
         + '<td><span class="priority-pill priority-' + priority.key + '">' + priority.label + '</span></td>'
         + '<td>' + escapeHtml(observed) + ' UTC</td>'
         + '<td><code>INV-' + escapeHtml(inc.flowId || inc.id) + '</code><div><code>' + escapeHtml(inc.id) + '</code></div></td>'
-        + '<td><span class="decision-pill ' + (malicious ? 'decision-malicious' : 'decision-benign') + '">' + (malicious ? 'MALICIOUS' : 'BENIGN') + '</span><span class="alert-title">' + escapeHtml(alertTitle(inc)) + '</span></td>'
-        + '<td><code class="entity-pill">' + escapeHtml(src) + '</code><code class="entity-pill">' + escapeHtml(dst) + '</code></td>'
+        + '<td><span class="decision-pill ' + (malicious ? 'decision-malicious' : 'decision-benign') + '">' + (malicious ? 'MALICIOUS' : 'BENIGN') + '</span><span class="alert-title">' + escapeHtml(title) + '</span></td>'
+        + '<td>' + entitiesHtml + '</td>'
         + '<td>' + escapeHtml(sourceDisplayName(inc.sourceLabel)) + '</td>'
         + '<td>' + escapeHtml(triage) + ' <span class="priority-pill priority-info">' + escapeHtml(inc.analystVerdict || 'no verdict') + '</span></td>';
       itemEl.addEventListener('click', () => {
@@ -1638,6 +1688,9 @@
       id: 'live_flow:' + flow.flow_id,
       live: true,
       flowId: flow.flow_id,
+      flow_id: flow.flow_id,
+      src_entity_id: flow.src_entity_id || '',
+      dst_entity_id: flow.dst_entity_id || '',
       sourceEventId: flow.source_label || 'live_flow',
       sourceLabel: flow.source_label || 'live_flow',
       scenarioLabel: scenarioLabelFromTitle(flow),
