@@ -39,11 +39,11 @@
         <div class="header-telemetry">
           <span class="badge badge-auth">mTLS 1.3 Active</span>
           <span class="badge badge-terminal">Air-Gapped Local</span>
-          <span class="badge badge-role">Audit Chain: Intact</span>
+          <span class="badge badge-role" id="headerChainBadge" data-evidence-state="unavailable">Playbook hash chain: unavailable</span>
           <span id="operatorProfileName">Muhammad Bilal (Triage Lead)</span>
-          <span class="badge" id="operatorIdentityBadge" data-evidence-state="unavailable">unverified local label</span>
+          <span class="badge badge-neutral" id="operatorIdentityBadge" data-evidence-state="unavailable">unverified local label</span>
           <span class="badge" id="copilotProviderBadge" data-evidence-state="unavailable">AI Copilot: Local Air-Gapped Engine</span>
-          <span id="liveClock">2026-10-19 22:30:00 UTC</span>
+          <span id="liveClock">UTC</span>
           <button id="btnOpenLabDrawer" class="btn" type="button">Lab Range &amp; Simulation Controls</button>
         </div>
       </header>
@@ -138,27 +138,39 @@
               <span class="badge" data-evidence-state="unavailable" id="groundedBadge">Grounded evidence: waiting for a stored flow</span>
               <span class="badge badge-rf-confidence">Primary: Frozen RF (95.27%)</span>
               <span class="badge badge-secondary-anomaly">Secondary: v2 AE Ranker</span>
-              <label for="analystVerdictSelect">Verdict</label>
-              <select id="analystVerdictSelect">
-                <option value="true_positive">true_positive</option>
-                <option value="false_positive">false_positive</option>
-                <option value="inconclusive">inconclusive</option>
-              </select>
-              <label for="caseAssignee">Assignee</label>
-              <input id="caseAssignee" type="text" value="">
-              <label for="reviewStatusSelect">Review</label>
-              <select id="reviewStatusSelect">
-                <option value="unassigned">unassigned</option>
-                <option value="in_review">in_review</option>
-                <option value="reviewed">reviewed</option>
-              </select>
-              <button id="btnSaveVerdict" type="button">Save analyst verdict</button>
-              <button id="btnSaveAssignment" type="button">Save assignment</button>
-              <button id="btnAcknowledge" type="button">Acknowledge</button>
-              <button id="btnEscalate" type="button">Escalate</button>
-              <button id="btnDismiss" type="button">Dismiss</button>
-              <button class="btn btn-approve" id="topBtnApproveSoar" type="button">Approve Playbook</button>
-              <button class="btn" id="btnIsolateAttacker" type="button">Isolate Attacker</button>
+              <div class="action-group" data-action-group="primary">
+                <span class="action-group-label">Primary</span>
+                <label for="analystVerdictSelect">Verdict</label>
+                <select id="analystVerdictSelect">
+                  <option value="">— Select Verdict —</option>
+                  <option value="true_positive">true_positive</option>
+                  <option value="false_positive">false_positive</option>
+                  <option value="inconclusive">inconclusive</option>
+                </select>
+                <label for="caseAssignee">Assignee</label>
+                <input id="caseAssignee" type="text" value="">
+                <label for="reviewStatusSelect">Review</label>
+                <select id="reviewStatusSelect">
+                  <option value="unassigned">unassigned</option>
+                  <option value="in_review">in_review</option>
+                  <option value="reviewed">reviewed</option>
+                </select>
+                <button id="btnSaveVerdict" type="button">Save Verdict</button>
+                <button id="btnSaveContextMemory" type="button">Save Context Memory</button>
+                <button id="btnSaveAssignment" type="button">Save assignment</button>
+              </div>
+              <div class="action-group" data-action-group="triage">
+                <span class="action-group-label">Triage</span>
+                <button id="btnAcknowledge" type="button">Acknowledge</button>
+                <button id="btnEscalate" type="button">Escalate</button>
+                <button id="btnDismiss" type="button">Dismiss</button>
+              </div>
+              <div class="action-group" data-action-group="response">
+                <span class="action-group-label">Response</span>
+                <button class="btn btn-approve" id="topBtnApproveSoar" type="button">Approve Playbook</button>
+                <button class="btn" id="btnIsolateAttacker" type="button">Isolate Attacker</button>
+                <button id="btnRollbackRange" type="button">Rollback</button>
+              </div>
             </div>
           </div>
           <nav class="inspector-tab-nav" aria-label="Investigation Inspector Tabs">
@@ -178,21 +190,15 @@
                     <div id="inspectorSensorLine">Suricata: waiting</div>
                     <div id="inspectorForestLine">Frozen forest: waiting</div>
                     <div id="inspectorScenarioLabel">scenario label waiting</div>
-                    <div><b>Affected assets:</b> <span id="inspectorAssets">not recorded</span></div>
+                    <div><b>Affected assets:</b> <span id="inspectorAssets">endpoints unavailable</span></div>
                     <label for="liveCopilotQuestion">Advisory question</label>
                     <input id="liveCopilotQuestion" type="text" value="command and control beacon">
                     <button id="btnLiveCopilot" type="button">Ask the advisory copilot</button>
+                    <div id="advisoryProgress" hidden>Advisory request running</div>
                     <div id="liveCopilotAnswer" data-evidence-state="unavailable"></div>
                   </article>
                   <article class="card" style="background: #111827;">
                     <h3>Top Findings</h3>
-                    <ol class="finding-list">
-                      <li>Feature contract valid for the stored 14-feature row</li>
-                      <li>Frozen RF score and SHA-256 digest bd2853a6</li>
-                      <li>Dual-window 30.0s burst and 600.0s campaign status</li>
-                      <li>MISP RFC1918 guard result</li>
-                      <li>Post-score ChromaDB MITRE and CVE candidate lookup</li>
-                    </ol>
                     <div id="glassBoxChecklist" data-evidence-state="unavailable">Glass-box checklist waiting for a stored flow.</div>
                   </article>
                   <article class="card" id="contextMemoryPanel" data-context-memory-panel style="background: #111827;">
@@ -200,7 +206,6 @@
                     <div id="contextMemoryList" data-context-memory-list data-evidence-state="unavailable">No institutional memory stored for this flow.</div>
                     <label for="contextMemoryRule">Expected behavior rule</label>
                     <input id="contextMemoryRule" type="text" value="">
-                    <button id="btnSaveContextMemory" type="button">Save context memory</button>
                   </article>
                 </div>
                 <aside class="detail-side">
@@ -211,9 +216,9 @@
                     <div id="analystVerdictDisplay" data-evidence-state="unavailable">No analyst verdict stored.</div>
                     <label for="analystRationale">Grounded rationale</label>
                     <textarea id="analystRationale" rows="3" placeholder="Stored separately from the frozen Random Forest decision. An address must already be on this flow."></textarea>
+                    <div id="citedRationale" data-evidence-state="unavailable">unavailable</div>
                     <div id="caseAssignmentDisplay" data-evidence-state="unavailable">No assignee stored.</div>
                     <div id="inspectorFusionNote">production_fusion_enabled is false. The autoencoder does not decide this alert. Containment stays unauthorized.</div>
-                    <div class="badge badge-secondary-anomaly">+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)</div>
                   </article>
                   <article class="card" style="background: #111827;">
                     <h3>Containment &amp; SOAR Actions</h3>
@@ -224,11 +229,10 @@
                       <li>
                         <button id="btnDispatchCallback" type="button">2. Dispatch via Live n8n Container</button>
                         <div><b>SOAR path:</b> <span id="inspectorExecutionPath">not dispatched</span></div>
-                        <div><b>Callback:</b> <span id="inspectorCallback">not recorded</span></div>
+                        <div><b>Callback:</b> <span id="inspectorCallback" data-evidence-state="unavailable">Callback receipt: not recorded</span></div>
                       </li>
                       <li>
                         <button id="btnContainRange" type="button">3. Isolate Attacker (172.29.0.10) in Victim Firewall</button>
-                        <button id="btnRollbackRange" type="button">Rollback</button>
                         <span class="badge" id="rangeConnectivityBadge" data-evidence-state="unavailable">172.29.0.10 -&gt; 172.29.0.20:80: waiting for a probe</span>
                       </li>
                     </ol>
@@ -335,7 +339,7 @@
           <aside id="graphNodePopover" class="graph-popover is-open" role="dialog" aria-label="Selected Node Inspector">
             <h3>Selected Node Inspector</h3>
             <strong>Frozen RF bd2853a6</strong>
-            <div><span class="status-dot status-verified"></span>Verified</div>
+            <div><span class="status-dot status-pending"></span>unavailable</div>
             <p>Input: the selected stored flow.</p>
             <p>Rule: forest uses only stored fields.</p>
             <p>Output: Frozen Random Forest decision for the selected flow. production_fusion_enabled is false.</p>
@@ -402,22 +406,25 @@
                 <svg viewBox="0 0 120 120" aria-label="Urgent ring">
                   <circle class="donut-track" cx="60" cy="60" r="42"></circle>
                   <circle class="donut-value donut-urgent" id="donutUrgent" cx="60" cy="60" r="42"></circle>
+                  <text class="donut-count" id="donutUrgentCount" x="60" y="66" text-anchor="middle">0</text>
                 </svg>
-                <figcaption>Urgent <strong id="donutUrgentCount">0</strong></figcaption>
+                <figcaption>Urgent</figcaption>
               </figure>
               <figure class="donut">
                 <svg viewBox="0 0 120 120" aria-label="Notable ring">
                   <circle class="donut-track" cx="60" cy="60" r="42"></circle>
                   <circle class="donut-value donut-notable" id="donutNotable" cx="60" cy="60" r="42"></circle>
+                  <text class="donut-count" id="donutNotableCount" x="60" y="66" text-anchor="middle">0</text>
                 </svg>
-                <figcaption>Notable <strong id="donutNotableCount">0</strong></figcaption>
+                <figcaption>Notable</figcaption>
               </figure>
               <figure class="donut">
                 <svg viewBox="0 0 120 120" aria-label="Informational ring">
                   <circle class="donut-track" cx="60" cy="60" r="42"></circle>
                   <circle class="donut-value donut-info" id="donutInfo" cx="60" cy="60" r="42"></circle>
+                  <text class="donut-count" id="donutInfoCount" x="60" y="66" text-anchor="middle">0</text>
                 </svg>
-                <figcaption>Informational <strong id="donutInfoCount">0</strong></figcaption>
+                <figcaption>Informational</figcaption>
               </figure>
             </div>
           </article>

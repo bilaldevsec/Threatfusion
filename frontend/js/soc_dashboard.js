@@ -590,6 +590,8 @@
   }
 
   function initApp() {
+    renderLiveClock();
+    setInterval(renderLiveClock, 1000);
     renderIncidentQueue();
     renderForensicDrawer();
     initWalkthroughTimeline();
@@ -702,15 +704,67 @@
     return { key: 'info', label: 'Informational' };
   }
 
+  const UNSW_ENDPOINT_CHIP = 'Dataset flow (UNSW-NB15) · endpoints not recorded';
+  const CONTAINMENT_DISABLED_TITLE = 'Containment disabled: Flow scored Benign by Frozen RF';
+
   function isMissingEndpoint(val) {
     if (!val) return true;
     const str = String(val).trim();
     return str === '' || str === 'not recorded' || str === 'not-recorded';
   }
 
+  function isRecordedUnsw(inc) {
+    return !!inc && (
+      (inc.dataset && inc.dataset.sourceLabel === 'recorded_unsw_nb15')
+      || inc.sourceLabel === 'recorded_unsw_nb15'
+    );
+  }
+
+  function studyFlowTitle(inc) {
+    const id = (inc.dataset && inc.dataset.id) || inc.flow_id || inc.flowId || inc.id || '';
+    return 'UNSW-NB15 Recorded Study Flow #' + id;
+  }
+
+  function formatRfPercent(score) {
+    const value = Number(score);
+    if (!Number.isFinite(value)) return 'unavailable';
+    return (value * 100).toFixed(1) + '%';
+  }
+
+  function formatDisplayUtc(value) {
+    const raw = String(value || '').trim();
+    const match = raw.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
+    if (!match) return raw;
+    return match[1] + ' ' + match[2] + ' UTC';
+  }
+
+  function formatLiveClock(date) {
+    const iso = date.toISOString();
+    return iso.slice(0, 10) + ' ' + iso.slice(11, 19) + ' UTC';
+  }
+
+  function renderLiveClock() {
+    const node = document.getElementById('liveClock');
+    if (node) node.textContent = formatLiveClock(new Date());
+  }
+
+  function rfDecisionLabel(inc) {
+    const token = inc && (inc.decision === 'Attack' || inc.decision === 'Benign')
+      ? inc.decision
+      : String((inc && inc.decision) || 'withheld');
+    if (token === 'Attack' || token === 'Benign') return token + ' ' + formatRfPercent(inc.uncalibratedScore);
+    return token;
+  }
+
+  function mispGuardLabel(status) {
+    if (status === 422 || status === '422' || String(status).indexOf('422') !== -1) {
+      return 'RFC1918 Guard: External Lookup Skipped (Pass)';
+    }
+    return status == null ? '' : String(status);
+  }
+
   function alertTitle(inc) {
     if (!inc) return '';
-    const isUnsw = (inc.dataset && inc.dataset.sourceLabel === 'recorded_unsw_nb15') || (inc.sourceLabel === 'recorded_unsw_nb15');
     const src = (inc.provenance && inc.provenance.srcIp)
       || (inc.dataset && (inc.dataset.src_entity_id || inc.dataset.srcEntityId))
       || (typeof inc.getAttribute === 'function' && inc.getAttribute('data-src_entity_id'))
@@ -724,15 +778,15 @@
       || inc.dstIp
       || '';
 
-    if (isUnsw && (isMissingEndpoint(src) || isMissingEndpoint(dst))) {
-      return 'UNSW-NB15 Recorded Study Flow #' + (inc.dataset && inc.dataset.id ? inc.dataset.id : (inc.flow_id || inc.flowId || inc.id || ''));
+    if (isRecordedUnsw(inc) && (isMissingEndpoint(src) || isMissingEndpoint(dst))) {
+      return studyFlowTitle(inc);
     }
     if (!isMissingEndpoint(src) && !isMissingEndpoint(dst)) {
       const port = (inc.provenance && inc.provenance.dstPort) || (inc.dataset && inc.dataset.port) || '';
       const proto = String((inc.provenance && inc.provenance.proto) || (inc.dataset && inc.dataset.proto) || 'flow').toUpperCase();
       return proto + ' probe ' + src + ' -> ' + dst + (port ? ':' + port : '');
     }
-    return inc.advisory && inc.advisory.summaryHeadline ? inc.advisory.summaryHeadline : String((inc.dataset && inc.dataset.id) || inc.id || '');
+    return inc.advisory && inc.advisory.summaryHeadline ? inc.advisory.summaryHeadline : studyFlowTitle(inc);
   }
 
   function updatePriorityCounts(rows) {
@@ -770,24 +824,37 @@
   }
 
   function graphStatus(inc, key) {
-    if (!inc) return { dot: 'status-pending', label: 'Pending', output: 'No stored flow is selected.' };
+    const unavailable = { dot: 'status-pending', label: 'unavailable', output: 'Stored evidence is unavailable for this node.' };
+    if (!inc) return { dot: 'status-pending', label: 'unavailable', output: 'No stored flow is selected.' };
     if (key === 'forest') {
-      return { dot: 'status-verified', label: 'Verified', output: 'Frozen RF decision ' + inc.decision + '.' };
+      if (inc.decision === 'Attack' || inc.decision === 'Benign') {
+        return { dot: 'status-verified', label: 'Verified', output: 'Frozen RF decision ' + inc.decision + '.' };
+      }
+      return unavailable;
     }
-    if (key === 'gemini') {
-      const live = document.getElementById('copilotProviderBadge');
-      const text = live ? live.textContent : '';
-      if (text.indexOf('Local') !== -1) return { dot: 'status-pending', label: 'Pending', output: 'Local air-gapped corpus. No live model key is in use.' };
-      return { dot: 'status-verified', label: 'Verified', output: text };
+    if (key === 'chain') {
+      if (verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256)) {
+        return { dot: 'status-verified', label: 'Verified', output: 'Playbook hash chain verified.' };
+      }
+      return unavailable;
     }
-    if (key === 'respond') {
-      if (inc.containmentState === 'applied') return { dot: 'status-verified', label: 'Verified', output: 'Victim firewall drop is applied for 172.29.0.10.' };
-      return { dot: 'status-pending', label: 'Pending', output: 'Containment has not been applied. execution_path=' + (inc.executionPath || 'not dispatched') + '.' };
+    if (key === 'chroma') {
+      if (verifyChromaRagHits(inc.chromaRagHits)) {
+        return { dot: 'status-verified', label: 'Verified', output: 'Stored ChromaDB hits passed the receipt check.' };
+      }
+      return unavailable;
     }
-    if (key === 'ground' && inc.analystRationale && inc.analystRationale.indexOf('203.0.113') !== -1) {
-      return { dot: 'status-refused', label: 'Refused', output: 'Groundedness refused an address that is not on the stored flow.' };
+    if (key === 'ground') {
+      const rationale = inc.analystRationale || '';
+      if (rationale && rationale.indexOf('203.0.113') !== -1) {
+        return { dot: 'status-refused', label: 'Refused', output: 'Groundedness refused an address that is not on the stored flow.' };
+      }
+      if (rationale) {
+        return { dot: 'status-verified', label: 'Verified', output: 'Stored rationale is present.' };
+      }
+      return unavailable;
     }
-    return { dot: 'status-verified', label: 'Verified', output: 'Stored field checked for ' + inc.id + '.' };
+    return unavailable;
   }
 
   function graphNodeLabel(node) {
@@ -852,35 +919,48 @@
       itemEl.setAttribute('data-dst_entity_id', rawDst);
 
       const priority = priorityFor(inc);
-      const observed = typeof inc.observedAt === 'string' ? inc.observedAt.replace('T', ' ').substring(0, 19) : '';
-      const src = inc.provenance && inc.provenance.srcIp ? inc.provenance.srcIp : (rawSrc || 'not recorded');
-      const dst = inc.provenance && inc.provenance.dstIp ? inc.provenance.dstIp : (rawDst || 'not recorded');
+      const observed = formatDisplayUtc(inc.observedAt);
+      const src = (inc.provenance && inc.provenance.srcIp) || rawSrc || '';
+      const dst = (inc.provenance && inc.provenance.dstIp) || rawDst || '';
       const malicious = inc.decision === 'Attack';
       const triage = inc.triageState && inc.triageState !== 'unreviewed' ? inc.triageState : 'Open';
       const title = alertTitle(inc);
-
-      const isUnsw = (inc.dataset && inc.dataset.sourceLabel === 'recorded_unsw_nb15') || (inc.sourceLabel === 'recorded_unsw_nb15');
       const endpointsMissing = isMissingEndpoint(src) || isMissingEndpoint(dst);
-      const cleanStudyLabel = 'UNSW-NB15 Recorded Study Flow #' + (inc.dataset && inc.dataset.id ? inc.dataset.id : (inc.flow_id || inc.flowId || inc.id || ''));
-
-      const entitiesHtml = (isUnsw && endpointsMissing)
-        ? '<span class="clean-study-label">' + escapeHtml(cleanStudyLabel) + '</span>'
-        : '<code class="entity-pill">' + escapeHtml(src) + '</code><code class="entity-pill">' + escapeHtml(dst) + '</code>';
+      const entitiesHtml = (isRecordedUnsw(inc) && endpointsMissing)
+        ? '<span class="entity-chip-muted">' + escapeHtml(UNSW_ENDPOINT_CHIP) + '</span>'
+        : (!isMissingEndpoint(src) && !isMissingEndpoint(dst)
+          ? '<code class="entity-pill">' + escapeHtml(src) + '</code><code class="entity-pill">' + escapeHtml(dst) + '</code>'
+          : '<span class="entity-chip-muted">endpoints unavailable</span>');
+      const fullId = String(inc.id || '');
+      const flowKey = inc.flowId || inc.flow_id || '';
+      const shortId = 'INV-' + (flowKey === '' ? fullId.slice(0, 7) : flowKey) + ' · ' + fullId.slice(0, 7) + '…';
+      const analystNote = inc.analystVerdict ? ' ' + inc.analystVerdict : '';
 
       itemEl.innerHTML = ''
         + '<td><span class="priority-pill priority-' + priority.key + '">' + priority.label + '</span></td>'
-        + '<td>' + escapeHtml(observed) + ' UTC</td>'
-        + '<td><code>INV-' + escapeHtml(inc.flowId || inc.id) + '</code><div><code>' + escapeHtml(inc.id) + '</code></div></td>'
+        + '<td>' + escapeHtml(observed) + '</td>'
+        + '<td><code title="' + escapeHtml(fullId) + '">' + escapeHtml(shortId) + '</code>'
+        + '<button type="button" class="copy-incident-id" data-full-id="' + escapeHtml(fullId) + '" title="' + escapeHtml(fullId) + '">Copy</button></td>'
         + '<td><span class="decision-pill ' + (malicious ? 'decision-malicious' : 'decision-benign') + '">' + (malicious ? 'MALICIOUS' : 'BENIGN') + '</span><span class="alert-title">' + escapeHtml(title) + '</span></td>'
         + '<td>' + entitiesHtml + '</td>'
         + '<td>' + escapeHtml(sourceDisplayName(inc.sourceLabel)) + '</td>'
-        + '<td>' + escapeHtml(triage) + ' <span class="priority-pill priority-info">' + escapeHtml(inc.analystVerdict || 'no verdict') + '</span></td>';
+        + '<td>' + escapeHtml(triage) + ' <span class="priority-pill priority-info">' + escapeHtml(rfDecisionLabel(inc)) + '</span>' + escapeHtml(analystNote) + '</td>';
       itemEl.addEventListener('click', () => {
         selectedIncidentId = inc.id;
         renderIncidentQueue();
         renderForensicDrawer();
         showSocView('detail');
       });
+      const copyButton = itemEl.querySelector('.copy-incident-id');
+      if (copyButton) {
+        copyButton.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const value = copyButton.getAttribute('data-full-id') || '';
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(value);
+          }
+        });
+      }
       listEl.appendChild(itemEl);
   }
 
@@ -895,9 +975,61 @@
     });
   }
 
+  function syncHeaderChainBadge(inc) {
+    const node = document.getElementById('headerChainBadge');
+    if (!node) return;
+    const chainOk = !!(inc && verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256));
+    if (chainOk) {
+      node.textContent = 'Playbook hash chain: verified';
+      node.setAttribute('data-evidence-state', 'verified');
+      return;
+    }
+    node.textContent = 'Playbook hash chain: unavailable';
+    node.setAttribute('data-evidence-state', 'unavailable');
+  }
+
+  function applyContainmentGuard(inc) {
+    const blocked = !!(inc && inc.decision === 'Benign');
+    ['topBtnApproveSoar', 'btnIsolateAttacker', 'btnGuidedApprove', 'btnContainRange'].forEach(id => {
+      const node = document.getElementById(id);
+      if (!node) return;
+      node.disabled = blocked;
+      if (blocked) node.title = CONTAINMENT_DISABLED_TITLE;
+      else node.removeAttribute('title');
+    });
+  }
+
+  function renderCitedRationale(inc) {
+    const node = document.getElementById('citedRationale');
+    if (!node) return;
+    const items = inc && inc.glassBox && Array.isArray(inc.glassBox.items) ? inc.glassBox.items : [];
+    const valid = {};
+    items.forEach((_, index) => { valid[String(index + 1)] = true; });
+    const text = inc && inc.analystRationale ? String(inc.analystRationale) : '';
+    const sentences = [];
+    let buffer = '';
+    for (let i = 0; i < text.length; i += 1) {
+      buffer += text.charAt(i);
+      const ch = text.charAt(i);
+      if (ch === '.' || ch === '!' || ch === '?') {
+        if (buffer.trim()) sentences.push(buffer.trim());
+        buffer = '';
+      }
+    }
+    if (buffer.trim()) sentences.push(buffer.trim());
+    const cited = sentences.filter(sentence => {
+      const matches = sentence.match(/\[E(\d+)\]/g) || [];
+      return matches.some(token => valid[token.slice(2, -1)] === true);
+    });
+    node.textContent = cited.length ? cited.join(' ') : 'unavailable';
+    node.setAttribute('data-evidence-state', 'unavailable');
+  }
+
   function syncLiveInspector(inc) {
     const title = document.getElementById('inspectorCaseTitle');
     const badge = document.getElementById('groundedBadge');
+    syncHeaderChainBadge(inc);
+    applyContainmentGuard(inc);
     if (!inc) {
       if (title) title.textContent = 'No stored campaign selected';
       if (badge) {
@@ -909,29 +1041,29 @@
       setInspectorText('inspectorSensorLine', 'Suricata: waiting');
       setInspectorText('inspectorForestLine', 'Frozen forest: waiting');
       setInspectorText('inspectorScenarioLabel', 'scenario label waiting');
-      setInspectorText('inspectorAssets', 'not recorded');
+      setInspectorText('inspectorAssets', 'endpoints unavailable');
       setInspectorText('inspectorTechnique', 'unavailable');
       setInspectorText('inspectorTactic', 'unavailable');
       setInspectorText('inspectorPlaybook', 'none');
-      setInspectorText('inspectorChain', 'unavailable');
-      setInspectorText('inspectorCallback', 'not recorded');
+      setInspectorText('inspectorChain', 'Playbook hash chain: unavailable');
+      setInspectorText('inspectorCallback', 'Callback receipt: not recorded');
       setInspectorText('inspectorExecutionPath', 'not dispatched');
       showOperatorStamp({ identity_verified: false, identity_label: 'unverified_local_label' });
       renderGlassBox(null);
+      renderCitedRationale(null);
       renderContextMemoryPanels(null);
       renderEvidenceLockerQueries(null);
       return;
     }
-    const score = Number(inc.uncalibratedScore);
-    const scoreText = Number.isFinite(score) ? (score * 100).toFixed(2) + '%' : 'unavailable';
+    const scoreText = formatRfPercent(inc.uncalibratedScore);
     const headline = inc.advisory && inc.advisory.summaryHeadline
       ? String(inc.advisory.summaryHeadline)
       : ((inc.live ? 'Stored flow ' : 'Recorded case ') + String(inc.id));
     if (title) title.textContent = headline;
     const conclusion = document.getElementById('conclusionCard');
     if (conclusion) conclusion.setAttribute('data-decision', String(inc.decision || 'withheld'));
-    const src = inc.provenance && inc.provenance.srcIp ? String(inc.provenance.srcIp) : 'not recorded';
-    const dst = inc.provenance && inc.provenance.dstIp ? String(inc.provenance.dstIp) : 'not recorded';
+    const src = inc.provenance && inc.provenance.srcIp ? String(inc.provenance.srcIp) : '';
+    const dst = inc.provenance && inc.provenance.dstIp ? String(inc.provenance.dstIp) : '';
     setInspectorText('inspectorDecision', String(inc.decision || 'withheld'));
     setInspectorText('inspectorScore', scoreText);
     const sensor = inc.sensorObservation;
@@ -949,11 +1081,17 @@
       setInspectorText('inspectorForestLine', 'Frozen forest: ' + String(inc.decision || 'withheld') + ', ' + scoreText + ', ' + (inc.scoreReason || 'unscored'));
       setInspectorText('inspectorScenarioLabel', 'no scenario label');
     }
-    setInspectorText('inspectorAssets', src + ' -> ' + dst);
+    if (isRecordedUnsw(inc) && (isMissingEndpoint(src) || isMissingEndpoint(dst))) {
+      setInspectorText('inspectorAssets', UNSW_ENDPOINT_CHIP);
+    } else if (!isMissingEndpoint(src) && !isMissingEndpoint(dst)) {
+      setInspectorText('inspectorAssets', src + ' -> ' + dst);
+    } else {
+      setInspectorText('inspectorAssets', 'endpoints unavailable');
+    }
     const chainOk = verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256);
     if (badge) {
-      badge.textContent = chainOk ? 'SOAR chain verified' : 'SOAR chain unavailable';
-      badge.setAttribute('data-evidence-state', chainOk ? 'verified' : 'unavailable');
+      badge.textContent = 'Grounded evidence: stored flow';
+      badge.setAttribute('data-evidence-state', 'unavailable');
     }
     const ragOk = verifyChromaRagHits(inc.chromaRagHits);
     if (ragOk) {
@@ -968,13 +1106,15 @@
     setInspectorText('inspectorPlaybook', playbook + ' / ' + state);
     const chainNode = document.getElementById('inspectorChain');
     if (chainNode) {
-      chainNode.textContent = chainOk ? 'Chain valid (SHA-256)' : 'unavailable';
+      chainNode.textContent = chainOk ? 'Playbook hash chain: verified' : 'Playbook hash chain: unavailable';
       chainNode.setAttribute('data-evidence-state', chainOk ? 'verified' : 'unavailable');
     }
     const signed = inc.live === true
       && typeof inc.callbackSignature === 'string'
       && SHA256_HEX_REGEX.test(inc.callbackSignature);
-    setInspectorText('inspectorCallback', signed ? inc.callbackSignature.slice(0, 16) : 'not recorded');
+    setInspectorText('inspectorCallback', signed ? 'Callback receipt: recorded' : 'Callback receipt: not recorded');
+    const callbackNode = document.getElementById('inspectorCallback');
+    if (callbackNode) callbackNode.setAttribute('data-evidence-state', 'unavailable');
     const executionPath = inc.executionPath === 'n8n_live_container'
       || inc.executionPath === 'local_contract_fallback'
       ? inc.executionPath
@@ -995,6 +1135,7 @@
       assignmentNode.setAttribute('data-evidence-state', inc.assigneeId ? 'verified' : 'unavailable');
     }
     renderGlassBox(inc.glassBox);
+    renderCitedRationale(inc);
     renderContextMemoryPanels(inc);
     renderEvidenceLockerQueries(inc);
   }
@@ -1030,7 +1171,7 @@
       if (query.query_id === 'destination_port_protocol_baseline') {
         const average = query.average_rf_attack_probability == null
           ? 'unavailable'
-          : Number(query.average_rf_attack_probability).toFixed(6);
+          : (Number(query.average_rf_attack_probability) * 100).toFixed(1) + '%';
         return '<div><b>Query 2 Destination Port &amp; Protocol Baseline:</b> count '
           + escapeHtml(String(query.flow_count)) + ', average RF probability ' + escapeHtml(average) + '</div>';
       }
@@ -1058,8 +1199,8 @@
       return;
     }
     node.innerHTML = items.map((item, index) => (
-      '<div class="finding-row"><span class="finding-num">' + (index + 1) + '</span> '
-      + escapeHtml(item.id + ': ' + item.status + (item.passed ? ' pass' : ' open'))
+      '<div class="finding-row"><span class="finding-num">[E' + (index + 1) + ']</span> '
+      + escapeHtml(String(item.id) + ': ' + String(item.status) + (item.passed ? ' pass' : ' open'))
       + '</div>'
     )).join('');
     const allKnown = items.every(item => item.status !== 'not_recorded' && item.status !== 'invalid' && item.status !== 'unscored');
@@ -1102,6 +1243,14 @@
     const recordedCaseId = signedLocalCallback
       ? inc.thehiveCaseId
       : ((inc.thehiveCaseRecord && inc.thehiveCaseRecord.case_id) || 'not recorded');
+    const srcShown = isMissingEndpoint(inc.provenance && inc.provenance.srcIp) ? '' : String(inc.provenance.srcIp);
+    const dstShown = isMissingEndpoint(inc.provenance && inc.provenance.dstIp) ? '' : String(inc.provenance.dstIp);
+    const assetLine = (isRecordedUnsw(inc) && (!srcShown || !dstShown))
+      ? UNSW_ENDPOINT_CHIP
+      : (srcShown && dstShown ? srcShown + ' -> ' + dstShown : 'endpoints unavailable');
+    const tupleLine = (srcShown && dstShown)
+      ? srcShown + ':' + inc.provenance.srcPort + ' -> ' + dstShown + ':' + inc.provenance.dstPort + ' (' + inc.provenance.proto + ')'
+      : assetLine;
 
     // Build Forensic Drawer HTML
     drawerEl.innerHTML = `
@@ -1113,7 +1262,7 @@
       <div class="tier-section" data-blast-ui-tier="unicorn-progressive-disclosure-v1">
         <div class="tier-header">
           <span class="tier-1-title">Tier 1: Primary Triage Signal (Decision Authority)</span>
-          <span class="badge badge-rf-confidence">Sole Authority: Random Forest (${(inc.uncalibratedScore * 100).toFixed(2)}%)</span>
+          <span class="badge badge-rf-confidence">Sole Authority: Random Forest (${formatRfPercent(inc.uncalibratedScore)})</span>
         </div>
         <div class="evidence-grid">
           <div class="evidence-cell">
@@ -1160,7 +1309,7 @@
         <div class="evidence-grid">
           <div class="evidence-cell">
             <span class="evidence-cell-label">SENSOR PROVENANCE & FLOW 5-TUPLE</span>
-            <span class="evidence-cell-val"><code>${escapeHtml(inc.provenance.srcIp)}:${inc.provenance.srcPort} -> ${escapeHtml(inc.provenance.dstIp)}:${inc.provenance.dstPort} (${inc.provenance.proto})</code></span>
+            <span class="evidence-cell-val"><code>${escapeHtml(tupleLine)}</code></span>
           </div>
           <div class="evidence-cell">
             <span class="evidence-cell-label">INCIDENT CORRELATION KEY</span>
@@ -1193,7 +1342,7 @@
           <span class="tier-3-title">Tier 3: Advisory Synthesis & Human-in-the-Loop SOAR Action</span>
           <div style="display: flex; gap: 0.4rem;">
             <span class="badge badge-soar-chain" data-evidence-state="${chainState}">
-              ${chainOk ? 'SOAR Chain: VERIFIED (SHA-256 Linked)' : 'SOAR Chain: UNAVAILABLE'}
+              ${chainOk ? 'Playbook hash chain: verified' : 'Playbook hash chain: unavailable'}
             </span>
             <span class="badge badge-chroma-rag" data-evidence-state="${ragState}">
               ${ragOk ? `ChromaDB RAG: ${inc.chromaRagHits.length} Hits Verified` : 'ChromaDB RAG: UNAVAILABLE'}
@@ -1246,7 +1395,7 @@
             Constitutional Policy: AI models are strictly advisory and forbidden from autonomous execution. Human analyst cryptographic authorization required.
           </div>
           <div class="btn-group">
-            <button class="btn btn-approve" id="btnApprovePlaybook" ${!(inc.live && inc.flowId && inc.soarRecord && inc.soarRecord.state === 'pending_approval') ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>
+            <button class="btn btn-approve" id="btnApprovePlaybook" ${inc.decision === 'Benign' ? 'disabled title="' + CONTAINMENT_DISABLED_TITLE + '" style="opacity:0.5;cursor:not-allowed;"' : (!(inc.live && inc.flowId && inc.soarRecord && inc.soarRecord.state === 'pending_approval') ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : '')}>
               3A. Approve Playbook (SHA-256 Chain)
             </button>
             <button class="btn btn-rollback" id="btnRollbackPlaybook" ${!inc.soarRecord || inc.soarRecord.state !== 'executed_simulated' ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>
@@ -1267,10 +1416,9 @@
           <div class="anatomy-block" data-anatomy-block="1">
             <h4>Block 1: Executive Summary</h4>
             <div><b>Risk Level:</b> <span class="badge badge-decision">${inc.uncalibratedScore >= 0.9 ? 'CRITICAL' : (inc.uncalibratedScore >= 0.7 ? 'HIGH' : 'MEDIUM')}</span></div>
-            <div><b>RF Confidence:</b> ${(inc.uncalibratedScore * 100).toFixed(2)}%</div>
+            <div><b>RF Confidence:</b> ${formatRfPercent(inc.uncalibratedScore)}</div>
             <div><b>Priority Rank:</b> #${inc.secondaryAe && inc.secondaryAe.status === 'ANOMALY_CONFIRMED' ? 1 : 2}</div>
-            <div style="margin-top: 0.25rem;"><span class="badge badge-secondary-anomaly">${EVAL_PACK_REV2.section8Lock.recallComparisonString}</span></div>
-            <div style="margin-top: 0.25rem;"><b>Affected Assets:</b> <code>${escapeHtml(inc.provenance.srcIp)}</code>, <code>${escapeHtml(inc.provenance.dstIp)}</code></div>
+            <div style="margin-top: 0.25rem;"><b>Affected Assets:</b> <code>${escapeHtml(assetLine)}</code></div>
           </div>
 
           <!-- Block 2: Attack Timeline -->
@@ -1278,7 +1426,7 @@
             <h4>Block 2: Attack Timeline</h4>
             <div><b>Window Type:</b> <span class="badge badge-corr">${inc.correlation ? escapeHtml(inc.correlation.windowType) : '30.0s_burst'}</span></div>
             <div><b>Correlated Flows:</b> ${liveCorrelationReport ? Number(liveCorrelationReport.correlated_flow_count || 0) : (inc.correlation ? inc.correlation.constituentAlerts : 1)}</div>
-            <div><b>Progression:</b> ${liveCorrelationReport ? 'Live unified timeline' : ('Ingest at ' + escapeHtml(inc.observedAt))}</div>
+            <div><b>Progression:</b> ${liveCorrelationReport ? 'Live unified timeline' : ('Ingest at ' + escapeHtml(formatDisplayUtc(inc.observedAt)))}</div>
             ${liveCorrelationReport ? ('<div data-live-timeline="true">' + liveTimelineRows(liveCorrelationReport) + '</div>') : (inc.live ? '<div><b>Byte Volume Delta:</b> not recorded on this flow</div>' : '<div><b>Byte Volume Delta:</b> +1,250 B &middot; <b>Packets:</b> 18</div>')}
           </div>
 
@@ -1298,11 +1446,11 @@
             <h4>Block 4: Cryptographic SOAR Status</h4>
             <div><b>Playbook:</b> <code>${inc.soarRecord ? escapeHtml(inc.soarRecord.playbookId) : 'pb-isolate-01'}</code></div>
             <div><b>State:</b> <span class="badge badge-state">${inc.soarRecord ? escapeHtml(inc.soarRecord.state) : 'pending_approval'}</span></div>
-            <div><b>Audit Chain:</b> <span class="badge" data-evidence-state="${chainState}">${chainOk ? 'Chain Valid (SHA-256)' : 'Chain Unavailable'}</span></div>
+            <div><b>Audit Chain:</b> <span class="badge" data-evidence-state="${chainState}">${chainOk ? 'Playbook hash chain: verified' : 'Playbook hash chain: unavailable'}</span></div>
             <div><b>TheHive case:</b> <code>${escapeHtml(recordedCaseId)}</code></div>
             <div><b>Callback MTTR:</b> ${inc.mttrSeconds === null || inc.mttrSeconds === undefined ? 'not recorded' : Number(inc.mttrSeconds).toFixed(3) + 's'}</div>
             <div><b>HMAC:</b> <code>${inc.callbackSignature && SHA256_HEX_REGEX.test(inc.callbackSignature) ? escapeHtml(inc.callbackSignature.substring(0, 16)) + '...' : 'none'}</code></div>
-            <div><b>HMAC Verified:</b> <span class="badge" data-evidence-state="${hiveState}">${(hiveOk || signedLocalCallback) ? 'Signed callback recorded' : 'Pending Authorization'}</span></div>
+            <div><b>HMAC Verified:</b> <span class="badge" data-evidence-state="unavailable">${signedLocalCallback ? 'Callback receipt: recorded' : 'Callback receipt: not recorded'}</span></div>
             <div><b>Execution path:</b> <code>${escapeHtml(inc.executionPath || 'not dispatched')}</code></div>
           </div>
         </div>
@@ -1702,8 +1850,8 @@
       modelArtifactSha256: flow.model_sha256 || EVAL_PACK_REV2.rfArtifactSha256,
       modelVersion: 'full-network-random-forest-6d69c72-v1',
       provenance: {
-        srcIp: flow.src_entity_id || 'not-recorded',
-        dstIp: flow.dst_entity_id || 'not-recorded',
+        srcIp: flow.src_entity_id || '',
+        dstIp: flow.dst_entity_id || '',
         srcPort: 0,
         dstPort: Number(flow.service_or_port) || 0,
         proto: flow.flow_protocol || 'flow'
@@ -1977,7 +2125,7 @@
       await refreshLiveCampaigns();
       const lines = (data.flows || []).map(flow => {
         const label = flow.scenario_label ? (' ' + flow.scenario_label) : '';
-        const guard = flow.misp_guard_status === 422 ? ', private IP refused HTTP 422' : '';
+        const guard = flow.misp_guard_status === 422 ? ', ' + mispGuardLabel(422) : '';
         const pct = Number.isFinite(Number(flow.rf_attack_probability))
           ? (Number(flow.rf_attack_probability) * 100).toFixed(1) + '%'
           : 'unavailable';
@@ -2028,10 +2176,12 @@
     const prefix = stamp.cert_sha256_prefix || stamp.certSha256Prefix || '';
     if (verified && label !== 'unverified_local_label' && operatorId === 'lab_operator' && prefix) {
       node.textContent = 'verified lab_operator ' + prefix;
+      node.classList.remove('badge-neutral');
       node.setAttribute('data-evidence-state', 'verified');
       return;
     }
     node.textContent = 'unverified local label';
+    node.classList.add('badge-neutral');
     node.setAttribute('data-evidence-state', 'unavailable');
   }
 
@@ -2192,10 +2342,10 @@
       body.innerHTML = assets.map(asset => (
         '<tr><td>' + escapeHtml(String(asset.entity_ip || '')) + '</td>'
         + '<td>' + escapeHtml(String(asset.classification || '')) + '</td>'
-        + '<td>' + escapeHtml(String(asset.first_seen_utc || '')) + '</td>'
-        + '<td>' + escapeHtml(String(asset.last_seen_utc || '')) + '</td>'
+        + '<td>' + escapeHtml(formatDisplayUtc(asset.first_seen_utc)) + '</td>'
+        + '<td>' + escapeHtml(formatDisplayUtc(asset.last_seen_utc)) + '</td>'
         + '<td>' + escapeHtml(String(asset.flow_count)) + '</td>'
-        + '<td>' + escapeHtml(String(asset.misp_guard_status)) + '</td>'
+        + '<td>' + escapeHtml(mispGuardLabel(asset.misp_guard_status)) + '</td>'
         + '<td>' + escapeHtml(String(asset.context_memory_count)) + '</td></tr>'
       )).join('');
       if (status) {
@@ -2543,6 +2693,8 @@
   async function askLiveCopilot() {
     const input = document.getElementById('liveCopilotQuestion');
     const question = input ? input.value : '';
+    const progress = document.getElementById('advisoryProgress');
+    if (progress) progress.hidden = false;
     try {
       const resp = await fetch('/api/v1/live/copilot', {
         method: 'POST',
@@ -2568,6 +2720,8 @@
       }
     } catch (err) {
       setLiveText('liveCopilotAnswer', 'Copilot unavailable.', 'unavailable');
+    } finally {
+      if (progress) progress.hidden = true;
     }
   }
 

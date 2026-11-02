@@ -1168,3 +1168,56 @@ def test_context_memory_evidence_locker_and_asset_inventory(tmp_path: Path, monk
     assert "/api/v1/live/context-memory" in script
     assert "/api/v1/live/assets" in script
     assert "Queries Run" in script
+
+
+def test_presentation_polish_contracts() -> None:
+    html = (REPO_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    script = (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")
+    recall = (
+        "+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)"
+    )
+    select = html.split('id="analystVerdictSelect"', 1)[1].split("</select>", 1)[0]
+    empty_option = '<option value="">— Select Verdict —</option>'
+    assert empty_option in select
+    assert select.index(empty_option) < select.index("true_positive")
+    assert "Containment disabled: Flow scored Benign by Frozen RF" in script
+    assert "inc.decision === 'Benign'" in script
+    start = html.index('id="headerChainBadge"')
+    tag = html[html.rfind("<", 0, start) : html.index(">", start) + 1]
+    assert 'data-evidence-state="unavailable"' in tag
+    assert "verified" not in tag
+    badge_fn = script.split("function syncHeaderChainBadge", 1)[1].split(
+        "function applyContainmentGuard", 1
+    )[0]
+    assert "verifySoarChain(" in badge_fn
+    verified_at = badge_fn.index("data-evidence-state', 'verified'")
+    assert badge_fn.rfind("verifySoarChain(", 0, verified_at) != -1
+    assert badge_fn.index("if (chainOk)") < verified_at
+    conclusion = html.split('id="conclusionCard"', 1)[1].split("</article>", 1)[0]
+    assert recall not in conclusion
+    hunter = html.split('data-soc-view="hunter"', 1)[1]
+    assert recall in hunter
+    assert "http://" not in html
+    assert "https://" not in html
+    assert (
+        "UNSW-NB15 and CIC byte layers are not interchangeable. "
+        "CIC is not a validated compatible external test."
+    ) in html
+    for element_id in (
+        "analystRationale",
+        "contextMemoryPanel",
+        "forensicDrawer",
+        "sourceQualification",
+        "liveSocConsole",
+        "inspectorCaseTitle",
+        "inspectorSensorLine",
+        "inspectorForestLine",
+        "btnReplayScenarios",
+        "queueSearch",
+        "liveHeroFlowCount",
+        "liveHeroBridgeCount",
+        "headerChainBadge",
+        "citedRationale",
+        "advisoryProgress",
+    ):
+        assert f'id="{element_id}"' in html

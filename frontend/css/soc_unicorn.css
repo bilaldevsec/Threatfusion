@@ -430,6 +430,12 @@ a:hover {
   color: #fff;
 }
 
+.badge-neutral {
+  background: #1f2937;
+  color: #cbd5e1;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+
 .badge-terminal {
   background: #6e7681;
   color: #fff;
@@ -1604,6 +1610,58 @@ a:hover {
   align-items: center;
 }
 
+.action-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: #090d16;
+}
+
+.action-group-label {
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8b949e;
+}
+
+.entity-chip-muted,
+.clean-study-label {
+  display: inline-block;
+  color: #8b949e;
+  background: #1f2937;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 0.12rem 0.45rem;
+  font-size: 0.75rem;
+}
+
+.copy-incident-id {
+  margin-left: 0.35rem;
+  background: #1f2937;
+  color: #e6edf3;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  padding: 0.05rem 0.35rem;
+  font: inherit;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+#advisoryProgress {
+  margin-top: 0.35rem;
+  color: #8b949e;
+  font-size: 0.78rem;
+}
+
+#citedRationale {
+  margin: 0.35rem 0;
+  line-height: 1.45;
+}
+
 .detail-split {
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr);
@@ -1734,6 +1792,12 @@ a:hover {
 .donut-urgent { stroke: #EF4444; }
 .donut-notable { stroke: #F59E0B; }
 .donut-info { stroke: #14b8a6; }
+
+.donut-count {
+  fill: #e6edf3;
+  font-size: 18px;
+  font-weight: 600;
+}
 
 .insight {
   background: #111827;
