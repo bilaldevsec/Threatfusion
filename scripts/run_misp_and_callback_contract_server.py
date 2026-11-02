@@ -731,9 +731,25 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
             question = ""
+            flow_id = None
             if isinstance(req_data, dict):
                 question = str(req_data.get("question") or "")
-            self._send_json(200, answer_mitre_copilot(question, self._live_rag_path()))
+                raw_flow = req_data.get("flow_id")
+                if raw_flow not in (None, ""):
+                    try:
+                        flow_id = int(raw_flow)
+                    except (TypeError, ValueError):
+                        flow_id = None
+            self._send_json(
+                200,
+                answer_mitre_copilot(
+                    self._live_db_path(),
+                    question,
+                    flow_id,
+                    self._live_rag_path(),
+                    soar_db_path=self._live_soar_path(),
+                ),
+            )
             return
 
         if path == "/api/v1/live/correlate":

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import sqlite3
 
+import pytest
+
 from threatfusion.api.live_soc_console import (
     add_analyst_note,
     answer_mitre_copilot,
@@ -110,6 +112,69 @@ def test_missing_feature_is_withheld_and_notes_round_trip(tmp_path: Path) -> Non
         note_text="Reviewed the withheld score.",
     )
     assert saved["evidence_state"] == "verified"
+
+
+def test_flow_copilot_brief_names_only_stored_endpoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("THREATFUSION_CLOUD_SPEND_USD", raising=False)
+    scored = score_canonical_flow(
+        _features(),
+        repo_root=REPO_ROOT,
+        model=_Width14Model(),
+        supply_verified=True,
+    )
+    stored = persist_scored_flow(
+        tmp_path / "live.sqlite3",
+        _features(),
+        scored,
+        source_label="live_scenario_replay",
+        case_title="ssh brute force (scenario label T1110)",
+        provenance={
+            "entity_namespace_id": "lab",
+            "src_entity_id": "172.29.0.10",
+            "dst_entity_id": "not-recorded",
+            "protocol": "tcp",
+            "service_or_port": "22",
+            "clock_synchronized": True,
+        },
+    )
+    answer = answer_mitre_copilot(
+        tmp_path / "live.sqlite3",
+        "ssh brute force",
+        stored["flow_id"],
+        tmp_path / "rag.sqlite3",
+    )
+    narrative = answer["narrative"]
+    assert answer["provider"] == "local_air_gapped"
+    assert answer["reason"] == "local_flow_brief"
+    assert answer["execution_authorized"] is False
+    for heading in (
+        "[1] EXECUTIVE TRIAGE & MODEL AUTHORITY",
+        "[2] CORRELATED TELEMETRY & EVIDENCE LOCKER",
+        "[3] MITRE ATT&CK & CVE THREAT INTELLIGENCE",
+        "[4] IMMEDIATE ANALYST INVESTIGATION STEPS",
+        "[5] GOVERNED SOAR PLAYBOOK & CONTAINMENT GUIDANCE",
+    ):
+        assert heading in narrative
+    assert "172.29.0.10" in narrative
+    assert "not-recorded" not in narrative
+    assert "198.51.100.99" not in narrative
+    from threatfusion.advisory.explanation_engine import (
+        IP_REGEX,
+        verify_explanation_groundedness,
+    )
+    from threatfusion.api.live_soc_console import (
+        _copilot_grounding_bundle,
+        _load_flow_row,
+    )
+
+    row = _load_flow_row(tmp_path / "live.sqlite3", stored["flow_id"])
+    assert row is not None
+    bundle = _copilot_grounding_bundle(row, ["172.29.0.10"])
+    assert verify_explanation_groundedness(narrative, bundle) is True
+    assert set(IP_REGEX.findall(narrative)) == {"172.29.0.10"}
 
 
 def test_copilot_refuses_containment_and_drift_reads_rows(tmp_path: Path) -> None:
@@ -1173,9 +1238,7 @@ def test_context_memory_evidence_locker_and_asset_inventory(tmp_path: Path, monk
 def test_presentation_polish_contracts() -> None:
     html = (REPO_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
     script = (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")
-    recall = (
-        "+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)"
-    )
+    recall = "+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)"
     select = html.split('id="analystVerdictSelect"', 1)[1].split("</select>", 1)[0]
     empty_option = '<option value="">— Select Verdict —</option>'
     assert empty_option in select
@@ -1221,9 +1284,9 @@ def test_presentation_polish_contracts() -> None:
     assert 'id="scoringTimeProvenance"' in html
     assert "scoringTimeModelSha256" in script
     assert "startupIntegrityForest" in script
-    registry = (
-        REPO_ROOT / "backend/src/threatfusion/models/drift_and_supply_chain.py"
-    ).read_text(encoding="utf-8")
+    registry = (REPO_ROOT / "backend/src/threatfusion/models/drift_and_supply_chain.py").read_text(
+        encoding="utf-8"
+    )
     for digest in (
         "bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9",
         "2cf4de6686d937c485d4dbcbfa21d3e90f65bbb922087c8b31be4b012d7fb148",

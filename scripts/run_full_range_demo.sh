@@ -9,6 +9,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+if [ -f "$ROOT/.env" ]; then
+  set -a
+  . "$ROOT/.env"
+  set +a
+fi
+
 PORT="${PORT:-8766}"
 PYTHON="${ROOT}/threatfusion-venv/bin/python"
 SERVER="${ROOT}/scripts/run_misp_and_callback_contract_server.py"

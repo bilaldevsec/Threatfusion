@@ -2330,15 +2330,13 @@
       const resp = await fetch('/api/v1/live/advisory-status');
       const data = await resp.json();
       const badge = document.getElementById('copilotProviderBadge');
-      if (badge && data.label) {
-        badge.textContent = data.transport_disclosure
-          ? data.label + '. ' + data.transport_disclosure
-          : data.label;
+      if (badge && data.provider) {
+        badge.textContent = copilotBadgeLabel(data.provider);
         badge.setAttribute('data-evidence-state', data.provider === 'gemini' ? 'verified' : 'unavailable');
       }
     } catch (err) {
       const badge = document.getElementById('copilotProviderBadge');
-      if (badge) badge.textContent = 'AI Copilot: Local Air-Gapped Engine';
+      if (badge) badge.textContent = 'Local Air-Gapped Engine';
     }
   }
 
@@ -3054,6 +3052,19 @@
     }
   }
 
+  function selectedLiveFlowId() {
+    const inc = selectedIncident();
+    if (!inc) return null;
+    const raw = inc.flowId != null ? inc.flowId : inc.flow_id;
+    const number = Number(raw);
+    if (!Number.isInteger(number) || number <= 0) return null;
+    return number;
+  }
+
+  function copilotBadgeLabel(provider) {
+    return provider === 'gemini' ? 'Live Gemini 2.5 Flash' : 'Local Air-Gapped Engine';
+  }
+
   async function askLiveCopilot() {
     const input = document.getElementById('liveCopilotQuestion');
     const question = input ? input.value : '';
@@ -3063,9 +3074,14 @@
       const resp = await fetch('/api/v1/live/copilot', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: question })
+        body: JSON.stringify({ question: question, flow_id: selectedLiveFlowId() })
       });
       const data = await resp.json();
+      const answer = document.getElementById('liveCopilotAnswer');
+      if (answer) {
+        answer.style.whiteSpace = 'pre-wrap';
+        answer.style.lineHeight = '1.5';
+      }
       if (data.reason === 'containment_refused') {
         setLiveText('liveCopilotAnswer', 'Containment refused. execution_authorized is false.', 'unavailable');
         return;
@@ -3075,16 +3091,14 @@
         ? ('retrieved candidate technique ' + hit.technique_id + ' ' + hit.technique_name)
         : 'No local corpus hit.';
       const narrative = typeof data.narrative === 'string' && data.narrative ? data.narrative : retrieved;
-      const provider = data.provider_label || 'AI Copilot: Local Air-Gapped Engine';
-      const disclosure = typeof data.transport_disclosure === 'string' ? data.transport_disclosure : '';
       setLiveText(
         'liveCopilotAnswer',
-        provider + (disclosure ? '. ' + disclosure : '') + '. ' + narrative,
+        narrative,
         data.evidence_state || 'unavailable'
       );
       const badge = document.getElementById('copilotProviderBadge');
       if (badge) {
-        badge.textContent = provider;
+        badge.textContent = copilotBadgeLabel(data.provider);
         badge.setAttribute('data-evidence-state', data.provider === 'gemini' ? 'verified' : 'unavailable');
       }
     } catch (err) {

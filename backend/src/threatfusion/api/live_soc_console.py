@@ -675,9 +675,217 @@ def add_analyst_note(
     }
 
 
-def answer_mitre_copilot(question: str, rag_db_path: Path) -> dict[str, Any]:
-    """Answer from the local MITRE corpus, then an optional grounded Gemini brief."""
-    if _CONTAINMENT_REQUEST.search(question or ""):
+_COPILOT_HEADINGS = (
+    "[1] EXECUTIVE TRIAGE & MODEL AUTHORITY",
+    "[2] CORRELATED TELEMETRY & EVIDENCE LOCKER",
+    "[3] MITRE ATT&CK & CVE THREAT INTELLIGENCE",
+    "[4] IMMEDIATE ANALYST INVESTIGATION STEPS",
+    "[5] GOVERNED SOAR PLAYBOOK & CONTAINMENT GUIDANCE",
+)
+_CVE_TOKEN = re.compile(r"cve[-_ ]?(\d{4})[-_ ](\d{4,7})", re.IGNORECASE)
+
+
+def _copilot_allowed_entities(stored: Mapping[str, Any] | None) -> list[str]:
+    """Keep only stored endpoints. Empty and not-recorded values are omitted."""
+    if not stored:
+        return []
+    allowed: list[str] = []
+    for key in ("src_entity_id", "dst_entity_id"):
+        text = str(stored.get(key) or "").strip()
+        if not text or text.lower() == "not-recorded" or text in allowed:
+            continue
+        allowed.append(text)
+    return allowed
+
+
+def _text_uses_only_entities(text: str, allowed: Sequence[str]) -> bool:
+    from threatfusion.advisory.explanation_engine import IP_REGEX
+
+    return set(IP_REGEX.findall(text)).issubset(set(allowed))
+
+
+def _safe_copilot_clause(text: str, allowed: Sequence[str]) -> str:
+    cleaned = " ".join(text.split())
+    if not cleaned or not _text_uses_only_entities(cleaned, allowed):
+        return ""
+    return cleaned
+
+
+def _copilot_citation_ids(hits: Sequence[Mapping[str, Any]]) -> tuple[list[str], list[str]]:
+    techniques: list[str] = []
+    cves: list[str] = []
+    for hit in hits:
+        technique = str(hit.get("technique_id") or "").strip()
+        if technique and technique not in techniques:
+            techniques.append(technique)
+        blob = " ".join(
+            str(hit.get(key) or "") for key in ("technique_name", "playbook_id", "doc_id")
+        )
+        for year, number in _CVE_TOKEN.findall(blob):
+            cve = f"CVE-{year}-{number}"
+            if cve not in cves:
+                cves.append(cve)
+    return techniques, cves
+
+
+def _copilot_grounding_bundle(
+    stored: Mapping[str, Any],
+    allowed: Sequence[str],
+) -> Any:
+    from threatfusion.advisory.explanation_engine import AdvisoryEvidenceBundle
+    from threatfusion.enrichment.threat_intel import ThreatIntelEnrichmentResult
+
+    raw_probability = stored.get("rf_attack_probability")
+    try:
+        probability = float(raw_probability) if raw_probability is not None else 0.0
+    except (TypeError, ValueError):
+        probability = 0.0
+    enrichment = None
+    if allowed:
+        try:
+            private_guard = _any_non_public_ipv4(allowed)
+        except ValueError:
+            private_guard = False
+        enrichment = ThreatIntelEnrichmentResult(
+            status="internal_lab_entity_annotated",
+            provenance_verified=True,
+            external_lookup_performed=False,
+            private_ip_guard_triggered=private_guard,
+            inspected_entities=tuple(allowed),
+            internal_lab_annotations={},
+            matches=(),
+            feed_snapshot_id=None,
+            reason="stored_flow_entities",
+        )
+    return AdvisoryEvidenceBundle(
+        candidate_id=f"live_flow:{stored.get('flow_id')}",
+        record_id=f"live_flow:{stored.get('flow_id')}",
+        rf_model_version="network_random_forest_baseline_v1",
+        rf_attack_probability=probability,
+        rf_threshold=0.5,
+        top_feature_signals={},
+        incident_id=stored.get("campaign_id"),
+        observed_at=stored.get("observed_at_utc"),
+        enrichment_result=enrichment,
+    )
+
+
+def _five_section_flow_brief(
+    stored: Mapping[str, Any],
+    locker: Mapping[str, Any],
+    memory: Sequence[Mapping[str, Any]],
+    techniques: Sequence[str],
+    cves: Sequence[str],
+    allowed: Sequence[str],
+) -> str:
+    """Offline brief. Every address in it is one of the stored endpoints."""
+    decision = str(stored.get("decision") or "unavailable")
+    raw_probability = stored.get("rf_attack_probability")
+    try:
+        probability = (
+            f"{float(raw_probability):.4f}" if raw_probability is not None else "unavailable"
+        )
+    except (TypeError, ValueError):
+        probability = "unavailable"
+    digest = str(stored.get("model_sha256") or "")
+    digest_text = digest if _SHA256_HEX.fullmatch(digest) else "unavailable"
+    source = _safe_copilot_clause(str(stored.get("source_label") or "unavailable"), allowed)
+    title = _safe_copilot_clause(str(stored.get("case_title") or ""), allowed)
+    scenario = ""
+    if str(stored.get("source_label") or "") == "live_scenario_replay" and title:
+        match = re.search(r"scenario label (T\d+(?:\.\d+)?)", title)
+        scenario = match.group(1) if match else "none"
+    src = str(stored.get("src_entity_id") or "").strip()
+    dst = str(stored.get("dst_entity_id") or "").strip()
+    endpoint = ""
+    if src in allowed and dst in allowed:
+        endpoint = f"Stored endpoints {src} to {dst}."
+    elif src in allowed:
+        endpoint = f"Stored source {src}."
+    elif dst in allowed:
+        endpoint = f"Stored destination {dst}."
+    protocol = _safe_copilot_clause(str(stored.get("flow_protocol") or "unavailable"), allowed)
+    service = _safe_copilot_clause(str(stored.get("service_or_port") or "unavailable"), allowed)
+    queries = {
+        str(item.get("query_id")): item
+        for item in locker.get("queries", [])
+        if isinstance(item, Mapping) and item.get("query_id")
+    }
+    frequency = queries.get("entity_historical_frequency", {})
+    baseline = queries.get("destination_port_protocol_baseline", {})
+    campaign = queries.get("correlated_campaign_soar_ledger", {})
+    rules = [
+        clause
+        for row in memory
+        if (clause := _safe_copilot_clause(str(row.get("expected_behavior_rule") or ""), allowed))
+    ]
+    technique_text = ", ".join(techniques) if techniques else "none retrieved"
+    cve_text = ", ".join(cves) if cves else "none retrieved"
+    if decision == "Attack":
+        containment = (
+            "Containment is recommended and remains unauthorized until a human approves "
+            "the SHA-256 hash-chained playbook, n8n webhook dispatch, victim firewall "
+            "isolation, and rollback verification."
+        )
+    else:
+        containment = f"Containment is blocked. The frozen Random Forest decision is {decision}."
+    sections = (
+        f"{_COPILOT_HEADINGS[0]}\n"
+        f"Frozen Random Forest decision {decision}. Attack probability {probability}. "
+        f"Model digest {digest_text}. production_fusion_enabled is false. "
+        "The secondary v2 autoencoder does not decide this alert. "
+        f"Source label {source or 'unavailable'}."
+        + (f" Scenario label {scenario}." if scenario else "")
+        + (f" Case title {title}." if title else ""),
+        f"{_COPILOT_HEADINGS[1]}\n"
+        "Dual-window correlation uses a 30.0s burst and a 600.0s campaign. "
+        f"{endpoint} Protocol {protocol or 'unavailable'}. Service or port {service or 'unavailable'}. "
+        f"entity_historical_frequency count {frequency.get('entity_count', 0)}. "
+        f"destination_port_protocol_baseline flow_count {baseline.get('flow_count', 0)}. "
+        "correlated_campaign_soar_ledger "
+        f"stitched_flow_count {campaign.get('stitched_flow_count', 0)} "
+        f"soar_receipt_status {campaign.get('soar_receipt_status', 'unavailable')}. "
+        + (
+            "Context memory rules: " + " ".join(rules) + "."
+            if rules
+            else "No stored context memory rule for these endpoints."
+        ),
+        f"{_COPILOT_HEADINGS[2]}\n"
+        f"Retrieved MITRE ATT&CK technique IDs: {technique_text}. "
+        f"Retrieved CVE IDs: {cve_text}.",
+        f"{_COPILOT_HEADINGS[3]}\n"
+        "Verify Context Memory for the stored endpoints. Inspect the 5-node Attack Topology. "
+        "Record a grounded verdict on this flow.",
+        f"{_COPILOT_HEADINGS[4]}\n{containment}",
+    )
+    brief = "\n".join(sections)
+    if not _text_uses_only_entities(brief, allowed):
+        return ""
+    return brief
+
+
+def answer_mitre_copilot(
+    db_path: Path | str,
+    question: str | Path = "",
+    flow_id: int | None = None,
+    rag_db_path: Path | None = None,
+    *,
+    soar_db_path: Path | None = None,
+) -> dict[str, Any]:
+    """Answer from the local MITRE corpus, then a flow-grounded five-section brief.
+
+    A legacy call ``answer_mitre_copilot(question, rag_db_path)`` stays corpus-only.
+    """
+    if isinstance(db_path, str) and isinstance(question, Path):
+        rag_db_path = question
+        question = db_path
+        db_path = Path()
+        flow_id = None
+        soar_db_path = None
+    elif isinstance(db_path, str):
+        db_path = Path(db_path)
+    asked = question if isinstance(question, str) else ""
+    if _CONTAINMENT_REQUEST.search(asked):
         return disclose_offline_fallback(
             {
                 "schema_version": "live_mitre_copilot_v1",
@@ -690,34 +898,79 @@ def answer_mitre_copilot(question: str, rag_db_path: Path) -> dict[str, Any]:
                 "narrative": "",
             }
         )
-    rag = ChromaDbMitrePlaybookRag(rag_db_path)
-    hits = rag.query_semantic_rag(question or "", top_k=3)
+    corpus_path = (
+        rag_db_path if isinstance(rag_db_path, Path) else Path("threatfusion-live-rag.sqlite3")
+    )
+    rag = ChromaDbMitrePlaybookRag(corpus_path)
+    hits = rag.query_semantic_rag(asked, top_k=3)
     hit_rows = [
         {
             "technique_id": hit.technique_id,
             "technique_name": hit.technique_name,
             "playbook_id": hit.playbook_id,
+            "doc_id": hit.doc_id,
             "cosine_similarity": hit.cosine_similarity,
         }
         for hit in hits
     ]
-    narrative = _grounded_gemini_narrative(question or "", hit_rows)
+    stored = None
+    resolved_flow_id: int | None
+    try:
+        resolved_flow_id = int(flow_id) if flow_id is not None else None
+    except (TypeError, ValueError):
+        resolved_flow_id = None
+    if (
+        resolved_flow_id is not None
+        and resolved_flow_id > 0
+        and isinstance(db_path, Path)
+        and db_path.is_file()
+    ):
+        stored = _load_flow_row(db_path, resolved_flow_id)
+    local_narrative = ""
+    bundle = None
+    if stored is not None and isinstance(db_path, Path):
+        allowed = _copilot_allowed_entities(stored)
+        techniques, cves = _copilot_citation_ids(hit_rows)
+        locker = evidence_locker_queries(db_path, int(stored["flow_id"]), soar_db_path)
+        memory = _memory_rows_for_entities(db_path, allowed)
+        local_narrative = _five_section_flow_brief(
+            stored, locker, memory, techniques, cves, allowed
+        )
+        bundle = _copilot_grounding_bundle(stored, allowed)
+        if local_narrative:
+            from threatfusion.advisory.explanation_engine import verify_explanation_groundedness
+
+            if not verify_explanation_groundedness(local_narrative, bundle):
+                local_narrative = ""
+    narrative = _grounded_gemini_narrative(
+        asked,
+        hit_rows,
+        evidence_text=local_narrative or None,
+        bundle=bundle,
+        local_narrative=local_narrative,
+    )
     provider = str(narrative.get("provider") or "local_air_gapped")
+    narrative_text = str(narrative.get("narrative") or "")
+    if narrative_text and provider == "gemini":
+        reason = "gemini_grounded"
+    elif narrative_text and stored is not None:
+        reason = "local_flow_brief"
+    elif hits:
+        reason = "local_corpus"
+    else:
+        reason = "no_corpus_hit"
     return disclose_offline_fallback(
         {
             "schema_version": "live_mitre_copilot_v1",
-            "evidence_state": "verified" if hits or narrative.get("narrative") else "unavailable",
+            "evidence_state": "verified" if hits or narrative_text else "unavailable",
             "execution_authorized": False,
-            "reason": (
-                "gemini_grounded"
-                if narrative.get("narrative")
-                else ("local_corpus" if hits else "no_corpus_hit")
-            ),
+            "reason": reason,
             "hits": hit_rows,
             "provider": provider,
             "provider_label": narrative.get("provider_label"),
-            "narrative": narrative.get("narrative") or "",
+            "narrative": narrative_text,
             "production_fusion_enabled": False,
+            "flow_id": None if stored is None else stored.get("flow_id"),
         }
     )
 
@@ -749,8 +1002,15 @@ def _handoff_brief_or_local(
     return default_brief
 
 
-def _grounded_gemini_narrative(question: str, hits: list[dict[str, Any]]) -> dict[str, Any]:
-    """Return a Gemini sentence only when it names no address outside the evidence."""
+def _grounded_gemini_narrative(
+    question: str,
+    hits: list[dict[str, Any]],
+    *,
+    evidence_text: str | None = None,
+    bundle: Any | None = None,
+    local_narrative: str = "",
+) -> dict[str, Any]:
+    """Return a Gemini brief only when it names no address outside the evidence."""
     from threatfusion.advisory.explanation_engine import (
         AdvisoryEvidenceBundle,
         verify_explanation_groundedness,
@@ -765,32 +1025,39 @@ def _grounded_gemini_narrative(question: str, hits: list[dict[str, Any]]) -> dic
     local = {
         "provider": "local_air_gapped",
         "provider_label": "AI Copilot: Local Air-Gapped Engine",
-        "narrative": "",
+        "narrative": local_narrative,
     }
     if not status.get("live_call_allowed"):
         return disclose_offline_fallback(local)
-    lines = [f"Analyst question: {question}"]
-    for hit in hits:
-        lines.append(
-            f"Retrieved candidate technique {hit.get('technique_id')} "
-            f"{hit.get('technique_name')} playbook {hit.get('playbook_id')}."
-        )
-    if not hits:
-        lines.append("No local corpus hit.")
-    evidence = "\n".join(lines)
+    if evidence_text:
+        evidence = evidence_text
+    else:
+        lines = [f"Analyst question: {question}"]
+        for hit in hits:
+            lines.append(
+                f"Retrieved candidate technique {hit.get('technique_id')} "
+                f"{hit.get('technique_name')} playbook {hit.get('playbook_id')}."
+            )
+        if not hits:
+            lines.append("No local corpus hit.")
+        evidence = "\n".join(lines)
     try:
         text = GeminiAdvisoryCallable().generate_copilot_text(evidence)
     except (GeminiAdvisoryUnavailableError, OSError, TimeoutError):
         return local
-    bundle = AdvisoryEvidenceBundle(
-        candidate_id="live_copilot",
-        record_id="live_copilot",
-        rf_model_version="network_random_forest_baseline_v1",
-        rf_attack_probability=0.0,
-        rf_threshold=0.5,
-        top_feature_signals={},
-    )
-    if not verify_explanation_groundedness(text, bundle):
+    check_bundle = bundle
+    if check_bundle is None:
+        check_bundle = AdvisoryEvidenceBundle(
+            candidate_id="live_copilot",
+            record_id="live_copilot",
+            rf_model_version="network_random_forest_baseline_v1",
+            rf_attack_probability=0.0,
+            rf_threshold=0.5,
+            top_feature_signals={},
+        )
+    if not verify_explanation_groundedness(text, check_bundle):
+        return local
+    if evidence_text and not all(heading in text for heading in _COPILOT_HEADINGS):
         return local
     return {
         "provider": "gemini",

@@ -1942,6 +1942,7 @@ def render_dashboard_html(
         [data-layer="split-investigation-workspace"] {{ display: grid; grid-template-columns: minmax(320px, 1fr) 2fr; gap: 1.5rem; }}
         @media (max-width: 950px) {{ [data-layer="split-investigation-workspace"] {{ grid-template-columns: 1fr; }} }}
         [data-copy-hash] {{ cursor: pointer; border-bottom: 1px dashed rgba(88, 166, 255, 0.4); }}
+        #liveCopilotAnswer {{ white-space: pre-wrap; line-height: 1.5; }}
     </style>
 </head>
 <body>
@@ -1951,6 +1952,8 @@ def render_dashboard_html(
         <span>Role: <b class="badge badge-role">{html.escape(actor_role)}</b></span> &middot;
         <span>Status: <b>{html.escape(snapshot.status)}</b></span> &middot;
         <span>Loaded Alerts: <b>{snapshot.queue.total_loaded}</b></span>
+        <span class="badge" id="copilotProviderBadge" data-evidence-state="unavailable">AI Copilot: Local Air-Gapped Engine</span>
+        <div id="liveCopilotAnswer" data-evidence-state="unavailable"></div>
     </header>
 
     <!-- Layer 1: Top Hero Strip -->

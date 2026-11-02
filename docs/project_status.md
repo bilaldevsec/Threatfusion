@@ -20,6 +20,12 @@ heatmap, and a journal/table timeline toggle. Hunt rows are labeled
 `LAB HYPOTHESIS — NOT AN ALERT` and are hashed into a separate chain file.
 The heatmap counts frozen Random Forest verified Attack rows. Lab rows stay
 out unless `include_lab=true`, and they do not mark a cell verified.
+The Stage 5 copilot brief uses the selected stored flow. `scripts/run_live_product.sh`
+and `scripts/run_full_range_demo.sh` export `$ROOT/.env` before the server starts.
+Pytest does not source that file. A missing `GEMINI_API_KEY` keeps the offline
+five-section brief, and a live `gemini-2.5-flash` reply is shown only when it
+stays on the stored endpoints. `GeminiAdvisoryConfig` stays at 512 tokens and
+temperature 0.0.
 TF-008, TF-009, TF-010, and TF-011 remain open.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0

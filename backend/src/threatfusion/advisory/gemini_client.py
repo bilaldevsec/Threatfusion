@@ -31,7 +31,9 @@ from threatfusion.advisory.explanation_engine import (
 SOC_COPILOT_SYSTEM_PROMPT = (
     "You are the ThreatFusion Enterprise SOC Copilot. Base your analysis STRICTLY "
     "on the verified telemetry provided in the evidence block. Never invent or "
-    "hallucinate IP addresses, ports, or facts not present in the evidence."
+    "hallucinate IP addresses, ports, or facts not present in the evidence. "
+    "Reference ONLY the provided src_entity_id, dst_entity_id, and retrieved "
+    "MITRE ATT&CK technique IDs and CVE IDs. Do not invent an external IP address."
 )
 
 _MODEL_LABELS = {
@@ -394,8 +396,17 @@ class GeminiAdvisoryCallable:
                 f"Gemini API key environment variable '{self.config.api_key_env_var}' is unset or empty."
             )
         prompt = (
-            f"{SOC_COPILOT_SYSTEM_PROMPT}\n\nEVIDENCE BLOCK:\n{evidence_text}\n\n"
-            "Reply in plain sentences. Do not add an address or port that is absent above."
+            f"{SOC_COPILOT_SYSTEM_PROMPT}\n\n"
+            "Write these five headings and no others:\n"
+            "[1] EXECUTIVE TRIAGE & MODEL AUTHORITY\n"
+            "[2] CORRELATED TELEMETRY & EVIDENCE LOCKER\n"
+            "[3] MITRE ATT&CK & CVE THREAT INTELLIGENCE\n"
+            "[4] IMMEDIATE ANALYST INVESTIGATION STEPS\n"
+            "[5] GOVERNED SOAR PLAYBOOK & CONTAINMENT GUIDANCE\n"
+            "Reference ONLY the src_entity_id, dst_entity_id, MITRE technique IDs, "
+            "and CVE IDs that appear in the evidence block. Do not invent an external "
+            "IP address, technique, or CVE.\n\n"
+            f"EVIDENCE BLOCK:\n{evidence_text}\n"
         )
         payload = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],

@@ -2010,6 +2010,11 @@ a:hover {
   padding: 0.55rem 0.75rem;
 }
 
+#liveCopilotAnswer {
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
 .graph-col {
   position: relative;
 }
