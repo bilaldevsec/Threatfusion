@@ -16,6 +16,9 @@ Implements lightweight deterministic HTTP services for containerized SOC stacks:
    execution and audit callbacks from the n8n autonomous playbook.
 4. GET /healthz:
    Liveness and readiness health probe returning HTTP 200 {"status": "ok"}.
+5. GET /api/v1/live/coverage-heatmap:
+   Read-only canonical JSON comparing frozen-RF observations with the static
+   18-entry ATT&CK and CVE mapping. POST, PUT, and DELETE return HTTP 405.
 """
 
 from __future__ import annotations
@@ -413,6 +416,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             )
             self._send_json(200, report.to_dict())
             return
+        if path == "/api/v1/live/coverage-heatmap":
+            self._send_coverage_heatmap()
+            return
 
         self._send_json(404, {"error": "Not Found", "path": path})
 
@@ -466,8 +472,73 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
         return disclose_offline_fallback(advisory_provider_status())
 
+    def _send_json_bytes(
+        self, status_code: int, payload: bytes, *, allow: str | None = None
+    ) -> None:
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        if allow:
+            self.send_header("Allow", allow)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _coverage_include_lab(self) -> bool:
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        raw = (query.get("include_lab") or ["false"])[0]
+        return str(raw).strip().lower() == "true"
+
+    def _lab_chain_path(self) -> Path | None:
+        configured = os.environ.get("THREATFUSION_LAB_HUNT_CHAIN", "").strip()
+        if not configured:
+            return None
+        return Path(configured)
+
+    def _send_coverage_heatmap(self) -> None:
+        from threatfusion.evaluation.coverage_heatmap import (
+            build_coverage_heatmap,
+            heatmap_canonical_bytes,
+        )
+
+        live_db = self._live_db_path()
+        payload = build_coverage_heatmap(
+            live_db if live_db.is_file() else None,
+            include_lab=self._coverage_include_lab(),
+            lab_chain_path=self._lab_chain_path(),
+        )
+        self._send_json_bytes(200, heatmap_canonical_bytes(payload))
+
+    def _send_coverage_method_not_allowed(self) -> None:
+        from threatfusion.evaluation.lab_hunt_runner import canonical_json
+
+        body = canonical_json(
+            {
+                "allow": "GET",
+                "error": "method_not_allowed",
+                "evidence_state": "unavailable",
+            }
+        ).encode("utf-8")
+        self._send_json_bytes(405, body, allow="GET")
+
+    def do_PUT(self) -> None:
+        path = self.path.split("?")[0]
+        if path == "/api/v1/live/coverage-heatmap":
+            self._send_coverage_method_not_allowed()
+            return
+        self.send_error(501)
+
+    def do_DELETE(self) -> None:
+        path = self.path.split("?")[0]
+        if path == "/api/v1/live/coverage-heatmap":
+            self._send_coverage_method_not_allowed()
+            return
+        self.send_error(501)
+
     def do_POST(self) -> None:
         path = self.path.split("?")[0]
+        if path == "/api/v1/live/coverage-heatmap":
+            self._send_coverage_method_not_allowed()
+            return
         if self._rejected_content_length():
             return
         content_length = int(str(self.headers.get("Content-Length")).strip())

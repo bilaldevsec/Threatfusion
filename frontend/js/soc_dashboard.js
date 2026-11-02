@@ -386,6 +386,7 @@
   let selectedIncidentId = '';
   let liveCampaignIncidents = [];
   let liveCorrelationReport = null;
+  let timelineViewMode = 'journal';
   let campaignFetchSettled = false;
   let liveQueueLoaded = false;
   let campaignFingerprint = null;
@@ -1033,37 +1034,129 @@
       + '<p>Output: ' + escapeHtml(node.evidence) + '</p>';
   }
 
-  function storedFlowObservesCoverage(flow, entry) {
-    if (!flow || flow.flowId == null) return false;
-    const scenario = typeof flow.scenarioLabel === 'string' ? flow.scenarioLabel : '';
-    if (entry.kind === 'technique') {
-      if (scenario === entry.id) return true;
-      if (!verifyChromaRagHits(flow.chromaRagHits)) return false;
-      return flow.chromaRagHits.some(hit => hit && hit.technique_id === entry.id);
-    }
-    if (scenario.indexOf(entry.id) !== -1) return true;
-    if (!verifyChromaRagHits(flow.chromaRagHits)) return false;
-    return flow.chromaRagHits.some(hit => {
-      const name = hit && typeof hit.technique_name === 'string' ? hit.technique_name : '';
-      return name.indexOf(entry.id) !== -1;
+  function staticUnavailableHeatmap() {
+    return {
+      cells: INDEXED_MITRE_COVERAGE.map(entry => ({
+        id: entry.id,
+        name: entry.name,
+        kind: entry.kind,
+        observed_count: 0,
+        rf_confirmed_count: 0,
+        claimed: true,
+        evidence_state: 'unavailable'
+      }))
+    };
+  }
+
+  function paintCoverageHeatmap(payload) {
+    const body = document.getElementById('mitreCoverageBody');
+    if (!body) return;
+    const cells = payload && Array.isArray(payload.cells) ? payload.cells : [];
+    body.replaceChildren();
+    cells.forEach(cell => {
+      const state = cell && cell.evidence_state === 'verified' ? 'verified' : 'unavailable';
+      const tr = document.createElement('tr');
+      tr.setAttribute('data-evidence-state', state);
+      const observed = cell && cell.rf_confirmed_count != null
+        ? cell.rf_confirmed_count
+        : (cell && cell.observed_count != null ? cell.observed_count : 0);
+      const claimed = cell && cell.claimed === true ? 'claimed' : 'unavailable';
+      [cell && cell.id, cell && cell.name, cell && cell.kind, String(observed), claimed].forEach((value, index) => {
+        const td = document.createElement('td');
+        td.textContent = value == null ? '' : String(value);
+        if (index >= 3) td.setAttribute('data-evidence-state', state);
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
     });
   }
 
   function renderMitreCoverageMatrix() {
     const body = document.getElementById('mitreCoverageBody');
     if (!body) return;
-    const flows = (liveCampaignIncidents || []).filter(row => row && row.flowId != null);
-    body.replaceChildren();
-    INDEXED_MITRE_COVERAGE.forEach(entry => {
-      const observed = flows.filter(flow => storedFlowObservesCoverage(flow, entry)).length;
-      const tr = document.createElement('tr');
-      [entry.id, entry.name, entry.kind, String(observed)].forEach(value => {
-        const td = document.createElement('td');
-        td.textContent = value;
-        tr.appendChild(td);
-      });
-      body.appendChild(tr);
+    paintCoverageHeatmap(staticUnavailableHeatmap());
+    fetch('/api/v1/live/coverage-heatmap?include_lab=false', { method: 'GET' })
+      .then(resp => (resp && resp.ok ? resp.json() : null))
+      .then(payload => {
+        if (payload && Array.isArray(payload.cells)) paintCoverageHeatmap(payload);
+      })
+      .catch(() => {});
+  }
+
+  function timelineActor(event) {
+    if (!event || typeof event !== 'object') return 'stored-flow';
+    const raw = event.actor_id || event.actor || event.operator_id || event.src_entity_id;
+    if (typeof raw === 'string' && raw.trim() !== '') return raw.trim();
+    return 'stored-flow';
+  }
+
+  function groupConsecutiveTimelineByActor(events) {
+    const groups = [];
+    const source = Array.isArray(events) ? events : [];
+    source.forEach(event => {
+      const actor = timelineActor(event);
+      const last = groups[groups.length - 1];
+      if (last && last.actor === actor) last.events.push(event);
+      else groups.push({ actor: actor, events: [event] });
     });
+    return groups;
+  }
+
+  function timelineJournalHtml(groups) {
+    return groups.map(group => {
+      const rows = group.events.map(event => (
+        '<div>[' + escapeHtml(event && event.observed_at || '') + '] '
+        + escapeHtml((event && (event.summary || event.kind)) || 'event') + '</div>'
+      )).join('');
+      return '<section data-timeline-actor="' + escapeHtml(group.actor) + '"><h4>'
+        + escapeHtml(group.actor) + '</h4>' + rows + '</section>';
+    }).join('');
+  }
+
+  function timelineTableHtml(groups) {
+    const rows = groups.map(group => group.events.map((event, index) => {
+      const actorCell = index === 0
+        ? '<td rowspan="' + group.events.length + '">' + escapeHtml(group.actor) + '</td>'
+        : '';
+      return '<tr>' + actorCell
+        + '<td>' + escapeHtml(event && event.observed_at || '') + '</td>'
+        + '<td>' + escapeHtml((event && (event.summary || event.kind)) || 'event') + '</td>'
+        + '<td>' + escapeHtml(event && event.kind || '') + '</td></tr>';
+    }).join('')).join('');
+    return '<table><thead><tr><th>Actor</th><th>When</th><th>Summary</th><th>Kind</th></tr></thead><tbody>'
+      + rows + '</tbody></table>';
+  }
+
+  function renderTimelineGroupedView() {
+    const host = document.getElementById('timelineGroupedView');
+    if (!host) return;
+    const events = liveCorrelationReport
+      && liveCorrelationReport.timeline
+      && Array.isArray(liveCorrelationReport.timeline.events)
+      ? liveCorrelationReport.timeline.events
+      : [];
+    const groups = groupConsecutiveTimelineByActor(events);
+    host.setAttribute('data-timeline-mode', timelineViewMode);
+    const state = events.length && liveCorrelationReport
+      ? (liveCorrelationReport.evidence_state || 'unavailable')
+      : 'unavailable';
+    host.setAttribute('data-evidence-state', state);
+    if (!events.length) {
+      host.textContent = 'No correlated timeline yet.';
+      return;
+    }
+    host.innerHTML = timelineViewMode === 'table'
+      ? timelineTableHtml(groups)
+      : timelineJournalHtml(groups);
+  }
+
+  function setTimelineViewMode(mode) {
+    timelineViewMode = mode === 'table' ? 'table' : 'journal';
+    const journal = document.getElementById('timelineViewJournal');
+    const table = document.getElementById('timelineViewTable');
+    if (journal) journal.setAttribute('aria-pressed', timelineViewMode === 'journal' ? 'true' : 'false');
+    if (table) table.setAttribute('aria-pressed', timelineViewMode === 'table' ? 'true' : 'false');
+    renderTimelineGroupedView();
   }
 
   function renderScoringTimeProvenance(inc) {
@@ -1966,6 +2059,14 @@
     if (healthButton) {
       healthButton.addEventListener('click', () => { runConstitutionalHealth(); });
     }
+    const timelineJournal = document.getElementById('timelineViewJournal');
+    if (timelineJournal) {
+      timelineJournal.addEventListener('click', () => { setTimelineViewMode('journal'); });
+    }
+    const timelineTable = document.getElementById('timelineViewTable');
+    if (timelineTable) {
+      timelineTable.addEventListener('click', () => { setTimelineViewMode('table'); });
+    }
     const scenarioButton = document.getElementById('btnReplayScenarios');
     if (scenarioButton) {
       scenarioButton.addEventListener('click', () => { replayLiveScenarios(); });
@@ -2760,6 +2861,7 @@
         eventsEl.innerHTML = liveTimelineRows(data) || '<div>No correlated timeline events.</div>';
       }
     }
+    renderTimelineGroupedView();
     renderForensicDrawer();
   }
 
@@ -3051,6 +3153,7 @@
     verifyHiveAndN8nReceipt,
     SAMPLE_INCIDENTS,
     WALKTHROUGH_STAGES,
+    groupConsecutiveTimelineByActor,
     initApp
   };
 

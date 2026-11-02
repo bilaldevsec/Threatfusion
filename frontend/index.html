@@ -287,6 +287,11 @@
                 <div id="attackTimelineEvents">No live timeline yet.</div>
                 <div id="liveTimeline" data-evidence-state="unavailable">No correlated timeline yet.</div>
                 <div id="liveTimelineDrawer" data-evidence-state="unavailable" data-correlated-flow-count="0">No unified timeline yet.</div>
+                <div id="timelineViewToggle" role="group" aria-label="Timeline view">
+                  <button type="button" class="btn" id="timelineViewJournal" data-timeline-mode="journal" aria-pressed="true">Journal</button>
+                  <button type="button" class="btn" id="timelineViewTable" data-timeline-mode="table" aria-pressed="false">Table</button>
+                </div>
+                <div id="timelineGroupedView" data-timeline-mode="journal" data-evidence-state="unavailable">No correlated timeline yet.</div>
               </div>
             </div>
             <div class="inspector-tab-pane" data-inspector-tab="3">
@@ -415,7 +420,8 @@
                   <th>Identifier</th>
                   <th>Name</th>
                   <th>Kind</th>
-                  <th>Observed on stored flows</th>
+                  <th>Observed (RF-Confirmed)</th>
+                  <th>Claimed (Static Mapping)</th>
                 </tr>
               </thead>
               <tbody id="mitreCoverageBody"></tbody>

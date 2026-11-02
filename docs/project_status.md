@@ -15,6 +15,12 @@ Sprint B checks a callback HMAC with `hmac.compare_digest` when a verification
 key is present, recomputes the SOAR canonical hash chain, refuses non-global
 and evasive addresses before an external lookup, and requires the receipt,
 the chain, and the explanation together before `data-evidence-state="verified"`.
+RFC W46-01 adds a lab-only hunt pack runner, a read-only ATT&CK/CVE coverage
+heatmap, and a journal/table timeline toggle. Hunt rows are labeled
+`LAB HYPOTHESIS — NOT AN ALERT` and are hashed into a separate chain file.
+The heatmap counts frozen Random Forest verified Attack rows. Lab rows stay
+out unless `include_lab=true`, and they do not mark a cell verified.
+TF-008, TF-009, TF-010, and TF-011 remain open.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0
 readiness report still says split assignments are missing, but the later completed full assignment and

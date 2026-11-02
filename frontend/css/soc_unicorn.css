@@ -925,6 +925,20 @@ a:hover {
   margin: 0.8rem 0;
 }
 
+#timelineViewToggle {
+  display: flex;
+  gap: 0.4rem;
+  margin: 0.6rem 0;
+}
+
+#timelineViewToggle button[aria-pressed="true"] {
+  outline: 1px solid #58a6ff;
+}
+
+#mitreCoverageBody tr[data-evidence-state="unavailable"] {
+  color: #cbd5e1;
+}
+
 /* Standardized 4-Block Investigation Anatomy */
 .anatomy-card {
   margin-top: 1rem;

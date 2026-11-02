@@ -31,6 +31,10 @@ The earlier 2026-10-27 browser check of the five-vector replay showed playbook `
 
 Section 8 stays: `+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)`. Fusion stays off because those 96 true positives cost 1,574 extra false positives.
 
+## Governed hunt and coverage
+
+The lab hunt runner reads local replay fixtures only, blocks outbound sockets, and writes a separate hash chain. It does not write `soar.sqlite3`, `alerts.sqlite3`, or `incidents.sqlite3`. Every hunt row is `LAB HYPOTHESIS — NOT AN ALERT`. `GET /api/v1/live/coverage-heatmap` is read-only and returns HTTP 405 for POST, PUT, and DELETE. Observed counts are frozen-RF verified Attack rows. The claimed column is the static 18-entry mapping. A cell stays `evidence_state: unavailable` until an RF-confirmed row matches it. The investigation timeline can switch between Journal and Table and groups consecutive rows by actor without rewriting Evidence Locker hashes.
+
 ## What is not claimed
 
 - TF-008, TF-009, TF-010, and TF-011 remain open.
