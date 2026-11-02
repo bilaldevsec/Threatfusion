@@ -2,44 +2,17 @@
   "all_suites_passed": true,
   "audit_version": "autonomous_product_audit_v1",
   "cli_flags": {
-    "full_e2e": true,
-    "mode": "full_e2e",
+    "full_e2e": false,
+    "mode": "quick",
     "quick": false
   },
   "git_branch": "gemini/product-20260924",
-  "git_head_sha": "c5cf7252c3042bfacdb75698bebd654d5e72af89",
+  "git_head_sha": "b715ccdc36a7cd6532cf880d1bf3cc2011556708",
   "investor_e2e_suite": {
     "passed": true,
-    "status": "PASSED",
-    "steps": [
-      {
-        "passed": true,
-        "stderr": "ctim  Waiting\n Container threatfusion_range_victim  Healthy\n Container threatfusion_range_suricata  Starting\n Container threatfusion_range_victim  Healthy\n Container threatfusion_range_attacker  Starting\n Container threatfusion_range_suricata  Started\n Container threatfusion_range_attacker  Started\n",
-        "stdout": "Analyst URL: http://127.0.0.1:8766/\nSuricata engine started. Follower pid 32571.\n",
-        "step": "run_full_range_demo_up"
-      },
-      {
-        "passed": true,
-        "stderr": "",
-        "stdout": "n_ingested\",\n  \"removed_noise\": 0,\n  \"ingested\": true,\n  \"flow_id\": 4,\n  \"src_entity_id\": \"172.29.0.10\",\n  \"dst_entity_id\": \"172.29.0.20\",\n  \"eve_seen\": true,\n  \"containment_executed\": false,\n  \"production_fusion_enabled\": false,\n  \"recorded_attack_present\": true,\n  \"notable_bridge_present\": true\n}\n",
-        "step": "run_full_range_demo_scan"
-      },
-      {
-        "detail": "Ingested 4 flows across 4 campaigns",
-        "passed": true,
-        "step": "verify_flow_ingestion"
-      },
-      {
-        "passed": true,
-        "stderr": "",
-        "stdout": "ome/muhammad-bilal/projects/threatfusion-gemini/docs/screenshots/04_n8n_soar_callback.png\nwrote [PROTECTED_WORKSPACE]-gemini/docs/screenshots/05_victim_firewall_containment.png\nwrote [PROTECTED_WORKSPACE]-gemini/docs/screenshots/06_agy_adversarial_audit.png\n",
-        "step": "capture_demo_screenshots"
-      },
-      {
-        "passed": true,
-        "step": "run_full_range_demo_down"
-      }
-    ],
+    "reason": "Skipped in quick / non-E2E mode",
+    "status": "SKIPPED",
+    "steps": [],
     "suite_name": "investor_e2e_suite"
   },
   "jury_governance_suite": {
@@ -141,7 +114,7 @@
         "all_checks_passed": true,
         "failed_check_ids": [],
         "passed": true,
-        "receipt_digest": "8d21f3677f10729519178d0f4d18bbdaad806bbe7e00770ee5c90871cf09dc5c",
+        "receipt_digest": "7433ff528ad14f45134a5a11b75bae310568b5217e83189cde82a7eab321b997",
         "repository_integrity_decision": "GO"
       },
       "section_8_fusion_disabled": {
@@ -217,7 +190,7 @@
         "probe_id": "Probe 7"
       },
       {
-        "detail": "analyst_a identity_verified=False (unverified_local_label); lab_operator identity_verified=True (verified_operator, cert_prefix=320b014f40c0b361)",
+        "detail": "analyst_a identity_verified=False (unverified_local_label); lab_operator identity_verified=True (verified_operator, cert_prefix=119dfdfa0d15160e)",
         "evidence_state": "verified",
         "expected_http_status": "X.509/mTLS",
         "name": "Operator Identity Verification Guard",
@@ -229,5 +202,5 @@
     "suite_name": "red_team_suite",
     "summary": "8/8 Adversarial Red-Team Probes Passed"
   },
-  "timestamp_utc": "2026-11-02T09:20:36.237437+00:00"
+  "timestamp_utc": "2026-11-02T11:05:02.069252+00:00"
 }

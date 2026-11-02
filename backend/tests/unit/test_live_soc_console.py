@@ -1099,7 +1099,7 @@ def test_context_memory_evidence_locker_and_asset_inventory(tmp_path: Path, monk
     assert by_entity["172.29.0.10"]["context_memory_count"] >= 1
     assert by_entity["172.29.0.10"]["flow_count"] == 1
     assert by_entity["203.0.113.10"]["classification"] == "External WAN"
-    assert by_entity["203.0.113.10"]["misp_guard_status"] == 200
+    assert by_entity["203.0.113.10"]["misp_guard_status"] == 422
     queue = list_live_campaigns(db_path, soar_db_path=soar_path)
     queued = next(
         flow

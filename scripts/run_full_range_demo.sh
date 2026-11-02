@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Start the lab console, the private range, the eve follower, and live n8n.
-# The analyst URL is http://127.0.0.1:8766. The process also listens on the
-# docker bridge so n8n can call host.docker.internal:8766. This script does
-# not change the host firewall and does not start Azure resources.
+# The analyst URL is http://127.0.0.1:8766. The process binds to the docker0
+# bridge address when that interface exists, so n8n can call the host without
+# listening on 0.0.0.0. Otherwise it binds 127.0.0.1. This script does not
+# change the host firewall and does not start Azure resources.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -61,22 +62,31 @@ cmd_up() {
   require_tools
   mkdir -p "$DEMO_DIR"
   mkdir -p "${ROOT}/docker/range/eve"
+  local BIND_HOST="127.0.0.1"
+  if command -v ip >/dev/null 2>&1; then
+    local bridge_ip
+    bridge_ip="$(ip -4 -o addr show docker0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+    if [[ "$bridge_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      BIND_HOST="$bridge_ip"
+    fi
+  fi
+  printf '%s\n' "$BIND_HOST" >"${DEMO_DIR}/bind-host"
   if ss -ltn | awk '{print $4}' | grep -Eq "(^|:)${PORT}$"; then
     die "port ${PORT} is already in use"
   fi
   nohup env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 \
-    "$PYTHON" "$SERVER" --bind 0.0.0.0 --port "$PORT" \
+    "$PYTHON" "$SERVER" --bind "$BIND_HOST" --port "$PORT" \
     >"${DEMO_DIR}/console.log" 2>&1 &
   echo $! >"$CONSOLE_PIDFILE"
   local ready=0
   for _i in $(seq 1 50); do
-    if curl -fsS "http://127.0.0.1:${PORT}/healthz" 2>/dev/null | grep -q '"status": "ok"'; then
+    if curl -fsS "http://${BIND_HOST}:${PORT}/healthz" 2>/dev/null | grep -q '"status": "ok"'; then
       ready=1
       break
     fi
     sleep 0.2
   done
-  [[ "$ready" == 1 ]] || die "console did not become ready on 127.0.0.1:${PORT}"
+  [[ "$ready" == 1 ]] || die "console did not become ready on ${BIND_HOST}:${PORT}"
   docker compose -p threatfusion-n8n -f docker/docker-compose.n8n.yml up -d --remove-orphans
   docker compose -p threatfusion-range -f docker/docker-compose.range.yml up -d --remove-orphans
   local deadline=$((SECONDS + 120))
@@ -93,19 +103,23 @@ cmd_up() {
     "$PYTHON" "${ROOT}/scripts/follow_suricata_eve.py" \
     >"$FOLLOWER_LOG" 2>&1 &
   echo $! >"$FOLLOWER_PIDFILE"
-  curl -fsS -X POST "http://127.0.0.1:${PORT}/api/v1/live/purge-bridge-noise" \
+  curl -fsS -X POST "http://${BIND_HOST}:${PORT}/api/v1/live/purge-bridge-noise" \
     -H 'Content-Type: application/json' -d '{}' >/dev/null
-  echo "Analyst URL: http://127.0.0.1:${PORT}/"
+  echo "Analyst URL: http://${BIND_HOST}:${PORT}/"
   echo "Suricata engine started. Follower pid $(cat "$FOLLOWER_PIDFILE")."
 }
 
 cmd_scan() {
   require_tools
+  local BIND_HOST="127.0.0.1"
+  if [[ -f "${DEMO_DIR}/bind-host" ]]; then
+    BIND_HOST="$(tr -d '[:space:]' <"${DEMO_DIR}/bind-host")"
+  fi
   docker inspect -f '{{.State.Running}}' threatfusion_range_attacker | grep -qx true \
     || die "attacker container is not running; use --up first"
   echo "waiting for 172.29.0.10 -> 172.29.0.20 in eve.json and the live queue"
   local response
-  response="$(curl -fsS -X POST "http://127.0.0.1:${PORT}/api/v1/live/range-scan" \
+  response="$(curl -fsS -X POST "http://${BIND_HOST}:${PORT}/api/v1/live/range-scan" \
     -H 'Content-Type: application/json' -d '{}')" || die "range scan was not ingested"
   printf '%s\n' "$response"
   printf '%s\n' "$response" | grep -q '"ingested": true' \

@@ -299,6 +299,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             js_path = REPO_ROOT / "frontend" / "js" / "soc_dashboard.js"
             self._send_file(js_path, "application/javascript; charset=utf-8")
             return
+        if path == "/api/v1/live/advisory-status":
+            self._send_json(200, self._advisory_status_payload())
+            return
         if path in ("/healthz", "/api/v1/heartbeat", "/api/status"):
             self._send_json(200, {"status": "ok", "service": "threatfusion_soc_contract_server"})
             return
@@ -437,12 +440,40 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return Path(str(configured).strip())
         return self._live_db_path().with_name("threatfusion-live-soar.sqlite3")
 
+    def _presented_operator_fingerprint(self) -> str:
+        return (self.headers.get("X-ThreatFusion-Cert-SHA256") or "").strip()
+
+    def _csrf_origin_rejected(self, path: str) -> bool:
+        """Refuse a browser POST whose Origin is not this loopback listener."""
+        if not path.startswith("/api/v1/live/"):
+            return False
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin == "":
+            return False
+        host = urllib.parse.urlparse(origin).hostname
+        allowed = {"127.0.0.1", "localhost", "::1"}
+        bind_host = str(self.server.server_address[0])
+        if bind_host not in {"0.0.0.0", "::", ""}:
+            allowed.add(bind_host.lower())
+        if host is None or host.lower() not in allowed:
+            self._send_json(403, {"error": "csrf_origin_mismatch"})
+            return True
+        return False
+
+    def _advisory_status_payload(self) -> dict[str, Any]:
+        from threatfusion.advisory.gemini_client import advisory_provider_status
+        from threatfusion.api.live_soc_console import disclose_offline_fallback
+
+        return disclose_offline_fallback(advisory_provider_status())
+
     def do_POST(self) -> None:
         path = self.path.split("?")[0]
         if self._rejected_content_length():
             return
         content_length = int(str(self.headers.get("Content-Length")).strip())
         body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
+        if self._csrf_origin_rejected(path):
+            return
 
         if path == "/api/v1/live/purge-bridge-noise":
             from threatfusion.api.live_soc_console import purge_bridge_noise_rows
@@ -592,9 +623,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/v1/live/advisory-status":
-            from threatfusion.advisory.gemini_client import advisory_provider_status
-
-            self._send_json(200, advisory_provider_status())
+            self._send_json(200, self._advisory_status_payload())
             return
 
         if path == "/api/v1/live/agy-audit":
@@ -679,6 +708,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 rationale=str(req_data.get("rationale") or ""),
                 actor_id=str(req_data.get("actor_id") or ""),
                 policy_dir=_operator_policy_dir(),
+                presented_fingerprint=self._presented_operator_fingerprint(),
             )
             status = 200 if result.get("evidence_state") == "verified" else 400
             self._send_json(status, result)
@@ -885,6 +915,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 actor_id=str(req_data.get("actor_id") or ""),
                 reason=str(req_data.get("reason") or ""),
                 policy_dir=_operator_policy_dir(),
+                presented_fingerprint=self._presented_operator_fingerprint(),
             )
             status = 200 if result.get("evidence_state") == "verified" else 400
             self._send_json(status, result)
@@ -982,20 +1013,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             value = str(req_data.get("value", "")).strip()
             ind_type = str(req_data.get("type", "ip-dst")).strip()
 
-            # Refuse RFC1918, ULA, loopback, and link-local before any indicator lookup.
-            if is_rfc1918_or_loopback_ip(value):
-                self._send_json(
-                    422,
-                    {
-                        "error": "RFC1918 private IP lookup forbidden",
-                        "detail": (
-                            f"Private, loopback, or link-local address '{value}' is "
-                            "suppressed before threat intelligence lookup"
-                        ),
-                        "private_ip_guard_triggered": True,
-                        "external_lookup_performed": False,
-                    },
-                )
+            from threatfusion.correlation.misp_client import private_ip_guard_response
+
+            guard_status, guard_payload = private_ip_guard_response(value)
+            if guard_status == 422:
+                self._send_json(422, guard_payload)
                 return
 
             indicator_info = lookup_canonical_indicator(value)

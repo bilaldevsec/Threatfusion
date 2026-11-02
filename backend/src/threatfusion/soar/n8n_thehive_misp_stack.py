@@ -367,6 +367,13 @@ class TheHiveCaseRecord:
             "status": self.status,
             "created_at_utc": self.created_at_utc,
             "transport_error": self.transport_error,
+            "fallback_label": self.status if self.status == "queued_offline" else None,
+            "simulated_external_system": False if self.status == "queued_offline" else None,
+            "transport_disclosure": (
+                "Queued offline. Not a live external case system."
+                if self.status == "queued_offline"
+                else None
+            ),
         }
 
 

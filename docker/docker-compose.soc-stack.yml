@@ -31,7 +31,7 @@ services:
   misp-connector:
     image: python:3.11.10-slim
     container_name: threatfusion_misp_connector
-    command: python /app/scripts/run_misp_and_callback_contract_server.py --port 8080 --bind 0.0.0.0
+    command: python /app/scripts/run_misp_and_callback_contract_server.py --port 8080 --bind 172.28.0.10
     environment:
       - THREATFUSION_MISP_API_KEY=${THREATFUSION_MISP_API_KEY:?required}
       - THREATFUSION_SOAR_HMAC_SECRET=${THREATFUSION_SOAR_HMAC_SECRET:?required}
@@ -42,17 +42,18 @@ services:
       - ../scripts:/app/scripts:ro
       - ../backend/src:/app/backend/src:ro
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://172.28.0.10:8080/healthz')"]
       interval: 10s
       timeout: 5s
       retries: 3
     networks:
-      - threatfusion_soc_net
+      threatfusion_soc_net:
+        ipv4_address: 172.28.0.10
 
   threatfusion-callback:
     image: python:3.11.10-slim
     container_name: threatfusion_callback
-    command: python /app/scripts/run_misp_and_callback_contract_server.py --port 8443 --bind 0.0.0.0 --soar-db-path /app/data/soar.sqlite3
+    command: python /app/scripts/run_misp_and_callback_contract_server.py --port 8443 --bind 172.28.0.11 --soar-db-path /app/data/soar.sqlite3
     environment:
       - THREATFUSION_SOAR_HMAC_SECRET=${THREATFUSION_SOAR_HMAC_SECRET:?required}
       - THREATFUSION_SOAR_LEDGER_DB_PATH=${THREATFUSION_SOAR_LEDGER_DB_PATH:-/app/data/soar.sqlite3}
@@ -64,12 +65,13 @@ services:
       - ../backend/src:/app/backend/src:ro
       - ../data:/app/data
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8443/healthz')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://172.28.0.11:8443/healthz')"]
       interval: 10s
       timeout: 5s
       retries: 3
     networks:
-      - threatfusion_soc_net
+      threatfusion_soc_net:
+        ipv4_address: 172.28.0.11
 
   thehive:
     image: strangebee/thehive:5.2.10

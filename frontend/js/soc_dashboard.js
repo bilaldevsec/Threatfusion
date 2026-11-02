@@ -1351,9 +1351,19 @@
     if (callbackNode) callbackNode.setAttribute('data-evidence-state', 'unavailable');
     const executionPath = inc.executionPath === 'n8n_live_container'
       || inc.executionPath === 'local_contract_fallback'
+      || inc.executionPath === 'queued_offline'
+      || inc.executionPath === 'local_air_gapped'
       ? inc.executionPath
       : 'not dispatched';
-    setInspectorText('inspectorExecutionPath', executionPath);
+    const offlineDisclosure = {
+      local_contract_fallback: 'Simulated local contract. Not a live external SOAR system.',
+      queued_offline: 'Queued offline. Not a live external case system.',
+      local_air_gapped: 'Local air-gapped advisory. Not a live external model.'
+    };
+    const executionLabel = offlineDisclosure[executionPath]
+      ? executionPath + '. ' + offlineDisclosure[executionPath]
+      : executionPath;
+    setInspectorText('inspectorExecutionPath', executionLabel);
     showOperatorStamp(inc);
     const verdictNode = document.getElementById('analystVerdictDisplay');
     if (verdictNode) {
@@ -2216,15 +2226,13 @@
 
   async function refreshAdvisoryStatus() {
     try {
-      const resp = await fetch('/api/v1/live/advisory-status', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: '{}'
-      });
+      const resp = await fetch('/api/v1/live/advisory-status');
       const data = await resp.json();
       const badge = document.getElementById('copilotProviderBadge');
       if (badge && data.label) {
-        badge.textContent = data.label;
+        badge.textContent = data.transport_disclosure
+          ? data.label + '. ' + data.transport_disclosure
+          : data.label;
         badge.setAttribute('data-evidence-state', data.provider === 'gemini' ? 'verified' : 'unavailable');
       }
     } catch (err) {
@@ -2811,10 +2819,11 @@
         const mttrText = Number.isFinite(mttr) ? mttr.toFixed(3) + 's' : 'n/a';
         const caseId = typeof data.thehive_case_id === 'string' ? data.thehive_case_id : 'not recorded';
         const path = typeof data.execution_path === 'string' ? data.execution_path : 'not dispatched';
+        const disclosure = typeof data.transport_disclosure === 'string' ? data.transport_disclosure : '';
         setLiveText(
           'campaignQueueStatus',
-          'execution_path: ' + path + '. HMAC ' + sig + '. mttr_seconds ' + mttrText + '. Case ' + caseId + '. Host containment was not executed.',
-          'verified'
+          'execution_path: ' + path + (disclosure ? '. ' + disclosure : '') + '. HMAC ' + sig + '. mttr_seconds ' + mttrText + '. Case ' + caseId + '. Host containment was not executed.',
+          data.fallback_label ? 'unavailable' : 'verified'
         );
       } else {
         setLiveText('campaignQueueStatus', 'Signed callback unavailable.', 'unavailable');
@@ -2965,7 +2974,12 @@
         : 'No local corpus hit.';
       const narrative = typeof data.narrative === 'string' && data.narrative ? data.narrative : retrieved;
       const provider = data.provider_label || 'AI Copilot: Local Air-Gapped Engine';
-      setLiveText('liveCopilotAnswer', provider + '. ' + narrative, data.evidence_state || 'unavailable');
+      const disclosure = typeof data.transport_disclosure === 'string' ? data.transport_disclosure : '';
+      setLiveText(
+        'liveCopilotAnswer',
+        provider + (disclosure ? '. ' + disclosure : '') + '. ' + narrative,
+        data.evidence_state || 'unavailable'
+      );
       const badge = document.getElementById('copilotProviderBadge');
       if (badge) {
         badge.textContent = provider;

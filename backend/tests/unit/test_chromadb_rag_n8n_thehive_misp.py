@@ -2095,7 +2095,9 @@ class TestMegaMilestone38FailClosedEvidence:
         compose = (REPO_ROOT / "docker" / "docker-compose.soc-stack.yml").read_text(
             encoding="utf-8"
         )
-        assert "--bind 0.0.0.0" in compose
+        assert "--bind 172.28.0.10" in compose
+        assert "--bind 172.28.0.11" in compose
+        assert "--bind 0.0.0.0" not in compose
 
         alerts = AlertCandidateRepository(tmp_path / "alerts.sqlite3")
         with alerts._connect() as conn:

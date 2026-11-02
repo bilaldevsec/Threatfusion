@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import hashlib
+import hmac
 import html
 import json
 import math
@@ -90,10 +91,50 @@ def compute_alert_noise_reduction_funnel(
     )
 
 
+_RECEIPT_CANONICAL_FIELDS = (
+    "playbook_id",
+    "candidate_id",
+    "state",
+    "actor",
+    "reason",
+    "timestamp_utc",
+)
+
+
+def _receipt_hmac_material(receipt: Mapping[str, Any]) -> bytes:
+    payload = {field: receipt.get(field, "") for field in _RECEIPT_CANONICAL_FIELDS}
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "utf-8"
+    )
+
+
 def _is_verified_receipt_dict(receipt: Any) -> bool:
-    """Validate that a SOAR callback or execution receipt contains a verified 64-hex SHA-256 signature."""
+    """Accept a callback receipt only when its HMAC matches, or a legacy fixture signature is intact.
+
+    A ``callback_hmac_sha256`` claim, a verification key, or the canonical callback
+    fields are checked with ``hmac.compare_digest``. A bare 64-hex string is not
+    treated as proof once any of those are present. Fixtures that only carry a
+    precomputed ``signature_sha256`` keep the previous shape check.
+    """
     if not isinstance(receipt, dict):
         return False
+    claimed = receipt.get("callback_hmac_sha256")
+    secret = receipt.get("verification_key", receipt.get("hmac_secret"))
+    canonical_present = any(field in receipt for field in _RECEIPT_CANONICAL_FIELDS)
+    if (
+        claimed is not None
+        or secret not in (None, "")
+        or (canonical_present and "callback_hmac_sha256" in receipt)
+    ):
+        if not isinstance(claimed, str) or not isinstance(secret, str):
+            return False
+        claimed_hex = claimed.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", claimed_hex) or secret == "":
+            return False
+        digest = hmac.new(
+            secret.encode("utf-8"), _receipt_hmac_material(receipt), hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(digest, claimed_hex)
     sig = str(
         receipt.get(
             "signature_sha256",
@@ -119,6 +160,13 @@ def _is_verified_receipt_dict(receipt: Any) -> bool:
     return True
 
 
+def evidence_state_from_gates(receipt_ok: bool, chain_ok: bool, grounded_ok: bool) -> str:
+    """Return ``verified`` only when the receipt, the hash chain, and the explanation all pass."""
+    if receipt_ok and chain_ok and grounded_ok:
+        return "verified"
+    return "unavailable"
+
+
 def _is_hex64(value: str) -> bool:
     return bool(re.fullmatch(r"[0-9a-fA-F]{64}", value))
 
@@ -127,16 +175,76 @@ def _is_genesis_anchor(value: str) -> bool:
     return value == ("0" * 64) or value.startswith("GENESIS")
 
 
+_CANONICAL_CHAIN_FIELDS = (
+    "prev_entry_sha256",
+    "sequence_id",
+    "playbook_id",
+    "candidate_id",
+    "state",
+    "actor",
+    "reason",
+    "timestamp_utc",
+)
+
+
+def _entries_use_canonical_chain(entries: Sequence[Any]) -> bool:
+    return all(
+        isinstance(record, dict) and all(field in record for field in _CANONICAL_CHAIN_FIELDS)
+        for record in entries
+    )
+
+
+def _verify_canonical_audit_entries(entries: Sequence[Mapping[str, Any]]) -> bool:
+    """Recompute each digest from the canonical fields. Genesis is ``0`` * 64."""
+    from threatfusion.soar.playbook_ledger import (
+        SOAR_AUDIT_GENESIS_HASH,
+        compute_canonical_audit_entry_hash,
+    )
+
+    expected_prev = SOAR_AUDIT_GENESIS_HASH
+    for index, record in enumerate(entries):
+        try:
+            sequence_id = int(record["sequence_id"])
+        except (TypeError, ValueError):
+            return False
+        if sequence_id != index + 1:
+            return False
+        prev = str(record.get("prev_entry_sha256") or "")
+        if prev != expected_prev:
+            return False
+        digest = compute_canonical_audit_entry_hash(
+            prev_entry_sha256=prev,
+            sequence_id=sequence_id,
+            playbook_id=str(record.get("playbook_id") or ""),
+            candidate_id=str(record.get("candidate_id") or ""),
+            state=str(record.get("state") or ""),
+            actor=str(record.get("actor") or ""),
+            reason=None if record.get("reason") is None else str(record.get("reason")),
+            timestamp_utc=str(record.get("timestamp_utc") or ""),
+        )
+        stored = str(record.get("entry_sha256") or record.get("entry_hash") or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", stored) or not hmac.compare_digest(digest, stored):
+            return False
+        expected_prev = digest
+    return True
+
+
 def verify_audit_chain_integrity(entries: Any) -> bool:
     """Verify cryptographic audit hash chain integrity across ledger entries.
 
-    Entry 0 must carry a genesis anchor or a 64-hex parent snapshot anchor.
-    Every later entry must set prev_entry_sha256 to the previous entry hash.
+    Canonical entries are recomputed from ``prev_entry_sha256``, ``sequence_id``,
+    ``playbook_id``, ``candidate_id``, ``state``, ``actor``, ``reason``, and
+    ``timestamp_utc``, starting at genesis ``0`` * 64. A reordered, truncated,
+    or tampered canonical chain is rejected. Legacy fixtures that only link
+    ``entry_sha256`` values keep the previous parent-link check. An empty
+    entry list is not a verified chain.
     """
     if not entries:
         return False
     if not isinstance(entries, (list, tuple)):
         return False
+    if _entries_use_canonical_chain(entries):
+        return _verify_canonical_audit_entries(entries)
     previous_entry_hash: str | None = None
     for index, record in enumerate(entries):
         if not isinstance(record, dict):
@@ -554,7 +662,7 @@ def build_five_tab_investigation_inspector(
 
     tab1_state = "verified" if grounded_ok else "unavailable"
     tab3_state = "verified" if mitre_ok else "unavailable"
-    tab5_state = "verified" if (audit_chain_valid and soar_verified) else "unavailable"
+    tab5_state = evidence_state_from_gates(soar_verified, audit_chain_valid, grounded_ok)
 
     tab_1 = {
         "title": "Executive Summary & Asset Exposure",
@@ -1629,6 +1737,15 @@ def render_dashboard_html(
             if (sel.soar_recommendations and len(sel.soar_recommendations) > 0)
             else None
         )
+        explanation_summary = ""
+        if isinstance(sel.explanation, dict):
+            explanation_summary = str(sel.explanation.get("summary") or "")
+        grounded_for_badge = bool(explanation_summary) and verify_explanation_groundedness(
+            explanation_summary, bundle
+        )
+        evidence_badge_state = evidence_state_from_gates(
+            valid_dispatch, valid_soar_chain, grounded_for_badge
+        )
         anatomy = build_four_block_investigation_anatomy(
             bundle,
             soar_record=first_soar,
@@ -1641,7 +1758,7 @@ def render_dashboard_html(
             <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.75rem;">
                 <h3 style="margin:0;">5-Tab Investigation Inspector &amp; Standardized 4-Block Case Anatomy</h3>
                 <div style="display:flex;gap:0.4rem;align-items:center;">
-                    <span class="badge" data-evidence-state="{'verified' if (valid_dispatch and valid_soar_chain) else 'unavailable'}">Grounded Evidence: {'Verified' if (valid_dispatch and valid_soar_chain) else 'Unavailable'}</span>
+                    <span class="badge" data-evidence-state="{evidence_badge_state}">Grounded Evidence: {'Verified' if evidence_badge_state == 'verified' else 'Unavailable'}</span>
                     <button class="btn-submit" type="button">Approve Playbook</button>
                 </div>
             </div>

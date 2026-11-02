@@ -678,16 +678,18 @@ def add_analyst_note(
 def answer_mitre_copilot(question: str, rag_db_path: Path) -> dict[str, Any]:
     """Answer from the local MITRE corpus, then an optional grounded Gemini brief."""
     if _CONTAINMENT_REQUEST.search(question or ""):
-        return {
-            "schema_version": "live_mitre_copilot_v1",
-            "evidence_state": "unavailable",
-            "execution_authorized": False,
-            "reason": "containment_refused",
-            "hits": [],
-            "provider": "local_air_gapped",
-            "provider_label": "AI Copilot: Local Air-Gapped Engine",
-            "narrative": "",
-        }
+        return disclose_offline_fallback(
+            {
+                "schema_version": "live_mitre_copilot_v1",
+                "evidence_state": "unavailable",
+                "execution_authorized": False,
+                "reason": "containment_refused",
+                "hits": [],
+                "provider": "local_air_gapped",
+                "provider_label": "AI Copilot: Local Air-Gapped Engine",
+                "narrative": "",
+            }
+        )
     rag = ChromaDbMitrePlaybookRag(rag_db_path)
     hits = rag.query_semantic_rag(question or "", top_k=3)
     hit_rows = [
@@ -701,21 +703,23 @@ def answer_mitre_copilot(question: str, rag_db_path: Path) -> dict[str, Any]:
     ]
     narrative = _grounded_gemini_narrative(question or "", hit_rows)
     provider = str(narrative.get("provider") or "local_air_gapped")
-    return {
-        "schema_version": "live_mitre_copilot_v1",
-        "evidence_state": "verified" if hits or narrative.get("narrative") else "unavailable",
-        "execution_authorized": False,
-        "reason": (
-            "gemini_grounded"
-            if narrative.get("narrative")
-            else ("local_corpus" if hits else "no_corpus_hit")
-        ),
-        "hits": hit_rows,
-        "provider": provider,
-        "provider_label": narrative.get("provider_label"),
-        "narrative": narrative.get("narrative") or "",
-        "production_fusion_enabled": False,
-    }
+    return disclose_offline_fallback(
+        {
+            "schema_version": "live_mitre_copilot_v1",
+            "evidence_state": "verified" if hits or narrative.get("narrative") else "unavailable",
+            "execution_authorized": False,
+            "reason": (
+                "gemini_grounded"
+                if narrative.get("narrative")
+                else ("local_corpus" if hits else "no_corpus_hit")
+            ),
+            "hits": hit_rows,
+            "provider": provider,
+            "provider_label": narrative.get("provider_label"),
+            "narrative": narrative.get("narrative") or "",
+            "production_fusion_enabled": False,
+        }
+    )
 
 
 def _handoff_brief_or_local(
@@ -764,7 +768,7 @@ def _grounded_gemini_narrative(question: str, hits: list[dict[str, Any]]) -> dic
         "narrative": "",
     }
     if not status.get("live_call_allowed"):
-        return local
+        return disclose_offline_fallback(local)
     lines = [f"Analyst question: {question}"]
     for hit in hits:
         lines.append(
@@ -1930,8 +1934,24 @@ def _store_flow_receipt(db_path: Path, flow_id: int, receipt: Mapping[str, Any])
         )
 
 
-def operator_stamp(actor_id: str, policy_dir: Path | None) -> dict[str, Any]:
-    """Stamp a verified operator only when an enrolled credential matches this actor."""
+def operator_stamp(
+    actor_id: str, policy_dir: Path | None, presented_fingerprint: str | None = None
+) -> dict[str, Any]:
+    """Stamp a verified operator only when an enrolled credential matches this actor.
+
+    A presented fingerprint is checked with ``verify_operator_identity``. Callers
+    that omit it keep the enrolled-actor stamp used by the in-process lab path.
+    """
+    if presented_fingerprint is not None:
+        from threatfusion.operations.human_credentials import verify_operator_identity
+
+        stamp = verify_operator_identity(policy_dir, actor_id, presented_fingerprint)
+        return {
+            "operator_id": stamp["operator_id"],
+            "cert_sha256_prefix": stamp["cert_sha256_prefix"],
+            "identity_verified": bool(stamp["identity_verified"]),
+            "identity_label": stamp["identity_label"],
+        }
     unverified = {
         "operator_id": "",
         "cert_sha256_prefix": "",
@@ -2101,6 +2121,7 @@ def approve_live_soar(
     actor_id: str,
     reason: str,
     policy_dir: Path | None = None,
+    presented_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """Record analyst approval on the SOAR hash chain. Containment is not executed."""
     refused = {
@@ -2140,7 +2161,7 @@ def approve_live_soar(
         receipt["flow_id"] = flow_id
         receipt["candidate_id"] = candidate_id
         _store_flow_receipt(live_db_path, flow_id, receipt)
-        stamp = operator_stamp(author, policy_dir)
+        stamp = operator_stamp(author, policy_dir, presented_fingerprint)
         _store_operator_stamp(live_db_path, flow_id, stamp)
         receipt.update(stamp)
         return receipt
@@ -2166,7 +2187,7 @@ def approve_live_soar(
     receipt["candidate_id"] = candidate_id
     receipt["ledger_state"] = updated.state
     _store_flow_receipt(live_db_path, flow_id, receipt)
-    stamp = operator_stamp(author, policy_dir)
+    stamp = operator_stamp(author, policy_dir, presented_fingerprint)
     _store_operator_stamp(live_db_path, flow_id, stamp)
     receipt.update(stamp)
     return receipt
@@ -2250,6 +2271,23 @@ def _n8n_result_dict(payload: Any) -> dict[str, Any]:
 
 LOCAL_CONTRACT_FALLBACK = "local_contract_fallback"
 N8N_LIVE_CONTAINER = "n8n_live_container"
+OFFLINE_FALLBACK_LABELS = {
+    "local_contract_fallback": "Simulated local contract. Not a live external SOAR system.",
+    "queued_offline": "Queued offline. Not a live external case system.",
+    "local_air_gapped": "Local air-gapped advisory. Not a live external model.",
+}
+
+
+def disclose_offline_fallback(payload: dict[str, Any]) -> dict[str, Any]:
+    """Label a simulated fallback so it is not presented as a live external system."""
+    for key in ("provider", "thehive_status", "status", "query_mode", "execution_path"):
+        value = payload.get(key)
+        if isinstance(value, str) and value in OFFLINE_FALLBACK_LABELS:
+            payload["fallback_label"] = value
+            payload["simulated_external_system"] = False
+            payload["transport_disclosure"] = OFFLINE_FALLBACK_LABELS[value]
+            return payload
+    return payload
 
 
 def _n8n_contract_base(contract_base_url: str, override: str | None) -> str:
@@ -2382,26 +2420,28 @@ def _dispatch_through_live_n8n(
         mttr_seconds=float(mttr),
         execution_path=N8N_LIVE_CONTAINER,
     )
-    return {
-        "schema_version": "live_soar_callback_v1",
-        "evidence_state": "verified",
-        "reason": "signed_callback_recorded",
-        "execution_authorized": False,
-        "containment_executed": False,
-        "production_fusion_enabled": False,
-        "callback_recorded": True,
-        "signature_sha256": callback_sig,
-        "thehive_case_id": case.case_id,
-        "thehive_status": case.status,
-        "four_block_recorded": all(label in case.description for label in four_block_labels),
-        "mttr_seconds": float(mttr),
-        "flow_id": flow_id,
-        "playbook_id": approved.playbook_id,
-        "candidate_id": candidate_id,
-        "verify_state": True,
-        "execution_path": N8N_LIVE_CONTAINER,
-        "private_ip_guard_triggered": result.get("private_ip_guard_triggered") is True,
-    }
+    return disclose_offline_fallback(
+        {
+            "schema_version": "live_soar_callback_v1",
+            "evidence_state": "verified",
+            "reason": "signed_callback_recorded",
+            "execution_authorized": False,
+            "containment_executed": False,
+            "production_fusion_enabled": False,
+            "callback_recorded": True,
+            "signature_sha256": callback_sig,
+            "thehive_case_id": case.case_id,
+            "thehive_status": case.status,
+            "four_block_recorded": all(label in case.description for label in four_block_labels),
+            "mttr_seconds": float(mttr),
+            "flow_id": flow_id,
+            "playbook_id": approved.playbook_id,
+            "candidate_id": candidate_id,
+            "verify_state": True,
+            "execution_path": N8N_LIVE_CONTAINER,
+            "private_ip_guard_triggered": result.get("private_ip_guard_triggered") is True,
+        }
+    )
 
 
 def dispatch_approved_callback(
@@ -2447,21 +2487,23 @@ def dispatch_approved_callback(
         return refused
     stored_sig = str(flow["callback_signature"] or "")
     if flow["callback_recorded"] and _SHA256_HEX.fullmatch(stored_sig):
-        return {
-            "schema_version": "live_soar_callback_v1",
-            "evidence_state": "verified",
-            "reason": "already_recorded",
-            "execution_authorized": False,
-            "containment_executed": False,
-            "production_fusion_enabled": False,
-            "callback_recorded": True,
-            "signature_sha256": stored_sig,
-            "thehive_case_id": flow["thehive_case_id"],
-            "mttr_seconds": flow["mttr_seconds"],
-            "flow_id": flow_id,
-            "playbook_id": flow["playbook_id"],
-            "execution_path": flow["execution_path"] or LOCAL_CONTRACT_FALLBACK,
-        }
+        return disclose_offline_fallback(
+            {
+                "schema_version": "live_soar_callback_v1",
+                "evidence_state": "verified",
+                "reason": "already_recorded",
+                "execution_authorized": False,
+                "containment_executed": False,
+                "production_fusion_enabled": False,
+                "callback_recorded": True,
+                "signature_sha256": stored_sig,
+                "thehive_case_id": flow["thehive_case_id"],
+                "mttr_seconds": flow["mttr_seconds"],
+                "flow_id": flow_id,
+                "playbook_id": flow["playbook_id"],
+                "execution_path": flow["execution_path"] or LOCAL_CONTRACT_FALLBACK,
+            }
+        )
     candidate_id = f"live_flow:{flow_id}"
     repository = SoarPlaybookSqliteRepository(soar_db_path)
     approved = next(
@@ -2563,27 +2605,29 @@ def dispatch_approved_callback(
         mttr_seconds=mttr,
         execution_path=LOCAL_CONTRACT_FALLBACK,
     )
-    return {
-        "schema_version": "live_soar_callback_v1",
-        "evidence_state": "verified",
-        "reason": "signed_callback_recorded",
-        "execution_authorized": False,
-        "containment_executed": False,
-        "production_fusion_enabled": False,
-        "callback_recorded": True,
-        "signature_sha256": callback_sig,
-        "thehive_case_id": case.case_id,
-        "thehive_status": case.status,
-        "four_block_recorded": all(label in case.description for label in four_block_labels),
-        "t_approval_queued": callback.get("t_approval_queued"),
-        "t_callback_verified": callback.get("t_callback_verified"),
-        "mttr_seconds": mttr,
-        "flow_id": flow_id,
-        "playbook_id": approved.playbook_id,
-        "candidate_id": candidate_id,
-        "verify_state": True,
-        "execution_path": LOCAL_CONTRACT_FALLBACK,
-    }
+    return disclose_offline_fallback(
+        {
+            "schema_version": "live_soar_callback_v1",
+            "evidence_state": "verified",
+            "reason": "signed_callback_recorded",
+            "execution_authorized": False,
+            "containment_executed": False,
+            "production_fusion_enabled": False,
+            "callback_recorded": True,
+            "signature_sha256": callback_sig,
+            "thehive_case_id": case.case_id,
+            "thehive_status": case.status,
+            "four_block_recorded": all(label in case.description for label in four_block_labels),
+            "t_approval_queued": callback.get("t_approval_queued"),
+            "t_callback_verified": callback.get("t_callback_verified"),
+            "mttr_seconds": mttr,
+            "flow_id": flow_id,
+            "playbook_id": approved.playbook_id,
+            "candidate_id": candidate_id,
+            "verify_state": True,
+            "execution_path": LOCAL_CONTRACT_FALLBACK,
+        }
+    )
 
 
 def store_flow_provenance(
@@ -2972,23 +3016,12 @@ def build_glass_box_checklist(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def private_ip_guard_response(value: str) -> tuple[int, dict[str, Any]]:
-    """Return HTTP 422 for RFC1918, IPv6 ULA, loopback, or link-local. No lookup is performed."""
-    from threatfusion.soar.n8n_thehive_misp_stack import is_rfc1918_or_loopback_ip
+    """Return HTTP 422 for a non-global or evasive address. No lookup is performed."""
+    from threatfusion.correlation.misp_client import (
+        private_ip_guard_response as strict_guard,
+    )
 
-    blocked = is_rfc1918_or_loopback_ip(value)
-    if blocked:
-        return 422, {
-            "error": "RFC1918 private IP lookup forbidden",
-            "private_ip_guard_triggered": True,
-            "external_lookup_performed": False,
-            "value": value.strip(),
-        }
-    return 200, {
-        "private_ip_guard_triggered": False,
-        "external_lookup_performed": False,
-        "matched": False,
-        "value": value.strip(),
-    }
+    return strict_guard(value)
 
 
 _TRIAGE_ACTIONS = {
@@ -3201,6 +3234,7 @@ def record_analyst_verdict(
     rationale: str,
     actor_id: str,
     policy_dir: Path | None = None,
+    presented_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """Store an analyst verdict beside the frozen Random Forest decision."""
     chosen = verdict.strip().lower()
@@ -3243,7 +3277,7 @@ def record_analyst_verdict(
             "SELECT decision FROM live_flows WHERE flow_id = ?", (flow_id,)
         ).fetchone()
     frozen_decision = None if decision is None else decision["decision"]
-    stamp = operator_stamp(actor, policy_dir)
+    stamp = operator_stamp(actor, policy_dir, presented_fingerprint)
     _store_operator_stamp(db_path, flow_id, stamp)
     memory_rule = f"Analyst verdict {chosen}. {text}"[:500]
     memories = _upsert_context_memory_rows(
@@ -3644,7 +3678,7 @@ def _authorized_range_flow(
     from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
 
     repository = SoarPlaybookSqliteRepository(soar_db_path)
-    chain_ok, _message = repository.verify_audit_chain_integrity()
+    chain_ok, _message = repository.verify_audit_chain_integrity(require_non_empty=True)
     approved = next(
         (
             record

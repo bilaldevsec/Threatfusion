@@ -328,11 +328,20 @@ def test_http_misp_lookup_refuses_rfc1918_loopback_and_link_local_before_lookup(
         {"value": "198.51.100.27", "type": "ip-dst"},
         headers={"Authorization": MISP_KEY},
     )
+    assert status == 422
+    assert opened["error"] == "private_or_reserved_ip_rejected"
+    assert opened["external_lookup_performed"] is False
+    assert lookups["count"] == 0
+
+    status, public_lookup = _post(
+        live_http,
+        "/attributes/restSearch",
+        {"value": "8.8.8.8", "type": "ip-dst"},
+        headers={"Authorization": MISP_KEY},
+    )
     assert status == 200
     assert lookups["count"] == 1
-    attributes = opened["response"]["Attribute"]
-    assert attributes[0]["event_id"] == "misp_evt_c2_03"
-    assert attributes[0]["value"] == "198.51.100.27"
+    assert public_lookup["response"]["Attribute"] == []
 
     status, public = _post(
         live_http,

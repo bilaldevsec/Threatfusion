@@ -732,6 +732,46 @@ def active_fingerprint(directory: Path, actor_id: str) -> str | None:
     return None
 
 
+def verify_operator_identity(
+    directory: Path | None, actor_id: str, presented_fingerprint: str
+) -> dict[str, object]:
+    """Bind an approval stamp to an enrolled certificate. A request claim is not identity.
+
+    ``presented_fingerprint`` must be the DER SHA-256 of the certificate the
+    caller actually presented. A matching enrolled actor is ``identity_verified``.
+    A missing, revoked, or mismatched fingerprint stays unverified.
+    """
+    import hmac
+
+    unverified: dict[str, object] = {
+        "operator_id": "",
+        "cert_sha256_prefix": "",
+        "identity_verified": False,
+        "identity_label": "unverified_local_label",
+    }
+    author = actor_id.strip()
+    presented = presented_fingerprint.strip().lower()
+    if (
+        author == ""
+        or author == "analyst_a"
+        or directory is None
+        or presented == ""
+        or not valid_actor_id(author)
+    ):
+        return unverified
+    enrolled = active_fingerprint(directory, author)
+    if enrolled is None or len(enrolled) != len(presented):
+        return unverified
+    if not hmac.compare_digest(enrolled.lower(), presented):
+        return unverified
+    return {
+        "operator_id": author,
+        "cert_sha256_prefix": enrolled[:16],
+        "identity_verified": True,
+        "identity_label": "verified_operator",
+    }
+
+
 def restrict(directory: Path, fingerprint: str, *, revoke: bool) -> None:
     """Retain the exact record; no delete, re-enable, or un-revoke operation."""
     with _boundary(), _directory(directory, write=True) as fd:
