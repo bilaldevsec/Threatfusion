@@ -31,6 +31,47 @@ artifacts/reports/*
 !artifacts/models/.gitkeep
 !artifacts/reports/.gitkeep
 
+# Frozen model sidecar JSON. Parent directories are re-opened only so Git can
+# see the named JSON files. Every other file in those directories stays ignored.
+# Weight digests are unchanged.
+!artifacts/models/network_logistic_baseline/
+artifacts/models/network_logistic_baseline/*
+!artifacts/models/network_logistic_baseline/full-network-logistic-5e70ed9-v1/
+artifacts/models/network_logistic_baseline/full-network-logistic-5e70ed9-v1/*
+!artifacts/models/network_logistic_baseline/full-network-logistic-5e70ed9-v1/model_config.json
+!artifacts/models/network_logistic_baseline/full-network-logistic-5e70ed9-v1/evaluation_report.json
+!artifacts/models/network_random_forest_baseline/
+artifacts/models/network_random_forest_baseline/*
+!artifacts/models/network_random_forest_baseline/full-network-random-forest-6d69c72-v1/
+artifacts/models/network_random_forest_baseline/full-network-random-forest-6d69c72-v1/*
+!artifacts/models/network_random_forest_baseline/full-network-random-forest-6d69c72-v1/model_config.json
+!artifacts/models/network_random_forest_baseline/full-network-random-forest-6d69c72-v1/evaluation_report.json
+!artifacts/models/network_autoencoder/
+artifacts/models/network_autoencoder/*
+!artifacts/models/network_autoencoder/full-benign-autoencoder-255c342-v1/
+artifacts/models/network_autoencoder/full-benign-autoencoder-255c342-v1/*
+!artifacts/models/network_autoencoder/full-benign-autoencoder-255c342-v1/autoencoder_config.json
+!artifacts/models/network_autoencoder/full-benign-autoencoder-255c342-v1/artifact_manifest.json
+!artifacts/models/network_autoencoder/full-benign-autoencoder-255c342-v1/evaluation_report.json
+!artifacts/models/network_autoencoder/full-benign-autoencoder-255c342-v1/threshold.json
+!artifacts/models/network_autoencoder/full-benign-autoencoder-2a51c94-v2/
+artifacts/models/network_autoencoder/full-benign-autoencoder-2a51c94-v2/*
+!artifacts/models/network_autoencoder/full-benign-autoencoder-2a51c94-v2/autoencoder_config.json
+!artifacts/models/network_autoencoder/full-benign-autoencoder-2a51c94-v2/artifact_manifest.json
+!artifacts/models/network_autoencoder/full-benign-autoencoder-2a51c94-v2/evaluation_report.json
+!artifacts/models/network_autoencoder/full-benign-autoencoder-2a51c94-v2/source_provenance_manifest.json
+!artifacts/models/network_autoencoder/full-benign-autoencoder-2a51c94-v2/threshold.json
+!artifacts/models/network_rate_log1p_autoencoder/
+artifacts/models/network_rate_log1p_autoencoder/*
+!artifacts/models/network_rate_log1p_autoencoder/rate-log1p-autoencoder-b5e6e5d-v1/
+artifacts/models/network_rate_log1p_autoencoder/rate-log1p-autoencoder-b5e6e5d-v1/*
+!artifacts/models/network_rate_log1p_autoencoder/rate-log1p-autoencoder-b5e6e5d-v1/artifact_manifest.json
+!artifacts/models/network_rate_log1p_autoencoder/rate-log1p-autoencoder-b5e6e5d-v1/completion_manifest.json
+!artifacts/models/network_rate_log1p_autoencoder/rate-log1p-autoencoder-b5e6e5d-v1/evaluation_report.json
+!artifacts/models/network_rate_log1p_autoencoder/rate-log1p-autoencoder-b5e6e5d-v1/experiment_config.json
+!artifacts/models/network_rate_log1p_autoencoder/rate-log1p-autoencoder-b5e6e5d-v1/source_provenance_manifest.json
+!artifacts/models/network_rate_log1p_autoencoder/rate-log1p-autoencoder-b5e6e5d-v1/threshold.json
+
 *.pcap
 *.pcapng
 *.parquet

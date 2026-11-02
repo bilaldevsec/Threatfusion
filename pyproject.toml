@@ -24,7 +24,9 @@ explicit = true
 dev = [
     "black>=26,<27",
     "pytest>=9,<10",
+    "python-pptx>=1.0.2,<2",
     "ruff>=0.15,<0.16",
+    "setuptools>=77",
 ]
 
 [build-system]

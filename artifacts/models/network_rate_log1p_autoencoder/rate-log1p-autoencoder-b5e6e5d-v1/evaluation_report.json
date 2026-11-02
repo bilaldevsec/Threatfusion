@@ -1,0 +1,290 @@
+{
+  "artifact_identity": "910d2977c93285f54c33408268bb316c5a8f9093042927a77de5ba6fe5fb36f4",
+  "baseline": {
+    "autoencoder": {
+      "attack_f1": 0.4986205516549649,
+      "attack_precision": 0.5497787610619469,
+      "attack_recall": 0.4561725562184488,
+      "false_negative": 2370,
+      "false_positive": 1628,
+      "false_positive_rate": 0.007671646011026813,
+      "true_negative": 210582,
+      "true_positive": 1988
+    },
+    "complementarity": {
+      "attack": {
+        "autoencoder_only_rf_missed": 96,
+        "both_detected": 1892,
+        "missed_by_both": 217,
+        "random_forest_only_ae_missed": 2153
+      },
+      "normal": {
+        "autoencoder_only_added_false_positive": 1574,
+        "both_false_positive": 54,
+        "correctly_unflagged_by_both": 210435,
+        "random_forest_only_false_positive": 147
+      }
+    }
+  },
+  "candidate": {
+    "acceptance_gates": {
+      "ae_only_attacks_at_least_96": {
+        "passed": false,
+        "value": 59
+      },
+      "ae_only_benign_false_positives_at_most_1574": {
+        "passed": false,
+        "value": 2080
+      },
+      "all_passed": false,
+      "ratio_at_least_0_075": {
+        "denominator": 2080,
+        "integer_test": "40*A >= 3*B when B > 0",
+        "numerator": 59,
+        "passed": false,
+        "value": 0.028365384615384615,
+        "zero_denominator_status": "finite"
+      },
+      "total_ae_false_positives_at_most_1628": {
+        "passed": false,
+        "value": 2122
+      }
+    },
+    "autoencoder": {
+      "accuracy": 0.9744422075283514,
+      "attack_count": 4358,
+      "attack_f1": 0.2545454545454546,
+      "attack_precision": 0.3081186827518748,
+      "attack_recall": 0.21684258834327674,
+      "average_precision": 0.15068747159331924,
+      "balanced_accuracy": 0.6034215297873021,
+      "false_negative": 3413,
+      "false_positive": 2122,
+      "false_positive_rate": 0.009999528768672541,
+      "normal_count": 212210,
+      "predicted_anomaly_count": 3067,
+      "predicted_anomaly_percentage": 1.4161833696575672,
+      "reconstruction_threshold": 0.08645885557604867,
+      "roc_auc": 0.8668767445047539,
+      "sample_count": 216568,
+      "score_identity": "mean_squared_reconstruction_error_14_rate_log1p_float32_per_record_v1",
+      "threshold_counts": {
+        "above": 3067,
+        "below": 213500,
+        "equal": 1
+      },
+      "threshold_operator": ">",
+      "true_negative": 210088,
+      "true_positive": 945
+    },
+    "complementarity": {
+      "attack": {
+        "autoencoder_only_rf_missed": 59,
+        "both_detected": 886,
+        "missed_by_both": 254,
+        "random_forest_only_ae_missed": 3159
+      },
+      "hypothetical_or_rule": {
+        "added_false_positives_over_random_forest": 2080,
+        "added_true_positives_over_random_forest": 59,
+        "not_enabled": true
+      },
+      "normal": {
+        "autoencoder_only_added_false_positive": 2080,
+        "both_false_positive": 42,
+        "correctly_unflagged_by_both": 209929,
+        "random_forest_only_false_positive": 159
+      }
+    }
+  },
+  "checks": {
+    "baseline_rf_received_unchanged_matrix": true,
+    "candidate_and_rf_label_order_exact": true,
+    "candidate_bundle_verified": true,
+    "cic_accessed": false,
+    "completed_report_persisted_before_chart": true,
+    "february_accessed": false
+  },
+  "completed": true,
+  "deterioration": {
+    "attacks_caught_by_both_reduced": true,
+    "both_detected_attack_change": -1006,
+    "overall_recall_change": -0.23932996787517208,
+    "overall_recall_reduced": true,
+    "true_positive_change": -1043
+  },
+  "disposition": "FAIL_preserve_baseline",
+  "evidence_label": "January calibration-informed adaptively-selected development evidence",
+  "fit": {
+    "benign_weight_rows": 847837,
+    "epoch_mean_losses": [
+      0.2792568131615104,
+      0.08291390006829111,
+      0.045347430524263245,
+      0.033785557699955344,
+      0.030956989261032547,
+      0.02700649169537851,
+      0.024761158750945075,
+      0.02411975550550748,
+      0.023758786321953183,
+      0.023474729886530737,
+      0.023148770906527474,
+      0.02289710552261111,
+      0.022754361577891968,
+      0.022633088149018713,
+      0.02255306798165348,
+      0.022480847341969343,
+      0.0224168588315755,
+      0.022359848390210747,
+      0.02230914945539441,
+      0.02226214206227168,
+      0.022228832168397026,
+      0.022201263259661323,
+      0.022154769645133316,
+      0.022117125542168384,
+      0.022095272003168895,
+      0.022081896851369735,
+      0.022036826699792934,
+      0.02202328502095474,
+      0.022006892119913347,
+      0.021975533696430124
+    ],
+    "epochs_completed": 30,
+    "fit_seconds": 535.8538100839996,
+    "preprocessing_all_train_rows": 865480,
+    "rows_per_epoch": [
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837
+    ]
+  },
+  "isolation": {
+    "abi": 8,
+    "denial_probes": [
+      {
+        "denied": true,
+        "errno": 13,
+        "path": "/home/muhammad-bilal/projects/threatfusion/data/raw/unsw_nb15/official/UNSW-NB15_1.csv"
+      },
+      {
+        "denied": true,
+        "errno": 13,
+        "path": "/home/muhammad-bilal/projects/threatfusion/artifacts/reports/network_classical_evaluation/full-february-classical-2528ee8-v1/X_test.npy"
+      },
+      {
+        "denied": true,
+        "errno": 13,
+        "path": "/home/muhammad-bilal/projects/threatfusion/artifacts/reports/network_classical_evaluation/full-february-classical-2528ee8-v1/y_test.npy"
+      },
+      {
+        "denied": true,
+        "errno": 13,
+        "path": "/home/muhammad-bilal/projects/threatfusion/data/raw/cse_cic_ids2018/official/Wednesday-14-02-2018_TrafficForML_CICFlowMeter.csv"
+      }
+    ],
+    "mechanism": "Linux Landlock",
+    "no_new_privileges": true
+  },
+  "limitations": [
+    "January informed threshold calibration and intervention selection",
+    "February was previously inspected but was inaccessible and not evaluated",
+    "CIC was inaccessible and not evaluated",
+    "passing gates is not independent confirmation, operational acceptance, statistical significance, fusion approval, product approval, or issue closure"
+  ],
+  "populations": {
+    "train": {
+      "attack": 17643,
+      "benign": 847837,
+      "rows": 865480
+    },
+    "validation": {
+      "attack": 4358,
+      "benign": 212210,
+      "rows": 216568
+    }
+  },
+  "provenance": {
+    "artifact_manifest_sha256": "7c4ebaf35347e8ec62c8253f443a237f9ba02e6c1f9c541d640a3383c130c79b",
+    "configuration_sha256": "4cc23ecec84b171be6d62079215c85f88f97574c7f9c35b78c0a2030cc7366c1",
+    "prepared_input_manifest": {
+      "admission_report_sha256": "1c091a207771961abea741d9d7fddbaf7f8d277242cbd0d48beda8f7220ccd52",
+      "files": {
+        "train_rates.npy": {
+          "sha256": "4de80692c8c76ad30131324e5391a2047282dc12642c48a37962d71922bf5120",
+          "size_bytes": 13847808
+        },
+        "train_record_ids.npy": {
+          "sha256": "c15430e482cffb367adfbd30cbd6dbf4bcdb2879b08385f69ef10e862fb7af9a",
+          "size_bytes": 6923968
+        },
+        "validation_rates.npy": {
+          "sha256": "f4c4fb2b5b1421e67574a503b3043573639fcd4337772d13eae6f46280c4e0d7",
+          "size_bytes": 3465216
+        },
+        "validation_record_ids.npy": {
+          "sha256": "b213e9b2ad7e8d979b63401e3f5e91df718a9d86f98362f79d57b91594febfe6",
+          "size_bytes": 1732672
+        }
+      },
+      "schema_version": "unsw_january_rate_input_manifest_v1"
+    },
+    "source_provenance_manifest_sha256": "fe561ae4a7bff3106e7ef84324d3e75a6bf0bd006e15b0fd13fbca21f86b0140"
+  },
+  "reload_verification": {
+    "reconstructions_exact": true,
+    "sample_count": 4096,
+    "sample_values_sha256": "dc839565bdb798738df39b4679c57f0cabaf0b97a1bbc7f4cde54742b6fe3e8f",
+    "scores_exact": true,
+    "state_tensors_exact": true
+  },
+  "resources": {
+    "available_memory_before_bytes": 11519590400,
+    "candidate_artifact_bytes": 148474626,
+    "candidate_artifact_bytes_before_report_and_chart": 148466000,
+    "elapsed_seconds": 559.8961680000002,
+    "free_disk_before_bytes": 70421766144,
+    "loader_workers": 0,
+    "peak_rss_bytes": 872030208,
+    "rf_batch_size": 25000
+  },
+  "schema_version": "unsw_network_rate_log1p_autoencoder_experiment_v1",
+  "v2_reload_scoring_verification": {
+    "caller_chunk_sizes": [
+      1,
+      64,
+      256
+    ],
+    "decisions_exact": true,
+    "partial_final_chunks_exercised": true,
+    "sample_count": 257,
+    "sample_values_sha256": "3b5b1c8c38eb0e0e1ae04162caf5b10fc691aa79fa39568fa7beb0d50fcb921f",
+    "scores_exact": true
+  }
+}

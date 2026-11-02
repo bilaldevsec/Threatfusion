@@ -301,6 +301,27 @@ def _validate_passphrase(passphrase: str) -> None:
         raise HumanBrowserProvisioningError("invalid_passphrase")
 
 
+def _verify_pkcs12_passphrase(bundle_path: Path, passphrase: str) -> None:
+    """Check the PKCS#12 MAC before certutil or pk12util are invoked.
+
+    The passphrase is written only to OpenSSL stdin. A wrong passphrase returns
+    invalid_passphrase even when libnss3-tools is not installed.
+    """
+    try:
+        proc = subprocess.run(
+            ["openssl", "pkcs12", "-in", str(bundle_path), "-noout", "-passin", "stdin"],
+            input=(passphrase + "\n").encode("utf-8"),
+            capture_output=True,
+            timeout=15.0,
+            check=False,
+            env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise HumanBrowserProvisioningError("invalid_passphrase") from None
+    if proc.returncode != 0:
+        raise HumanBrowserProvisioningError("invalid_passphrase")
+
+
 def _run_nss_command(
     command: list[str],
     *,
@@ -406,11 +427,7 @@ def provision_firefox_profile(
     ):
         raise HumanBrowserProvisioningError("bundle_invalid")
 
-    # Ensure NSS utilities are available
-    if shutil.which("certutil") is None or shutil.which("pk12util") is None:
-        raise HumanBrowserProvisioningError("nss_tool_failed")
-
-    # 3. Lock directories in deterministic order
+    # Lock directories and reject a dirty or mode-unsafe profile before NSS binaries.
     sorted_dirs = sorted([c_dir, d_dir, p_dir], key=lambda p: str(p))
     with _directory_context(sorted_dirs[0], write=True) as fd0:
         with _directory_context(sorted_dirs[1], write=True) as fd1:
@@ -420,14 +437,21 @@ def provision_firefox_profile(
                 d_fd = fds[d_dir]
                 p_fd = fds[p_dir]
 
-                # Profile directory must be clean
+                if not p_dir.is_dir():
+                    raise HumanBrowserProvisioningError("directory_invalid")
+
                 existing_entries = [f for f in os.listdir(p_fd) if not f.startswith(".tmp-")]
                 if existing_entries:
                     raise HumanBrowserProvisioningError("profile_dir_not_empty")
 
-                # Verify files inside ca_dir and delivery_dir descriptors
                 _check_file_stat(c_fd, ca_ops.CA_CERT_FILENAME)
                 _check_file_stat(d_fd, ca_ops.CLIENT_BUNDLE_FILENAME)
+
+                p12_file = d_dir / ca_ops.CLIENT_BUNDLE_FILENAME
+                _verify_pkcs12_passphrase(p12_file, pkcs12_passphrase)
+
+                if shutil.which("certutil") is None or shutil.which("pk12util") is None:
+                    raise HumanBrowserProvisioningError("nss_tool_failed")
 
                 # Initialize fresh NSS SQLite database
                 proc_init = _run_nss_command(
@@ -457,7 +481,6 @@ def provision_firefox_profile(
                     raise HumanBrowserProvisioningError("nss_tool_failed")
 
                 # Import encrypted PKCS#12 bundle using a temporary mode-0600 passphrase file
-                p12_file = d_dir / ca_ops.CLIENT_BUNDLE_FILENAME
                 with tempfile.TemporaryDirectory(prefix=".tf-nss-pass-") as tmp_pass_dir:
                     tmp_pass_file = Path(tmp_pass_dir) / "pass.txt"
                     tmp_pass_file.write_bytes(pkcs12_passphrase.encode("utf-8") + b"\n")

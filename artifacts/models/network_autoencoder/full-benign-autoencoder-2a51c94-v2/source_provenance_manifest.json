@@ -1,0 +1,21 @@
+{
+  "captured_before_training": true,
+  "files": {
+    "model_source": {
+      "filename": "network_autoencoder.snapshot.py",
+      "sha256": "bcd2f8077de6cd9edeb3902aea5cb9a64f089111d7233aa6f94ee0257a1542c9",
+      "size_bytes": 72421
+    },
+    "protocol": {
+      "filename": "network_autoencoder_protocol.snapshot.md",
+      "sha256": "7ebd76b094f48303e45b40c6ff42bbfdbae1256e24c41a265bed6187466be78e",
+      "size_bytes": 34794
+    },
+    "runner_source": {
+      "filename": "train_network_autoencoder.snapshot.py",
+      "sha256": "1e85861ced0f341598f697387c2826ffdc31ad41d0516755ddff77850a6f6a54",
+      "size_bytes": 3657
+    }
+  },
+  "schema_version": "unsw_autoencoder_source_provenance_v2"
+}

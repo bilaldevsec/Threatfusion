@@ -29,8 +29,10 @@ import tempfile
 from types import ModuleType
 from typing import Any, Mapping
 
+from threatfusion.evaluation.boundary_preflight import resolve_default_active_workspace
+
 REPO_TRUTH_AUDIT_SCHEMA_VERSION = "repo_truth_audit_v1"
-CANONICAL_WORKSPACE_PATH = Path("/home/muhammad-bilal/projects/threatfusion-gemini").resolve()
+CANONICAL_WORKSPACE_PATH = resolve_default_active_workspace(Path(__file__))
 
 EXPECTED_MODEL_DIGESTS: dict[str, dict[str, str]] = {
     "random_forest": {
@@ -89,13 +91,48 @@ CANONICAL_MODULES: tuple[str, ...] = (
     "threatfusion.soar.n8n_thehive_misp_stack",
 )
 
-GATE_G9_STAGE_1_TO_4_MODULES: tuple[str, ...] = (
-    "threatfusion/datasets/adapters/suricata_flow.py",
-    "threatfusion/datasets/adapters/provenance_sources.py",
-    "threatfusion/api/producer_inference_worker.py",
-    "threatfusion/models/network_inference.py",
-    "threatfusion/alerts/correlation_engine.py",
+_GATE_G9_STAGE_DIRECTORIES: tuple[str, ...] = (
+    "threatfusion/datasets/adapters",
+    "threatfusion/features",
+    "threatfusion/preprocessing",
+    "threatfusion/alerts",
+    "threatfusion/enrichment",
+    "threatfusion/correlation",
 )
+_GATE_G9_STAGE_FILES: tuple[str, ...] = (
+    "threatfusion/api/__init__.py",
+    "threatfusion/api/alert_explanation.py",
+    "threatfusion/api/producer_admission.py",
+    "threatfusion/api/producer_execution_gates.py",
+    "threatfusion/api/producer_inference_worker.py",
+    "threatfusion/api/producer_orchestrator.py",
+    "threatfusion/api/producer_service.py",
+    "threatfusion/api/producer_tls_transport.py",
+    "threatfusion/models/network_inference.py",
+)
+_GATE_G9_RUNTIME_MODULE_NEEDLES: tuple[str, ...] = (
+    "analyst_dashboard",
+    "threatfusion.advisory",
+    "gemini_client",
+    "explanation_engine",
+    "chromadb_mitre_rag",
+)
+
+
+def _discover_gate_g9_stage_modules() -> tuple[str, ...]:
+    """Every Stage 1–4 module under the detection pipeline, relative to backend/src."""
+    src_root = Path(__file__).resolve().parents[2]
+    found = set(_GATE_G9_STAGE_FILES)
+    for relative_root in _GATE_G9_STAGE_DIRECTORIES:
+        base = src_root / relative_root
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*.py"):
+            found.add(path.relative_to(src_root).as_posix())
+    return tuple(sorted(found))
+
+
+GATE_G9_STAGE_1_TO_4_MODULES: tuple[str, ...] = _discover_gate_g9_stage_modules()
 
 GATE_G9_FORBIDDEN_IMPORT_PATTERNS: tuple[str, ...] = (
     "threatfusion.advisory",
@@ -342,7 +379,10 @@ def _check_1_workspace_isolation(
 
     resolved_root = repo_root.resolve()
 
-    if resolved_root != CANONICAL_WORKSPACE_PATH:
+    if not CANONICAL_WORKSPACE_PATH.is_dir():
+        passed = False
+        issues.append(f"Resolved active workspace does not exist: {CANONICAL_WORKSPACE_PATH}")
+    elif resolved_root != CANONICAL_WORKSPACE_PATH:
         passed = False
         issues.append(f"Workspace path mismatch: {resolved_root} != {CANONICAL_WORKSPACE_PATH}")
 
@@ -767,6 +807,79 @@ def verify_gate_g9_ast_import_graph(src_root: Path) -> tuple[bool, list[str]]:
     return len(violations) == 0, violations
 
 
+_GATE_G9_SYS_MODULES_PROBE = """
+import json
+import sys
+
+import threatfusion.api.producer_inference_worker
+
+needles = (
+    "analyst_dashboard",
+    "threatfusion.advisory",
+    "gemini_client",
+    "explanation_engine",
+    "chromadb_mitre_rag",
+)
+leaked = sorted(
+    name for name in sys.modules if any(needle in name for needle in needles)
+)
+print(json.dumps(leaked))
+"""
+
+
+def verify_gate_g9_runtime_sys_modules(src_root: Path) -> tuple[bool, list[str]]:
+    """Gate G9 runtime seal: a fresh interpreter import leaves advisory modules unloaded."""
+    violations: list[str] = []
+    resolved_src = src_root.resolve()
+    if not resolved_src.is_dir():
+        return False, [f"Gate G9 source root does not exist: {resolved_src}"]
+
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONPATH": str(resolved_src),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONNOUSERSITE": "1",
+    }
+    try:
+        with tempfile.TemporaryDirectory(prefix="tf-g9-") as scratch:
+            proc = subprocess.run(
+                [sys.executable, "-P", "-c", _GATE_G9_SYS_MODULES_PROBE],
+                cwd=scratch,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=False,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, [f"Gate G9 sys.modules probe failed to start: {exc}"]
+
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "no output").strip().splitlines()
+        tail = detail[-1] if detail else "no output"
+        return False, [f"Gate G9 sys.modules probe exited {proc.returncode}: {tail}"]
+
+    try:
+        leaked = json.loads(proc.stdout.strip() or "[]")
+    except json.JSONDecodeError as exc:
+        return False, [f"Gate G9 sys.modules probe returned invalid JSON: {exc}"]
+    if not isinstance(leaked, list):
+        return False, ["Gate G9 sys.modules probe did not return a list"]
+
+    for name in leaked:
+        if not isinstance(name, str):
+            violations.append(f"Gate G9 sys.modules probe returned a non-string entry: {name!r}")
+            continue
+        for needle in _GATE_G9_RUNTIME_MODULE_NEEDLES:
+            if needle in name:
+                violations.append(
+                    "Gate G9 sys.modules leak after "
+                    f"import threatfusion.api.producer_inference_worker: {name}"
+                )
+                break
+    return len(violations) == 0, violations
+
+
 def _check_5_no_duplicate_package_regression(
     repo_root: Path, expected_src_root: Path
 ) -> CheckResult:
@@ -818,17 +931,22 @@ def _check_5_no_duplicate_package_regression(
             passed = False
             failures.append(f"Failed to import canonical module {mod_name}: {e}")
 
-    # Gate G9 AST Import-Graph Check (Fast-path Stage 1-4 decoupled from Stage 5 Advisory)
+    # Gate G9: Stage 1-4 AST isolation plus a fresh-interpreter sys.modules seal.
     g9_passed, g9_violations = verify_gate_g9_ast_import_graph(expected_src_root)
     if not g9_passed:
         passed = False
         failures.extend(g9_violations)
+    g9_runtime_passed, g9_runtime_violations = verify_gate_g9_runtime_sys_modules(expected_src_root)
+    if not g9_runtime_passed:
+        passed = False
+        failures.extend(g9_runtime_violations)
 
     summary = (
-        "Zero split-paste duplicate packages detected; Gate G9 AST import-graph verified "
-        "(Stages 1-4 decoupled from Stage 5 advisory); all canonical packages (including Gemini "
-        "advisory client, ChromaDB RAG, and n8n/TheHive/MISP SOAR stack) import cleanly; "
-        "SOC Unicorn SOP and n8n workflow JSON verified on disk."
+        "Zero split-paste duplicate packages detected; Gate G9 AST import-graph and "
+        "fresh-interpreter sys.modules seal verified (Stages 1-4 decoupled from Stage 5 "
+        "advisory); all canonical packages (including Gemini advisory client, ChromaDB RAG, "
+        "and n8n/TheHive/MISP SOAR stack) import cleanly; SOC Unicorn SOP and n8n workflow "
+        "JSON verified on disk."
         if passed
         else "; ".join(failures)
     )

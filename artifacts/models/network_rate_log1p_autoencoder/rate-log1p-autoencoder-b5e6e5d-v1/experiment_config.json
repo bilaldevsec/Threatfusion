@@ -1,0 +1,171 @@
+{
+  "acceptance": {
+    "A_minimum": 96,
+    "B_maximum": 1574,
+    "ratio_integer_test": "40*A >= 3*B",
+    "total_false_positive_maximum": 1628
+  },
+  "architecture": [
+    14,
+    8,
+    3,
+    8,
+    14
+  ],
+  "baseline_preprocessing_hashes": {
+    "configuration": "70273ec360e0bce88b5ec8311df4b5b8ccbbdbe6c456d8a679528563d477645a",
+    "report": "d1688079b9cbcf521a8b9938ea07b540321e11edd70236452720fbd2f1697e4a",
+    "state": "30c955e3931dc010f8b4391a80fc0fbeddd17e14260701c8131d88f95b06ee49"
+  },
+  "candidate_preprocessing_hashes": {
+    "X_train.npy": "0446a4128649381f0ed387142304377434f248dbb4b9b001c7c700b01dd7528f",
+    "X_validation.npy": "8d1bdc7b881778ec8f8a70876010bf2a6a252bb244d2c64c74f919eabd45d986",
+    "report": "51008fa94affced764d5da9548b3921c8e17bcf51387121c76ff7da5877910f7",
+    "state": "9ea9544d9f065d4f6bcbff29ad4832def2028c82e70ff3c8afe4762966cc31f8",
+    "y_train.npy": "f12ba5c05db37d5c34bf7f22fa62d41535bdeaab58014bdd3975d50c21a24209",
+    "y_validation.npy": "38d87b7c7fbf27a59228a2a84f3f4eca4e026acedc4e4aa3626da28292dd467b"
+  },
+  "feature_order": [
+    "duration_ms__zscore",
+    "fwd_packets__zscore",
+    "bwd_packets__zscore",
+    "fwd_bytes__zscore",
+    "bwd_bytes__zscore",
+    "packets_per_second__log1p__zscore",
+    "bytes_per_second__log1p__zscore",
+    "fwd_packet_length_mean__zscore",
+    "bwd_packet_length_mean__zscore",
+    "dst_port__zscore",
+    "protocol=tcp",
+    "protocol=udp",
+    "protocol=icmp",
+    "protocol=other"
+  ],
+  "fit": {
+    "batch_size": 1024,
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "epochs": 30,
+    "eps": 1e-08,
+    "learning_rate": 0.001,
+    "loader_workers": 0,
+    "optimizer": "Adam",
+    "preprocessing_population": "all 865480 TRAIN rows including 17643 attacks",
+    "seed": 42,
+    "shuffle": "deterministic_seeded_each_epoch",
+    "weight_population": "847837 benign TRAIN rows only"
+  },
+  "identities": {
+    "model": "unsw_network_rate_log1p_benign_autoencoder_v1",
+    "preprocessing": "unsw_train.rate_log1p_all_train_zscore.14_columns.v1",
+    "score": "mean_squared_reconstruction_error_14_rate_log1p_float32_per_record_v1",
+    "scoring_contract": "unsw_autoencoder_per_record_scoring_v2",
+    "threshold": "unsw_january_benign_higher_p99_rate_log1p_v1"
+  },
+  "intervention": "float64 natural log1p on packets_per_second and bytes_per_second only, then all-TRAIN population z-score",
+  "isolation": {
+    "abi": 8,
+    "denial_probes": [
+      {
+        "denied": true,
+        "errno": 13,
+        "path": "/home/muhammad-bilal/projects/threatfusion/data/raw/unsw_nb15/official/UNSW-NB15_1.csv"
+      },
+      {
+        "denied": true,
+        "errno": 13,
+        "path": "/home/muhammad-bilal/projects/threatfusion/artifacts/reports/network_classical_evaluation/full-february-classical-2528ee8-v1/X_test.npy"
+      },
+      {
+        "denied": true,
+        "errno": 13,
+        "path": "/home/muhammad-bilal/projects/threatfusion/artifacts/reports/network_classical_evaluation/full-february-classical-2528ee8-v1/y_test.npy"
+      },
+      {
+        "denied": true,
+        "errno": 13,
+        "path": "/home/muhammad-bilal/projects/threatfusion/data/raw/cse_cic_ids2018/official/Wednesday-14-02-2018_TrafficForML_CICFlowMeter.csv"
+      }
+    ],
+    "mechanism": "Linux Landlock",
+    "no_new_privileges": true
+  },
+  "prepared_input_manifest_sha256": "a14421f37c0b8b221a9ff087eb5dd4b3c0e5201caa8a8238eafb119a92aa1d8c",
+  "random_forest": {
+    "input_representation": "unchanged frozen baseline matrix",
+    "model_sha256": "bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9",
+    "threshold": 0.5
+  },
+  "resource_limits": {
+    "artifact_bytes": 268435456,
+    "deadline_seconds": 3600.0,
+    "peak_rss_bytes": 2147483648,
+    "reserve_bytes": 2147483648
+  },
+  "runtime": {
+    "deterministic_algorithms": true,
+    "interop_threads": 1,
+    "intraop_threads": 4,
+    "numpy": "2.4.6",
+    "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.39",
+    "python": "3.11.16",
+    "scikit_learn": "1.9.0",
+    "torch": "2.10.0+cpu"
+  },
+  "schema_version": "unsw_network_rate_log1p_autoencoder_experiment_v1",
+  "snapshots": {
+    "captured_before_fitting": true,
+    "files": {
+      "adapter_base": {
+        "filename": "adapter_base.snapshot.py",
+        "sha256": "4923253e15337fd92f2f69963b82eaca2bd43db2f30c128f5285c9d83e97e9ef",
+        "size_bytes": 5009
+      },
+      "autoencoder_scorer": {
+        "filename": "autoencoder_scorer.snapshot.py",
+        "sha256": "bcd2f8077de6cd9edeb3902aea5cb9a64f089111d7233aa6f94ee0257a1542c9",
+        "size_bytes": 72421
+      },
+      "baseline_preprocessing": {
+        "filename": "baseline_preprocessing.snapshot.py",
+        "sha256": "d8df0eebab347a043d343f3ad91dab89b1fe7b6ff922bd3887e3184543ba9a02",
+        "size_bytes": 41829
+      },
+      "candidate_model": {
+        "filename": "candidate_model.snapshot.py",
+        "sha256": "77383ae6c9af0a04bf5286c35edd7a1552624d5090529bc7df6314a5baffe0bf",
+        "size_bytes": 37056
+      },
+      "protocol": {
+        "filename": "protocol.snapshot.md",
+        "sha256": "f8828a6914debd3cd9bcd3abe49ec3edaaf65d7dd94fe79e1bc7e7c700b17969",
+        "size_bytes": 4329
+      },
+      "random_forest": {
+        "filename": "random_forest.snapshot.py",
+        "sha256": "f29f29639ecb45e2f66f3d155dac97d602842acfdd4d3ceefc3e2b6e73be1899",
+        "size_bytes": 33998
+      },
+      "runner": {
+        "filename": "runner.snapshot.py",
+        "sha256": "b637cc3834a8ec073e5af78a0bafc35df426e92de8176f26e404d364173a8a80",
+        "size_bytes": 6614
+      },
+      "unsw_adapter": {
+        "filename": "unsw_adapter.snapshot.py",
+        "sha256": "c632613d526ceafca117c03c7dfbd4deafb9745ee450adf13a6501cf4b230d28",
+        "size_bytes": 3502
+      }
+    },
+    "schema_version": "unsw_rate_log1p_source_provenance_v1"
+  },
+  "source_provenance_manifest_sha256": "fe561ae4a7bff3106e7ef84324d3e75a6bf0bd006e15b0fd13fbca21f86b0140",
+  "threshold_policy": {
+    "benign_january_rows": 212210,
+    "method": "higher",
+    "operator": ">",
+    "quantile": 0.99
+  }
+}

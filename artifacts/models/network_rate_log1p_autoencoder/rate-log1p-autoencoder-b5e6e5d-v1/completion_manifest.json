@@ -1,0 +1,186 @@
+{
+  "artifact_budget_bytes": 268435456,
+  "baseline_autoencoder": {
+    "artifact_manifest.json": {
+      "sha256": "c142d3352b406a689b6317f48ae513540076b02ffb2e0fdef9cd3e6a83da1866",
+      "size_bytes": 1482
+    },
+    "autoencoder_config.json": {
+      "sha256": "51d4d664b5e017c5b039a08dc897d63e81a0b1e140eb1bb16457997ffa0727c2",
+      "size_bytes": 7143
+    },
+    "autoencoder_state.pt": {
+      "sha256": "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23",
+      "size_bytes": 4931
+    },
+    "evaluation_report.json": {
+      "sha256": "0ec77eda4a58e40e1b75087bbc5131f39cad54d553771e174ea303bc506c3bef",
+      "size_bytes": 12152
+    },
+    "threshold.json": {
+      "sha256": "79bc7f3def3a4ed745fbc85d9cbf36a04f4fb4384de4db065569f81f60c78e3e",
+      "size_bytes": 845
+    }
+  },
+  "baseline_preserved": true,
+  "bound_candidate_bytes_before_this_manifest": 148481020,
+  "bound_files": {
+    "admitted_inputs": {
+      "admission_report.json": {
+        "sha256": "1c091a207771961abea741d9d7fddbaf7f8d277242cbd0d48beda8f7220ccd52",
+        "size_bytes": 2164
+      },
+      "input_manifest.json": {
+        "sha256": "a14421f37c0b8b221a9ff087eb5dd4b3c0e5201caa8a8238eafb119a92aa1d8c",
+        "size_bytes": 773
+      },
+      "train_rates.npy": {
+        "sha256": "4de80692c8c76ad30131324e5391a2047282dc12642c48a37962d71922bf5120",
+        "size_bytes": 13847808
+      },
+      "train_record_ids.npy": {
+        "sha256": "c15430e482cffb367adfbd30cbd6dbf4bcdb2879b08385f69ef10e862fb7af9a",
+        "size_bytes": 6923968
+      },
+      "validation_rates.npy": {
+        "sha256": "f4c4fb2b5b1421e67574a503b3043573639fcd4337772d13eae6f46280c4e0d7",
+        "size_bytes": 3465216
+      },
+      "validation_record_ids.npy": {
+        "sha256": "b213e9b2ad7e8d979b63401e3f5e91df718a9d86f98362f79d57b91594febfe6",
+        "size_bytes": 1732672
+      }
+    },
+    "preprocessing": {
+      "X_train.npy": {
+        "sha256": "0446a4128649381f0ed387142304377434f248dbb4b9b001c7c700b01dd7528f",
+        "size_bytes": 96933888
+      },
+      "X_validation.npy": {
+        "sha256": "8d1bdc7b881778ec8f8a70876010bf2a6a252bb244d2c64c74f919eabd45d986",
+        "size_bytes": 24255744
+      },
+      "preprocessing_report.json": {
+        "sha256": "51008fa94affced764d5da9548b3921c8e17bcf51387121c76ff7da5877910f7",
+        "size_bytes": 662
+      },
+      "preprocessor_state.json": {
+        "sha256": "9ea9544d9f065d4f6bcbff29ad4832def2028c82e70ff3c8afe4762966cc31f8",
+        "size_bytes": 1360
+      },
+      "y_train.npy": {
+        "sha256": "f12ba5c05db37d5c34bf7f22fa62d41535bdeaab58014bdd3975d50c21a24209",
+        "size_bytes": 865608
+      },
+      "y_validation.npy": {
+        "sha256": "38d87b7c7fbf27a59228a2a84f3f4eca4e026acedc4e4aa3626da28292dd467b",
+        "size_bytes": 216696
+      }
+    },
+    "run": {
+      "adapter_base.snapshot.py": {
+        "sha256": "4923253e15337fd92f2f69963b82eaca2bd43db2f30c128f5285c9d83e97e9ef",
+        "size_bytes": 5009
+      },
+      "artifact_manifest.json": {
+        "sha256": "7c4ebaf35347e8ec62c8253f443a237f9ba02e6c1f9c541d640a3383c130c79b",
+        "size_bytes": 1491
+      },
+      "autoencoder_scorer.snapshot.py": {
+        "sha256": "bcd2f8077de6cd9edeb3902aea5cb9a64f089111d7233aa6f94ee0257a1542c9",
+        "size_bytes": 72421
+      },
+      "autoencoder_state.pt": {
+        "sha256": "1d02e5bba556cb28709bd0faefce5f29da424a419a2d95332ad27a8995b26f63",
+        "size_bytes": 4931
+      },
+      "baseline_preprocessing.snapshot.py": {
+        "sha256": "d8df0eebab347a043d343f3ad91dab89b1fe7b6ff922bd3887e3184543ba9a02",
+        "size_bytes": 41829
+      },
+      "baseline_vs_candidate.md": {
+        "sha256": "6bbe947f1ab2bf2e906904601a86efc5d79bae87d7498f02366262c0e4756ebf",
+        "size_bytes": 404
+      },
+      "baseline_vs_candidate.svg": {
+        "sha256": "2b2613d57a25a7c1b2887055f878bef3159b98875f6b9f5c9a91d4d15ffec07b",
+        "size_bytes": 855
+      },
+      "candidate_model.snapshot.py": {
+        "sha256": "77383ae6c9af0a04bf5286c35edd7a1552624d5090529bc7df6314a5baffe0bf",
+        "size_bytes": 37056
+      },
+      "completion_finalizer.snapshot.py": {
+        "sha256": "ae8d451ba2180432ae8880fddedd5d28df831b1e9e11c2ebb14b3619deeac761",
+        "size_bytes": 4824
+      },
+      "evaluation_report.json": {
+        "sha256": "3012864ccf4286668cbd8a9b739c9c4e4e1ee0b59660a21ab993ca4704e42ba9",
+        "size_bytes": 8937
+      },
+      "experiment_config.json": {
+        "sha256": "4cc23ecec84b171be6d62079215c85f88f97574c7f9c35b78c0a2030cc7366c1",
+        "size_bytes": 6097
+      },
+      "protocol.snapshot.md": {
+        "sha256": "f8828a6914debd3cd9bcd3abe49ec3edaaf65d7dd94fe79e1bc7e7c700b17969",
+        "size_bytes": 4329
+      },
+      "random_forest.snapshot.py": {
+        "sha256": "f29f29639ecb45e2f66f3d155dac97d602842acfdd4d3ceefc3e2b6e73be1899",
+        "size_bytes": 33998
+      },
+      "runner.snapshot.py": {
+        "sha256": "b637cc3834a8ec073e5af78a0bafc35df426e92de8176f26e404d364173a8a80",
+        "size_bytes": 6614
+      },
+      "source_provenance_manifest.json": {
+        "sha256": "fe561ae4a7bff3106e7ef84324d3e75a6bf0bd006e15b0fd13fbca21f86b0140",
+        "size_bytes": 1611
+      },
+      "threshold.json": {
+        "sha256": "f53c776178d7176cc319214bb6b91c5b7e0fb25e030390b217b6368f3968d853",
+        "size_bytes": 553
+      },
+      "unsw_adapter.snapshot.py": {
+        "sha256": "c632613d526ceafca117c03c7dfbd4deafb9745ee450adf13a6501cf4b230d28",
+        "size_bytes": 3502
+      }
+    }
+  },
+  "candidate_metrics_retained_as_protocol_invalid_development_evidence": true,
+  "completed": true,
+  "completion_review_disposition": "BLOCKED_preserve_baseline",
+  "finalizer_source": {
+    "sha256": "ae8d451ba2180432ae8880fddedd5d28df831b1e9e11c2ebb14b3619deeac761",
+    "size_bytes": 4824
+  },
+  "no_training_fitting_calibration_or_scoring": true,
+  "protocol_valid": false,
+  "reported_scientific_disposition": "FAIL_preserve_baseline",
+  "review_blockers": [
+    {
+      "code": "preparation_accessed_february_test_rows",
+      "evidence": {
+        "test_rows_seen": 1452844
+      }
+    },
+    {
+      "code": "preparation_resource_limits_not_hard_enforced",
+      "evidence": "preparation recorded runtime and peak RSS only after traversal"
+    },
+    {
+      "code": "artifact_budget_not_verified_before_fitting",
+      "evidence": "candidate artifact total was checked only after model fitting"
+    },
+    {
+      "code": "execution_peak_rss_not_hard_enforced",
+      "evidence": "peak RSS was checked only after fitting and scoring completed"
+    },
+    {
+      "code": "cli_failure_code_not_strictly_allowlisted",
+      "evidence": "generic exceptions may contribute exception-derived text to stderr"
+    }
+  ],
+  "schema_version": "unsw_rate_log1p_completion_manifest_v1"
+}

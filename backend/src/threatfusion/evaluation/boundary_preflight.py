@@ -28,8 +28,34 @@ import re
 import sys
 from typing import Any
 
-CANONICAL_ACTIVE_WORKSPACE = Path("/home/muhammad-bilal/projects/threatfusion-gemini")
+_DECLARED_ACTIVE_WORKSPACE = Path("/home/muhammad-bilal/projects/threatfusion-gemini")
 CANONICAL_PROTECTED_WORKSPACE = Path("/home/muhammad-bilal/projects/threatfusion")
+_ACTIVE_ANCHOR_DEPTH = 4
+
+
+def resolve_default_active_workspace(anchor: Path | None = None) -> Path:
+    """Resolve the active checkout without requiring one machine-local path.
+
+    Use the declared gemini checkout when that directory exists. Otherwise use
+    the git repository root that contains this module. Fail closed when the
+    resolved directory is missing or is the protected tree.
+    """
+    if _DECLARED_ACTIVE_WORKSPACE.is_dir():
+        resolved = _DECLARED_ACTIVE_WORKSPACE.resolve()
+    else:
+        source = anchor if anchor is not None else Path(__file__)
+        resolved = source.resolve().parents[_ACTIVE_ANCHOR_DEPTH]
+    if not resolved.is_dir():
+        raise FileNotFoundError(f"Active workspace does not exist: {resolved}")
+    protected = CANONICAL_PROTECTED_WORKSPACE.resolve()
+    if resolved == protected or resolved.is_relative_to(protected):
+        raise FileNotFoundError(
+            f"Resolved active workspace overlaps the protected tree: {resolved}"
+        )
+    return resolved
+
+
+CANONICAL_ACTIVE_WORKSPACE = resolve_default_active_workspace()
 
 EXEMPT_B5_FILES: frozenset[str] = frozenset(
     {
@@ -448,8 +474,14 @@ def run_boundary_preflight(
     findings: list[str] = []
     checks: dict[str, Any] = {}
 
-    # Resolve paths
-    active_path = Path(active).resolve() if active is not None else CANONICAL_ACTIVE_WORKSPACE
+    # Resolve paths. The default active root follows the checkout that contains
+    # this module when the declared gemini path is not present on the machine.
+    if active is not None:
+        active_path = Path(active).resolve()
+    else:
+        active_path = resolve_default_active_workspace()
+    if not active_path.is_dir():
+        raise FileNotFoundError(f"Active workspace does not exist: {active_path}")
     protected_path = (
         Path(protected).resolve() if protected is not None else CANONICAL_PROTECTED_WORKSPACE
     )

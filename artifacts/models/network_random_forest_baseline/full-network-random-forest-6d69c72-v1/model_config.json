@@ -1,0 +1,164 @@
+{
+  "comparison": {
+    "logistic_run_report_sha256": "0afe787ccbea3a7f43f3ff69e43d642adaa5d5954039848cd7dfa168b4a85cc8",
+    "same_preprocessing_and_validation_verified": true
+  },
+  "decision_threshold": {
+    "operator": ">=",
+    "positive_label": 1,
+    "positive_name": "Attack",
+    "probability": 0.5
+  },
+  "dependencies": {
+    "joblib": "1.6.0",
+    "numpy": "2.4.6",
+    "python": "3.11.16",
+    "scikit-learn": "1.9.0",
+    "scipy": "1.17.1",
+    "threadpoolctl": "3.6.0"
+  },
+  "effective_parameters": {
+    "bootstrap": true,
+    "ccp_alpha": 0.0,
+    "class_weight": null,
+    "criterion": "gini",
+    "max_depth": 16,
+    "max_features": "sqrt",
+    "max_leaf_nodes": null,
+    "max_samples": null,
+    "min_impurity_decrease": 0.0,
+    "min_samples_leaf": 5,
+    "min_samples_split": 2,
+    "min_weight_fraction_leaf": 0.0,
+    "monotonic_cst": null,
+    "n_estimators": 100,
+    "n_jobs": 4,
+    "oob_score": false,
+    "random_state": 42,
+    "verbose": 0,
+    "warm_start": false
+  },
+  "estimator": "sklearn.ensemble.RandomForestClassifier",
+  "evaluation_partition": "validation",
+  "experiment_authorization": "explicit_network_only_random_forest_baseline",
+  "fit_partition": "train",
+  "frozen_parameters": {
+    "bootstrap": true,
+    "ccp_alpha": 0.0,
+    "class_weight": null,
+    "criterion": "gini",
+    "max_depth": 16,
+    "max_features": "sqrt",
+    "max_samples": null,
+    "min_samples_leaf": 5,
+    "min_samples_split": 2,
+    "n_estimators": 100,
+    "n_jobs": 4,
+    "oob_score": false,
+    "random_state": 42,
+    "warm_start": false
+  },
+  "interpreter": "/home/muhammad-bilal/.local/share/uv/python/cpython-3.11.16-linux-x86_64-gnu/bin/python3.11",
+  "label_mapping": {
+    "Attack": 1,
+    "Normal": 0
+  },
+  "preprocessing": {
+    "assignment_provenance": {
+      "archive_sha256": "154829274f1a2d594086c6a73db6fce7b585ffeba58632dfce08422c1b187dc9",
+      "preflight_report_sha256": "f805424dc5f39ca41f7b1935b25938307d2e15c18caa008b3a1ca9250b8ab384",
+      "report_sha256": "6913c1f2ef974d0b969506daf2b091a740fbf0d6b43d231a6f64f30841436857",
+      "schema_version": "unsw_development_split_v1",
+      "seed": "threatfusion-unsw-dev-split-v1"
+    },
+    "configuration_sha256": "70273ec360e0bce88b5ec8311df4b5b8ccbbdbe6c456d8a679528563d477645a",
+    "report_sha256": "d1688079b9cbcf521a8b9938ea07b540321e11edd70236452720fbd2f1697e4a",
+    "source_provenance": {
+      "manifest_sha256": "c6794cab5af9de5bf218989461b2ad673d1a14232688edf46aed1c63bc6e60e1",
+      "registered_raw_files": [
+        {
+          "name": "UNSW-NB15_1.csv",
+          "rows": 700001,
+          "sha256": "7d851bbeabd27894ce39c8e78835c73341fc946652fb7743b9eff193b55eb511"
+        },
+        {
+          "name": "UNSW-NB15_2.csv",
+          "rows": 700001,
+          "sha256": "6130ad02873cc6069ae695cf2844f2e8c2e9a9a1b7532dd82ab8f202757cacf8"
+        },
+        {
+          "name": "UNSW-NB15_3.csv",
+          "rows": 700001,
+          "sha256": "ae990a96c3dfcd425ce2801aadb1727a34d5e0ae6d8215dbcdae60dedfaef640"
+        },
+        {
+          "name": "UNSW-NB15_4.csv",
+          "rows": 440044,
+          "sha256": "cdf563692d51d405541dd659ddcdad9fa01f001f05fe9fc4b67f00ca12fbc96a"
+        }
+      ]
+    },
+    "state_reused_without_refit": true,
+    "state_sha256": "30c955e3931dc010f8b4391a80fc0fbeddd17e14260701c8131d88f95b06ee49",
+    "transformed_feature_count": 14,
+    "transformed_feature_names": [
+      "duration_ms__zscore",
+      "fwd_packets__zscore",
+      "bwd_packets__zscore",
+      "fwd_bytes__zscore",
+      "bwd_bytes__zscore",
+      "packets_per_second__zscore",
+      "bytes_per_second__zscore",
+      "fwd_packet_length_mean__zscore",
+      "bwd_packet_length_mean__zscore",
+      "dst_port__zscore",
+      "protocol=tcp",
+      "protocol=udp",
+      "protocol=icmp",
+      "protocol=other"
+    ]
+  },
+  "prohibited_partitions": [
+    "test",
+    "cic"
+  ],
+  "resource_estimate": {
+    "available_memory_bytes": 11875725312,
+    "estimated_peak_bytes": 1940149056,
+    "estimated_tree_storage_bytes": 1048568000,
+    "estimator_input_copy_bytes": 96933760,
+    "fixed_overhead_bytes": 268435456,
+    "free_disk_bytes": 73389576192,
+    "label_working_bytes": 13847680,
+    "matrix_bytes": 96933760,
+    "maximum_leaves_per_tree": 65536,
+    "maximum_nodes_per_tree": 131071,
+    "parallel_worker_bytes": 415430400,
+    "required_disk_with_reserve_bytes": 2122309824,
+    "required_memory_with_reserve_bytes": 3013890880
+  },
+  "schema_version": "network_random_forest_baseline_v1",
+  "synthetic_smoke": {
+    "class_mapping": [
+      0,
+      1
+    ],
+    "completed": true,
+    "sample_count": 6,
+    "tree_count": 100
+  },
+  "training_controls": {
+    "calibration": false,
+    "class_weighting": false,
+    "eligible_training_rows_reduced": false,
+    "external_resampling": false,
+    "feature_selection": false,
+    "forest_workers": 4,
+    "hyperparameter_search": false,
+    "internal_bootstrap_sampling": true,
+    "nested_numerical_thread_limit": 1,
+    "prediction_batch_size": 25000,
+    "threshold_tuning": false
+  },
+  "working_tree_dirty_during_training": true
+}

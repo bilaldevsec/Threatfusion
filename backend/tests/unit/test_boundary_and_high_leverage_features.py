@@ -24,6 +24,7 @@ from threatfusion.evaluation.repo_truth_audit import (
     GATE_G9_FORBIDDEN_IMPORT_PATTERNS,
     GATE_G9_STAGE_1_TO_4_MODULES,
     verify_gate_g9_ast_import_graph,
+    verify_gate_g9_runtime_sys_modules,
 )
 from threatfusion.evaluation.workload_measurement import evaluate_alert_fatigue_compression
 from threatfusion.models.canonical_evaluation import CANONICAL_EVALUATION_PACK_REV2
@@ -410,6 +411,13 @@ class TestGateG9AstImportGraph:
         src_root = Path(__file__).resolve().parents[2] / "src"
         passed, violations = verify_gate_g9_ast_import_graph(src_root)
         assert passed is True, f"Gate G9 failed on live codebase: {violations}"
+        assert len(violations) == 0
+
+    def test_live_gate_g9_sys_modules_isolation(self) -> None:
+        """Importing the producer worker leaves advisory and dashboard modules unloaded."""
+        src_root = Path(__file__).resolve().parents[2] / "src"
+        passed, violations = verify_gate_g9_runtime_sys_modules(src_root)
+        assert passed is True, f"Gate G9 sys.modules leak: {violations}"
         assert len(violations) == 0
 
     def test_gate_g9_constants(self) -> None:

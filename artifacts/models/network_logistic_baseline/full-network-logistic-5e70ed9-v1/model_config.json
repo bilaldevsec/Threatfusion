@@ -1,0 +1,152 @@
+{
+  "decision_threshold": {
+    "operator": ">=",
+    "positive_label": 1,
+    "positive_name": "Attack",
+    "probability": 0.5
+  },
+  "dependencies": {
+    "joblib": "1.6.0",
+    "numpy": "2.4.6",
+    "python": "3.11.16",
+    "scikit-learn": "1.9.0",
+    "scipy": "1.17.1",
+    "threadpoolctl": "3.6.0"
+  },
+  "effective_parameters": {
+    "C": 1.0,
+    "class_weight": null,
+    "dual": false,
+    "fit_intercept": true,
+    "intercept_scaling": 1,
+    "l1_ratio": 0.0,
+    "max_iter": 1000,
+    "n_jobs": null,
+    "penalty": "deprecated",
+    "random_state": null,
+    "solver": "lbfgs",
+    "tol": 0.0001,
+    "verbose": 0,
+    "warm_start": false
+  },
+  "estimator": "sklearn.linear_model.LogisticRegression",
+  "evaluation_partition": "validation",
+  "experiment_authorization": "explicit_network_only_supervised_baseline",
+  "fit_partition": "train",
+  "frozen_requested_parameters": {
+    "C": 1.0,
+    "class_weight": null,
+    "fit_intercept": true,
+    "max_iter": 1000,
+    "penalty": "l2",
+    "solver": "lbfgs",
+    "tol": 0.0001
+  },
+  "installed_version_parameter_translation": {
+    "effective_syntax": "default penalty sentinel with l1_ratio=0.0",
+    "reason": "scikit-learn 1.9 deprecates the explicit penalty parameter",
+    "requested": "penalty='l2'"
+  },
+  "interpreter": "/home/muhammad-bilal/.local/share/uv/python/cpython-3.11.16-linux-x86_64-gnu/bin/python3.11",
+  "label_mapping": {
+    "Attack": 1,
+    "Normal": 0
+  },
+  "preprocessing": {
+    "assignment_provenance": {
+      "archive_sha256": "154829274f1a2d594086c6a73db6fce7b585ffeba58632dfce08422c1b187dc9",
+      "preflight_report_sha256": "f805424dc5f39ca41f7b1935b25938307d2e15c18caa008b3a1ca9250b8ab384",
+      "report_sha256": "6913c1f2ef974d0b969506daf2b091a740fbf0d6b43d231a6f64f30841436857",
+      "schema_version": "unsw_development_split_v1",
+      "seed": "threatfusion-unsw-dev-split-v1"
+    },
+    "configuration_sha256": "70273ec360e0bce88b5ec8311df4b5b8ccbbdbe6c456d8a679528563d477645a",
+    "report_sha256": "d1688079b9cbcf521a8b9938ea07b540321e11edd70236452720fbd2f1697e4a",
+    "source_provenance": {
+      "manifest_sha256": "c6794cab5af9de5bf218989461b2ad673d1a14232688edf46aed1c63bc6e60e1",
+      "registered_raw_files": [
+        {
+          "name": "UNSW-NB15_1.csv",
+          "rows": 700001,
+          "sha256": "7d851bbeabd27894ce39c8e78835c73341fc946652fb7743b9eff193b55eb511"
+        },
+        {
+          "name": "UNSW-NB15_2.csv",
+          "rows": 700001,
+          "sha256": "6130ad02873cc6069ae695cf2844f2e8c2e9a9a1b7532dd82ab8f202757cacf8"
+        },
+        {
+          "name": "UNSW-NB15_3.csv",
+          "rows": 700001,
+          "sha256": "ae990a96c3dfcd425ce2801aadb1727a34d5e0ae6d8215dbcdae60dedfaef640"
+        },
+        {
+          "name": "UNSW-NB15_4.csv",
+          "rows": 440044,
+          "sha256": "cdf563692d51d405541dd659ddcdad9fa01f001f05fe9fc4b67f00ca12fbc96a"
+        }
+      ]
+    },
+    "state_reused_without_refit": true,
+    "state_sha256": "30c955e3931dc010f8b4391a80fc0fbeddd17e14260701c8131d88f95b06ee49",
+    "transformed_feature_count": 14,
+    "transformed_feature_names": [
+      "duration_ms__zscore",
+      "fwd_packets__zscore",
+      "bwd_packets__zscore",
+      "fwd_bytes__zscore",
+      "bwd_bytes__zscore",
+      "packets_per_second__zscore",
+      "bytes_per_second__zscore",
+      "fwd_packet_length_mean__zscore",
+      "bwd_packet_length_mean__zscore",
+      "dst_port__zscore",
+      "protocol=tcp",
+      "protocol=udp",
+      "protocol=icmp",
+      "protocol=other"
+    ]
+  },
+  "prohibited_partitions": [
+    "test",
+    "cic"
+  ],
+  "resource_estimate": {
+    "available_memory_bytes": 12088467456,
+    "estimated_peak_bytes": 670018176,
+    "estimator_copy_bytes": 96933760,
+    "fixed_overhead_bytes": 268435456,
+    "free_disk_bytes": 73370624000,
+    "label_working_bytes": 13847680,
+    "matrix_bytes": 96933760,
+    "minimum_free_disk_bytes": 1073741824,
+    "required_memory_with_reserve_bytes": 1743760000,
+    "solver_working_bytes": 193867520
+  },
+  "schema_version": "network_logistic_baseline_v1",
+  "synthetic_smoke": {
+    "completed": true,
+    "convergence": {
+      "captured_warning_categories": [],
+      "captured_warnings": [],
+      "converged": true,
+      "convergence_warning_count": 0,
+      "iteration_count_by_class": [
+        7
+      ],
+      "maximum_iterations": 1000,
+      "reached_iteration_limit": false
+    },
+    "sample_count": 6
+  },
+  "training_controls": {
+    "calibration": false,
+    "class_rebalancing": false,
+    "feature_selection": false,
+    "hyperparameter_search": false,
+    "numerical_thread_limit": 4,
+    "resampling": false,
+    "threshold_tuning": false
+  },
+  "working_tree_dirty_during_training": true
+}

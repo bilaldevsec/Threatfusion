@@ -8,7 +8,9 @@ below. The corrected v2 experiment is checkpointed and pushed at
 recorded-data demonstration is checkpointed and pushed at
 `f71a5e74186a8975b4ca090b9d1a987384a55da4`. Both autoencoder runs and generated demonstration
 evidence are ignored. Existing split, preprocessing, historical autoencoder, and classical-model
-artifacts remain unchanged.
+artifacts remain unchanged. Sprint A on `gemini/product-20260924` tracks the frozen
+model sidecar JSON files, keeps the four weight digests unchanged, and resolves the
+active checkout from the git root when the declared gemini path is absent.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0
 readiness report still says split assignments are missing, but the later completed full assignment and

@@ -116,6 +116,10 @@ Approval, verify-state, and the callback share one ledger file. A missing ledger
 From the repository root, with `threatfusion-venv` installed:
 
 ```bash
+uv python install 3.11 && uv venv threatfusion-venv --python 3.11 && UV_PROJECT_ENVIRONMENT=threatfusion-venv uv sync --locked --dev
+```
+
+```bash
 ./scripts/run_live_product.sh --seed-demo
 ```
 

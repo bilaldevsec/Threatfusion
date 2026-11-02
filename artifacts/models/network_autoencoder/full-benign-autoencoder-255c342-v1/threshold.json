@@ -1,0 +1,18 @@
+{
+  "calibration_evidence": "January VALIDATION development data, not independent evaluation",
+  "calibration_label": "Normal=0",
+  "calibration_partition": "validation",
+  "calibration_rows": 212210,
+  "cic_influenced_threshold": false,
+  "configuration_sha256": "2b904768fc264c7c29965cdd5c93b7535f16737e32fcf84620a09c66ffc5695e",
+  "february_influenced_threshold": false,
+  "method": "higher",
+  "model_sha256": "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23",
+  "operational_false_positive_target": null,
+  "operator": ">",
+  "quantile": 0.99,
+  "schema_version": "unsw_autoencoder_threshold_v1",
+  "score_identity": "mean_squared_reconstruction_error_14_v1",
+  "threshold": 0.11813611984640647,
+  "ties": "within_threshold"
+}

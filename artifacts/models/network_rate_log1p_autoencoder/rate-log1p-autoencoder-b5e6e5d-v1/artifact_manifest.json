@@ -1,0 +1,23 @@
+{
+  "candidate_preprocessing_hashes": {
+    "X_train.npy": "0446a4128649381f0ed387142304377434f248dbb4b9b001c7c700b01dd7528f",
+    "X_validation.npy": "8d1bdc7b881778ec8f8a70876010bf2a6a252bb244d2c64c74f919eabd45d986",
+    "report": "51008fa94affced764d5da9548b3921c8e17bcf51387121c76ff7da5877910f7",
+    "state": "9ea9544d9f065d4f6bcbff29ad4832def2028c82e70ff3c8afe4762966cc31f8",
+    "y_train.npy": "f12ba5c05db37d5c34bf7f22fa62d41535bdeaab58014bdd3975d50c21a24209",
+    "y_validation.npy": "38d87b7c7fbf27a59228a2a84f3f4eca4e026acedc4e4aa3626da28292dd467b"
+  },
+  "configuration_sha256": "4cc23ecec84b171be6d62079215c85f88f97574c7f9c35b78c0a2030cc7366c1",
+  "identities": {
+    "model": "unsw_network_rate_log1p_benign_autoencoder_v1",
+    "preprocessing": "unsw_train.rate_log1p_all_train_zscore.14_columns.v1",
+    "score": "mean_squared_reconstruction_error_14_rate_log1p_float32_per_record_v1",
+    "scoring_contract": "unsw_autoencoder_per_record_scoring_v2",
+    "threshold": "unsw_january_benign_higher_p99_rate_log1p_v1"
+  },
+  "model_state_sha256": "1d02e5bba556cb28709bd0faefce5f29da424a419a2d95332ad27a8995b26f63",
+  "prepared_input_manifest_sha256": "a14421f37c0b8b221a9ff087eb5dd4b3c0e5201caa8a8238eafb119a92aa1d8c",
+  "schema_version": "unsw_rate_log1p_artifact_manifest_v1",
+  "source_provenance_manifest_sha256": "fe561ae4a7bff3106e7ef84324d3e75a6bf0bd006e15b0fd13fbca21f86b0140",
+  "threshold_sha256": "f53c776178d7176cc319214bb6b91c5b7e0fb25e030390b217b6368f3968d853"
+}

@@ -1,0 +1,194 @@
+{
+  "artifact_size_bytes_excluding_report": 2647182,
+  "checks": {
+    "actual_tree_count_matches_configuration": true,
+    "frozen_configuration_recorded_before_fit": true,
+    "logistic_comparison_provenance_verified": true,
+    "model_refit_during_recovery": false,
+    "preprocessing_evidence_verified": true,
+    "preprocessing_state_reused_without_refit": true,
+    "saved_model_reload_equivalent": true,
+    "test_and_cic_not_accessed": true,
+    "train_only_fit": true,
+    "validation_only_evaluation": true
+  },
+  "completed": true,
+  "configuration_sha256": "fffe5e839c28b4e1d216c87ea1db7c675fa1a267ccf450c02869fe41e3bab13f",
+  "global_training_ready": false,
+  "limitations": [
+    "exact fit time was not persisted before the initial strict reload check failed",
+    "validation is grouped development data, not later-period external testing",
+    "feature collisions and conflicting labels remain in the frozen assignment",
+    "near-duplicate leakage is not assessed",
+    "capture and session provenance remain unresolved",
+    "host model training remains blocked",
+    "this experiment does not change global training readiness"
+  ],
+  "model": {
+    "attack_probability_column": 1,
+    "classes": [
+      0,
+      1
+    ],
+    "filename": "random_forest.joblib",
+    "sha256": "bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9",
+    "size_bytes": 2641921,
+    "tree_summary": {
+      "actual_tree_count": 100,
+      "depth": {
+        "maximum": 16,
+        "mean": 16.0,
+        "median": 16.0,
+        "minimum": 16
+      },
+      "node_count": {
+        "maximum": 1445,
+        "mean": 1095.64,
+        "median": 1096.0,
+        "minimum": 669,
+        "total": 109564
+      }
+    }
+  },
+  "network_only_authorized_experiment": true,
+  "reload_verification": {
+    "initial_exact_comparison_failed_on_roundoff_only": true,
+    "maximum_absolute_probability_difference": 2.220446049250313e-16,
+    "predictions_exactly_equal": true,
+    "probabilities_equivalent_within_tolerance": true,
+    "probability_absolute_tolerance": 1e-15,
+    "recovered_without_refit": true,
+    "sample_count": 4096
+  },
+  "resource_controls": {
+    "available_memory_bytes": 11875725312,
+    "bounded_prediction_batch_size": 25000,
+    "estimated_peak_bytes": 1940149056,
+    "estimated_tree_storage_bytes": 1048568000,
+    "estimator_input_copy_bytes": 96933760,
+    "fixed_overhead_bytes": 268435456,
+    "forest_workers": 4,
+    "free_disk_bytes": 73389576192,
+    "full_train_used_without_external_subsampling": true,
+    "label_working_bytes": 13847680,
+    "matrices_memory_mapped": true,
+    "matrix_bytes": 96933760,
+    "maximum_leaves_per_tree": 65536,
+    "maximum_nodes_per_tree": 131071,
+    "nested_numerical_threads": 1,
+    "parallel_worker_bytes": 415430400,
+    "required_disk_with_reserve_bytes": 2122309824,
+    "required_memory_with_reserve_bytes": 3013890880,
+    "threadpools_during_recovery_evaluation": [
+      {
+        "internal_api": "openblas",
+        "num_threads": 1,
+        "user_api": "blas",
+        "version": "0.3.31.188.0"
+      },
+      {
+        "internal_api": "openblas",
+        "num_threads": 1,
+        "user_api": "blas",
+        "version": "0.3.30"
+      },
+      {
+        "internal_api": "openmp",
+        "num_threads": 1,
+        "user_api": "openmp",
+        "version": null
+      }
+    ]
+  },
+  "schema_version": "network_random_forest_baseline_v1",
+  "timings_seconds": {
+    "exact_fit": null,
+    "exact_fit_status": "not persisted before the initial exact-reload check failed; model was not refit",
+    "initial_config_to_model_wall_interval": 47.88626503944397,
+    "recovery_input_and_comparison_verification": 0.2136352719999195,
+    "recovery_total": 0.8661242910002329,
+    "recovery_validation_evaluation": 0.4236446389995763
+  },
+  "validation": {
+    "always_benign_reference": {
+      "accuracy": 0.979876990137047,
+      "attack_count": 4358,
+      "attack_f1": 0.0,
+      "attack_precision": 0.0,
+      "attack_recall": 0.0,
+      "average_precision": 0.020123009862952977,
+      "balanced_accuracy": 0.5,
+      "decision_threshold": 0.5,
+      "false_negative": 4358,
+      "false_positive": 0,
+      "false_positive_rate": 0.0,
+      "normal_count": 212210,
+      "predicted_attack_count": 0,
+      "predicted_attack_percentage": 0.0,
+      "roc_auc": 0.5,
+      "sample_count": 216568,
+      "true_negative": 212210,
+      "true_positive": 0,
+      "zero_denominator_policy": {
+        "average_precision_without_positive_labels": "return 0.0",
+        "balanced_accuracy_or_roc_auc_without_both_classes": "return null",
+        "precision_recall_f1_false_positive_rate_accuracy": "return 0.0"
+      }
+    },
+    "attack_count": 4358,
+    "average_precision_definition": "non-interpolated average precision from continuous Attack scores; not trapezoidal PR-AUC",
+    "comparison_provenance_verified": true,
+    "logistic_regression": {
+      "accuracy": 0.982222673709874,
+      "attack_count": 4358,
+      "attack_f1": 0.3224216825061598,
+      "attack_precision": 0.6918429003021148,
+      "attack_recall": 0.2101881597062873,
+      "average_precision": 0.4219615296707183,
+      "balanced_accuracy": 0.604132767945128,
+      "decision_threshold": 0.5,
+      "false_negative": 3442,
+      "false_positive": 408,
+      "false_positive_rate": 0.0019226238160312897,
+      "normal_count": 212210,
+      "predicted_attack_count": 1324,
+      "predicted_attack_percentage": 0.6113553248864098,
+      "roc_auc": 0.935502694723046,
+      "sample_count": 216568,
+      "true_negative": 211802,
+      "true_positive": 916,
+      "zero_denominator_policy": {
+        "average_precision_without_positive_labels": "return 0.0",
+        "balanced_accuracy_or_roc_auc_without_both_classes": "return null",
+        "precision_recall_f1_false_positive_rate_accuracy": "return 0.0"
+      }
+    },
+    "normal_count": 212210,
+    "random_forest": {
+      "accuracy": 0.9976266115030845,
+      "attack_count": 4358,
+      "attack_f1": 0.9402603440260344,
+      "attack_precision": 0.9526613283089967,
+      "attack_recall": 0.9281780633318035,
+      "average_precision": 0.9900436400962743,
+      "balanced_accuracy": 0.9636154441818059,
+      "decision_threshold": 0.5,
+      "false_negative": 313,
+      "false_positive": 201,
+      "false_positive_rate": 0.0009471749681918853,
+      "normal_count": 212210,
+      "predicted_attack_count": 4246,
+      "predicted_attack_percentage": 1.9605851279967492,
+      "roc_auc": 0.9997855373028687,
+      "sample_count": 216568,
+      "true_negative": 212009,
+      "true_positive": 4045,
+      "zero_denominator_policy": {
+        "average_precision_without_positive_labels": "return 0.0",
+        "balanced_accuracy_or_roc_auc_without_both_classes": "return null",
+        "precision_recall_f1_false_positive_rate_accuracy": "return 0.0"
+      }
+    },
+    "sample_count": 216568
+  }
+}

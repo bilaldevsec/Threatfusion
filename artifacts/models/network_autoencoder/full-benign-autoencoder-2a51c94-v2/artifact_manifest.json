@@ -1,0 +1,25 @@
+{
+  "assignment_hashes": {
+    "archive_sha256": "154829274f1a2d594086c6a73db6fce7b585ffeba58632dfce08422c1b187dc9",
+    "preflight_report_sha256": "f805424dc5f39ca41f7b1935b25938307d2e15c18caa008b3a1ca9250b8ab384",
+    "report_sha256": "6913c1f2ef974d0b969506daf2b091a740fbf0d6b43d231a6f64f30841436857"
+  },
+  "configuration_sha256": "51d4d664b5e017c5b039a08dc897d63e81a0b1e140eb1bb16457997ffa0727c2",
+  "identities": {
+    "detector": "threatfusion.unsw_network_reconstruction_anomaly",
+    "detector_version": "v2",
+    "model": "unsw_network_benign_autoencoder_v2",
+    "preprocessing_requirements": "unsw_train.network_behavior_v1_preprocessing_v1.14_columns.benign_autoencoder.v2",
+    "score": "mean_squared_reconstruction_error_14_float32_input_per_record_v2",
+    "scoring_contract_version": "unsw_autoencoder_per_record_scoring_v2"
+  },
+  "model_state_sha256": "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23",
+  "preprocessing_hashes": {
+    "configuration": "70273ec360e0bce88b5ec8311df4b5b8ccbbdbe6c456d8a679528563d477645a",
+    "report": "d1688079b9cbcf521a8b9938ea07b540321e11edd70236452720fbd2f1697e4a",
+    "state": "30c955e3931dc010f8b4391a80fc0fbeddd17e14260701c8131d88f95b06ee49"
+  },
+  "schema_version": "unsw_autoencoder_artifact_manifest_v2",
+  "source_provenance_manifest_sha256": "d412f390f0d081170917a2e784046239f3e5b14d9a604e1196d2e3cbd3c527a9",
+  "threshold_sha256": "79bc7f3def3a4ed745fbc85d9cbf36a04f4fb4384de4db065569f81f60c78e3e"
+}

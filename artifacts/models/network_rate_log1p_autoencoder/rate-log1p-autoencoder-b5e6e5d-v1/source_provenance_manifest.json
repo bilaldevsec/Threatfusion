@@ -1,0 +1,46 @@
+{
+  "captured_before_fitting": true,
+  "files": {
+    "adapter_base": {
+      "filename": "adapter_base.snapshot.py",
+      "sha256": "4923253e15337fd92f2f69963b82eaca2bd43db2f30c128f5285c9d83e97e9ef",
+      "size_bytes": 5009
+    },
+    "autoencoder_scorer": {
+      "filename": "autoencoder_scorer.snapshot.py",
+      "sha256": "bcd2f8077de6cd9edeb3902aea5cb9a64f089111d7233aa6f94ee0257a1542c9",
+      "size_bytes": 72421
+    },
+    "baseline_preprocessing": {
+      "filename": "baseline_preprocessing.snapshot.py",
+      "sha256": "d8df0eebab347a043d343f3ad91dab89b1fe7b6ff922bd3887e3184543ba9a02",
+      "size_bytes": 41829
+    },
+    "candidate_model": {
+      "filename": "candidate_model.snapshot.py",
+      "sha256": "77383ae6c9af0a04bf5286c35edd7a1552624d5090529bc7df6314a5baffe0bf",
+      "size_bytes": 37056
+    },
+    "protocol": {
+      "filename": "protocol.snapshot.md",
+      "sha256": "f8828a6914debd3cd9bcd3abe49ec3edaaf65d7dd94fe79e1bc7e7c700b17969",
+      "size_bytes": 4329
+    },
+    "random_forest": {
+      "filename": "random_forest.snapshot.py",
+      "sha256": "f29f29639ecb45e2f66f3d155dac97d602842acfdd4d3ceefc3e2b6e73be1899",
+      "size_bytes": 33998
+    },
+    "runner": {
+      "filename": "runner.snapshot.py",
+      "sha256": "b637cc3834a8ec073e5af78a0bafc35df426e92de8176f26e404d364173a8a80",
+      "size_bytes": 6614
+    },
+    "unsw_adapter": {
+      "filename": "unsw_adapter.snapshot.py",
+      "sha256": "c632613d526ceafca117c03c7dfbd4deafb9745ee450adf13a6501cf4b230d28",
+      "size_bytes": 3502
+    }
+  },
+  "schema_version": "unsw_rate_log1p_source_provenance_v1"
+}

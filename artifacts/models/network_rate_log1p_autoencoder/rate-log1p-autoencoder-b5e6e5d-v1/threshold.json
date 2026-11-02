@@ -1,0 +1,13 @@
+{
+  "calibration_rows": 212210,
+  "configuration_sha256": "4cc23ecec84b171be6d62079215c85f88f97574c7f9c35b78c0a2030cc7366c1",
+  "method": "higher",
+  "model_sha256": "1d02e5bba556cb28709bd0faefce5f29da424a419a2d95332ad27a8995b26f63",
+  "operator": ">",
+  "quantile": 0.99,
+  "schema_version": "unsw_rate_log1p_threshold_v1",
+  "score_identity": "mean_squared_reconstruction_error_14_rate_log1p_float32_per_record_v1",
+  "threshold_identity": "unsw_january_benign_higher_p99_rate_log1p_v1",
+  "ties": "within_threshold",
+  "value": 0.08645885557604867
+}

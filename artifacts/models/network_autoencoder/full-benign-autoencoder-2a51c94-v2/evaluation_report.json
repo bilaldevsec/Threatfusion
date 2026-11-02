@@ -1,0 +1,336 @@
+{
+  "checks": {
+    "automatic_fusion_not_enabled": true,
+    "cic_and_mordor_not_accessed": true,
+    "configuration_frozen_before_training_or_scoring": true,
+    "feature_order_and_split_identities_verified": true,
+    "model_state_dict_only_and_weights_only_reload": true,
+    "only_benign_train_rows_fit_weights": true,
+    "per_record_scoring_independent_of_caller_batching": true,
+    "preprocessing_reused_without_refit": true,
+    "preprocessing_statistics_used_all_train_rows": true,
+    "random_forest_verified_and_not_retrained": true,
+    "reload_exact_in_locked_cpu_environment": true,
+    "source_snapshots_captured_before_training": true,
+    "threshold_persisted_before_february_evaluation": true,
+    "validation_and_test_weight_fit_rows_zero": true
+  },
+  "completed": true,
+  "configuration_sha256": "51d4d664b5e017c5b039a08dc897d63e81a0b1e140eb1bb16457997ffa0727c2",
+  "evidence_labels": {
+    "february_test": "later_period_development_informed_previously_inspected_benchmark",
+    "validation": "development_informed_post_calibration"
+  },
+  "february_test": {
+    "autoencoder": {
+      "accuracy": 0.9473646172610412,
+      "attack_count": 299068,
+      "attack_f1": 0.8666667829052557,
+      "attack_precision": 0.9055107208569398,
+      "attack_recall": 0.831018363716613,
+      "average_precision": 0.828552837800705,
+      "balanced_accuracy": 0.9042704318756409,
+      "false_negative": 50537,
+      "false_positive": 25934,
+      "false_positive_rate": 0.022477499965331226,
+      "normal_count": 1153776,
+      "predicted_anomaly_count": 274465,
+      "predicted_anomaly_percentage": 18.89156716068621,
+      "reconstruction_threshold": 0.1181361214680695,
+      "roc_auc": 0.9508909655710571,
+      "sample_count": 1452844,
+      "score_identity": "mean_squared_reconstruction_error_14_float32_input_per_record_v2",
+      "threshold_counts": {
+        "above": 274465,
+        "below": 1177028,
+        "equal": 1351
+      },
+      "threshold_operator": ">",
+      "true_negative": 1127842,
+      "true_positive": 248531
+    },
+    "complementarity": {
+      "attack": {
+        "autoencoder_only_rf_missed": 2802,
+        "both_detected": 245729,
+        "missed_by_both": 5111,
+        "random_forest_only_ae_missed": 45426
+      },
+      "hypothetical_or_rule": {
+        "added_false_positives_over_random_forest": 22056,
+        "added_true_positives_over_random_forest": 2802,
+        "not_enabled": true
+      },
+      "normal": {
+        "autoencoder_only_added_false_positive": 22056,
+        "both_false_positive": 3878,
+        "correctly_unflagged_by_both": 1118557,
+        "random_forest_only_false_positive": 9285
+      }
+    },
+    "evidence_label": "later_period_development_informed_previously_inspected_benchmark",
+    "provenance": {
+      "X_test_sha256": "dffc7b0354f3917dd7b3bf912b01366ea5fe138ae03cb3dfaa50642498fcddf4",
+      "configuration_sha256": "5e33e84f2fa0086ab0a9b66d7b7e6e6de179a0ce3e7e372919a461a7eed30eb4",
+      "historical_result_reused_without_raw_access": true,
+      "report_sha256": "17ad32dd54088b70af656c4de5f6972c08ecbb6e213d82b6414de2ca7add1d8e",
+      "y_test_sha256": "bf49145f228ce49966dec07d23194e1c630d63e58ec4f0f317b8e42460e1b6b6"
+    },
+    "random_forest": {
+      "accuracy": 0.9854932807651751,
+      "attack_count": 299068,
+      "attack_f1": 0.9650704524135463,
+      "attack_precision": 0.9567459039557306,
+      "attack_recall": 0.9735411344577153,
+      "average_precision": 0.9963626795993002,
+      "balanced_accuracy": 0.9810662537399308,
+      "decision_threshold": 0.5,
+      "false_negative": 7913,
+      "false_positive": 13163,
+      "false_positive_rate": 0.011408626977853586,
+      "normal_count": 1153776,
+      "predicted_attack_count": 304318,
+      "predicted_attack_percentage": 20.946364509885438,
+      "roc_auc": 0.9990887811248137,
+      "sample_count": 1452844,
+      "true_negative": 1140613,
+      "true_positive": 291155,
+      "zero_denominator_policy": {
+        "average_precision_without_positive_labels": "return 0.0",
+        "balanced_accuracy_or_roc_auc_without_both_classes": "return null",
+        "precision_recall_f1_false_positive_rate_accuracy": "return 0.0"
+      }
+    }
+  },
+  "fit": {
+    "eligible_benign_train_rows": 847837,
+    "epoch_mean_losses": [
+      0.27916392174650945,
+      0.11654360895841465,
+      0.07876128201126142,
+      0.05146177325134937,
+      0.04320903759290104,
+      0.03775724439932558,
+      0.03486895288361443,
+      0.03257702722988219,
+      0.03037989820490944,
+      0.028604315644708788,
+      0.027219150285329057,
+      0.026195777121331334,
+      0.0254162851067868,
+      0.02479563423783194,
+      0.024384564948524107,
+      0.02405249413431193,
+      0.023651142032846576,
+      0.02342087515109179,
+      0.023114712619424056,
+      0.02280792209056007,
+      0.02244888019790533,
+      0.022334419971534725,
+      0.02217130276034478,
+      0.022079931901919113,
+      0.02193881798637822,
+      0.021764503134672607,
+      0.021576131270856766,
+      0.02158590776140018,
+      0.021366406709796594,
+      0.02140706373753276
+    ],
+    "epochs_completed": 30,
+    "excluded_attack_train_rows": 17643,
+    "final_partial_batch_rows": 989,
+    "rows_per_epoch": [
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837,
+      847837
+    ],
+    "test_rows_used_for_weight_fit": 0,
+    "validation_rows_used_for_weight_fit": 0
+  },
+  "global_training_ready": false,
+  "limitations": [
+    "reconstruction error is not attack probability or calibrated confidence",
+    "the 99th-percentile policy is development calibration, not an operational target",
+    "January validation false positives are measured on threshold-calibration records",
+    "February outcomes were previously inspected and are not independent evaluation",
+    "exact feature collisions and conflicting labels remain in the frozen assignment",
+    "near-duplicate leakage and capture/session provenance remain unresolved",
+    "CIC remains unsupported and was not accessed",
+    "additional detections do not authorize automatic fusion",
+    "TF-008 and TF-009 remain open"
+  ],
+  "model": {
+    "artifact_identity": "bdb7fc33d5b092566995018b5f83aa66bdb8ce95841d6b8b9021111c9a392a9a",
+    "artifact_manifest_sha256": "c142d3352b406a689b6317f48ae513540076b02ffb2e0fdef9cd3e6a83da1866",
+    "filename": "autoencoder_state.pt",
+    "sha256": "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23",
+    "size_bytes": 4931,
+    "trainable_parameters": 305
+  },
+  "reload_verification": {
+    "reconstructions_exact": true,
+    "sample_count": 4096,
+    "sample_values_sha256": "4d2d3b1a416f382c191a56998105c08f93f46a94307a61a45adf016d58ae52cb",
+    "scores_exact": true,
+    "state_tensors_exact": true
+  },
+  "resources": {
+    "artifact_budget_bytes": 268435456,
+    "artifact_bytes_before_report": 125977,
+    "available_memory_bytes_before_fit": 10649919488,
+    "cpu_only": true,
+    "deadline_seconds": 3600.0,
+    "disk_reserve_bytes": 2147483648,
+    "estimated_peak_bytes": 536870912,
+    "free_disk_bytes_before_fit": 70858231808,
+    "measurement_method": "Linux /proc/meminfo MemAvailable, shutil.disk_usage, resource.ru_maxrss",
+    "memory_reserve_bytes": 2147483648,
+    "nested_classical_threads": 1,
+    "peak_rss_bytes": 901115904,
+    "peak_rss_limit_bytes": 2147483648,
+    "peak_rss_measurement": "resource.getrusage(RUSAGE_SELF).ru_maxrss on Linux",
+    "torch_interop_threads": 1,
+    "torch_intraop_threads": 4
+  },
+  "schema_version": "unsw_network_benign_autoencoder_v2",
+  "threshold": {
+    "artifact_sha256": "79bc7f3def3a4ed745fbc85d9cbf36a04f4fb4384de4db065569f81f60c78e3e",
+    "calibration_evidence": "January VALIDATION development data, not independent evaluation",
+    "calibration_label": "Normal=0",
+    "calibration_partition": "validation",
+    "calibration_rows": 212210,
+    "cic_influenced_threshold": false,
+    "configuration_sha256": "51d4d664b5e017c5b039a08dc897d63e81a0b1e140eb1bb16457997ffa0727c2",
+    "february_influenced_threshold": false,
+    "method": "higher",
+    "model_sha256": "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23",
+    "operational_false_positive_target": null,
+    "operator": ">",
+    "quantile": 0.99,
+    "schema_version": "unsw_autoencoder_threshold_v2",
+    "score_identity": "mean_squared_reconstruction_error_14_float32_input_per_record_v2",
+    "scoring_contract_version": "unsw_autoencoder_per_record_scoring_v2",
+    "threshold": 0.1181361214680695,
+    "ties": "within_threshold"
+  },
+  "timings_seconds": {
+    "february_verification_evaluation_and_comparison": 108.4592168449999,
+    "full_fit": 149.8261376269993,
+    "input_and_random_forest_verification": 0.27444635200026823,
+    "total_runner": 275.92863129500074,
+    "validation_calibration_evaluation_and_comparison": 16.269357055
+  },
+  "v2_reload_scoring_verification": {
+    "caller_chunk_sizes": [
+      1,
+      64,
+      256
+    ],
+    "decisions_exact": true,
+    "partial_final_chunks_exercised": true,
+    "sample_count": 257,
+    "sample_values_sha256": "f615737041e70e2e26b16e39e63c36fd93ec4415e8a4c41d20b3feb5fcfe8f9a",
+    "scores_exact": true
+  },
+  "validation": {
+    "autoencoder": {
+      "accuracy": 0.9815392855823575,
+      "attack_count": 4358,
+      "attack_f1": 0.49862051667920737,
+      "attack_precision": 0.5497787610619469,
+      "attack_recall": 0.4561725562184488,
+      "average_precision": 0.34803954157265204,
+      "balanced_accuracy": 0.724250455103711,
+      "false_negative": 2370,
+      "false_positive": 1628,
+      "false_positive_rate": 0.007671646011026813,
+      "normal_count": 212210,
+      "predicted_anomaly_count": 3616,
+      "predicted_anomaly_percentage": 1.6696834250674153,
+      "reconstruction_threshold": 0.1181361214680695,
+      "roc_auc": 0.91710734941591,
+      "sample_count": 216568,
+      "score_identity": "mean_squared_reconstruction_error_14_float32_input_per_record_v2",
+      "threshold_counts": {
+        "above": 3616,
+        "below": 212454,
+        "equal": 498
+      },
+      "threshold_operator": ">",
+      "true_negative": 210582,
+      "true_positive": 1988
+    },
+    "complementarity": {
+      "attack": {
+        "autoencoder_only_rf_missed": 96,
+        "both_detected": 1892,
+        "missed_by_both": 217,
+        "random_forest_only_ae_missed": 2153
+      },
+      "hypothetical_or_rule": {
+        "added_false_positives_over_random_forest": 1574,
+        "added_true_positives_over_random_forest": 96,
+        "not_enabled": true
+      },
+      "normal": {
+        "autoencoder_only_added_false_positive": 1574,
+        "both_false_positive": 54,
+        "correctly_unflagged_by_both": 210435,
+        "random_forest_only_false_positive": 147
+      }
+    },
+    "evidence_label": "development_informed_post_calibration",
+    "random_forest": {
+      "accuracy": 0.9976266115030845,
+      "attack_count": 4358,
+      "attack_f1": 0.9402603440260344,
+      "attack_precision": 0.9526613283089967,
+      "attack_recall": 0.9281780633318035,
+      "average_precision": 0.9900436400962743,
+      "balanced_accuracy": 0.9636154441818059,
+      "decision_threshold": 0.5,
+      "false_negative": 313,
+      "false_positive": 201,
+      "false_positive_rate": 0.0009471749681918853,
+      "normal_count": 212210,
+      "predicted_attack_count": 4246,
+      "predicted_attack_percentage": 1.9605851279967492,
+      "roc_auc": 0.9997855373028687,
+      "sample_count": 216568,
+      "true_negative": 212009,
+      "true_positive": 4045,
+      "zero_denominator_policy": {
+        "average_precision_without_positive_labels": "return 0.0",
+        "balanced_accuracy_or_roc_auc_without_both_classes": "return null",
+        "precision_recall_f1_false_positive_rate_accuracy": "return 0.0"
+      }
+    }
+  }
+}

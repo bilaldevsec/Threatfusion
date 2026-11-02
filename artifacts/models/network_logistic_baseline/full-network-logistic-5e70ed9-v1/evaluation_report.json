@@ -1,0 +1,158 @@
+{
+  "artifact_size_bytes_excluding_report": 5428,
+  "checks": {
+    "frozen_configuration_recorded_before_fit": true,
+    "preprocessing_evidence_verified": true,
+    "preprocessing_state_reused_without_refit": true,
+    "saved_model_reload_equivalent": true,
+    "test_and_cic_not_accessed": true,
+    "train_only_fit": true,
+    "validation_only_evaluation": true
+  },
+  "completed": true,
+  "configuration_sha256": "f8ebe49fb4aaeee482c8f7e5eb509bc7d29cae92b2fbc6df72172e22a248217e",
+  "convergence": {
+    "captured_warning_categories": [],
+    "captured_warnings": [],
+    "converged": true,
+    "convergence_warning_count": 0,
+    "iteration_count_by_class": [
+      80
+    ],
+    "maximum_iterations": 1000,
+    "reached_iteration_limit": false
+  },
+  "global_training_ready": false,
+  "limitations": [
+    "strong class imbalance makes ordinary accuracy misleading",
+    "validation is grouped development data, not later-period external testing",
+    "feature collisions and conflicting labels remain in the frozen assignment",
+    "near-duplicate leakage is not assessed",
+    "capture and session provenance remain unresolved",
+    "host model training remains blocked",
+    "this experiment does not change global training readiness"
+  ],
+  "model": {
+    "attack_probability_column": 1,
+    "classes": [
+      0,
+      1
+    ],
+    "coefficient_shape": [
+      1,
+      14
+    ],
+    "filename": "logistic_regression.joblib",
+    "intercept_shape": [
+      1
+    ],
+    "sha256": "2cf4de6686d937c485d4dbcbfa21d3e90f65bbb922087c8b31be4b012d7fb148",
+    "size_bytes": 690
+  },
+  "model_converged": true,
+  "network_only_authorized_experiment": true,
+  "reload_verification": {
+    "predictions_exactly_equal": true,
+    "probabilities_exactly_equal": true,
+    "sample_count": 4096
+  },
+  "resource_controls": {
+    "available_memory_bytes": 12088467456,
+    "estimated_peak_bytes": 670018176,
+    "estimator_copy_bytes": 96933760,
+    "fixed_overhead_bytes": 268435456,
+    "free_disk_bytes": 73370624000,
+    "full_train_used_without_subsampling": true,
+    "label_working_bytes": 13847680,
+    "matrices_memory_mapped": true,
+    "matrix_bytes": 96933760,
+    "maximum_numerical_threads": 4,
+    "minimum_free_disk_bytes": 1073741824,
+    "required_memory_with_reserve_bytes": 1743760000,
+    "solver_working_bytes": 193867520,
+    "threadpools_during_fit": [
+      {
+        "internal_api": "openblas",
+        "num_threads": 4,
+        "user_api": "blas",
+        "version": "0.3.31.188.0"
+      },
+      {
+        "internal_api": "openblas",
+        "num_threads": 4,
+        "user_api": "blas",
+        "version": "0.3.30"
+      },
+      {
+        "internal_api": "openmp",
+        "num_threads": 4,
+        "user_api": "openmp",
+        "version": null
+      }
+    ]
+  },
+  "schema_version": "network_logistic_baseline_v1",
+  "timings_seconds": {
+    "fit": 4.269089793000603,
+    "input_verification": 0.15989712300051906,
+    "synthetic_smoke": 0.03600443699997413,
+    "total": 4.671754951999901,
+    "validation_evaluation": 0.1835360880004373
+  },
+  "validation": {
+    "always_benign_reference": {
+      "accuracy": 0.979876990137047,
+      "attack_count": 4358,
+      "attack_f1": 0.0,
+      "attack_precision": 0.0,
+      "attack_recall": 0.0,
+      "average_precision": 0.020123009862952977,
+      "balanced_accuracy": 0.5,
+      "decision_threshold": 0.5,
+      "false_negative": 4358,
+      "false_positive": 0,
+      "false_positive_rate": 0.0,
+      "normal_count": 212210,
+      "predicted_attack_count": 0,
+      "predicted_attack_percentage": 0.0,
+      "roc_auc": 0.5,
+      "sample_count": 216568,
+      "true_negative": 212210,
+      "true_positive": 0,
+      "zero_denominator_policy": {
+        "average_precision_without_positive_labels": "return 0.0",
+        "balanced_accuracy_or_roc_auc_without_both_classes": "return null",
+        "precision_recall_f1_false_positive_rate_accuracy": "return 0.0"
+      }
+    },
+    "attack_count": 4358,
+    "average_precision_definition": "non-interpolated average precision from continuous Attack scores; not trapezoidal PR-AUC",
+    "logistic_regression": {
+      "accuracy": 0.982222673709874,
+      "attack_count": 4358,
+      "attack_f1": 0.3224216825061598,
+      "attack_precision": 0.6918429003021148,
+      "attack_recall": 0.2101881597062873,
+      "average_precision": 0.4219615296707183,
+      "balanced_accuracy": 0.604132767945128,
+      "decision_threshold": 0.5,
+      "false_negative": 3442,
+      "false_positive": 408,
+      "false_positive_rate": 0.0019226238160312897,
+      "normal_count": 212210,
+      "predicted_attack_count": 1324,
+      "predicted_attack_percentage": 0.6113553248864098,
+      "roc_auc": 0.935502694723046,
+      "sample_count": 216568,
+      "true_negative": 211802,
+      "true_positive": 916,
+      "zero_denominator_policy": {
+        "average_precision_without_positive_labels": "return 0.0",
+        "balanced_accuracy_or_roc_auc_without_both_classes": "return null",
+        "precision_recall_f1_false_positive_rate_accuracy": "return 0.0"
+      }
+    },
+    "normal_count": 212210,
+    "sample_count": 216568
+  }
+}

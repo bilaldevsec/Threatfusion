@@ -1481,8 +1481,9 @@ def run_server(
     effective_db = soar_db_path or os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH")
     if effective_db:
         MispAndCallbackContractHandler.soar_db_path = effective_db
-    # Load the console package on this thread. The first request threads otherwise
-    # deadlock inside threatfusion.api while the package init is still running.
+    # Preload threatfusion.api on this thread before request threads start.
+    # The first request threads otherwise deadlock inside the package import lock.
+    import threatfusion.api  # noqa: F401
     import threatfusion.api.analyst_dashboard  # noqa: F401
     import threatfusion.api.live_soc_console  # noqa: F401
 
