@@ -49,6 +49,44 @@
       </header>
 
       <section class="soc-view is-active" data-soc-view="investigations" aria-label="Investigations">
+        <section class="funnel-container" id="telemetryReductionFunnel" aria-label="Live telemetry reduction funnel">
+          <div class="funnel-header">
+            <h2>Live Pipeline Flow</h2>
+            <span class="badge badge-state" id="telemetryReductionPct">0.0%</span>
+          </div>
+          <svg id="telemetryReductionSvg" viewBox="0 0 640 48" aria-hidden="true">
+            <polygon points="8,6 632,12 632,36 8,42" fill="none" stroke="#58a6ff" stroke-width="1.5"></polygon>
+            <polygon points="160,9 632,14 632,34 160,39" fill="none" stroke="#bc8cff" stroke-width="1.5"></polygon>
+            <polygon points="310,12 632,16 632,32 310,36" fill="none" stroke="#f59e0b" stroke-width="1.5"></polygon>
+            <polygon points="460,15 632,18 632,30 460,33" fill="none" stroke="#10b981" stroke-width="1.5"></polygon>
+          </svg>
+          <div class="funnel-grid">
+            <div class="funnel-card tier-1">
+              <div class="funnel-tier-num">Stage 1</div>
+              <div class="funnel-count" id="funnelLiveFlows">0</div>
+              <div class="funnel-title">stored live_flows</div>
+            </div>
+            <span class="funnel-arrow" aria-hidden="true">&rarr;</span>
+            <div class="funnel-card tier-2">
+              <div class="funnel-tier-num">Stage 2</div>
+              <div class="funnel-count" id="funnelSchemaMtls">0</div>
+              <div class="funnel-title">schema &amp; mTLS valid</div>
+            </div>
+            <span class="funnel-arrow" aria-hidden="true">&rarr;</span>
+            <div class="funnel-card tier-3">
+              <div class="funnel-tier-num">Stage 3</div>
+              <div class="funnel-count" id="funnelRfAttacks">0</div>
+              <div class="funnel-title">Frozen RF Attack Alerts</div>
+            </div>
+            <span class="funnel-arrow" aria-hidden="true">&rarr;</span>
+            <div class="funnel-card tier-4">
+              <div class="funnel-tier-num">Stage 4</div>
+              <div class="funnel-count" id="funnelCampaigns">0</div>
+              <div class="funnel-title">30s/600s Correlated Campaigns</div>
+            </div>
+          </div>
+          <p class="badge badge-neutral" id="section8ReferencePill">Jan Benchmark: 216,568 flows -> 4,246 RF alerts | 98.0% volume reduction | 0.095% FPR</p>
+        </section>
         <div class="inv-toolbar">
           <div class="queue-filter-bar">
             <button class="filter-btn active" id="pillAll" data-filter="all" type="button">All <span id="pillCountAll">0</span></button>
@@ -295,6 +333,7 @@
       </section>
 
       <section class="soc-view" data-soc-view="graph" aria-label="AI Action Graph">
+        <svg id="entityTopologyGraph" viewBox="0 0 980 150" role="img" aria-label="Attack topology for the selected stored incident"></svg>
         <div class="graph-layout">
           <div class="graph-board" id="actionGraphBoard">
             <div class="graph-col">
@@ -367,6 +406,22 @@
           <span>JANUARY BENCHMARK: 216,568 FLOWS</span>
           <span>NOISE REDUCTION: 99.9889%</span>
         </div>
+        <article class="card" id="mitreCoverageMatrix" style="background: #111827;">
+          <h3>Read-only MITRE and CVE coverage</h3>
+          <div class="inv-table-wrap">
+            <table class="inv-table">
+              <thead>
+                <tr>
+                  <th>Identifier</th>
+                  <th>Name</th>
+                  <th>Kind</th>
+                  <th>Observed on stored flows</th>
+                </tr>
+              </thead>
+              <tbody id="mitreCoverageBody"></tbody>
+            </table>
+          </div>
+        </article>
         <div class="hunter-grid">
           <article class="card" id="liveSocConsole" style="background: #111827;">
             <h3>Proactive Threat Hunt Summary</h3>
@@ -540,7 +595,14 @@
       <section data-demo-step="3">
         <h3>Health and audit</h3>
         <button id="btnConstitutionalHealth" type="button">Run constitutional health</button>
-        <pre id="constitutionalHealth" data-evidence-state="unavailable">Constitutional health has not been run.</pre>
+        <div class="health-provenance-row">
+          <pre id="constitutionalHealth" data-evidence-state="unavailable">Constitutional health has not been run.</pre>
+          <aside id="scoringTimeProvenance" data-evidence-state="unavailable" aria-label="Scoring-time provenance">
+            <h3>Scoring-time provenance</h3>
+            <div id="scoringTimeModelDigest" data-evidence-state="unavailable">Scoring-time frozen RF digest: unavailable</div>
+            <div id="startupIntegrityDigest" data-evidence-state="unavailable">Startup integrity check: unavailable</div>
+          </aside>
+        </div>
         <div id="agyAuditStatus" data-evidence-state="unavailable">External agy Red-Team Audit: not run</div>
         <button id="btnStitchWindows" type="button">Stitch verified windows</button>
         <button id="btnPrivateIpGuard" type="button">Check private IP guard</button>

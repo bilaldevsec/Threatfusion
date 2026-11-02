@@ -400,3 +400,21 @@ def test_action_graph_contract() -> None:
         "Report & Respond",
     ]
     assert titles == expected_titles, f"Column titles mismatch: {titles} != {expected_titles}"
+
+
+def test_generate_reports_markdown_has_no_trailing_spaces(tmp_path: Path) -> None:
+    """Markdown audit reports must not emit trailing whitespace."""
+    from scripts.run_autonomous_product_audit import generate_reports
+
+    audit = {
+        "timestamp_utc": "2026-11-02T00:00:00+00:00",
+        "git_branch": "gemini/product-20260924",
+        "git_head_sha": "c5cf725",
+        "overall_decision": "GO",
+        "red_team_suite": {"passed": True, "summary": "ok", "probes": []},
+        "jury_governance_suite": {"passed": True, "checks": {}},
+        "investor_e2e_suite": {"status": "SKIPPED", "reason": "not requested"},
+    }
+    _json_path, md_path = generate_reports(audit, tmp_path)
+    for line in md_path.read_text(encoding="utf-8").splitlines():
+        assert line == line.rstrip(), line

@@ -389,6 +389,7 @@
   let campaignFetchSettled = false;
   let liveQueueLoaded = false;
   let campaignFingerprint = null;
+  let startupIntegrityForest = null;
   let walkthroughCurrentStep = 0;
   let walkthroughInterval = null;
 
@@ -551,7 +552,10 @@
       node.classList.toggle('is-active', node.getAttribute('data-soc-nav') === name);
     });
     if (name === 'graph') renderActionGraph();
-    if (name === 'hunter') renderHunterGauges();
+    if (name === 'hunter') {
+      renderHunterGauges();
+      renderMitreCoverageMatrix();
+    }
   }
 
   function openLabDrawer(open) {
@@ -600,6 +604,9 @@
     refreshAdvisoryStatus();
     refreshAgyAudit();
     refreshLiveCampaigns();
+    renderEntityTopology();
+    renderMitreCoverageMatrix();
+    renderScoringTimeProvenance(null);
     openInspectorHash();
     setInterval(refreshLiveCampaigns, 3000);
   }
@@ -862,7 +869,233 @@
     return copy ? copy.textContent : node.textContent;
   }
 
+  const INDEXED_MITRE_COVERAGE = [
+    { id: 'T1046', name: 'Network Service Discovery', kind: 'technique' },
+    { id: 'T1190', name: 'Exploit Public-Facing Application', kind: 'technique' },
+    { id: 'T1498', name: 'Network Denial of Service', kind: 'technique' },
+    { id: 'T1071.001', name: 'Application Layer Protocol: Web Traffic', kind: 'technique' },
+    { id: 'T1595', name: 'Active Scanning', kind: 'technique' },
+    { id: 'T1110', name: 'Brute Force', kind: 'technique' },
+    { id: 'T1041', name: 'Exfiltration Over C2 Channel', kind: 'technique' },
+    { id: 'T1021', name: 'Remote Services', kind: 'technique' },
+    { id: 'T1059', name: 'Command and Scripting Interpreter', kind: 'technique' },
+    { id: 'T1133', name: 'External Remote Services', kind: 'technique' },
+    { id: 'CVE-2023-48795', name: 'Terrapin SSH Prefix Truncation', kind: 'cve' },
+    { id: 'CVE-2023-44487', name: 'HTTP/2 Rapid Reset', kind: 'cve' },
+    { id: 'CVE-2021-44228', name: 'Log4Shell JNDI RCE', kind: 'cve' },
+    { id: 'CVE-2023-4966', name: 'CitrixBleed Session Hijack', kind: 'cve' },
+    { id: 'CVE-2024-3400', name: 'PAN-OS Command Injection', kind: 'cve' },
+    { id: 'CVE-2023-34362', name: 'MOVEit SQL Injection and Exfiltration', kind: 'cve' },
+    { id: 'CVE-2023-22515', name: 'Confluence Broken Authentication', kind: 'cve' },
+    { id: 'CVE-2017-0144', name: 'EternalBlue SMB Remote Exploit', kind: 'cve' }
+  ];
+
+  function flowContractPassed(inc) {
+    const items = inc && inc.glassBox && Array.isArray(inc.glassBox.items) ? inc.glassBox.items : [];
+    return items.some(item => item && item.id === 'flow_contract_valid' && item.passed === true);
+  }
+
+  function renderTelemetryReductionFunnel(data, flowViews) {
+    const rawFlows = Number(data && data.flow_count);
+    const rawCampaigns = Number(data && data.campaign_count);
+    const flows = Number.isFinite(rawFlows) && rawFlows > 0 ? rawFlows : 0;
+    const campaigns = Number.isFinite(rawCampaigns) && rawCampaigns > 0 ? rawCampaigns : 0;
+    const rows = Array.isArray(flowViews) ? flowViews : [];
+    const schemaValid = rows.filter(flowContractPassed).length;
+    const attacks = rows.filter(row => row && row.decision === 'Attack').length;
+    const reduction = flows === 0 ? '0.0%' : ((1 - campaigns / flows) * 100).toFixed(1) + '%';
+    setInspectorText('funnelLiveFlows', String(flows));
+    setInspectorText('funnelSchemaMtls', String(schemaValid));
+    setInspectorText('funnelRfAttacks', String(attacks));
+    setInspectorText('funnelCampaigns', String(campaigns));
+    setInspectorText('telemetryReductionPct', reduction);
+  }
+
+  function sourceEntityLabel(inc) {
+    const src = inc && inc.provenance && inc.provenance.srcIp ? String(inc.provenance.srcIp) : '';
+    if (isRecordedUnsw(inc) && isMissingEndpoint(src)) return UNSW_ENDPOINT_CHIP;
+    if (!isMissingEndpoint(src)) return src;
+    return 'unavailable';
+  }
+
+  function targetAssetLabel(inc) {
+    const dst = inc && inc.provenance && inc.provenance.dstIp ? String(inc.provenance.dstIp) : '';
+    const port = inc && inc.provenance ? Number(inc.provenance.dstPort) : 0;
+    const dstMissing = isMissingEndpoint(dst);
+    const portMissing = !Number.isFinite(port) || port <= 0;
+    if (!dstMissing && !portMissing) return dst + ':' + port;
+    if (isRecordedUnsw(inc) && (dstMissing || portMissing)) return UNSW_ENDPOINT_CHIP;
+    return 'unavailable';
+  }
+
+  function campaignStitchLabel(inc) {
+    const count = inc && inc.correlation ? Number(inc.correlation.constituentAlerts) : 0;
+    const campaignId = inc && inc.correlation && inc.correlation.incidentId
+      ? String(inc.correlation.incidentId)
+      : '';
+    if (count > 1 && campaignId) return campaignId;
+    return 'single-flow';
+  }
+
+  function callbackReceiptLabel(inc) {
+    const signature = inc && typeof inc.callbackSignature === 'string' ? inc.callbackSignature.trim() : '';
+    if (inc && (inc.callbackRecorded === true || signature !== '')) {
+      return 'Callback receipt: recorded';
+    }
+    return 'Callback receipt: not recorded';
+  }
+
+  function entityTopologyNodes(inc, ragOk) {
+    const technique = ragOk ? String(inc.chromaRagHits[0].technique_id) : 'unavailable';
+    const chain = inc && verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256)
+      ? 'Playbook hash chain: verified'
+      : 'Playbook hash chain: unavailable';
+    const callback = callbackReceiptLabel(inc);
+    return [
+      { key: 'source', title: 'Source Entity', lines: [sourceEntityLabel(inc)], evidence: sourceEntityLabel(inc) },
+      { key: 'target', title: 'Target Asset:Port', lines: [targetAssetLabel(inc)], evidence: targetAssetLabel(inc) },
+      { key: 'stitch', title: '30s/600s Campaign Stitch', lines: [campaignStitchLabel(inc)], evidence: campaignStitchLabel(inc) },
+      { key: 'mitre', title: 'MITRE / CVE Advisory Hit', lines: [technique], evidence: technique },
+      { key: 'soar', title: 'SOAR & Containment Gate', lines: [chain, callback], evidence: chain + ' | ' + callback }
+    ];
+  }
+
+  function topologyTextLines(text) {
+    const raw = String(text || '');
+    const lines = [];
+    let rest = raw;
+    while (rest.length > 22 && lines.length < 3) {
+      let cut = rest.lastIndexOf(' ', 22);
+      if (cut < 8) cut = 22;
+      lines.push(rest.slice(0, cut));
+      rest = rest.slice(cut).trim();
+    }
+    if (rest) lines.push(rest);
+    return lines.slice(0, 4);
+  }
+
+  function renderEntityTopology() {
+    const svg = document.getElementById('entityTopologyGraph');
+    if (!svg) return;
+    const inc = selectedIncident();
+    const ragOk = verifyChromaRagHits(inc && inc.chromaRagHits);
+    const nodes = entityTopologyNodes(inc, ragOk);
+    const width = 168;
+    const step = 188;
+    let markup = '';
+    nodes.forEach((node, index) => {
+      const x = 16 + index * step;
+      if (index > 0) {
+        markup += '<line x1="' + (x - 20) + '" y1="75" x2="' + x + '" y2="75" stroke="#58a6ff" stroke-width="1.5"></line>';
+      }
+      const wrapped = [];
+      node.lines.forEach(line => {
+        topologyTextLines(line).forEach(part => wrapped.push(part));
+      });
+      let text = '<text x="' + (x + 10) + '" y="38">' + escapeHtml(node.title) + '</text>';
+      wrapped.slice(0, 4).forEach((part, lineIndex) => {
+        text += '<text x="' + (x + 10) + '" y="' + (58 + lineIndex * 16) + '">' + escapeHtml(part) + '</text>';
+      });
+      markup += '<g class="topology-node" data-topology-node="' + node.key + '" tabindex="0" role="button">'
+        + '<rect x="' + x + '" y="16" width="' + width + '" height="118" rx="8"></rect>'
+        + text
+        + '</g>';
+    });
+    svg.innerHTML = markup;
+    svg.querySelectorAll('[data-topology-node]').forEach(node => {
+      const open = () => showTopologyInspector(node.getAttribute('data-topology-node'));
+      node.addEventListener('click', open);
+      node.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          open();
+        }
+      });
+    });
+  }
+
+  function showTopologyInspector(key) {
+    const popover = document.getElementById('graphNodePopover');
+    if (!popover) return;
+    const inc = selectedIncident();
+    const ragOk = verifyChromaRagHits(inc && inc.chromaRagHits);
+    const node = entityTopologyNodes(inc, ragOk).find(item => item.key === key);
+    if (!node) return;
+    document.querySelectorAll('[data-topology-node]').forEach(item => {
+      item.classList.toggle('is-selected', item.getAttribute('data-topology-node') === key);
+    });
+    popover.classList.add('is-open');
+    popover.innerHTML = '<h3>Selected Node Inspector</h3>'
+      + '<strong>' + escapeHtml(node.title) + '</strong>'
+      + '<p>' + escapeHtml(node.evidence) + '</p>'
+      + '<p>Input: the selected stored flow.</p>'
+      + '<p>Rule: ' + escapeHtml(key) + ' uses only stored fields.</p>'
+      + '<p>Output: ' + escapeHtml(node.evidence) + '</p>';
+  }
+
+  function storedFlowObservesCoverage(flow, entry) {
+    if (!flow || flow.flowId == null) return false;
+    const scenario = typeof flow.scenarioLabel === 'string' ? flow.scenarioLabel : '';
+    if (entry.kind === 'technique') {
+      if (scenario === entry.id) return true;
+      if (!verifyChromaRagHits(flow.chromaRagHits)) return false;
+      return flow.chromaRagHits.some(hit => hit && hit.technique_id === entry.id);
+    }
+    if (scenario.indexOf(entry.id) !== -1) return true;
+    if (!verifyChromaRagHits(flow.chromaRagHits)) return false;
+    return flow.chromaRagHits.some(hit => {
+      const name = hit && typeof hit.technique_name === 'string' ? hit.technique_name : '';
+      return name.indexOf(entry.id) !== -1;
+    });
+  }
+
+  function renderMitreCoverageMatrix() {
+    const body = document.getElementById('mitreCoverageBody');
+    if (!body) return;
+    const flows = (liveCampaignIncidents || []).filter(row => row && row.flowId != null);
+    body.replaceChildren();
+    INDEXED_MITRE_COVERAGE.forEach(entry => {
+      const observed = flows.filter(flow => storedFlowObservesCoverage(flow, entry)).length;
+      const tr = document.createElement('tr');
+      [entry.id, entry.name, entry.kind, String(observed)].forEach(value => {
+        const td = document.createElement('td');
+        td.textContent = value;
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+  }
+
+  function renderScoringTimeProvenance(inc) {
+    const panel = document.getElementById('scoringTimeProvenance');
+    const scoring = document.getElementById('scoringTimeModelDigest');
+    const startup = document.getElementById('startupIntegrityDigest');
+    const stored = inc && typeof inc.scoringTimeModelSha256 === 'string'
+      ? inc.scoringTimeModelSha256.trim()
+      : '';
+    const scoringKnown = SHA256_HEX_REGEX.test(stored);
+    const forest = startupIntegrityForest;
+    const startupSha = forest && typeof forest.sha256 === 'string' ? forest.sha256 : '';
+    const startupKnown = SHA256_HEX_REGEX.test(startupSha);
+    if (scoring) {
+      scoring.textContent = scoringKnown
+        ? ('Scoring-time frozen RF digest: ' + stored)
+        : 'Scoring-time frozen RF digest: unavailable';
+      scoring.setAttribute('data-evidence-state', scoringKnown ? 'verified' : 'unavailable');
+    }
+    if (startup) {
+      startup.textContent = startupKnown
+        ? ('Startup integrity check: ' + startupSha + (forest.verified === true ? ' verified' : ' unverified'))
+        : 'Startup integrity check: unavailable';
+      startup.setAttribute('data-evidence-state', startupKnown && forest.verified === true ? 'verified' : 'unavailable');
+    }
+    if (panel) {
+      panel.setAttribute('data-evidence-state', scoringKnown ? 'verified' : 'unavailable');
+    }
+  }
+
   function renderActionGraph() {
+    renderEntityTopology();
     const inc = selectedIncident();
     const entities = document.getElementById('kpiEntities');
     const receipts = document.getElementById('kpiSoarReceipts');
@@ -1026,6 +1259,7 @@
   }
 
   function syncLiveInspector(inc) {
+    renderScoringTimeProvenance(inc);
     const title = document.getElementById('inspectorCaseTitle');
     const badge = document.getElementById('groundedBadge');
     syncHeaderChainBadge(inc);
@@ -1848,6 +2082,7 @@
       decision: flow.decision || 'withheld',
       uncalibratedScore: Number.isFinite(score) ? score : 0,
       modelArtifactSha256: flow.model_sha256 || EVAL_PACK_REV2.rfArtifactSha256,
+      scoringTimeModelSha256: typeof flow.model_sha256 === 'string' ? flow.model_sha256 : '',
       modelVersion: 'full-network-random-forest-6d69c72-v1',
       provenance: {
         srcIp: flow.src_entity_id || '',
@@ -1870,7 +2105,9 @@
           : (flow.case_title || ('Stored flow ' + flow.flow_id)),
         detectionRationale: 'Frozen Random Forest score. Fusion disabled. The autoencoder did not decide this alert.'
       },
-      chromaRagHits: [],
+      chromaRagHits: Array.isArray(flow.chroma_rag_hits)
+        ? flow.chroma_rag_hits
+        : (Array.isArray(flow.chromaRagHits) ? flow.chromaRagHits : []),
       soarRecord: {
         playbookId: flow.playbook_id || 'pending',
         state: flow.ledger_state || 'pending_approval',
@@ -1880,6 +2117,7 @@
       soarAuditChainVerified: chainOk && SHA256_HEX_REGEX.test(entry),
       soarAuditChainHeadSha256: entry,
       callbackSignature: typeof flow.callback_signature === 'string' ? flow.callback_signature : '',
+      callbackRecorded: flow.callback_recorded === 1 || flow.callback_recorded === true,
       executionPath: flow.execution_path || '',
       operatorId: flow.operator_id || '',
       certSha256Prefix: flow.cert_sha256_prefix || '',
@@ -2019,12 +2257,13 @@
       const resp = await fetch('/api/v1/live/campaigns');
       if (!resp.ok) throw new Error('campaign status');
       const data = await resp.json();
-      const views = [];
+      const flowViews = [];
       (data.campaigns || []).forEach(campaign => {
         (campaign.flows || []).forEach(flow => {
-          views.push(flowToIncident(flow, campaign.member_count));
+          flowViews.push(flowToIncident(flow, campaign.member_count));
         });
       });
+      const views = flowViews.slice();
       (data.incidents || []).forEach(row => views.push(incidentRowToView(row)));
       liveCampaignIncidents = views;
       showStoredN8nMttr(views);
@@ -2045,6 +2284,10 @@
       if (campaignCount) campaignCount.textContent = String(data.campaign_count || 0);
       if (incidentCount) incidentCount.textContent = String(data.incident_count || 0);
       if (bridgeCount) bridgeCount.textContent = 'Live bridge rows: ' + String(data.bridge_flow_count || 0);
+      renderTelemetryReductionFunnel(data, flowViews);
+      renderMitreCoverageMatrix();
+      renderScoringTimeProvenance(selectedIncident());
+      renderEntityTopology();
       const nextPrint = views.map(item => [
         item.id,
         item.decision,
@@ -2074,6 +2317,9 @@
       campaignFetchSettled = true;
       setSampleSurfacesHidden(false);
       setLiveText('campaignQueueStatus', 'Campaign store unavailable. The recorded queue is the fallback.', 'unavailable');
+      renderTelemetryReductionFunnel(null, []);
+      renderMitreCoverageMatrix();
+      renderScoringTimeProvenance(selectedIncident());
     }
     renderIncidentQueue();
     renderForensicDrawer();
@@ -2095,6 +2341,10 @@
         'Check ' + check.check_id + ': ' + (check.passed ? 'PASS' : 'FAIL')
       ));
       const digests = data.model_digests || {};
+      const forest = digests.random_forest;
+      startupIntegrityForest = forest && typeof forest.sha256 === 'string'
+        ? { sha256: forest.sha256, verified: forest.verified === true }
+        : null;
       Object.keys(digests).forEach(name => {
         const row = digests[name];
         const sha = row && row.sha256 ? String(row.sha256).slice(0, 16) : 'unavailable';
@@ -2109,8 +2359,11 @@
         lines.join('\n'),
         data.evidence_state === 'verified' ? 'verified' : 'unavailable'
       );
+      renderScoringTimeProvenance(selectedIncident());
     } catch (err) {
+      startupIntegrityForest = null;
       setLiveText('constitutionalHealth', 'Constitutional health unavailable.', 'unavailable');
+      renderScoringTimeProvenance(selectedIncident());
     }
   }
 

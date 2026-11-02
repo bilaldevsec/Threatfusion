@@ -863,6 +863,68 @@ a:hover {
   user-select: none;
 }
 
+#telemetryReductionFunnel svg {
+  width: 100%;
+  height: 48px;
+  display: block;
+  margin-bottom: 0.75rem;
+}
+
+#section8ReferencePill {
+  margin: 0.85rem 0 0;
+  display: inline-block;
+}
+
+#entityTopologyGraph {
+  width: 100%;
+  height: 168px;
+  background: #111827;
+  border-radius: 10px;
+  margin: 0 0 0.8rem;
+}
+
+#entityTopologyGraph .topology-node {
+  cursor: pointer;
+}
+
+#entityTopologyGraph .topology-node rect {
+  fill: #090D16;
+  stroke: #30363d;
+}
+
+#entityTopologyGraph .topology-node.is-selected rect {
+  stroke: #58a6ff;
+}
+
+#entityTopologyGraph text {
+  fill: #F8FAFC;
+  font-size: 11px;
+}
+
+.health-provenance-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: start;
+}
+
+#scoringTimeProvenance {
+  background: #111827;
+  color: #F8FAFC;
+  border: 1px solid rgba(248, 250, 252, 0.14);
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+}
+
+#scoringTimeProvenance h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+}
+
+#mitreCoverageMatrix {
+  margin: 0.8rem 0;
+}
+
 /* Standardized 4-Block Investigation Anatomy */
 .anatomy-card {
   margin-top: 1rem;

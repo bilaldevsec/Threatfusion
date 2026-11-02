@@ -806,10 +806,10 @@ def generate_reports(audit_data: dict[str, Any], output_dir: Path) -> tuple[Path
     md_lines: list[str] = [
         "# ThreatFusion Autonomous Product Audit Report",
         "",
-        f"**Audit Timestamp:** `{audit_data.get('timestamp_utc')}`  ",
-        f"**Repository Branch:** `{audit_data.get('git_branch')}`  ",
-        f"**Git Commit HEAD:** `{audit_data.get('git_head_sha')}`  ",
-        f"**Overall Decision Verdict:** **`{overall_verdict}`**  ",
+        f"**Audit Timestamp:** `{audit_data.get('timestamp_utc')}`",
+        f"**Repository Branch:** `{audit_data.get('git_branch')}`",
+        f"**Git Commit HEAD:** `{audit_data.get('git_head_sha')}`",
+        f"**Overall Decision Verdict:** **`{overall_verdict}`**",
         "",
         "---",
         "",
@@ -912,6 +912,7 @@ def generate_reports(audit_data: dict[str, Any], output_dir: Path) -> tuple[Path
         "",
     ])
 
+    md_lines = [line.rstrip() for line in md_lines]
     md_path.write_text("\n".join(md_lines), encoding="utf-8")
     return json_path, md_path
 

@@ -1203,6 +1203,34 @@ def test_presentation_polish_contracts() -> None:
         "UNSW-NB15 and CIC byte layers are not interchangeable. "
         "CIC is not a validated compatible external test."
     ) in html
+    investigations = html.split('data-soc-view="investigations"', 1)[1].split(
+        'data-soc-view="detail"', 1
+    )[0]
+    assert 'id="telemetryReductionFunnel"' in investigations
+    assert (
+        "Jan Benchmark: 216,568 flows -> 4,246 RF alerts | 98.0% volume reduction | 0.095% FPR"
+    ) in investigations
+    assert "flows === 0 ? '0.0%'" in script
+    assert "(1 - campaigns / flows)" in script
+    graph = html.split('data-soc-view="graph"', 1)[1].split('data-soc-view="hunter"', 1)[0]
+    assert 'id="entityTopologyGraph"' in graph
+    topology = script.split("function renderEntityTopology", 1)[1].split(
+        "function showTopologyInspector", 1
+    )[0]
+    assert "verifyChromaRagHits(" in topology
+    assert 'id="scoringTimeProvenance"' in html
+    assert "scoringTimeModelSha256" in script
+    assert "startupIntegrityForest" in script
+    registry = (
+        REPO_ROOT / "backend/src/threatfusion/models/drift_and_supply_chain.py"
+    ).read_text(encoding="utf-8")
+    for digest in (
+        "bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9",
+        "2cf4de6686d937c485d4dbcbfa21d3e90f65bbb922087c8b31be4b012d7fb148",
+        "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23",
+        "1d02e5bba556cb28709bd0faefce5f29da424a419a2d95332ad27a8995b26f63",
+    ):
+        assert digest in registry
     for element_id in (
         "analystRationale",
         "contextMemoryPanel",
