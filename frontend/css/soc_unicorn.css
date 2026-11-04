@@ -902,10 +902,10 @@ a:hover {
 }
 
 .health-provenance-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
-  gap: 0.75rem;
-  align-items: start;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
 }
 
 #scoringTimeProvenance {
@@ -919,6 +919,13 @@ a:hover {
 #scoringTimeProvenance h3 {
   margin: 0 0 0.4rem;
   font-size: 0.95rem;
+}
+
+#scoringTimeProvenance,
+#scoringTimeModelDigest,
+#startupIntegrityDigest {
+  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 
 #mitreCoverageMatrix {
@@ -1462,9 +1469,17 @@ a:hover {
   font-size: 0.8rem;
 }
 
+label[for="analystRationale"],
+label[for="contextMemoryRule"],
+label[for="shiftHandoffNote"],
 #analystRationale,
-#contextMemoryRule {
-  min-height: 76px;
+#contextMemoryRule,
+#shiftHandoffNote {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 88px;
 }
 
 .demo-panel label,
@@ -2013,6 +2028,19 @@ a:hover {
 #liveCopilotAnswer {
   white-space: pre-wrap;
   line-height: 1.5;
+}
+
+#liveCopilotAnswer .copilot-section {
+  margin: 0.75rem 0 0.35rem;
+  font-weight: 700;
+  color: #58a6ff;
+}
+
+#liveCopilotAnswer code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #090D16;
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
 }
 
 .graph-col {

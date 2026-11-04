@@ -23,15 +23,20 @@ out unless `include_lab=true`, and they do not mark a cell verified.
 The Stage 5 copilot brief uses the selected stored flow. `scripts/run_live_product.sh`
 sources `$ROOT/.env` only when it starts the server. `--dry-run`, `--smoke`, and
 `THREATFUSION_IGNORE_DOTENV=1` skip that file. `scripts/run_full_range_demo.sh`
-sources it only for `--up`. Pytest does not source that file. A missing
+sources it only for `--up`, then posts the four labeled scenarios after the
+console and follower are up. Pytest does not source that file. A missing
 `GEMINI_API_KEY` keeps the offline five-section brief. A live `gemini-3.5-flash`
-reply is shown only when every address is a stored endpoint and every MITRE/CVE
-id was retrieved or already in the evidence block. `GeminiAdvisoryConfig` stays
-at 512 tokens and temperature 0.0. The live five-section request uses 2048 tokens,
-temperature 0.1, a 30 second timeout, and thinking budget 0. `evidence_state` is
-`verified` only when that brief is grounded and the flow has a verified SOAR
-receipt with a valid hash chain.
-TF-008, TF-009, TF-010, and TF-011 remain open.
+reply is asked for 2-4 sentences and bullets under each canonical heading, and
+it is shown only when every address is a stored endpoint and every MITRE/CVE
+id was retrieved or already in the evidence block. The console escapes that
+narrative before turning heading lines, bold markers, and code markers into
+HTML. `GeminiAdvisoryConfig` stays at 512 tokens and temperature 0.0. The live
+five-section request uses 2048 tokens, temperature 0.1, and a 30 second timeout.
+`evidence_state` is `verified` only when that brief is grounded and the flow
+has a verified SOAR receipt with a valid hash chain. An empty correlation
+timeline falls back to five stored-flow stage rows. Campaign lists attach one
+ChromaDB technique hit. The funnel reduction uses Attack campaigns over stored
+flows. TF-008, TF-009, TF-010, and TF-011 remain open.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0
 readiness report still says split assignments are missing, but the later completed full assignment and

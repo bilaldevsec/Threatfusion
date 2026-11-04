@@ -715,6 +715,13 @@
   const UNSW_ENDPOINT_CHIP = 'Dataset flow (UNSW-NB15) · endpoints not recorded';
   const CONTAINMENT_DISABLED_TITLE = 'Containment disabled: Flow scored Benign by Frozen RF';
 
+  function isStoredIncident(inc, src, dst) {
+    const label = inc && (inc.sourceLabel || inc.source_label || inc.sourceEventId) || '';
+    return label === 'incident_store'
+      || src === 'stored-incident'
+      || dst === 'stored-incident';
+  }
+
   function isMissingEndpoint(val) {
     if (!val) return true;
     const str = String(val).trim();
@@ -788,6 +795,9 @@
 
     if (isRecordedUnsw(inc) && (isMissingEndpoint(src) || isMissingEndpoint(dst))) {
       return studyFlowTitle(inc);
+    }
+    if (isStoredIncident(inc, src, dst)) {
+      return 'Correlated Attack Campaign · 30s/600s Window';
     }
     if (!isMissingEndpoint(src) && !isMissingEndpoint(dst)) {
       const port = (inc.provenance && inc.provenance.dstPort) || (inc.dataset && inc.dataset.port) || '';
@@ -898,18 +908,44 @@
 
   function renderTelemetryReductionFunnel(data, flowViews) {
     const rawFlows = Number(data && data.flow_count);
-    const rawCampaigns = Number(data && data.campaign_count);
     const flows = Number.isFinite(rawFlows) && rawFlows > 0 ? rawFlows : 0;
-    const campaigns = Number.isFinite(rawCampaigns) && rawCampaigns > 0 ? rawCampaigns : 0;
     const rows = Array.isArray(flowViews) ? flowViews : [];
     const schemaValid = rows.filter(flowContractPassed).length;
     const attacks = rows.filter(row => row && row.decision === 'Attack').length;
-    const reduction = flows === 0 ? '0.0%' : ((1 - campaigns / flows) * 100).toFixed(1) + '%';
+    const attackCampaignIds = new Set();
+    rows.forEach(row => {
+      if (!row || row.decision !== 'Attack') return;
+      const id = row.correlation && row.correlation.incidentId
+        ? String(row.correlation.incidentId)
+        : String(row.id || '');
+      if (id) attackCampaignIds.add(id);
+    });
+    const attackCampaigns = attackCampaignIds.size;
+    const reduction = flows === 0 ? '0.0%' : ((1 - attackCampaigns / flows) * 100).toFixed(1) + '%';
     setInspectorText('funnelLiveFlows', String(flows));
     setInspectorText('funnelSchemaMtls', String(schemaValid));
     setInspectorText('funnelRfAttacks', String(attacks));
-    setInspectorText('funnelCampaigns', String(campaigns));
+    setInspectorText('funnelCampaigns', String(attackCampaigns));
     setInspectorText('telemetryReductionPct', reduction);
+    paintFunnelSvg([flows, schemaValid, attacks, attackCampaigns]);
+  }
+
+  function paintFunnelSvg(counts) {
+    const svg = document.getElementById('telemetryReductionSvg');
+    if (!svg) return;
+    const polys = svg.querySelectorAll('polygon');
+    const max = Math.max.apply(null, counts.concat([1]));
+    polys.forEach((poly, index) => {
+      const count = counts[index] == null ? 0 : Number(counts[index]);
+      const fraction = Math.max(0.12, Math.min(1, (Number.isFinite(count) ? count : 0) / max));
+      const left = Math.round(8 + (1 - fraction) * 452);
+      const top = 6 + index * 3;
+      const bottom = 42 - index * 3;
+      poly.setAttribute(
+        'points',
+        left + ',' + top + ' 632,' + (top + 6) + ' 632,' + (bottom - 6) + ' ' + left + ',' + bottom
+      );
+    });
   }
 
   function sourceEntityLabel(inc) {
@@ -947,7 +983,10 @@
   }
 
   function entityTopologyNodes(inc, ragOk) {
-    const technique = ragOk ? String(inc.chromaRagHits[0].technique_id) : 'unavailable';
+    const hit = ragOk ? inc.chromaRagHits[0] : null;
+    const technique = hit
+      ? (String(hit.technique_id) + (hit.technique_name ? ' · ' + hit.technique_name : ''))
+      : 'unavailable';
     const chain = inc && verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256)
       ? 'Playbook hash chain: verified'
       : 'Playbook hash chain: unavailable';
@@ -1127,17 +1166,63 @@
       + rows + '</tbody></table>';
   }
 
-  function renderTimelineGroupedView() {
+  function stageActor(inc) {
+    const src = inc && inc.provenance && inc.provenance.srcIp ? String(inc.provenance.srcIp) : '';
+    if (src && !isMissingEndpoint(src) && src !== 'stored-incident') return src;
+    return String((inc && (inc.sourceLabel || inc.sourceEventId)) || 'stored-flow');
+  }
+
+  function stageTimelineFromFlow(inc) {
+    if (!inc) return [];
+    const when = inc.observedAt || '';
+    const actor = stageActor(inc);
+    const summaries = [
+      '[E1] Stage 1-2 Telemetry & 14-Feature Contract',
+      '[E2] Stage 3 Frozen RF Scoring (bd2853a6)',
+      '[E3] Stage 4 Dual-Window 30s/600s Correlation',
+      '[E4] Stage 4 MISP RFC1918 Guard',
+      '[E5] Stage 6 SOAR Ledger State'
+    ];
+    const events = summaries.map((summary, index) => ({
+      observed_at: when,
+      actor_id: actor,
+      kind: 'E' + (index + 1),
+      summary: summary
+    }));
+    const campaign = inc.correlation && inc.correlation.incidentId
+      ? String(inc.correlation.incidentId)
+      : '';
+    if (campaign) {
+      activeIncidents().forEach(other => {
+        if (!other || other.id === inc.id) return;
+        const otherId = other.correlation && other.correlation.incidentId
+          ? String(other.correlation.incidentId)
+          : '';
+        if (otherId !== campaign) return;
+        events.push({
+          observed_at: other.observedAt || when,
+          actor_id: stageActor(other),
+          kind: 'partner',
+          summary: 'Correlated partner flow ' + String(other.flowId || other.id || '')
+        });
+      });
+    }
+    return events;
+  }
+
+  function renderTimelineGroupedView(selected) {
     const host = document.getElementById('timelineGroupedView');
     if (!host) return;
-    const events = liveCorrelationReport
+    const reportEvents = liveCorrelationReport
       && liveCorrelationReport.timeline
       && Array.isArray(liveCorrelationReport.timeline.events)
       ? liveCorrelationReport.timeline.events
       : [];
+    const inc = arguments.length ? selected : selectedIncident();
+    const events = reportEvents.length ? reportEvents : stageTimelineFromFlow(inc);
     const groups = groupConsecutiveTimelineByActor(events);
     host.setAttribute('data-timeline-mode', timelineViewMode);
-    const state = events.length && liveCorrelationReport
+    const state = reportEvents.length && liveCorrelationReport
       ? (liveCorrelationReport.evidence_state || 'unavailable')
       : 'unavailable';
     host.setAttribute('data-evidence-state', state);
@@ -1148,6 +1233,16 @@
     host.innerHTML = timelineViewMode === 'table'
       ? timelineTableHtml(groups)
       : timelineJournalHtml(groups);
+    if (!reportEvents.length) {
+      const line = events.map(event => String(event.summary || event.kind || '')).join('\n');
+      const live = document.getElementById('liveTimeline');
+      if (live) {
+        live.textContent = line;
+        live.setAttribute('data-evidence-state', 'unavailable');
+      }
+      const attack = document.getElementById('attackTimelineEvents');
+      if (attack) attack.textContent = line;
+    }
   }
 
   function setTimelineViewMode(mode) {
@@ -1252,11 +1347,13 @@
       const triage = inc.triageState && inc.triageState !== 'unreviewed' ? inc.triageState : 'Open';
       const title = alertTitle(inc);
       const endpointsMissing = isMissingEndpoint(src) || isMissingEndpoint(dst);
-      const entitiesHtml = (isRecordedUnsw(inc) && endpointsMissing)
+      const entitiesHtml = isStoredIncident(inc, src, dst)
+        ? '<span class="entity-pill">Correlated Campaign · Stored Incident</span>'
+        : ((isRecordedUnsw(inc) && endpointsMissing)
         ? '<span class="entity-chip-muted">' + escapeHtml(UNSW_ENDPOINT_CHIP) + '</span>'
         : (!isMissingEndpoint(src) && !isMissingEndpoint(dst)
           ? '<code class="entity-pill">' + escapeHtml(src) + '</code><code class="entity-pill">' + escapeHtml(dst) + '</code>'
-          : '<span class="entity-chip-muted">endpoints unavailable</span>');
+          : '<span class="entity-chip-muted">endpoints unavailable</span>'));
       const fullId = String(inc.id || '');
       const flowKey = inc.flowId || inc.flow_id || '';
       const shortId = 'INV-' + (flowKey === '' ? fullId.slice(0, 7) : flowKey) + ' · ' + fullId.slice(0, 7) + '…';
@@ -1382,6 +1479,7 @@
       renderCitedRationale(null);
       renderContextMemoryPanels(null);
       renderEvidenceLockerQueries(null);
+      renderTimelineGroupedView(null);
       return;
     }
     const scoreText = formatRfPercent(inc.uncalibratedScore);
@@ -1424,8 +1522,10 @@
     }
     const ragOk = verifyChromaRagHits(inc.chromaRagHits);
     if (ragOk) {
-      setInspectorText('inspectorTechnique', 'retrieved candidate technique ' + inc.chromaRagHits[0].technique_id);
-      setInspectorText('inspectorTactic', inc.chromaRagHits[0].technique_name);
+      const ragHit = inc.chromaRagHits[0];
+      const ragName = ragHit.technique_name ? ' · ' + ragHit.technique_name : '';
+      setInspectorText('inspectorTechnique', 'retrieved candidate technique ' + ragHit.technique_id + ragName);
+      setInspectorText('inspectorTactic', ragHit.tactic || ragHit.technique_name);
     } else {
       setInspectorText('inspectorTechnique', 'unavailable');
       setInspectorText('inspectorTactic', 'unavailable');
@@ -1477,6 +1577,7 @@
     renderCitedRationale(inc);
     renderContextMemoryPanels(inc);
     renderEvidenceLockerQueries(inc);
+    renderTimelineGroupedView(inc);
   }
 
   function renderContextMemoryPanels(inc) {
@@ -1576,8 +1677,12 @@
     const hiveLabel = signedLocalCallback
       ? ('TheHive Case: ' + inc.thehiveCaseId)
       : (hiveOk ? 'TheHive Case: DISPATCHED' : (inc.soarRecord && inc.soarRecord.state === 'pending_approval' ? 'TheHive Case: PENDING APPROVAL' : 'TheHive Case: UNAVAILABLE'));
-    const techniqueId = ragOk ? inc.chromaRagHits[0].technique_id : (inc.live ? 'unavailable' : 'T1046');
-    const tacticName = ragOk ? inc.chromaRagHits[0].technique_name : (inc.live ? 'unavailable' : 'Network Service Discovery');
+    const techniqueId = ragOk
+      ? (inc.chromaRagHits[0].technique_id + (inc.chromaRagHits[0].technique_name ? ' · ' + inc.chromaRagHits[0].technique_name : ''))
+      : (inc.live ? 'unavailable' : 'T1046');
+    const tacticName = ragOk
+      ? (inc.chromaRagHits[0].tactic || inc.chromaRagHits[0].technique_name)
+      : (inc.live ? 'unavailable' : 'Network Service Discovery');
     const cosineText = ragOk ? inc.chromaRagHits[0].cosine_similarity.toFixed(4) : (inc.live ? 'unavailable' : '0.9120');
     const recordedCaseId = signedLocalCallback
       ? inc.thehiveCaseId
@@ -2262,6 +2367,7 @@
       live: true,
       flowId: null,
       sourceEventId: row.provenance_status || 'incident_store',
+      sourceLabel: 'incident_store',
       observedAt: row.earliest_observed_at || '',
       decision: row.escalated_decision || 'withheld',
       uncalibratedScore: Number.isFinite(score) ? score : 0,
@@ -3096,11 +3202,7 @@
         ? ('retrieved candidate technique ' + hit.technique_id + ' ' + hit.technique_name)
         : 'No local corpus hit.';
       const narrative = typeof data.narrative === 'string' && data.narrative ? data.narrative : retrieved;
-      setLiveText(
-        'liveCopilotAnswer',
-        narrative,
-        data.evidence_state || 'unavailable'
-      );
+      showCopilotAnswer(narrative, data.evidence_state || 'unavailable');
       const badge = document.getElementById('copilotProviderBadge');
       if (badge) {
         badge.textContent = copilotBadgeLabel(data.provider);
@@ -3152,6 +3254,21 @@
     } catch (err) {
       setLiveText('liveDriftStatus', 'Drift unavailable.', 'unavailable');
     }
+  }
+
+  function formatCopilotAnswer(raw) {
+    const escaped = escapeHtml(String(raw || ''));
+    return escaped
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\[([1-5])\][ \t]+([^\n<]+)/g, '<div class="copilot-section">[$1] $2</div>');
+  }
+
+  function showCopilotAnswer(narrative, state) {
+    const answer = document.getElementById('liveCopilotAnswer');
+    if (!answer) return;
+    answer.innerHTML = formatCopilotAnswer(narrative);
+    answer.setAttribute('data-evidence-state', state || 'unavailable');
   }
 
   function escapeHtml(str) {

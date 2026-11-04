@@ -27,7 +27,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from threatfusion.advisory.chromadb_mitre_rag import ChromaDbMitrePlaybookRag
+from threatfusion.advisory.chromadb_mitre_rag import (
+    CANONICAL_MITRE_AND_PLAYBOOK_CORPUS,
+    ChromaDbMitrePlaybookRag,
+)
 from threatfusion.operations.bridge_noise import is_lab_bridge_noise
 from threatfusion.models.drift_and_supply_chain import (
     CANONICAL_14_FEATURES,
@@ -686,6 +689,20 @@ _COPILOT_TITLES = tuple(heading.split("] ", 1)[1] for heading in _COPILOT_HEADIN
 _CVE_TOKEN = re.compile(r"cve[-_ ]?(\d{4})[-_ ](\d{4,7})", re.IGNORECASE)
 _MITRE_ID = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
 _CVE_ID = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
+_SCENARIO_LABEL_RE = re.compile(r"scenario label (T\d+(?:\.\d+)?)")
+_COPILOT_BRIEF_INSTRUCTION = (
+    "Write 2-4 authoritative sentences plus bullets under each canonical heading "
+    "[1] EXECUTIVE TRIAGE & MODEL AUTHORITY, "
+    "[2] CORRELATED TELEMETRY & EVIDENCE LOCKER, "
+    "[3] MITRE ATT&CK & CVE THREAT INTELLIGENCE, "
+    "[4] IMMEDIATE ANALYST INVESTIGATION STEPS, and "
+    "[5] GOVERNED SOAR PLAYBOOK & CONTAINMENT GUIDANCE. "
+    "Explain why rf_attack_probability is above or below the 0.5000 threshold, "
+    "how the Evidence Locker port and protocol baseline and historical frequency behave, "
+    "how the retrieved MITRE and CVE identifiers apply, and the concrete operator steps. "
+    "Mention only this flow's stored src_entity_id, dst_entity_id, and retrieved "
+    "MITRE and CVE identifiers. Use **bold** for the decision and `code` for identifiers."
+)
 
 
 def _normalize_copilot_headings(text: str) -> str:
@@ -1143,7 +1160,9 @@ def _grounded_gemini_narrative(
             lines.append("No local corpus hit.")
         evidence = "\n".join(lines)
     try:
-        text = _live_copilot_callable().generate_copilot_text(evidence)
+        text = _live_copilot_callable().generate_copilot_text(
+            _COPILOT_BRIEF_INSTRUCTION + "\n" + evidence
+        )
     except (GeminiAdvisoryUnavailableError, OSError, TimeoutError):
         return local
     text = _normalize_copilot_headings(text)
@@ -1665,6 +1684,66 @@ def list_digital_assets(db_path: Path) -> dict[str, Any]:
     }
 
 
+def _corpus_technique_hit(technique_id: str) -> dict[str, Any] | None:
+    for doc in CANONICAL_MITRE_AND_PLAYBOOK_CORPUS:
+        if doc.technique_id == technique_id:
+            return {
+                "technique_id": doc.technique_id,
+                "technique_name": doc.technique_name,
+                "tactic": doc.tactic,
+                "playbook_id": doc.playbook_id,
+                "cosine_similarity": 1.0,
+            }
+    return None
+
+
+def _attach_chroma_rag_hits(flows: list[dict[str, Any]], db_path: Path) -> None:
+    """Attach one receipt-shaped Chroma hit from a scenario label or the local corpus."""
+    if not flows:
+        return
+    pending: list[dict[str, Any]] = []
+    for row in flows:
+        title = str(row.get("case_title") or "")
+        match = _SCENARIO_LABEL_RE.search(title)
+        labelled = _corpus_technique_hit(match.group(1)) if match else None
+        if labelled is not None:
+            row["chroma_rag_hits"] = [labelled]
+        else:
+            pending.append(row)
+    if not pending:
+        return
+    try:
+        rag = ChromaDbMitrePlaybookRag(db_path.with_name("threatfusion-live-rag.sqlite3"))
+    except (OSError, sqlite3.Error):
+        for row in pending:
+            row["chroma_rag_hits"] = []
+        return
+    for row in pending:
+        query = str(row.get("case_title") or row.get("source_label") or "stored flow")
+        try:
+            hits = rag.query_semantic_rag(query, top_k=1)
+        except (OSError, sqlite3.Error, TypeError, ValueError):
+            row["chroma_rag_hits"] = []
+            continue
+        if not hits:
+            row["chroma_rag_hits"] = []
+            continue
+        top = hits[0]
+        similarity = float(top.cosine_similarity)
+        if similarity < 0.0 or similarity > 1.0 or not top.playbook_id:
+            row["chroma_rag_hits"] = []
+            continue
+        row["chroma_rag_hits"] = [
+            {
+                "technique_id": top.technique_id,
+                "technique_name": top.technique_name,
+                "tactic": top.tactic,
+                "playbook_id": top.playbook_id,
+                "cosine_similarity": similarity,
+            }
+        ]
+
+
 def list_live_campaigns(
     db_path: Path,
     *,
@@ -1674,6 +1753,7 @@ def list_live_campaigns(
 ) -> dict[str, Any]:
     """Return stored flow campaigns and any incident rows already on disk."""
     flows = _flow_rows(db_path, limit=limit)
+    _attach_chroma_rag_hits(flows, db_path)
     for row in flows:
         flow_id = int(row["flow_id"])
         row["evidence_locker"] = evidence_locker_queries(db_path, flow_id, soar_db_path)

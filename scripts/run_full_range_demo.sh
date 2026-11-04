@@ -114,6 +114,10 @@ cmd_up() {
   echo $! >"$FOLLOWER_PIDFILE"
   curl -fsS -X POST "http://${BIND_HOST}:${PORT}/api/v1/live/purge-bridge-noise" \
     -H 'Content-Type: application/json' -d '{}' >/dev/null
+  if ! curl -fsS -X POST "http://${BIND_HOST}:${PORT}/api/v1/live/scenarios" \
+    -H 'Content-Type: application/json' -d '{}' >/dev/null; then
+    echo "scenario replay did not store rows" >&2
+  fi
   echo "Analyst URL: http://${BIND_HOST}:${PORT}/"
   echo "Suricata engine started. Follower pid $(cat "$FOLLOWER_PIDFILE")."
 }

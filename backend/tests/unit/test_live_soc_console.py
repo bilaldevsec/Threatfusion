@@ -1306,7 +1306,7 @@ def test_presentation_polish_contracts() -> None:
         "Jan Benchmark: 216,568 flows -> 4,246 RF alerts | 98.0% volume reduction | 0.095% FPR"
     ) in investigations
     assert "flows === 0 ? '0.0%'" in script
-    assert "(1 - campaigns / flows)" in script
+    assert "(1 - attackCampaigns / flows)" in script
     graph = html.split('data-soc-view="graph"', 1)[1].split('data-soc-view="hunter"', 1)[0]
     assert 'id="entityTopologyGraph"' in graph
     topology = script.split("function renderEntityTopology", 1)[1].split(
