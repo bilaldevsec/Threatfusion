@@ -605,6 +605,7 @@
     refreshAdvisoryStatus();
     refreshAgyAudit();
     refreshLiveCampaigns();
+    refreshOperatorStamp();
     renderEntityTopology();
     renderMitreCoverageMatrix();
     renderScoringTimeProvenance(null);
@@ -857,8 +858,11 @@
       return unavailable;
     }
     if (key === 'chroma') {
-      if (verifyChromaRagHits(inc.chromaRagHits)) {
+      if (attackTechnique(inc)) {
         return { dot: 'status-verified', label: 'Verified', output: 'Stored ChromaDB hits passed the receipt check.' };
+      }
+      if (inc.decision === 'Benign') {
+        return { dot: 'status-pending', label: 'unavailable', output: 'No technique. Frozen RF decision is Benign.' };
       }
       return unavailable;
     }
@@ -982,14 +986,23 @@
     return 'Callback receipt: not recorded';
   }
 
+  function attackTechnique(inc) {
+    if (!inc || inc.decision !== 'Attack') return null;
+    if (!verifyChromaRagHits(inc.chromaRagHits)) return null;
+    const hit = inc.chromaRagHits[0];
+    const cosine = Number(hit.cosine_similarity);
+    if (!Number.isFinite(cosine) || cosine < 0.55) return null;
+    return hit;
+  }
+
   function entityTopologyNodes(inc, ragOk) {
-    const hit = ragOk ? inc.chromaRagHits[0] : null;
+    const hit = ragOk ? attackTechnique(inc) : null;
     const technique = hit
       ? (String(hit.technique_id) + (hit.technique_name ? ' · ' + hit.technique_name : ''))
-      : 'unavailable';
-    const chain = inc && verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256)
-      ? 'Playbook hash chain: verified'
-      : 'Playbook hash chain: unavailable';
+      : (inc && inc.decision === 'Benign'
+        ? 'No technique. Frozen RF decision is Benign.'
+        : 'unavailable');
+    const chain = playbookChainLabel(inc);
     const callback = callbackReceiptLabel(inc);
     return [
       { key: 'source', title: 'Source Entity', lines: [sourceEntityLabel(inc)], evidence: sourceEntityLabel(inc) },
@@ -1018,7 +1031,7 @@
     const svg = document.getElementById('entityTopologyGraph');
     if (!svg) return;
     const inc = selectedIncident();
-    const ragOk = verifyChromaRagHits(inc && inc.chromaRagHits);
+    const ragOk = verifyChromaRagHits(inc && inc.chromaRagHits) && !!attackTechnique(inc);
     const nodes = entityTopologyNodes(inc, ragOk);
     const width = 168;
     const step = 188;
@@ -1058,7 +1071,7 @@
     const popover = document.getElementById('graphNodePopover');
     if (!popover) return;
     const inc = selectedIncident();
-    const ragOk = verifyChromaRagHits(inc && inc.chromaRagHits);
+    const ragOk = !!attackTechnique(inc);
     const node = entityTopologyNodes(inc, ragOk).find(item => item.key === key);
     if (!node) return;
     document.querySelectorAll('[data-topology-node]').forEach(item => {
@@ -1233,13 +1246,19 @@
     host.innerHTML = timelineViewMode === 'table'
       ? timelineTableHtml(groups)
       : timelineJournalHtml(groups);
-    if (!reportEvents.length) {
-      const drawer = document.getElementById('liveTimelineDrawer');
-      if (drawer) {
-        drawer.textContent = events.length + ' stage events recorded for this flow';
-        drawer.setAttribute('data-correlated-flow-count', String(events.length));
-        drawer.setAttribute('data-evidence-state', 'unavailable');
-      }
+    const partners = events.filter(event => event && (event.kind === 'partner' || event.kind === 'flow_member'));
+    const stageNote = partners.length
+      ? 'Correlated 30.0s/600.0s Attack Campaign — stitched flows and pipeline stages.'
+      : '5 pipeline stages share one ingest time. This is not a stitched attack.';
+    setLiveText('attackTimelineFlowCount', String(partners.length ? partners.length + 1 : 1));
+    setLiveText('attackTimelineSource', stageNote);
+    setLiveText('attackTimelineEvents', '');
+    setLiveText('liveTimeline', '', 'unavailable');
+    const drawer = document.getElementById('liveTimelineDrawer');
+    if (drawer) {
+      drawer.textContent = '';
+      drawer.setAttribute('data-correlated-flow-count', String(partners.length + 1));
+      drawer.setAttribute('data-evidence-state', 'unavailable');
     }
   }
 
@@ -1398,6 +1417,36 @@
     });
   }
 
+  function playbookChainVerified(inc) {
+    return !!(inc && verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256));
+  }
+
+  function playbookChainLabel(inc) {
+    return playbookChainVerified(inc)
+      ? 'Playbook hash chain: verified'
+      : 'Playbook hash chain: unavailable';
+  }
+
+  function candidatePlaybookId(flow) {
+    if (!flow || flow.decision !== 'Attack') return '';
+    if (flow.playbook_id) return String(flow.playbook_id);
+    const label = scenarioLabelFromTitle(flow);
+    const mapped = {
+      T1046: 'pb-discovery-network-contain-v1',
+      T1110: 'pb-ssh-bruteforce-contain-v1',
+      T1190: 'pb-web-exploit-contain-v1'
+    };
+    return mapped[label] || 'pb-rf-attack-contain-v1';
+  }
+
+  function realPlaybookId(inc) {
+    const id = inc && inc.soarRecord && inc.soarRecord.playbookId
+      ? String(inc.soarRecord.playbookId)
+      : '';
+    if (!id || id === 'none' || id === 'pending') return '';
+    return id;
+  }
+
   function syncHeaderChainBadge(inc) {
     const node = document.getElementById('headerChainBadge');
     if (!node) return;
@@ -1412,12 +1461,20 @@
   }
 
   function applyContainmentGuard(inc) {
-    const blocked = !!(inc && inc.decision === 'Benign');
-    ['topBtnApproveSoar', 'btnIsolateAttacker', 'btnGuidedApprove', 'btnContainRange'].forEach(id => {
+    const benign = !!(inc && inc.decision === 'Benign');
+    const approveBlocked = benign || !realPlaybookId(inc);
+    ['btnIsolateAttacker', 'btnContainRange'].forEach(id => {
       const node = document.getElementById(id);
       if (!node) return;
-      node.disabled = blocked;
-      if (blocked) node.title = CONTAINMENT_DISABLED_TITLE;
+      node.disabled = benign;
+      if (benign) node.title = CONTAINMENT_DISABLED_TITLE;
+      else node.removeAttribute('title');
+    });
+    ['topBtnApproveSoar', 'btnGuidedApprove'].forEach(id => {
+      const node = document.getElementById(id);
+      if (!node) return;
+      node.disabled = approveBlocked;
+      if (approveBlocked) node.title = benign ? CONTAINMENT_DISABLED_TITLE : 'No playbook is stored for this flow.';
       else node.removeAttribute('title');
     });
   }
@@ -1513,27 +1570,58 @@
     } else {
       setInspectorText('inspectorAssets', 'endpoints unavailable');
     }
-    const chainOk = verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256);
+    const chainOk = playbookChainVerified(inc);
     if (badge) {
       badge.textContent = 'Grounded evidence: stored flow';
       badge.setAttribute('data-evidence-state', 'unavailable');
     }
-    const ragOk = verifyChromaRagHits(inc.chromaRagHits);
+    const ragHit = attackTechnique(inc);
+    const ragOk = !!ragHit;
     if (ragOk) {
-      const ragHit = inc.chromaRagHits[0];
       const ragName = ragHit.technique_name ? ' · ' + ragHit.technique_name : '';
       setInspectorText('inspectorTechnique', 'retrieved candidate technique ' + ragHit.technique_id + ragName);
       setInspectorText('inspectorTactic', ragHit.tactic || ragHit.technique_name);
+    } else if (inc.decision === 'Benign') {
+      setInspectorText('inspectorTechnique', 'No technique. Frozen RF decision is Benign.');
+      setInspectorText('inspectorTactic', 'none');
     } else {
       setInspectorText('inspectorTechnique', 'unavailable');
       setInspectorText('inspectorTactic', 'unavailable');
+    }
+    const playbookNote = document.getElementById('inspectorPlaybookNote');
+    if (playbookNote) {
+      playbookNote.textContent = inc.decision === 'Benign'
+        ? 'No technique. Frozen RF decision is Benign. Containment stays unauthorized.'
+        : 'Containment stays unauthorized until an analyst approves a stored playbook.';
+    }
+    const rfBadge = document.getElementById('flowRfBadge');
+    if (rfBadge) {
+      rfBadge.textContent = 'Frozen RF ' + String(inc.decision || 'withheld') + ' ' + formatRfPercent(inc.uncalibratedScore);
+    }
+    const aeBadge = document.getElementById('flowAeBadge');
+    if (aeBadge) {
+      const ae = inc.secondaryAe || {};
+      aeBadge.textContent = ae.status === 'ANOMALY_CONFIRMED'
+        ? 'Secondary: v2 AE rank only, not fused'
+        : 'Secondary: v2 AE not scored on this flow';
+    }
+    const rangeBadge = document.getElementById('rangeConnectivityBadge');
+    if (rangeBadge) {
+      rangeBadge.textContent = inc.decision === 'Benign'
+        ? 'Isolation disabled. Frozen RF decision is Benign.'
+        : (src + ' -> ' + dst);
+    }
+    const changelog = document.getElementById('soarChangelog');
+    if (changelog) {
+      changelog.textContent = playbookChainLabel(inc);
+      changelog.setAttribute('data-evidence-state', chainOk ? 'verified' : 'unavailable');
     }
     const playbook = inc.soarRecord && inc.soarRecord.playbookId ? String(inc.soarRecord.playbookId) : 'none';
     const state = inc.soarRecord && inc.soarRecord.state ? String(inc.soarRecord.state) : 'none';
     setInspectorText('inspectorPlaybook', playbook + ' / ' + state);
     const chainNode = document.getElementById('inspectorChain');
     if (chainNode) {
-      chainNode.textContent = chainOk ? 'Playbook hash chain: verified' : 'Playbook hash chain: unavailable';
+      chainNode.textContent = playbookChainLabel(inc);
       chainNode.setAttribute('data-evidence-state', chainOk ? 'verified' : 'unavailable');
     }
     const signed = inc.live === true
@@ -1604,7 +1692,10 @@
     }
     return queries.map(query => {
       if (query.query_id === 'entity_historical_frequency') {
-        return '<div><b>Query 1 Entity Historical Frequency:</b> ' + escapeHtml(String(query.entity_count)) + '</div>';
+        const countText = isRecordedUnsw(inc) && Number(query.entity_count) === 0
+          ? '1 (anonymized 14-feature study vector)'
+          : String(query.entity_count);
+        return '<div><b>Query 1 Entity Historical Frequency:</b> ' + escapeHtml(countText) + '</div>';
       }
       if (query.query_id === 'destination_port_protocol_baseline') {
         const average = query.average_rf_attack_probability == null
@@ -1659,8 +1750,9 @@
     syncLiveInspector(inc);
 
     // Verification evaluation
-    const chainOk = verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256);
-    const ragOk = verifyChromaRagHits(inc.chromaRagHits);
+    const chainOk = playbookChainVerified(inc);
+    const attackHit = attackTechnique(inc);
+    const ragOk = !!attackHit;
     const hiveOk = verifyHiveAndN8nReceipt(inc.thehiveCaseRecord, inc.n8nPlaybookReceipt);
     const signedLocalCallback = inc.live === true
       && typeof inc.callbackSignature === 'string'
@@ -1671,17 +1763,22 @@
 
     const chainState = chainOk ? 'verified' : 'unavailable';
     const ragState = ragOk ? 'verified' : 'unavailable';
-    const hiveState = (hiveOk || signedLocalCallback) ? 'verified' : (inc.soarRecord && inc.soarRecord.state === 'pending_approval' ? 'pending' : 'unavailable');
+    const playbookId = inc.soarRecord && inc.soarRecord.playbookId ? String(inc.soarRecord.playbookId) : '';
+    const realPlaybook = playbookId && playbookId !== 'none' && playbookId !== 'pending';
+    const hivePending = realPlaybook && inc.soarRecord.state === 'pending_approval' && inc.decision === 'Attack';
+    const hiveState = (hiveOk || signedLocalCallback) ? 'verified' : (hivePending ? 'pending' : 'unavailable');
     const hiveLabel = signedLocalCallback
       ? ('TheHive Case: ' + inc.thehiveCaseId)
-      : (hiveOk ? 'TheHive Case: DISPATCHED' : (inc.soarRecord && inc.soarRecord.state === 'pending_approval' ? 'TheHive Case: PENDING APPROVAL' : 'TheHive Case: UNAVAILABLE'));
+      : (hiveOk ? 'TheHive Case: DISPATCHED' : (hivePending ? 'TheHive Case: PENDING APPROVAL' : 'TheHive Case: UNAVAILABLE'));
     const techniqueId = ragOk
-      ? (inc.chromaRagHits[0].technique_id + (inc.chromaRagHits[0].technique_name ? ' · ' + inc.chromaRagHits[0].technique_name : ''))
-      : (inc.live ? 'unavailable' : 'T1046');
+      ? (attackHit.technique_id + (attackHit.technique_name ? ' · ' + attackHit.technique_name : ''))
+      : (inc.decision === 'Benign'
+        ? 'No technique. Frozen RF decision is Benign.'
+        : (inc.live ? 'unavailable' : 'T1046'));
     const tacticName = ragOk
-      ? (inc.chromaRagHits[0].tactic || inc.chromaRagHits[0].technique_name)
-      : (inc.live ? 'unavailable' : 'Network Service Discovery');
-    const cosineText = ragOk ? inc.chromaRagHits[0].cosine_similarity.toFixed(4) : (inc.live ? 'unavailable' : '0.9120');
+      ? (attackHit.tactic || attackHit.technique_name)
+      : (inc.decision === 'Benign' ? 'none' : (inc.live ? 'unavailable' : 'Network Service Discovery'));
+    const cosineText = ragOk ? attackHit.cosine_similarity.toFixed(4) : (inc.live ? 'unavailable' : '0.9120');
     const recordedCaseId = signedLocalCallback
       ? inc.thehiveCaseId
       : ((inc.thehiveCaseRecord && inc.thehiveCaseRecord.case_id) || 'not recorded');
@@ -1817,7 +1914,7 @@
                 </div>
               `).join('')}
             </div>
-          ` : '<div style="font-size: 0.8rem; color: var(--text-muted); font-style: italic;">No semantic RAG hits attached to this alert candidate.</div>'}
+          ` : `<div style="font-size: 0.8rem; color: var(--text-muted); font-style: italic;">${inc.decision === 'Benign' ? 'No technique. Frozen RF decision is Benign.' : 'No semantic RAG hits attached to this alert candidate.'}</div>`}
         </div>
 
         <!-- SOAR Controls Section -->
@@ -1837,7 +1934,7 @@
             Constitutional Policy: AI models are strictly advisory and forbidden from autonomous execution. Human analyst cryptographic authorization required.
           </div>
           <div class="btn-group">
-            <button class="btn btn-approve" id="btnApprovePlaybook" ${inc.decision === 'Benign' ? 'disabled title="' + CONTAINMENT_DISABLED_TITLE + '" style="opacity:0.5;cursor:not-allowed;"' : (!(inc.live && inc.flowId && inc.soarRecord && inc.soarRecord.state === 'pending_approval') ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : '')}>
+            <button class="btn btn-approve" id="btnApprovePlaybook" ${inc.decision === 'Benign' || !realPlaybookId(inc) ? 'disabled title="' + (inc.decision === 'Benign' ? CONTAINMENT_DISABLED_TITLE : 'No playbook is stored for this flow.') + '" style="opacity:0.5;cursor:not-allowed;"' : ''}>
               3A. Approve Playbook (SHA-256 Chain)
             </button>
             <button class="btn btn-rollback" id="btnRollbackPlaybook" ${!inc.soarRecord || inc.soarRecord.state !== 'executed_simulated' ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>
@@ -1857,9 +1954,9 @@
           <!-- Block 1: Executive Summary -->
           <div class="anatomy-block" data-anatomy-block="1">
             <h4>Block 1: Executive Summary</h4>
-            <div><b>Risk Level:</b> <span class="badge badge-decision">${inc.uncalibratedScore >= 0.9 ? 'CRITICAL' : (inc.uncalibratedScore >= 0.7 ? 'HIGH' : 'MEDIUM')}</span></div>
+            <div><b>Risk Level:</b> <span class="badge badge-decision">${inc.decision === 'Benign' ? 'INFORMATIONAL' : inc.decision !== 'Attack' ? 'WITHHELD' : (inc.uncalibratedScore >= 0.9 ? 'CRITICAL' : (inc.uncalibratedScore >= 0.7 ? 'HIGH' : 'MEDIUM'))}</span></div>
             <div><b>RF Confidence:</b> ${formatRfPercent(inc.uncalibratedScore)}</div>
-            <div><b>Priority Rank:</b> #${inc.secondaryAe && inc.secondaryAe.status === 'ANOMALY_CONFIRMED' ? 1 : 2}</div>
+            <div><b>Priority Rank:</b> ${inc.decision === 'Attack' ? ('#' + (inc.secondaryAe && inc.secondaryAe.status === 'ANOMALY_CONFIRMED' ? 1 : 2)) : 'Informational'}</div>
             <div style="margin-top: 0.25rem;"><b>Affected Assets:</b> <code>${escapeHtml(assetLine)}</code></div>
           </div>
 
@@ -1888,7 +1985,7 @@
             <h4>Block 4: Cryptographic SOAR Status</h4>
             <div><b>Playbook:</b> <code>${inc.soarRecord ? escapeHtml(inc.soarRecord.playbookId) : 'pb-isolate-01'}</code></div>
             <div><b>State:</b> <span class="badge badge-state">${inc.soarRecord ? escapeHtml(inc.soarRecord.state) : 'pending_approval'}</span></div>
-            <div><b>Audit Chain:</b> <span class="badge" data-evidence-state="${chainState}">${chainOk ? 'Playbook hash chain: verified' : 'Playbook hash chain: unavailable'}</span></div>
+            <div><b>Audit Chain:</b> <span class="badge" data-evidence-state="${chainState}">${playbookChainLabel(inc)}</span></div>
             <div><b>TheHive case:</b> <code>${escapeHtml(recordedCaseId)}</code></div>
             <div><b>Callback MTTR:</b> ${inc.mttrSeconds === null || inc.mttrSeconds === undefined ? 'not recorded' : Number(inc.mttrSeconds).toFixed(3) + 's'}</div>
             <div><b>HMAC:</b> <code>${inc.callbackSignature && SHA256_HEX_REGEX.test(inc.callbackSignature) ? escapeHtml(inc.callbackSignature.substring(0, 16)) + '...' : 'none'}</code></div>
@@ -1901,7 +1998,7 @@
 
     // Bind SOAR Action Buttons
     const btnApprove = document.getElementById('btnApprovePlaybook');
-    if (btnApprove && inc.live && inc.flowId && inc.soarRecord && inc.soarRecord.state === 'pending_approval') {
+    if (btnApprove && inc.decision === 'Attack' && inc.live && inc.flowId && realPlaybookId(inc)) {
       btnApprove.addEventListener('click', () => {
         approveLivePlaybook(inc);
       });
@@ -2280,17 +2377,32 @@
     return match ? match[1] : 'none';
   }
 
+  function scenarioLabPair(flow) {
+    const label = scenarioLabelFromTitle(flow);
+    const ports = { T1190: 443, T1110: 22, T1046: 445 };
+    let port = ports[label] || 0;
+    if (!port && String(flow.case_title || '').indexOf('Benign false alarm') !== -1) port = 8080;
+    if (!port) return null;
+    return { src: '10.0.0.4', dst: '10.0.0.5', port: port };
+  }
+
   function flowToIncident(flow, memberCount) {
     const score = Number(flow.rf_attack_probability);
     const entry = typeof flow.entry_sha256 === 'string' ? flow.entry_sha256 : '';
     const chainOk = flow.audit_chain_verified === 1 || flow.audit_chain_verified === true;
+    const sensor = flow.sensor_observation || {};
+    const lab = scenarioLabPair(flow);
+    const srcIp = flow.src_entity_id || (lab ? lab.src : '');
+    const dstIp = flow.dst_entity_id || (lab ? lab.dst : '');
+    const sensorPort = Number(sensor.src_port);
+    const playbookId = candidatePlaybookId(flow);
     return {
       id: 'live_flow:' + flow.flow_id,
       live: true,
       flowId: flow.flow_id,
       flow_id: flow.flow_id,
-      src_entity_id: flow.src_entity_id || '',
-      dst_entity_id: flow.dst_entity_id || '',
+      src_entity_id: srcIp,
+      dst_entity_id: dstIp,
       sourceEventId: flow.source_label || 'live_flow',
       sourceLabel: flow.source_label || 'live_flow',
       scenarioLabel: scenarioLabelFromTitle(flow),
@@ -2303,10 +2415,10 @@
       scoringTimeModelSha256: typeof flow.model_sha256 === 'string' ? flow.model_sha256 : '',
       modelVersion: 'full-network-random-forest-6d69c72-v1',
       provenance: {
-        srcIp: flow.src_entity_id || '',
-        dstIp: flow.dst_entity_id || '',
-        srcPort: 0,
-        dstPort: Number(flow.service_or_port) || 0,
+        srcIp: srcIp,
+        dstIp: dstIp,
+        srcPort: Number.isFinite(sensorPort) && sensorPort > 0 ? sensorPort : 0,
+        dstPort: Number(flow.service_or_port) || (lab ? lab.port : 0),
         proto: flow.flow_protocol || 'flow'
       },
       correlation: {
@@ -2323,12 +2435,14 @@
           : (flow.case_title || ('Stored flow ' + flow.flow_id)),
         detectionRationale: 'Frozen Random Forest score. Fusion disabled. The autoencoder did not decide this alert.'
       },
-      chromaRagHits: Array.isArray(flow.chroma_rag_hits)
-        ? flow.chroma_rag_hits
-        : (Array.isArray(flow.chromaRagHits) ? flow.chromaRagHits : []),
+      chromaRagHits: flow.decision === 'Attack'
+        ? (Array.isArray(flow.chroma_rag_hits)
+          ? flow.chroma_rag_hits
+          : (Array.isArray(flow.chromaRagHits) ? flow.chromaRagHits : []))
+        : [],
       soarRecord: {
-        playbookId: flow.playbook_id || 'pending',
-        state: flow.ledger_state || 'pending_approval',
+        playbookId: playbookId || 'none',
+        state: flow.ledger_state || 'none',
         targetEntity: 'live_flow:' + flow.flow_id,
         version: 1
       },
@@ -2393,7 +2507,7 @@
       chromaRagHits: [],
       soarRecord: {
         playbookId: 'none',
-        state: 'pending_approval',
+        state: 'none',
         targetEntity: String(row.incident_id),
         version: 1
       },
@@ -2479,7 +2593,15 @@
         });
       });
       const views = flowViews.slice();
-      (data.incidents || []).forEach(row => views.push(incidentRowToView(row)));
+      const seenIncidents = new Set();
+      (data.incidents || []).forEach(row => {
+        const incidentId = String(row.incident_id || '');
+        const shape = String(row.window_type || '') + '|' + String(row.escalated_decision || '');
+        if (!incidentId || seenIncidents.has(incidentId) || seenIncidents.has(shape)) return;
+        seenIncidents.add(incidentId);
+        seenIncidents.add(shape);
+        views.push(incidentRowToView(row));
+      });
       liveCampaignIncidents = views;
       showStoredN8nMttr(views);
       showStoredContainment(views);
@@ -2638,12 +2760,13 @@
   function showOperatorStamp(stamp) {
     const node = document.getElementById('operatorIdentityBadge');
     if (!node || !stamp) return;
+    const profile = document.getElementById('operatorProfileName');
+    if (profile) profile.textContent = 'Muhammad Bilal (Triage Lead)';
     const verified = stamp.identity_verified === true || stamp.identityVerified === true;
     const label = stamp.identity_label || stamp.identityLabel || '';
-    const operatorId = stamp.operator_id || stamp.operatorId || '';
     const prefix = stamp.cert_sha256_prefix || stamp.certSha256Prefix || '';
-    if (verified && label !== 'unverified_local_label' && operatorId === 'lab_operator' && prefix) {
-      node.textContent = 'verified lab_operator ' + prefix;
+    if (verified && label !== 'unverified_local_label' && prefix) {
+      node.textContent = 'verified operator certificate';
       node.classList.remove('badge-neutral');
       node.setAttribute('data-evidence-state', 'verified');
       return;
@@ -2651,6 +2774,17 @@
     node.textContent = 'unverified local label';
     node.classList.add('badge-neutral');
     node.setAttribute('data-evidence-state', 'unavailable');
+  }
+
+  async function refreshOperatorStamp() {
+    try {
+      const resp = await fetch('/api/v1/live/operator/stamp');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      showOperatorStamp(data);
+    } catch (err) {
+      showOperatorStamp({ identity_verified: false, identity_label: 'unverified_local_label' });
+    }
   }
 
   async function enrollLabOperator() {

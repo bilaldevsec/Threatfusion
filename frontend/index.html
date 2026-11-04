@@ -37,8 +37,7 @@
           <button class="view-tab" type="button" data-soc-nav="hunter">AI Threat Hunter</button>
         </nav>
         <div class="header-telemetry">
-          <span class="badge badge-auth">mTLS 1.3 Active</span>
-          <span class="badge badge-terminal">Air-Gapped Local</span>
+          <span class="badge badge-auth" id="consoleTransportBadge" data-evidence-state="unavailable">Lab HTTP console</span>
           <span class="badge badge-role" id="headerChainBadge" data-evidence-state="unavailable">Playbook hash chain: unavailable</span>
           <span id="operatorProfileName">Muhammad Bilal (Triage Lead)</span>
           <span class="badge badge-neutral" id="operatorIdentityBadge" data-evidence-state="unavailable">unverified local label</span>
@@ -174,8 +173,8 @@
             </div>
             <div class="detail-actions">
               <span class="badge" data-evidence-state="unavailable" id="groundedBadge">Grounded evidence: waiting for a stored flow</span>
-              <span class="badge badge-rf-confidence">Primary: Frozen RF (95.27%)</span>
-              <span class="badge badge-secondary-anomaly">Secondary: v2 AE Ranker</span>
+              <span class="badge badge-rf-confidence" id="flowRfBadge">Frozen RF: waiting</span>
+              <span class="badge badge-secondary-anomaly" id="flowAeBadge">Secondary: v2 AE not scored on this flow</span>
               <div class="action-group" data-action-group="primary">
                 <span class="action-group-label">Primary</span>
                 <label for="analystVerdictSelect">Verdict</label>
@@ -282,10 +281,10 @@
               <div class="card" data-anatomy-block="2" style="background: #111827;">
                 <h3>Findings &amp; Telemetry</h3>
                 <div><b>Correlation Window:</b> <span class="badge badge-corr">30.0s Burst Window</span> &middot; <b>Campaign Window:</b> <span class="badge badge-corr">600.0s Campaign</span></div>
-                <div><b>Stitched Flow Count:</b> <span id="attackTimelineFlowCount">No live stitch yet.</span></div>
-                <div id="attackTimelineSource">The timeline shows stored flows after a stitch.</div>
-                <div id="attackTimelineEvents">No live timeline yet.</div>
-                <div id="liveTimeline" data-evidence-state="unavailable">No correlated timeline yet.</div>
+                <div><b>Stitched Flow Count:</b> <span id="attackTimelineFlowCount">Pipeline stages appear after a stored flow is selected.</span></div>
+                <div id="attackTimelineSource">Select a stored flow to read its pipeline stages.</div>
+                <div id="attackTimelineEvents"></div>
+                <div id="liveTimeline" data-evidence-state="unavailable">No pipeline stages yet.</div>
                 <div id="liveTimelineDrawer" data-evidence-state="unavailable" data-correlated-flow-count="0">No unified timeline yet.</div>
                 <div id="timelineViewToggle" role="group" aria-label="Timeline view">
                   <button type="button" class="btn" id="timelineViewJournal" data-timeline-mode="journal" aria-pressed="true">Journal</button>
@@ -330,7 +329,7 @@
               <div class="card" data-anatomy-block="4" style="background: #111827;">
                 <h3>Changelog</h3>
                 <div><b>Audit chain:</b> <span id="inspectorChain" data-evidence-state="unavailable">unavailable</span></div>
-                <div data-soar-state-legend="pending_approval approved_local queued_durable_outbox dispatched_live">SOAR states: pending_approval, approved_local, queued_durable_outbox, dispatched_live</div>
+                <div id="soarChangelog" data-soar-state-legend="pending_approval approved_local queued_durable_outbox dispatched_live" data-evidence-state="unavailable">No ledger entries for this flow.</div>
               </div>
             </div>
           </div>
@@ -564,9 +563,9 @@
           <summary>Policy &amp; Adversarial Boundary Verification</summary>
           <p>RFC1918 private addresses return HTTP 422 before any external lookup. Gate G9 keeps advisory imports out of Stages 1-4.</p>
           <div class="shield-pills">
-            <span class="shield-pill">mTLS 1.3 Active</span>
+            <span class="shield-pill">Lab HTTP console</span>
             <span class="shield-pill" data-copy-hash="bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9" title="Click to copy SHA-256 digest">Model Weights Frozen &amp; Verified</span>
-            <span class="shield-pill">SOAR Audit Ledger: Intact</span>
+            <span class="shield-pill">SOAR ledger: checked per flow</span>
           </div>
           <p>Advisory model default: gemini-3.5-flash. A missing key uses the local corpus.</p>
           <p>99%+ Alert Noise Eliminated on the inspected January benchmark only.</p>

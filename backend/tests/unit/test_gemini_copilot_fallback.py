@@ -146,6 +146,16 @@ def test_copilot_raises_after_every_fallback_times_out(monkeypatch: pytest.Monke
     assert len(seen) == 5
 
 
+def _five_section_reply(*sentences: str) -> str:
+    from threatfusion.api import live_soc_console as console
+
+    body = " ".join(sentences) if sentences else "The stored decision is Benign."
+    sentence = body if body.endswith(".") else body + "."
+    if len(sentence) < 40:
+        sentence = sentence + " This sentence stays on the stored flow."
+    return "\n\n".join(f"{heading}\n{sentence}" for heading in console._COPILOT_HEADINGS)
+
+
 def test_missing_heading_is_kept_and_foreign_ids_are_still_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -172,15 +182,15 @@ def test_missing_heading_is_kept_and_foreign_ids_are_still_rejected(
         evidence_text="Stored decision Benign.",
         local_narrative="local brief",
     )
-    assert kept["provider"] == "gemini"
-    assert "The stored decision is Benign." in kept["narrative"]
-    for heading in console._COPILOT_HEADINGS:
-        assert heading in kept["narrative"]
+    assert kept["provider"] == "local_air_gapped"
+    assert kept["narrative"] == "local brief"
 
     monkeypatch.setattr(
         console,
         "_live_copilot_callable",
-        lambda: _Client("Indexed technique T1071.001 applies to the stored flow."),
+        lambda: _Client(
+            _five_section_reply("Indexed technique T1071.001 applies to the stored flow")
+        ),
     )
     indexed = console._grounded_gemini_narrative(
         "review",

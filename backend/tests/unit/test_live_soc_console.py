@@ -158,6 +158,9 @@ def test_flow_copilot_brief_names_only_stored_endpoints(
         "[5] GOVERNED SOAR PLAYBOOK & CONTAINMENT GUIDANCE",
     ):
         assert heading in narrative
+    assert "T1110" in narrative
+    assert "T1059" not in narrative
+    assert "CVE-2023-22515" not in narrative
     assert "172.29.0.10" in narrative
     assert "**" in narrative
     assert "`172.29.0.10`" in narrative
@@ -818,6 +821,17 @@ def test_four_scenario_replay_uses_the_frozen_forest(tmp_path: Path) -> None:
     assert by_id["internal_recon"]["service_or_port"] == "445"
     assert by_id["benign_false_alarm"]["service_or_port"] == "8080"
     assert by_id["benign_false_alarm"]["src_entity_id"] == "10.0.0.4"
+    assert by_id["internal_recon"]["playbook_id"] == "pb-discovery-network-contain-v1"
+    assert by_id["ssh_brute"]["playbook_id"] == "pb-ssh-bruteforce-contain-v1"
+    assert by_id["web_exploit"]["playbook_id"] == "pb-web-exploit-contain-v1"
+    assert by_id["benign_false_alarm"]["playbook_id"] is None
+    again = replay_live_scenarios(db, repo_root=REPO_ROOT)
+    assert again["member_count"] == 4
+    with sqlite3.connect(db) as conn:
+        stored_count = conn.execute(
+            "SELECT COUNT(*) FROM live_flows WHERE source_label = 'live_scenario_replay'"
+        ).fetchone()[0]
+    assert stored_count == 4
     html = (REPO_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
     script = (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")
     assert 'id="btnReplayScenarios"' in html

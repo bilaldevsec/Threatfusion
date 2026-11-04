@@ -305,6 +305,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/live/advisory-status":
             self._send_json(200, self._advisory_status_payload())
             return
+        if path == "/api/v1/live/operator/stamp":
+            from threatfusion.api.live_soc_console import operator_stamp
+
+            self._send_json(200, operator_stamp("lab_operator", _operator_policy_dir()))
+            return
         if path in ("/healthz", "/api/v1/heartbeat", "/api/status"):
             self._send_json(200, {"status": "ok", "service": "threatfusion_soc_contract_server"})
             return

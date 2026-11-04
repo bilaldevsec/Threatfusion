@@ -29,19 +29,29 @@ console and follower are up. Pytest does not source that file. A missing
 reply is asked for 2-4 sentences and bullets under each canonical heading.
 HTTP 503, HTTP 429, and timeouts retry once across `gemini-3.5-flash`,
 `gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, and
-`gemini-2.5-flash`. A missing canonical heading is inserted around the live
-prose. Indexed corpus technique IDs, including `T1071.001`, stay allowed.
-`T9999` and any IPv4 outside the stored endpoints, including `198.51.100.99`
-and `203.0.113.99`, still reject the live reply. The reply is shown only when
-every address is a stored endpoint. The console escapes that
-narrative before turning heading lines, bold markers, and code markers into
-HTML. `GeminiAdvisoryConfig` stays at 512 tokens and temperature 0.0. The live
-five-section request uses 2048 tokens, temperature 0.1, and a 30 second timeout.
-`evidence_state` is `verified` only when that brief is grounded and the flow
-has a verified SOAR receipt with a valid hash chain. An empty correlation
-timeline falls back to five stored-flow stage rows. Campaign lists attach one
-ChromaDB technique hit. The funnel reduction uses Attack campaigns over stored
-flows. TF-008, TF-009, TF-010, and TF-011 remain open.
+`gemini-2.5-flash`. A heading with no prose falls back to the local brief.
+Indexed corpus technique IDs, including `T1071.001`, stay allowed when every
+section has sentences. `T9999` and any IPv4 outside the stored endpoints,
+including `198.51.100.99` and `203.0.113.99`, still reject the live reply.
+The reply is shown only when every address is a stored endpoint. The console
+escapes that narrative before turning heading lines, bold markers, and code
+markers into HTML. `GeminiAdvisoryConfig` stays at 512 tokens and temperature
+0.0. The live five-section request uses 2048 tokens, temperature 0.1, and a
+30 second timeout. `evidence_state` is `verified` only when that brief is
+grounded and the flow has a verified SOAR receipt with a valid hash chain.
+An empty correlation timeline falls back to five stored-flow stage rows and
+one status line. A row with correlated partners says it is a 30s/600s campaign.
+Benign rows do not display a verified technique, and a Benign brief says no
+offensive technique is confirmed. An Attack brief cites that row's scenario
+label, so a T1046 replay cites T1046. The detail chip shows this flow's
+frozen-RF decision and score. The HTTP lab header says Lab HTTP console.
+The operator name stays Muhammad Bilal (Triage Lead). The identity badge says
+verified operator certificate only after lab_operator is enrolled, and
+unverified local label otherwise. One copilot badge shows either the live
+Gemini reply or the local brief. Scenario seeding reuses the four canonical
+rows and stores 10.0.0.4 and 10.0.0.5. Campaign lists attach a ChromaDB
+technique hit only for an Attack row. The funnel reduction uses Attack
+campaigns over stored flows. TF-008, TF-009, TF-010, and TF-011 remain open.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0
 readiness report still says split assignments are missing, but the later completed full assignment and

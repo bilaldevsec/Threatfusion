@@ -774,6 +774,24 @@ def _ensure_copilot_headings(text: str) -> str:
     return repaired
 
 
+def _copilot_sections_have_prose(text: str) -> bool:
+    """A heading with no sentences is not a finished brief."""
+    for index, heading in enumerate(_COPILOT_HEADINGS):
+        start = text.find(heading)
+        if start < 0:
+            return False
+        body_start = start + len(heading)
+        end = len(text)
+        for later in _COPILOT_HEADINGS[index + 1 :]:
+            found = text.find(later, body_start)
+            if found != -1:
+                end = min(end, found)
+        body = text[body_start:end].strip()
+        if len(body) < 40 or "." not in body:
+            return False
+    return True
+
+
 def _copilot_citations_grounded(
     text: str,
     evidence: str,
@@ -862,6 +880,60 @@ def _safe_copilot_clause(text: str, allowed: Sequence[str]) -> str:
     if not cleaned or not _text_uses_only_entities(cleaned, allowed):
         return ""
     return cleaned
+
+
+_SCENARIO_PLAYBOOKS = {
+    "T1046": "pb-discovery-network-contain-v1",
+    "T1110": "pb-ssh-bruteforce-contain-v1",
+    "T1190": "pb-web-exploit-contain-v1",
+}
+
+
+def candidate_playbook_id(decision: str, technique_id: str | None) -> str | None:
+    """Candidate playbook for an Attack row. It is not a verified ledger receipt."""
+    if decision != "Attack":
+        return None
+    if technique_id and technique_id in _SCENARIO_PLAYBOOKS:
+        return _SCENARIO_PLAYBOOKS[technique_id]
+    return "pb-rf-attack-contain-v1"
+
+
+def _scenario_technique_id(stored: Mapping[str, Any]) -> str | None:
+    match = _SCENARIO_LABEL_RE.search(str(stored.get("case_title") or ""))
+    if match:
+        return match.group(1)
+    hits = stored.get("chroma_rag_hits")
+    if isinstance(hits, list) and hits and isinstance(hits[0], Mapping):
+        technique = str(hits[0].get("technique_id") or "").strip()
+        if technique:
+            return technique
+    return None
+
+
+def _cves_for_technique(technique_id: str) -> list[str]:
+    found: list[str] = []
+    for doc in CANONICAL_MITRE_AND_PLAYBOOK_CORPUS:
+        if doc.technique_id != technique_id:
+            continue
+        blob = f"{doc.technique_name} {doc.description} {doc.playbook_id} {doc.doc_id}"
+        for year, number in _CVE_TOKEN.findall(blob):
+            cve = f"CVE-{year}-{number}"
+            if cve not in found:
+                found.append(cve)
+    return found
+
+
+def _flow_citation_ids(stored: Mapping[str, Any]) -> tuple[list[str], list[str]] | None:
+    """Use this flow's technique. Benign cites none. Other rows keep the question hits."""
+    decision = str(stored.get("decision") or "")
+    if decision == "Benign":
+        return [], []
+    if decision != "Attack":
+        return None
+    technique = _scenario_technique_id(stored)
+    if not technique:
+        return None
+    return [technique], _cves_for_technique(technique)
 
 
 def _copilot_citation_ids(hits: Sequence[Mapping[str, Any]]) -> tuple[list[str], list[str]]:
@@ -1023,11 +1095,18 @@ def _local_air_gapped_brief(
         f"`soar_receipt_status` `{campaign.get('soar_receipt_status', 'unavailable')}`. "
         f"{memory_text}",
         f"{_COPILOT_HEADINGS[2]}\n"
-        "Only indexed corpus techniques and CVEs already retrieved for this flow may be cited. "
-        f"**Retrieved MITRE ATT&CK technique IDs:** {technique_text}. "
-        f"**Retrieved CVE IDs:** {cve_text}. "
-        "An identifier that is not in the local corpus, the flow hit, or this evidence block "
-        "is a hallucination and must not be treated as a finding.",
+        + (
+            "No offensive MITRE ATT&CK technique is confirmed because the Frozen Random "
+            "Forest decision is **Benign**. A corpus neighbor is not a finding on this flow."
+            if decision == "Benign"
+            else (
+                "Only indexed corpus techniques and CVEs already retrieved for this flow may be cited. "
+                f"**Retrieved MITRE ATT&CK technique IDs:** {technique_text}. "
+                f"**Retrieved CVE IDs:** {cve_text}. "
+                "An identifier that is not in the local corpus, the flow hit, or this evidence block "
+                "is a hallucination and must not be treated as a finding."
+            )
+        ),
         f"{_COPILOT_HEADINGS[3]}\n"
         "Open the stored endpoints in Context Memory and confirm the expected behavior rule. "
         "Inspect the 5-node Attack Topology and the Evidence Locker frequency and baseline. "
@@ -1120,13 +1199,25 @@ def answer_mitre_copilot(
     bundle = None
     if stored is not None and isinstance(db_path, Path):
         allowed = _copilot_allowed_entities(stored)
-        techniques, cves = _copilot_citation_ids(hit_rows)
+        _attach_chroma_rag_hits([stored], db_path)
+        flow_citations = _flow_citation_ids(stored)
+        if flow_citations is not None:
+            techniques, cves = flow_citations
+            if techniques:
+                hit_rows = [
+                    row
+                    for row in (_corpus_technique_hit(technique) for technique in techniques)
+                    if row is not None
+                ]
+            else:
+                hit_rows = []
+        else:
+            techniques, cves = _copilot_citation_ids(hit_rows)
         locker = evidence_locker_queries(db_path, int(stored["flow_id"]), soar_db_path)
         memory = _memory_rows_for_entities(db_path, allowed)
         local_narrative = _five_section_flow_brief(
             stored, locker, memory, techniques, cves, allowed
         )
-        _attach_chroma_rag_hits([stored], db_path)
         bundle = _copilot_grounding_bundle(stored, allowed)
         if local_narrative:
             from threatfusion.advisory.explanation_engine import verify_explanation_groundedness
@@ -1279,7 +1370,7 @@ def _grounded_gemini_narrative(
         return local
     if not _copilot_citations_grounded(text, evidence, hits, flow_hits):
         return local
-    if evidence_text and not all(heading in text for heading in _COPILOT_HEADINGS):
+    if evidence_text and not _copilot_sections_have_prose(text):
         return local
     return {
         "provider": "gemini",
@@ -1416,7 +1507,16 @@ def _read_stored_incidents(incidents_db_path: Path | None, *, limit: int) -> lis
         return []
     finally:
         conn.close()
-    return [dict(row) for row in rows]
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        item = dict(row)
+        incident_id = str(item.get("incident_id") or "")
+        if not incident_id or incident_id in seen:
+            continue
+        seen.add(incident_id)
+        unique.append(item)
+    return unique
 
 
 def _flow_entities(stored: Mapping[str, Any] | sqlite3.Row) -> list[str]:
@@ -1802,6 +1902,9 @@ def _attach_chroma_rag_hits(flows: list[dict[str, Any]], db_path: Path) -> None:
         return
     pending: list[dict[str, Any]] = []
     for row in flows:
+        if str(row.get("decision") or "") != "Attack":
+            row["chroma_rag_hits"] = []
+            continue
         title = str(row.get("case_title") or "")
         match = _SCENARIO_LABEL_RE.search(title)
         labelled = _corpus_technique_hit(match.group(1)) if match else None
@@ -1829,7 +1932,7 @@ def _attach_chroma_rag_hits(flows: list[dict[str, Any]], db_path: Path) -> None:
             continue
         top = hits[0]
         similarity = float(top.cosine_similarity)
-        if similarity < 0.0 or similarity > 1.0 or not top.playbook_id:
+        if similarity < 0.55 or similarity > 1.0 or not top.playbook_id:
             row["chroma_rag_hits"] = []
             continue
         row["chroma_rag_hits"] = [
@@ -1853,6 +1956,7 @@ def list_live_campaigns(
     """Return stored flow campaigns and any incident rows already on disk."""
     flows = _flow_rows(db_path, limit=limit)
     _attach_chroma_rag_hits(flows, db_path)
+    _attach_candidate_playbooks(flows)
     for row in flows:
         flow_id = int(row["flow_id"])
         row["evidence_locker"] = evidence_locker_queries(db_path, flow_id, soar_db_path)
@@ -2086,6 +2190,90 @@ def constitutional_health(repo_root: Path) -> dict[str, Any]:
     }
 
 
+def _scenario_case_title(spec: Mapping[str, Any]) -> str:
+    label = spec.get("scenario_label")
+    title = str(spec.get("title") or "")
+    if label is None:
+        return title
+    return f"{title} (scenario label {label})"
+
+
+def _reuse_scenario_row(
+    db_path: Path, title: str, provenance: Mapping[str, Any]
+) -> sqlite3.Row | None:
+    """Keep one stored scenario row and fill empty lab endpoints."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE live_flows
+            SET src_entity_id = COALESCE(NULLIF(TRIM(src_entity_id), ''), ?),
+                dst_entity_id = COALESCE(NULLIF(TRIM(dst_entity_id), ''), ?),
+                flow_protocol = COALESCE(NULLIF(TRIM(flow_protocol), ''), ?),
+                service_or_port = COALESCE(NULLIF(TRIM(service_or_port), ''), ?)
+            WHERE source_label = 'live_scenario_replay' AND case_title = ?
+            """,
+            (
+                provenance.get("src_entity_id"),
+                provenance.get("dst_entity_id"),
+                provenance.get("protocol"),
+                provenance.get("service_or_port"),
+                title,
+            ),
+        )
+        kept = conn.execute(
+            """
+            SELECT flow_id, decision, reason, rf_attack_probability, evidence_state,
+                   model_sha256, campaign_id, case_title, src_entity_id, dst_entity_id,
+                   service_or_port, playbook_id
+            FROM live_flows
+            WHERE source_label = 'live_scenario_replay' AND case_title = ?
+            ORDER BY flow_id ASC
+            LIMIT 1
+            """,
+            (title,),
+        ).fetchone()
+        if kept is None:
+            return None
+        conn.execute(
+            """
+            DELETE FROM live_flows
+            WHERE source_label = 'live_scenario_replay'
+              AND case_title = ?
+              AND flow_id != ?
+            """,
+            (title, int(kept["flow_id"])),
+        )
+    return kept
+
+
+def _store_candidate_playbook(db_path: Path, flow_id: int, playbook_id: str | None) -> None:
+    if not playbook_id:
+        return
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE live_flows
+            SET playbook_id = ?
+            WHERE flow_id = ?
+              AND (playbook_id IS NULL OR TRIM(playbook_id) = '')
+            """,
+            (playbook_id, flow_id),
+        )
+
+
+def _attach_candidate_playbooks(flows: list[dict[str, Any]]) -> None:
+    """Expose a candidate playbook on Attack rows. This does not verify the hash chain."""
+    for row in flows:
+        if str(row.get("playbook_id") or "").strip():
+            continue
+        playbook = candidate_playbook_id(
+            str(row.get("decision") or ""),
+            _scenario_technique_id(row),
+        )
+        if playbook:
+            row["playbook_id"] = playbook
+
+
 def replay_live_scenarios(
     db_path: Path,
     *,
@@ -2097,40 +2285,80 @@ def replay_live_scenarios(
 
     The technique id is stored as a scenario label. It is not a model output.
     The internal-recon row asks the private-IP guard and does not perform a lookup.
+    A second call reuses the four canonical rows instead of inserting copies.
     """
-    campaign_id = "campaign_live_scenarios:" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     created = datetime.now(UTC).isoformat()
+    campaign_id = "campaign_live_scenarios:" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     stored: list[dict[str, Any]] = []
+    inserted = 0
     for spec in LIVE_SCENARIO_REPLAYS:
-        features = dict(_ATTACK_SHAPED_UDP)
-        features["dst_port"] = spec["dst_port"]
-        features["protocol_tcp"] = spec["protocol_tcp"]
-        features["protocol_udp"] = spec["protocol_udp"]
-        score = score_canonical_flow(
-            features,
-            repo_root=repo_root,
-            model=model,
-            supply_verified=supply_verified,
-        )
         label = spec["scenario_label"]
-        title = spec["title"] if label is None else f"{spec['title']} (scenario label {label})"
-        row = persist_scored_flow(
-            db_path,
-            features,
-            score,
-            campaign_id=campaign_id,
-            source_label="live_scenario_replay",
-            case_title=title,
-            provenance=spec.get("provenance"),
-        )
-        row["scenario_id"] = spec["scenario_id"]
-        row["scenario_label"] = label
-        row["case_title"] = title
+        title = _scenario_case_title(spec)
         provenance = spec.get("provenance")
-        if isinstance(provenance, Mapping):
-            row["src_entity_id"] = provenance.get("src_entity_id")
-            row["dst_entity_id"] = provenance.get("dst_entity_id")
-            row["service_or_port"] = provenance.get("service_or_port")
+        if not isinstance(provenance, Mapping):
+            provenance = {}
+        existing = _reuse_scenario_row(db_path, title, provenance)
+        if existing is None:
+            features = dict(_ATTACK_SHAPED_UDP)
+            features["dst_port"] = spec["dst_port"]
+            features["protocol_tcp"] = spec["protocol_tcp"]
+            features["protocol_udp"] = spec["protocol_udp"]
+            score = score_canonical_flow(
+                features,
+                repo_root=repo_root,
+                model=model,
+                supply_verified=supply_verified,
+            )
+            row = persist_scored_flow(
+                db_path,
+                features,
+                score,
+                campaign_id=campaign_id,
+                source_label="live_scenario_replay",
+                case_title=title,
+                provenance=provenance,
+            )
+            inserted += 1
+            decision = str(row.get("decision") or "")
+            flow_id = int(row["flow_id"])
+            src_entity = provenance.get("src_entity_id")
+            dst_entity = provenance.get("dst_entity_id")
+            service = provenance.get("service_or_port")
+            reason = row.get("reason")
+            probability = row.get("rf_attack_probability")
+            evidence_state = row.get("evidence_state")
+            model_sha = row.get("model_sha256")
+            row_campaign = campaign_id
+        else:
+            decision = str(existing["decision"] or "")
+            flow_id = int(existing["flow_id"])
+            src_entity = existing["src_entity_id"]
+            dst_entity = existing["dst_entity_id"]
+            service = existing["service_or_port"]
+            reason = existing["reason"]
+            probability = existing["rf_attack_probability"]
+            evidence_state = existing["evidence_state"]
+            model_sha = existing["model_sha256"]
+            row_campaign = existing["campaign_id"] or campaign_id
+        playbook = candidate_playbook_id(decision, label if isinstance(label, str) else None)
+        _store_candidate_playbook(db_path, flow_id, playbook)
+        row = {
+            "flow_id": flow_id,
+            "decision": decision,
+            "reason": reason,
+            "rf_attack_probability": probability,
+            "evidence_state": evidence_state,
+            "model_sha256": model_sha,
+            "campaign_id": row_campaign,
+            "scenario_id": spec["scenario_id"],
+            "scenario_label": label,
+            "case_title": title,
+            "src_entity_id": src_entity,
+            "dst_entity_id": dst_entity,
+            "service_or_port": service,
+            "playbook_id": playbook,
+            "production_fusion_enabled": False,
+        }
         guard_value = spec.get("guard_value")
         if isinstance(guard_value, str):
             status, guard = private_ip_guard_response(guard_value)
@@ -2138,21 +2366,22 @@ def replay_live_scenarios(
             row["private_ip_guard_triggered"] = guard.get("private_ip_guard_triggered")
             row["external_lookup_performed"] = False
         stored.append(row)
-    with _connect(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO live_campaigns (
-                campaign_id, title, source_label, created_at_utc, member_count
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                campaign_id,
-                "Four-scenario live replay",
-                "live_scenario_replay",
-                created,
-                len(stored),
-            ),
-        )
+    if inserted:
+        with _connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO live_campaigns (
+                    campaign_id, title, source_label, created_at_utc, member_count
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    campaign_id,
+                    "Four-scenario live replay",
+                    "live_scenario_replay",
+                    created,
+                    inserted,
+                ),
+            )
     return {
         "schema_version": "live_scenario_replay_v1",
         "evidence_state": "verified" if stored else "unavailable",

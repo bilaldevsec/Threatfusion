@@ -264,6 +264,17 @@ required = {"web_exploit", "ssh_brute", "internal_recon", "benign_false_alarm"}
 if response.status != 200 or body.get("member_count") != 4 or not required <= ids:
     sys.stderr.write("error: seed-demo did not store the four scenarios\n")
     sys.exit(1)
+enroll = urllib.request.Request(
+    f"http://{host}:{port}/api/v1/live/operator/enroll",
+    data=b'{"actor_id":"lab_operator"}',
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+with urllib.request.urlopen(enroll, timeout=60) as enrolled:
+    stamp = json.load(enrolled)
+if enrolled.status != 200 or stamp.get("identity_verified") is not True:
+    sys.stderr.write("error: seed-demo did not enroll lab_operator\n")
+    sys.exit(1)
 print("seed-demo: four scenarios stored")
 PY
 fi
