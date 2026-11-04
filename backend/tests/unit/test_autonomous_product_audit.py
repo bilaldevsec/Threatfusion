@@ -38,6 +38,7 @@ AUDIT_INGEST_TOKEN = "test_sensor_ingest_token_autonomous_audit_2026"
 # Helper classes and functions required by contracts
 # ---------------------------------------------------------------------------
 
+
 class EvidenceQueryDescriptor(dict):
     """Query descriptor supporting dict indexing, attribute access, and string equality."""
 
@@ -85,8 +86,12 @@ def list_evidence_locker_queries(
         ]
     return [
         EvidenceQueryDescriptor("entity_historical_frequency", "Entity Historical Frequency"),
-        EvidenceQueryDescriptor("destination_port_protocol_baseline", "Destination Port & Protocol Baseline"),
-        EvidenceQueryDescriptor("correlated_campaign_soar_ledger", "Correlated Campaign & SOAR Ledger State"),
+        EvidenceQueryDescriptor(
+            "destination_port_protocol_baseline", "Destination Port & Protocol Baseline"
+        ),
+        EvidenceQueryDescriptor(
+            "correlated_campaign_soar_ledger", "Correlated Campaign & SOAR Ledger State"
+        ),
     ]
 
 
@@ -145,6 +150,7 @@ def parse_action_graph_columns(html_text: str) -> list[str]:
 # Fixture for ephemeral in-process HTTP server
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def audit_http_server(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Ephemeral in-process HTTP server bound to port 0."""
@@ -166,6 +172,7 @@ def audit_http_server(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 # ---------------------------------------------------------------------------
 # Test Suites
 # ---------------------------------------------------------------------------
+
 
 def test_probe_6_remote_sensor_auth_guard(audit_http_server: tuple[str, Path]) -> None:
     """Probe 6: Sensor auth guard refuses invalid token with 401 and writes 0 rows."""
@@ -265,7 +272,10 @@ def test_probe_7_context_memory_grounding_guard(audit_http_server: tuple[str, Pa
     req = urllib.request.Request(
         f"{base_url}/api/v1/live/context-memory",
         data=json.dumps(unstored_payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "X-ThreatFusion-Test-Client": "in-process",
+        },
         method="POST",
     )
     with pytest.raises(urllib.error.HTTPError) as exc_info:
@@ -292,7 +302,10 @@ def test_probe_7_context_memory_grounding_guard(audit_http_server: tuple[str, Pa
     req2 = urllib.request.Request(
         f"{base_url}/api/v1/live/context-memory",
         data=json.dumps(ungrounded_rule_payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "X-ThreatFusion-Test-Client": "in-process",
+        },
         method="POST",
     )
     with pytest.raises(urllib.error.HTTPError) as exc_info2:

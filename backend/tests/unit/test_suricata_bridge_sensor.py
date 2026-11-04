@@ -212,7 +212,10 @@ def _post(base: str, path: str, payload: dict[str, object]) -> tuple[int, dict[s
     request = urllib.request.Request(
         f"{base}{path}",
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "X-ThreatFusion-Test-Client": "in-process",
+        },
         method="POST",
     )
     try:
@@ -247,7 +250,10 @@ def test_sensor_token_rejects_a_mismatch_and_accepts_a_cloud_node(
     body = json.dumps(payload).encode("utf-8")
 
     def _send(header: str | None) -> tuple[int, dict[str, object]]:
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "X-ThreatFusion-Test-Client": "in-process",
+        }
         if header is not None:
             headers["Authorization"] = header
         request = urllib.request.Request(

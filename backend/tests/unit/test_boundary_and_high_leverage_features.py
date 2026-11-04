@@ -206,8 +206,8 @@ class TestTamperEvidentSoarAuditTrail:
 
             # Genesis verification on empty database
             is_valid, msg = repo.verify_audit_chain_integrity()
-            assert is_valid is True
-            assert "verified: 0 entries" in msg
+            assert is_valid is False
+            assert msg == "empty ledger"
 
             # Append 3 audit events
             e1 = repo.append_audit_event(
@@ -273,6 +273,7 @@ class TestTamperEvidentSoarAuditTrail:
 
             # Adversarial SQL tampering on row 1
             with sqlite3.connect(db_path) as conn:
+                conn.execute("DROP TRIGGER IF EXISTS soar_audit_events_append_only_update")
                 conn.execute(
                     "UPDATE soar_audit_events SET actor_id = 'adversary_attacker' WHERE rowid = 1"
                 )
@@ -300,6 +301,7 @@ class TestTamperEvidentSoarAuditTrail:
 
             # Delete middle event (rowid 2)
             with sqlite3.connect(db_path) as conn:
+                conn.execute("DROP TRIGGER IF EXISTS soar_audit_events_append_only_delete")
                 conn.execute("DELETE FROM soar_audit_events WHERE rowid = 2")
                 conn.commit()
 

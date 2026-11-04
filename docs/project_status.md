@@ -11,20 +11,25 @@ evidence are ignored. Existing split, preprocessing, historical autoencoder, and
 artifacts remain unchanged. Sprint A on `gemini/product-20260924` tracks the frozen
 model sidecar JSON files, keeps the four weight digests unchanged, and resolves the
 active checkout from the git root when the declared gemini path is absent.
-Sprint B checks a callback HMAC with `hmac.compare_digest` when a verification
-key is present, recomputes the SOAR canonical hash chain, refuses non-global
-and evasive addresses before an external lookup, and requires the receipt,
-the chain, and the explanation together before `data-evidence-state="verified"`.
+Sprint B checks a callback HMAC with `hmac.compare_digest` against
+`THREATFUSION_SOAR_HMAC_SECRET`. A receipt that carries its own key, or a
+bare 64-hex signature, is rejected. The SOAR ledger hash is that same secret.
+The head is sealed, delete and update of audit rows abort, and an empty
+ledger does not verify. Outbound MISP lookups use the strict address guard.
+Incomplete 14-feature ingest returns HTTP 422 and writes no row. Mutating
+`POST /api/v1/live/*` requires the process CSRF token, a bearer token, or the
+in-process test header. The receipt, the chain, and the explanation must all
+pass before `data-evidence-state="verified"`.
 RFC W46-01 adds a lab-only hunt pack runner, a read-only ATT&CK/CVE coverage
 heatmap, and a journal/table timeline toggle. Hunt rows are labeled
 `LAB HYPOTHESIS — NOT AN ALERT` and are hashed into a separate chain file.
 The heatmap counts frozen Random Forest verified Attack rows. Lab rows stay
 out unless `include_lab=true`, and they do not mark a cell verified.
-The Stage 5 copilot brief uses the selected stored flow. `scripts/run_live_product.sh`
-sources `$ROOT/.env` only when it starts the server. `--dry-run`, `--smoke`, and
-`THREATFUSION_IGNORE_DOTENV=1` skip that file. `scripts/run_full_range_demo.sh`
-sources it only for `--up`, then posts the four labeled scenarios after the
-console and follower are up. Pytest does not source that file. A missing
+The Stage 5 copilot brief uses the selected stored flow. The launchers read
+only `GEMINI_API_KEY` and `GEMINI_MODEL` from `$ROOT/.env` and do not execute
+the file. `--dry-run`, `--smoke`, `THREATFUSION_IGNORE_DOTENV=1`, and
+`THREATFUSION_OFFLINE_ONLY=1` skip it. `scripts/run_full_range_demo.sh` reads
+it only for `--up`. Pytest does not source that file. A missing
 `GEMINI_API_KEY` keeps the offline five-section brief. A live `gemini-3.5-flash`
 reply is asked for 2-4 sentences and bullets under each canonical heading.
 HTTP 503, HTTP 429, and timeouts retry once across `gemini-3.5-flash`,
@@ -50,7 +55,9 @@ verified operator certificate only after lab_operator is enrolled, and
 unverified local label otherwise. One copilot badge shows either the live
 Gemini reply or the local brief. Scenario seeding reuses the four canonical
 rows and stores 10.0.0.4 and 10.0.0.5. Campaign lists attach a ChromaDB
-technique hit only for an Attack row. The funnel reduction uses Attack
+technique hit only for an Attack row. The recorded port-53 DoS title maps to
+T1498. The playbook hash-chain label is verified only when that flow's chain
+checks and the flow has a receipt. The funnel reduction uses Attack
 campaigns over stored flows. TF-008, TF-009, TF-010, and TF-011 remain open.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0

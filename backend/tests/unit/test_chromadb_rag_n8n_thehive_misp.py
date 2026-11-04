@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import stat
 
@@ -35,8 +36,28 @@ from threatfusion.api.analyst_dashboard import (
     DashboardSnapshot,
     build_analyst_shift_handoff,
     load_frontend_unicorn_bundle,
+    receipt_hmac_sha256,
     render_dashboard_html,
 )
+
+
+def _signed_n8n_receipt() -> dict[str, str]:
+    os.environ.setdefault("THREATFUSION_SOAR_HMAC_SECRET", "lab-only-not-a-production-secret")
+    receipt = {
+        "execution_id": "exec_12345",
+        "playbook_id": "pb-isolate-01",
+        "candidate_id": "alert_cand_m32_test_02",
+        "state": "approved",
+        "actor": "lab_operator",
+        "reason": "reviewed",
+        "timestamp_utc": "2026-10-18T10:00:00Z",
+    }
+    receipt["signature_sha256"] = receipt_hmac_sha256(
+        receipt, os.environ["THREATFUSION_SOAR_HMAC_SECRET"]
+    )
+    return receipt
+
+
 import http.server
 import sqlite3
 import threading
@@ -348,6 +369,7 @@ class TestTheHiveDeterministicClient:
 
         # Tamper with audit trail directly
         with repo._get_connection() as conn:
+            conn.execute("DROP TRIGGER IF EXISTS soar_audit_events_append_only_update")
             conn.execute(
                 "UPDATE soar_audit_events SET reason = 'TAMPERED REASON' WHERE playbook_id = ?",
                 (approved.playbook_id,),
@@ -1183,7 +1205,7 @@ class TestEndToEndSocDemoAndDashboardIntegration:
             soar_audit_chain_verified=True,
             soar_audit_chain_head_sha256="a" * 64,
             thehive_case_record={"case_id": "case_12345"},
-            n8n_playbook_receipt={"execution_id": "exec_12345", "signature_sha256": "b" * 64},
+            n8n_playbook_receipt=_signed_n8n_receipt(),
         )
         snapshot_verified = DashboardSnapshot(
             queue=queue, selected=detail_verified, status="active"
@@ -1360,6 +1382,7 @@ class TestMilestone36ArchitecturalElevation:
         assert recorded_inv == 1.250555
 
         # 4. SQLite Persistence in SoarPlaybookSqliteRepository
+        monkeypatch.setenv("THREATFUSION_SOAR_HMAC_SECRET", TEST_SOAR_HMAC_SECRET)
         soar_db = tmp_path / "test_soar.sqlite3"
         soar_repo = SoarPlaybookSqliteRepository(soar_db)
         soar_engine = ApprovalGatedSoarEngine(soar_repo)
@@ -1406,7 +1429,6 @@ class TestMilestone36ArchitecturalElevation:
         assert "noise_reduction_funnel" in report.to_dict()
 
         # 6. Contract Server Endpoint Verification
-        monkeypatch.setenv("THREATFUSION_SOAR_HMAC_SECRET", TEST_SOAR_HMAC_SECRET)
         monkeypatch.setenv("THREATFUSION_SOAR_LEDGER_DB_PATH", str(soar_db))
         monkeypatch.setenv("THREATFUSION_INCIDENTS_DB_PATH", str(inc_db))
 
@@ -1791,10 +1813,19 @@ class TestMilestone36ArchitecturalElevation:
             build_five_tab_investigation_inspector,
         )
 
+        os.environ.setdefault("THREATFUSION_SOAR_HMAC_SECRET", "lab-only-not-a-production-secret")
         valid_receipt = {
             "execution_id": "exec_n8n_test_01",
-            "signature_sha256": "44d88612fea8a8f36de82e1278abb02f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d",
+            "playbook_id": "pb-1",
+            "candidate_id": "cand_m37_01",
+            "state": "approved",
+            "actor": "lab_operator",
+            "reason": "reviewed",
+            "timestamp_utc": "2026-10-18T10:00:00Z",
         }
+        valid_receipt["signature_sha256"] = receipt_hmac_sha256(
+            valid_receipt, os.environ["THREATFUSION_SOAR_HMAC_SECRET"]
+        )
         valid_chain = (
             {
                 "entry_hash": "GENESIS_BLOCK_00000000000000000000000000000000000000000000000000000000",
@@ -2034,8 +2065,8 @@ class TestMegaMilestone38FailClosedEvidence:
             assert empty_ok is False
             assert empty_msg == "empty ledger"
             legacy_ok, legacy_msg = repo.verify_audit_chain_integrity()
-            assert legacy_ok is True
-            assert "verified: 0 entries" in legacy_msg
+            assert legacy_ok is False
+            assert legacy_msg == "empty ledger"
 
     def test_velocity_telemetry_source_and_strict_measured_only(self) -> None:
         from threatfusion.correlation.incident_correlation import build_operational_velocity_report
@@ -2280,10 +2311,19 @@ class TestMegaMilestone38FailClosedEvidence:
         ]
         assert timeline["events"][2]["prev_entry_sha256"] == "0" * 64
 
+        os.environ.setdefault("THREATFUSION_SOAR_HMAC_SECRET", "lab-only-not-a-production-secret")
         receipt = {
             "execution_id": "exec_live_01",
-            "signature_sha256": "d" * 64,
+            "playbook_id": "pb-1",
+            "candidate_id": "flow-a",
+            "state": "approved",
+            "actor": "lab_operator",
+            "reason": "reviewed",
+            "timestamp_utc": "2026-10-26T00:00:04Z",
         }
+        receipt["signature_sha256"] = receipt_hmac_sha256(
+            receipt, os.environ["THREATFUSION_SOAR_HMAC_SECRET"]
+        )
         chain = (
             {"entry_sha256": "a" * 64, "prev_entry_sha256": "0" * 64},
             {"entry_sha256": "b" * 64, "prev_entry_sha256": "a" * 64},

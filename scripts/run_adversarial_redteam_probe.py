@@ -93,9 +93,16 @@ def _paint(ok: bool, text: str) -> str:
     return f"{color}{text}\033[0m"
 
 
+def _live_headers(base: str) -> dict[str, str]:
+    _status, health = _get(base, "/api/v1/live/health")
+    token = str(health.get("csrf_token") or "")
+    return {"X-ThreatFusion-CSRF": token} if token else {}
+
+
 def run_probes(base: str) -> list[tuple[str, bool, str]]:
     """Exercise five refusals. The caller owns the database behind base."""
-    scenario_status, _scenario = _post(base, "/api/v1/live/scenarios", {})
+    live_headers = _live_headers(base)
+    scenario_status, _scenario = _post(base, "/api/v1/live/scenarios", {}, headers=live_headers)
     if scenario_status != 200:
         raise RuntimeError(f"could not seed an isolated scenario flow: {scenario_status}")
     flow_ids = _flow_ids(base)
@@ -110,11 +117,14 @@ def run_probes(base: str) -> list[tuple[str, bool, str]]:
             "actor_id": "analyst_a",
             "reason": "Isolated probe approval so the ledger file exists.",
         },
+        headers=live_headers,
     )
     if approve_status != 200:
         raise RuntimeError(f"isolated approval failed: {approve_status}")
 
-    dispatch_status, dispatch = _post(base, "/api/v1/live/soar/dispatch", {"flow_id": other_id})
+    dispatch_status, dispatch = _post(
+        base, "/api/v1/live/soar/dispatch", {"flow_id": other_id}, headers=live_headers
+    )
     forged_status, _forged = _post(
         base,
         "/api/v1/soar/callback",
@@ -124,16 +134,20 @@ def run_probes(base: str) -> list[tuple[str, bool, str]]:
             "X-Idempotency-Key": "idem_redteam_probe_1",
         },
     )
-    guard_status, guard = _post(base, "/api/v1/live/misp-guard", {"value": "172.29.0.10"})
+    guard_status, guard = _post(
+        base, "/api/v1/live/misp-guard", {"value": "172.29.0.10"}, headers=live_headers
+    )
     handoff_status, handoff = _post(
         base,
         "/api/v1/live/handoff",
         {"flow_id": approved_id, "brief": "host 203.0.113.99 was isolated"},
+        headers=live_headers,
     )
     identity_status, identity = _post(
         base,
         "/api/v1/live/triage",
         {"flow_id": approved_id, "action": "acknowledge", "actor_id": "analyst_a"},
+        headers=live_headers,
     )
     checks = [
         (

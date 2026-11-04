@@ -101,11 +101,27 @@ def sensor_payload(
     }
 
 
+def _console_csrf(url: str, timeout: float) -> str:
+    health = url.split("/api/v1/live/", 1)[0] + "/api/v1/live/health"
+    request = urllib.request.Request(health, method="GET")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    token = payload.get("csrf_token") if isinstance(payload, dict) else ""
+    return str(token or "")
+
+
 def post_sensor(url: str, payload: dict[str, Any], timeout: float) -> tuple[int, dict[str, Any]]:
+    headers = {"Content-Type": "application/json"}
+    try:
+        token = _console_csrf(url, timeout)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        token = ""
+    if token:
+        headers["X-ThreatFusion-CSRF"] = token
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:

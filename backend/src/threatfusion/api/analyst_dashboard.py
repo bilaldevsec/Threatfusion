@@ -13,6 +13,7 @@ import hmac
 import html
 import json
 import math
+import os
 import re
 import socket
 import ssl
@@ -108,56 +109,37 @@ def _receipt_hmac_material(receipt: Mapping[str, Any]) -> bytes:
     )
 
 
-def _is_verified_receipt_dict(receipt: Any) -> bool:
-    """Accept a callback receipt only when its HMAC matches, or a legacy fixture signature is intact.
+_RECEIPT_SUPPLIED_SECRET_KEYS = ("hmac_secret", "secret", "verification_key")
 
-    A ``callback_hmac_sha256`` claim, a verification key, or the canonical callback
-    fields are checked with ``hmac.compare_digest``. A bare 64-hex string is not
-    treated as proof once any of those are present. Fixtures that only carry a
-    precomputed ``signature_sha256`` keep the previous shape check.
+
+def receipt_hmac_sha256(receipt: Mapping[str, Any], secret: str) -> str:
+    """HMAC the canonical receipt fields with a server-held secret."""
+    return hmac.new(
+        secret.encode("utf-8"), _receipt_hmac_material(receipt), hashlib.sha256
+    ).hexdigest()
+
+
+def _is_verified_receipt_dict(receipt: Any) -> bool:
+    """Accept a callback receipt only when the server secret signs it.
+
+    A key carried inside the receipt is ignored and the receipt is rejected.
+    A bare 64-hex string is not a signature.
     """
     if not isinstance(receipt, dict):
         return False
-    claimed = receipt.get("callback_hmac_sha256")
-    secret = receipt.get("verification_key", receipt.get("hmac_secret"))
-    canonical_present = any(field in receipt for field in _RECEIPT_CANONICAL_FIELDS)
-    if (
-        claimed is not None
-        or secret not in (None, "")
-        or (canonical_present and "callback_hmac_sha256" in receipt)
-    ):
-        if not isinstance(claimed, str) or not isinstance(secret, str):
-            return False
-        claimed_hex = claimed.strip().lower()
-        if not re.fullmatch(r"[0-9a-f]{64}", claimed_hex) or secret == "":
-            return False
-        digest = hmac.new(
-            secret.encode("utf-8"), _receipt_hmac_material(receipt), hashlib.sha256
-        ).hexdigest()
-        return hmac.compare_digest(digest, claimed_hex)
-    sig = str(
-        receipt.get(
-            "signature_sha256",
-            receipt.get(
-                "hmac_signature_sha256",
-                receipt.get("hmac_sha256", receipt.get("signature", "")),
-            ),
-        )
-    ).strip()
-    if not sig or not re.fullmatch(r"[0-9a-fA-F]{64}", sig):
+    if any(key in receipt for key in _RECEIPT_SUPPLIED_SECRET_KEYS):
         return False
-    eid = str(
-        receipt.get("execution_id", receipt.get("receipt_id", receipt.get("case_id", "")))
-    ).strip()
-    if eid and not (
-        eid.startswith("exec_")
-        or eid.startswith("rcpt_")
-        or eid.startswith("case_")
-        or eid.startswith("soar_")
-        or eid.startswith("pb-")
-    ):
+    server_secret = os.environ.get("THREATFUSION_SOAR_HMAC_SECRET", "").strip()
+    if not server_secret:
         return False
-    return True
+    claimed = receipt.get("callback_hmac_sha256", receipt.get("signature_sha256"))
+    if not isinstance(claimed, str):
+        return False
+    claimed_hex = claimed.strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", claimed_hex):
+        return False
+    digest = receipt_hmac_sha256(receipt, server_secret)
+    return hmac.compare_digest(digest, claimed_hex)
 
 
 def evidence_state_from_gates(receipt_ok: bool, chain_ok: bool, grounded_ok: bool) -> str:

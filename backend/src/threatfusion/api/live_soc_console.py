@@ -322,8 +322,11 @@ def _normalize_sensor_node(value: str | None) -> str | None:
 
 
 def authorize_sensor_ingest(authorization_header: str | None) -> bool:
-    """Allow ingest when no token is configured. A configured token must match."""
+    """Fail closed when a sensor token is required or the presented bearer does not match."""
+    required = os.environ.get("THREATFUSION_REQUIRE_SENSOR_TOKEN", "").strip() == "1"
     expected = os.environ.get("THREATFUSION_SENSOR_INGEST_TOKEN", "").strip()
+    if required and not expected:
+        return False
     if not expected:
         return True
     presented = ""
@@ -331,7 +334,24 @@ def authorize_sensor_ingest(authorization_header: str | None) -> bool:
         prefix, separator, token = authorization_header.partition(" ")
         if separator and prefix.lower() == "bearer":
             presented = token.strip()
+    if not presented:
+        return False
     return hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
+
+
+def canonical_feature_contract_error(features: Any) -> str | None:
+    """Reject a feature map that is missing a canonical name or a finite number."""
+    if not isinstance(features, dict):
+        return "invalid_feature_contract"
+    for name in CANONICAL_14_FEATURES:
+        if name not in features:
+            return "invalid_feature_contract"
+        value = features[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return "invalid_feature_contract"
+        if not math.isfinite(float(value)):
+            return "invalid_feature_contract"
+    return None
 
 
 def _probability_text(value: Any) -> str:
@@ -898,10 +918,23 @@ def candidate_playbook_id(decision: str, technique_id: str | None) -> str | None
     return "pb-rf-attack-contain-v1"
 
 
+_PORT53_DOS_TITLE = "Recorded UNSW-NB15 Generic DoS Burst on Destination Port 53"
+
+
+def _title_technique_id(title: str) -> str | None:
+    if title.strip() == _PORT53_DOS_TITLE:
+        return "T1498"
+    return None
+
+
 def _scenario_technique_id(stored: Mapping[str, Any]) -> str | None:
-    match = _SCENARIO_LABEL_RE.search(str(stored.get("case_title") or ""))
+    title = str(stored.get("case_title") or "")
+    match = _SCENARIO_LABEL_RE.search(title)
     if match:
         return match.group(1)
+    titled = _title_technique_id(title)
+    if titled:
+        return titled
     hits = stored.get("chroma_rag_hits")
     if isinstance(hits, list) and hits and isinstance(hits[0], Mapping):
         technique = str(hits[0].get("technique_id") or "").strip()
@@ -1907,7 +1940,8 @@ def _attach_chroma_rag_hits(flows: list[dict[str, Any]], db_path: Path) -> None:
             continue
         title = str(row.get("case_title") or "")
         match = _SCENARIO_LABEL_RE.search(title)
-        labelled = _corpus_technique_hit(match.group(1)) if match else None
+        titled = _title_technique_id(title)
+        labelled = _corpus_technique_hit(match.group(1) if match else titled or "")
         if labelled is not None:
             row["chroma_rag_hits"] = [labelled]
         else:

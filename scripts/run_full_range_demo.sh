@@ -10,11 +10,34 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 # Source the lab key only when this script starts the console (--up).
-if [[ "${1:-}" == "--up" && "${THREATFUSION_IGNORE_DOTENV:-}" != "1" && -f "$ROOT/.env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  . "$ROOT/.env"
-  set +a
+load_gemini_dotenv() {
+  if [[ "${THREATFUSION_IGNORE_DOTENV:-}" == "1" || "${THREATFUSION_OFFLINE_ONLY:-}" == "1" ]]; then
+    return 0
+  fi
+  local env_file="$1"
+  [[ -f "$env_file" ]] || return 0
+  local line key value
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    [[ "$line" == export\ * ]] && line="${line#export }"
+    [[ "$line" == *=* ]] || continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="${key%"${key##*[![:space:]]}"}"
+    if [[ "$key" != "GEMINI_API_KEY" && "$key" != "GEMINI_MODEL" ]]; then
+      continue
+    fi
+    if [[ ${#value} -ge 2 && ( "$value" == \"*\" || "$value" == \'*\' ) ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+    printf -v "$key" '%s' "$value"
+    export "$key"
+  done < "$env_file"
+}
+
+if [[ "${1:-}" == "--up" ]]; then
+  load_gemini_dotenv "$ROOT/.env"
 fi
 
 PORT="${PORT:-8766}"
@@ -112,14 +135,16 @@ cmd_up() {
     --console-url "http://${BIND_HOST}:${PORT}/api/v1/live/sensor" \
     >"$FOLLOWER_LOG" 2>&1 &
   echo $! >"$FOLLOWER_PIDFILE"
+  local csrf
+  csrf="$(curl -fsS "http://${BIND_HOST}:${PORT}/api/v1/live/health" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin).get("csrf_token",""))')"
   curl -fsS -X POST "http://${BIND_HOST}:${PORT}/api/v1/live/purge-bridge-noise" \
-    -H 'Content-Type: application/json' -d '{}' >/dev/null
+    -H 'Content-Type: application/json' -H "X-ThreatFusion-CSRF: ${csrf}" -d '{}' >/dev/null
   if ! curl -fsS -X POST "http://${BIND_HOST}:${PORT}/api/v1/live/scenarios" \
-    -H 'Content-Type: application/json' -d '{}' >/dev/null; then
+    -H 'Content-Type: application/json' -H "X-ThreatFusion-CSRF: ${csrf}" -d '{}' >/dev/null; then
     echo "scenario replay did not store rows" >&2
   fi
   if ! curl -fsS -X POST "http://${BIND_HOST}:${PORT}/api/v1/live/operator/enroll" \
-    -H 'Content-Type: application/json' -d '{"actor_id":"lab_operator"}' >/dev/null; then
+    -H 'Content-Type: application/json' -H "X-ThreatFusion-CSRF: ${csrf}" -d '{"actor_id":"lab_operator"}' >/dev/null; then
     echo "operator certificate enrollment did not complete" >&2
   fi
   echo "Analyst URL: http://${BIND_HOST}:${PORT}/"
@@ -136,8 +161,10 @@ cmd_scan() {
     || die "attacker container is not running; use --up first"
   echo "waiting for 172.29.0.10 -> 172.29.0.20 in eve.json and the live queue"
   local response
+  local csrf
+  csrf="$(curl -fsS "http://${BIND_HOST}:${PORT}/api/v1/live/health" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin).get("csrf_token",""))')"
   response="$(curl -fsS -X POST "http://${BIND_HOST}:${PORT}/api/v1/live/range-scan" \
-    -H 'Content-Type: application/json' -d '{}')" || die "range scan was not ingested"
+    -H 'Content-Type: application/json' -H "X-ThreatFusion-CSRF: ${csrf}" -d '{}')" || die "range scan was not ingested"
   printf '%s\n' "$response"
   printf '%s\n' "$response" | grep -q '"ingested": true' \
     || die "range scan did not store 172.29.0.10 -> 172.29.0.20"

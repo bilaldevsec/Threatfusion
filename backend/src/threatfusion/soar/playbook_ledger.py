@@ -13,8 +13,10 @@ Enforces Section 13.E of ThreatFusion:
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
+import secrets
 import sqlite3
 import stat
 import threading
@@ -28,6 +30,12 @@ from threatfusion.alerts.correlation_engine import EntityProvenanceContract
 
 SOAR_SCHEMA_VERSION = "soar_ledger_sqlite_v1"
 SOAR_AUDIT_GENESIS_HASH = "0" * 64
+_PROCESS_LEDGER_SECRET = secrets.token_hex(32)
+
+
+def _ledger_hmac(secret: str | None, canonical_repr: str) -> str:
+    key = os.environ.get("THREATFUSION_SOAR_HMAC_SECRET", "") if secret is None else secret
+    return hmac.new(key.encode("utf-8"), canonical_repr.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def compute_canonical_audit_entry_hash(
@@ -40,8 +48,9 @@ def compute_canonical_audit_entry_hash(
     actor: str,
     reason: str | None,
     timestamp_utc: str,
+    ledger_secret: str | None = None,
 ) -> str:
-    """Hash one ledger row from the canonical chain fields. Genesis is ``0`` * 64."""
+    """HMAC one ledger row from the canonical chain fields. Genesis is ``0`` * 64."""
     payload = {
         "actor": actor,
         "candidate_id": candidate_id,
@@ -53,7 +62,7 @@ def compute_canonical_audit_entry_hash(
         "timestamp_utc": timestamp_utc,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return _ledger_hmac(ledger_secret, encoded)
 
 
 def compute_soar_audit_entry_hash(
@@ -68,8 +77,9 @@ def compute_soar_audit_entry_hash(
     snapshot: str | None,
     timestamp_utc: str,
     prev_entry_sha256: str,
+    ledger_secret: str | None = None,
 ) -> str:
-    """Compute deterministic cryptographic SHA-256 digest for a SOAR audit entry."""
+    """HMAC one SOAR audit entry. An unkeyed SHA-256 rewrite does not match."""
     payload = {
         "event_id": event_id,
         "playbook_id": playbook_id,
@@ -83,7 +93,12 @@ def compute_soar_audit_entry_hash(
         "prev_entry_sha256": prev_entry_sha256,
     }
     canonical_repr = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical_repr.encode("utf-8")).hexdigest()
+    return _ledger_hmac(ledger_secret, canonical_repr)
+
+
+def seal_head_hmac(secret: str, expected_count: int, head_entry_sha256: str) -> str:
+    material = f"{int(expected_count)}:{head_entry_sha256}"
+    return hmac.new(secret.encode("utf-8"), material.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 class SoarError(RuntimeError):
@@ -179,9 +194,14 @@ class SoarPlaybookRecord:
 class SoarPlaybookSqliteRepository:
     """Isolated SQLite store enforcing mode 0600 file permissions and append-only audit."""
 
-    def __init__(self, db_path: Path | str) -> None:
+    def __init__(self, db_path: Path | str, ledger_secret: str | None = None) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if ledger_secret is None:
+            secret = os.environ.get("THREATFUSION_SOAR_HMAC_SECRET", "")
+        else:
+            secret = ledger_secret
+        self._ledger_secret = secret if secret else _PROCESS_LEDGER_SECRET
         self._append_lock = threading.Lock()
         self._init_db()
 
@@ -267,6 +287,29 @@ class SoarPlaybookSqliteRepository:
                 )
             if "t_response" not in cols_pb:
                 conn.execute("ALTER TABLE soar_playbook_records ADD COLUMN t_response REAL")
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS soar_ledger_head_seal (
+                    seal_id INTEGER PRIMARY KEY CHECK (seal_id = 1),
+                    expected_count INTEGER NOT NULL,
+                    head_entry_sha256 TEXT NOT NULL,
+                    head_seal_hmac TEXT NOT NULL
+                )
+                """)
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS soar_audit_events_append_only_delete
+                BEFORE DELETE ON soar_audit_events
+                BEGIN
+                    SELECT RAISE(ABORT, 'soar_audit_ledger_append_only');
+                END
+                """)
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS soar_audit_events_append_only_update
+                BEFORE UPDATE ON soar_audit_events
+                BEGIN
+                    SELECT RAISE(ABORT, 'soar_audit_ledger_append_only');
+                END
+                """)
 
             conn.commit()
 
@@ -377,6 +420,7 @@ class SoarPlaybookSqliteRepository:
                     snapshot=snapshot,
                     timestamp_utc=timestamp,
                     prev_entry_sha256=prev_hash,
+                    ledger_secret=self._ledger_secret,
                 )
                 canonical_hash = compute_canonical_audit_entry_hash(
                     prev_entry_sha256=prev_hash,
@@ -387,6 +431,7 @@ class SoarPlaybookSqliteRepository:
                     actor=actor_id,
                     reason=reason,
                     timestamp_utc=timestamp,
+                    ledger_secret=self._ledger_secret,
                 )
                 conn.execute(
                     """
@@ -413,6 +458,19 @@ class SoarPlaybookSqliteRepository:
                         candidate_id,
                         canonical_hash,
                     ),
+                )
+                seal = seal_head_hmac(self._ledger_secret, sequence_id, entry_hash)
+                conn.execute(
+                    """
+                    INSERT INTO soar_ledger_head_seal (
+                        seal_id, expected_count, head_entry_sha256, head_seal_hmac
+                    ) VALUES (1, ?, ?, ?)
+                    ON CONFLICT(seal_id) DO UPDATE SET
+                        expected_count = excluded.expected_count,
+                        head_entry_sha256 = excluded.head_entry_sha256,
+                        head_seal_hmac = excluded.head_seal_hmac
+                    """,
+                    (sequence_id, entry_hash, seal),
                 )
                 conn.execute("COMMIT")
             except Exception:
@@ -481,22 +539,24 @@ class SoarPlaybookSqliteRepository:
         self,
         playbook_id: str | None = None,
         *,
-        require_non_empty: bool = False,
+        require_non_empty: bool = True,
     ) -> tuple[bool, str]:
-        """Verify the cryptographic hash-chain integrity of SOAR audit events.
+        """Verify the keyed hash chain and the sealed head counter.
 
-        The full ledger link is always checked first. A playbook_id argument then
-        filters that already-valid chain. require_non_empty=False preserves the
-        empty-ledger success result used by existing initialization tests.
+        An empty ledger is not sound. A tail deletion or an unkeyed rewrite fails.
         """
         with self._get_connection() as conn:
             cursor = conn.execute("SELECT * FROM soar_audit_events ORDER BY rowid ASC")
             all_rows = cursor.fetchall()
+            seal_row = conn.execute(
+                "SELECT expected_count, head_entry_sha256, head_seal_hmac "
+                "FROM soar_ledger_head_seal WHERE seal_id = 1"
+            ).fetchone()
 
         if not all_rows:
-            if require_non_empty or playbook_id is not None:
-                return False, "empty ledger"
-            return True, "SOAR audit chain verified: 0 entries (empty ledger)"
+            return False, "empty ledger"
+        if require_non_empty and seal_row is None:
+            return False, "empty ledger"
 
         expected_prev = SOAR_AUDIT_GENESIS_HASH
         for idx, row in enumerate(all_rows):
@@ -522,6 +582,7 @@ class SoarPlaybookSqliteRepository:
                 snapshot=row["snapshot"],
                 timestamp_utc=row["timestamp_utc"],
                 prev_entry_sha256=stored_prev,
+                ledger_secret=self._ledger_secret,
             )
             if recomputed != stored_hash:
                 return (
@@ -552,6 +613,7 @@ class SoarPlaybookSqliteRepository:
                     actor=row["actor_id"],
                     reason=row["reason"],
                     timestamp_utc=row["timestamp_utc"],
+                    ledger_secret=self._ledger_secret,
                 )
                 if canonical != row["canonical_entry_sha256"]:
                     return (
@@ -562,6 +624,20 @@ class SoarPlaybookSqliteRepository:
                     )
 
             expected_prev = stored_hash
+
+        if seal_row is None:
+            return False, "empty ledger"
+        expected_seal = seal_head_hmac(
+            self._ledger_secret,
+            int(seal_row["expected_count"]),
+            str(seal_row["head_entry_sha256"]),
+        )
+        if (
+            int(seal_row["expected_count"]) != len(all_rows)
+            or str(seal_row["head_entry_sha256"]) != str(all_rows[-1]["entry_sha256"])
+            or not hmac.compare_digest(expected_seal, str(seal_row["head_seal_hmac"]))
+        ):
+            return False, "SOAR audit head seal mismatch"
 
         if playbook_id is not None:
             rows = [row for row in all_rows if row["playbook_id"] == playbook_id]

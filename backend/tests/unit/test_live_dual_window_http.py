@@ -82,7 +82,10 @@ def _provenance(port: str) -> dict[str, object]:
 
 
 def _post(base: str, path: str, payload: dict, headers: dict[str, str] | None = None):
-    request_headers = {"Content-Type": "application/json"}
+    request_headers = {
+        "Content-Type": "application/json",
+        "X-ThreatFusion-Test-Client": "in-process",
+    }
     if headers:
         request_headers.update(headers)
     request = urllib.request.Request(

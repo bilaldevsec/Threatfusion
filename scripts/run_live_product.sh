@@ -84,15 +84,36 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Load the lab key only for a real server start. Dry-run, smoke, and
-# THREATFUSION_IGNORE_DOTENV=1 keep the process on the environment it was given.
-if [[ "${THREATFUSION_IGNORE_DOTENV:-}" != "1" && "$MODE" != "dry-run" && "$MODE" != "smoke" ]]; then
-  if [[ -f "$ROOT/.env" ]]; then
-    set -a
-    # shellcheck disable=SC1091
-    . "$ROOT/.env"
-    set +a
+# Load only the Gemini key and model. Dry-run, smoke, and the offline flags
+# keep the process on the environment it was given.
+load_gemini_dotenv() {
+  if [[ "${THREATFUSION_IGNORE_DOTENV:-}" == "1" || "${THREATFUSION_OFFLINE_ONLY:-}" == "1" ]]; then
+    return 0
   fi
+  local env_file="$1"
+  [[ -f "$env_file" ]] || return 0
+  local line key value
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    [[ "$line" == export\ * ]] && line="${line#export }"
+    [[ "$line" == *=* ]] || continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="${key%"${key##*[![:space:]]}"}"
+    if [[ "$key" != "GEMINI_API_KEY" && "$key" != "GEMINI_MODEL" ]]; then
+      continue
+    fi
+    if [[ ${#value} -ge 2 && ( "$value" == \"*\" || "$value" == \'*\' ) ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+    printf -v "$key" '%s' "$value"
+    export "$key"
+  done < "$env_file"
+}
+
+if [[ "$MODE" != "dry-run" && "$MODE" != "smoke" ]]; then
+  load_gemini_dotenv "$ROOT/.env"
 fi
 if [[ -n "$CLI_PORT" ]]; then
   PORT="$CLI_PORT"
@@ -251,10 +272,13 @@ import sys
 import urllib.request
 
 host, port = sys.argv[1], sys.argv[2]
+with urllib.request.urlopen(f"http://{host}:{port}/api/v1/live/health", timeout=10) as health:
+    token = json.load(health).get("csrf_token", "")
+headers = {"Content-Type": "application/json", "X-ThreatFusion-CSRF": token}
 request = urllib.request.Request(
     f"http://{host}:{port}/api/v1/live/scenarios",
     data=b"{}",
-    headers={"Content-Type": "application/json"},
+    headers=headers,
     method="POST",
 )
 with urllib.request.urlopen(request, timeout=60) as response:
@@ -267,7 +291,7 @@ if response.status != 200 or body.get("member_count") != 4 or not required <= id
 enroll = urllib.request.Request(
     f"http://{host}:{port}/api/v1/live/operator/enroll",
     data=b'{"actor_id":"lab_operator"}',
-    headers={"Content-Type": "application/json"},
+    headers=headers,
     method="POST",
 )
 with urllib.request.urlopen(enroll, timeout=60) as enrolled:

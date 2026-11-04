@@ -213,22 +213,31 @@ class MispDeterministicClient:
         clean_ind = indicator.strip()
         now_str = datetime.now(UTC).isoformat()
 
-        # Check RFC1918 Guard if indicator is an IP address
-        if "ip" in indicator_type or is_rfc1918_or_loopback_ip(clean_ind):
-            if is_rfc1918_or_loopback_ip(clean_ind):
-                res = MispQueryResult(
-                    indicator=clean_ind,
-                    indicator_type=indicator_type,
-                    matched=False,
-                    threat_level="undefined",
-                    tags=("rfc1918_private_ip_suppressed",),
-                    event_id=None,
-                    private_ip_guard_triggered=True,
-                    query_mode="rfc1918_guard_suppressed",
-                    timestamp_utc=now_str,
-                )
-                self._record_query(res)
-                return res
+        from threatfusion.correlation.misp_client import external_lookup_allowed
+
+        address_attempt = (
+            "ip" in indicator_type.lower()
+            or clean_ind.lower() == "localhost"
+            or clean_ind.startswith("[")
+            or clean_ind.lower().startswith("0x")
+            or clean_ind.isdigit()
+            or "." in clean_ind
+            or ":" in clean_ind
+        )
+        if address_attempt and not external_lookup_allowed(clean_ind):
+            res = MispQueryResult(
+                indicator=clean_ind,
+                indicator_type=indicator_type,
+                matched=False,
+                threat_level="undefined",
+                tags=("rfc1918_private_ip_suppressed",),
+                event_id=None,
+                private_ip_guard_triggered=True,
+                query_mode="rfc1918_guard_suppressed",
+                timestamp_utc=now_str,
+            )
+            self._record_query(res)
+            return res
 
         # Attempt REST Search
         payload = json.dumps(

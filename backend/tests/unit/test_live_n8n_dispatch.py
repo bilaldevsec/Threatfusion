@@ -304,6 +304,7 @@ def test_tampered_chain_returns_no_callback(tmp_path: Path, monkeypatch) -> None
             reason="Analyst recorded local approval. Containment is not executed.",
         )
         with sqlite3.connect(soar_db) as conn:
+            conn.execute("DROP TRIGGER IF EXISTS soar_audit_events_append_only_update")
             conn.execute("UPDATE soar_audit_events SET entry_sha256 = ?", ("0" * 64,))
         result = dispatch_approved_callback(
             live_db,

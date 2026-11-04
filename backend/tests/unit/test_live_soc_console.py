@@ -637,7 +637,10 @@ def test_triage_and_handoff_routes_round_trip(tmp_path: Path, monkeypatch) -> No
             request = urllib.request.Request(
                 f"http://127.0.0.1:{port}{path}",
                 data=body,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "X-ThreatFusion-Test-Client": "in-process",
+                },
                 method="POST",
             )
             try:
@@ -944,7 +947,10 @@ def _post_json(url: str, payload: dict) -> tuple[int, dict]:
     request = urllib.request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "X-ThreatFusion-Test-Client": "in-process",
+        },
         method="POST",
     )
     try:

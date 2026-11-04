@@ -30,6 +30,7 @@ import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import secrets
 import urllib.parse
 from pathlib import Path
 import re
@@ -46,6 +47,8 @@ if BACKEND_SRC.exists() and str(BACKEND_SRC) not in sys.path:
     sys.path.insert(0, str(BACKEND_SRC))
 
 MAX_POST_BODY_BYTES = 1048576
+_LIVE_CSRF_TOKEN = secrets.token_urlsafe(32)
+_TEST_CLIENT_HEADER_VALUE = "in-process"
 
 CANONICAL_INDICATORS: dict[str, dict[str, Any]] = {
     "44d88612fea8a8f36de82e1278abb02f": {
@@ -305,6 +308,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/live/advisory-status":
             self._send_json(200, self._advisory_status_payload())
             return
+        if path == "/api/v1/live/health":
+            self._send_json(200, {"status": "ok", "csrf_token": _LIVE_CSRF_TOKEN})
+            return
         if path == "/api/v1/live/operator/stamp":
             from threatfusion.api.live_soc_console import operator_stamp
 
@@ -454,6 +460,26 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
     def _presented_operator_fingerprint(self) -> str:
         return (self.headers.get("X-ThreatFusion-Cert-SHA256") or "").strip()
 
+    def _live_write_authorized(self) -> bool:
+        """Accept the process CSRF token, a bearer token, or the in-process test header."""
+        presented = (self.headers.get("X-ThreatFusion-CSRF") or "").strip()
+        if (
+            presented
+            and len(presented) == len(_LIVE_CSRF_TOKEN)
+            and hmac.compare_digest(presented, _LIVE_CSRF_TOKEN)
+        ):
+            return True
+        authorization = self.headers.get("Authorization") or ""
+        prefix, separator, token = authorization.partition(" ")
+        if separator and prefix.lower() == "bearer" and token.strip():
+            return True
+        test_client = (self.headers.get("X-ThreatFusion-Test-Client") or "").strip()
+        return bool(
+            test_client
+            and len(test_client) == len(_TEST_CLIENT_HEADER_VALUE)
+            and hmac.compare_digest(test_client, _TEST_CLIENT_HEADER_VALUE)
+        )
+
     def _csrf_origin_rejected(self, path: str) -> bool:
         """Refuse a browser POST whose Origin is not this loopback listener."""
         if not path.startswith("/api/v1/live/"):
@@ -550,6 +576,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
         if self._csrf_origin_rejected(path):
             return
+        if path.startswith("/api/v1/live/") and not self._live_write_authorized():
+            self._send_json(401, {"error": "write_token_required"})
+            return
 
         if path == "/api/v1/live/purge-bridge-noise":
             from threatfusion.api.live_soc_console import purge_bridge_noise_rows
@@ -641,19 +670,25 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
         if path == "/api/v1/live/ingest":
             from threatfusion.api.live_soc_console import (
+                authorize_sensor_ingest,
+                canonical_feature_contract_error,
                 correlate_stored_attacks,
                 persist_scored_flow,
                 score_canonical_flow,
             )
 
+            if not authorize_sensor_ingest(self.headers.get("Authorization")):
+                self._send_json(401, {"error": "sensor_token_required"})
+                return
             try:
                 req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
             features = req_data.get("features") if isinstance(req_data, dict) else None
-            if not isinstance(features, dict):
-                self._send_json(400, {"error": "features object required"})
+            contract_error = canonical_feature_contract_error(features)
+            if contract_error is not None:
+                self._send_json(422, {"error": contract_error})
                 return
             observed_at = req_data.get("observed_at_utc")
             provenance = req_data.get("provenance")

@@ -7,6 +7,29 @@
 (function () {
   'use strict';
 
+  let liveCsrfToken = '';
+  const nativeFetch = window.fetch.bind(window);
+  async function ensureLiveCsrf() {
+    if (liveCsrfToken) return liveCsrfToken;
+    const response = await nativeFetch('/api/v1/live/health');
+    if (!response.ok) return '';
+    const payload = await response.json();
+    liveCsrfToken = payload && payload.csrf_token ? String(payload.csrf_token) : '';
+    return liveCsrfToken;
+  }
+  window.fetch = async function (url, options) {
+    const opts = options ? Object.assign({}, options) : {};
+    const method = String(opts.method || 'GET').toUpperCase();
+    const target = String(url);
+    if (method === 'POST' && target.indexOf('/api/v1/live/') !== -1) {
+      if (!liveCsrfToken) await ensureLiveCsrf();
+      const headers = new Headers(opts.headers || {});
+      if (liveCsrfToken) headers.set('X-ThreatFusion-CSRF', liveCsrfToken);
+      opts.headers = headers;
+    }
+    return nativeFetch(url, opts);
+  };
+
   // ========================================================================
   // 1. Exact Evaluation Pack Rev2 & Pipeline Invariant Constants
   // ========================================================================
@@ -1417,8 +1440,22 @@
     });
   }
 
+  function selectedFlowHasReceipt(inc) {
+    const queries = inc && inc.evidenceLocker && inc.evidenceLocker.queries;
+    if (!Array.isArray(queries)) return false;
+    const campaign = queries.find(function (row) {
+      return row && row.query_id === 'correlated_campaign_soar_ledger';
+    });
+    const status = campaign ? String(campaign.soar_receipt_status || '') : '';
+    return status !== '' && status !== 'no_receipt' && status !== 'unavailable';
+  }
+
   function playbookChainVerified(inc) {
-    return !!(inc && verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256));
+    return !!(
+      inc
+      && verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256)
+      && selectedFlowHasReceipt(inc)
+    );
   }
 
   function playbookChainLabel(inc) {
@@ -1450,7 +1487,11 @@
   function syncHeaderChainBadge(inc) {
     const node = document.getElementById('headerChainBadge');
     if (!node) return;
-    const chainOk = !!(inc && verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256));
+    const chainOk = !!(
+      inc
+      && verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256)
+      && selectedFlowHasReceipt(inc)
+    );
     if (chainOk) {
       node.textContent = 'Playbook hash chain: verified';
       node.setAttribute('data-evidence-state', 'verified');
