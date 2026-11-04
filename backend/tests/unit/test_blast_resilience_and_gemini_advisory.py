@@ -344,13 +344,13 @@ class TestGeminiAdvisoryGroundednessAndOutageIsolation:
     def test_gemini_config_defaults_and_endpoint_url(self) -> None:
         """Verify GeminiAdvisoryConfig default fields and parameterized URL formulation."""
         config = GeminiAdvisoryConfig()
-        assert config.model_name == "gemini-2.5-flash"
+        assert config.model_name == "gemini-3.5-flash"
         assert config.timeout_seconds == 5.0
         assert config.max_output_tokens == 512
         assert config.api_key_env_var == "GEMINI_API_KEY"
 
         url = config.get_endpoint_url("secret_test_key")
-        assert "gemini-2.5-flash" in url
+        assert "gemini-3.5-flash" in url
         assert "key=secret_test_key" in url
 
     def test_build_grounded_gemini_prompt_serialization(

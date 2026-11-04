@@ -87,6 +87,11 @@ def test_follower_strips_prefixes_and_keeps_the_signature_as_display_text() -> N
     assert "gemini_client" not in script
 
 
+def test_range_demo_follower_posts_to_the_console_bind_host() -> None:
+    script = (REPO_ROOT / "scripts" / "run_full_range_demo.sh").read_text(encoding="utf-8")
+    assert '--console-url "http://${BIND_HOST}:${PORT}/api/v1/live/sensor"' in script
+
+
 def test_follower_without_an_alert_leaves_the_signature_empty() -> None:
     payload = sensor_payload(_flow(), {})
     assert payload["sensor_observation"]["signature"] is None
@@ -410,6 +415,42 @@ def test_range_scan_waits_until_a_new_unicast_row_exists(tmp_path: Path) -> None
     assert result["ingested"] is True
     assert result["reason"] == "range_scan_ingested"
     assert result["eve_seen"] is True
+
+
+def test_range_scan_accepts_an_already_stored_bridge_pair(tmp_path: Path) -> None:
+    db = tmp_path / "scan.sqlite3"
+    features = {name: 0.0 for name in CANONICAL_14_FEATURES}
+    persist_scored_flow(
+        db,
+        features,
+        _bench_score(),
+        source_label="suricata_bridge",
+        provenance={
+            "entity_namespace_id": "lab:range-bridge-01",
+            "src_entity_id": "172.29.0.10",
+            "dst_entity_id": "172.29.0.20",
+            "flow_protocol": "tcp",
+            "service_or_port": "80",
+            "clock_synchronized": True,
+        },
+    )
+    calls = {"count": 0}
+
+    def runner() -> None:
+        calls["count"] += 1
+
+    result = run_live_range_scan(
+        db,
+        runner=runner,
+        timeout_seconds=1,
+        eve_path=tmp_path / "missing-eve.json",
+    )
+    assert calls["count"] == 1
+    assert result["ingested"] is True
+    assert result["reason"] == "range_scan_ingested"
+    assert result["eve_seen"] is False
+    assert result["src_entity_id"] == "172.29.0.10"
+    assert result["dst_entity_id"] == "172.29.0.20"
 
 
 def test_range_scan_does_not_invent_a_row_when_the_runner_fails(tmp_path: Path) -> None:

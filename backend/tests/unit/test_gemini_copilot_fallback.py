@@ -22,10 +22,12 @@ from threatfusion.advisory.gemini_client import (
 from threatfusion.api.live_soc_console import answer_mitre_copilot
 
 
-def test_unset_model_stays_gemini_2_5_flash(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unset_model_stays_gemini_3_5_flash(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
-    assert GeminiAdvisoryConfig().model_name == "gemini-2.5-flash"
-    assert resolve_gemini_model() == "gemini-2.5-flash"
+    assert GeminiAdvisoryConfig().model_name == "gemini-3.5-flash"
+    assert resolve_gemini_model() == "gemini-3.5-flash"
+    dashboard = Path(__file__).resolve().parents[3] / "frontend" / "js" / "soc_dashboard.js"
+    assert "Live Gemini 3.5 Flash (Grounded API Call)" in dashboard.read_text(encoding="utf-8")
     monkeypatch.setenv("GEMINI_MODEL", "gemini-2.0-flash")
     assert resolve_gemini_model() == "gemini-2.0-flash"
     assert GeminiAdvisoryCallable().config.model_name == "gemini-2.0-flash"

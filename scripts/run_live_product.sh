@@ -12,15 +12,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-if [ -f "$ROOT/.env" ]; then
-  set -a
-  . "$ROOT/.env"
-  set +a
-fi
-
 HOST="127.0.0.1"
 PORT="${PORT:-8766}"
 MODE="serve"
+CLI_PORT=""
 if [[ -n "${THREATFUSION_PYTHON:-}" ]]; then
   PYTHON="${THREATFUSION_PYTHON}"
 elif [[ -x "${ROOT}/threatfusion-venv/bin/python" ]]; then
@@ -73,6 +68,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --port)
       [[ $# -ge 2 ]] || die "--port requires a value"
+      CLI_PORT="$2"
       PORT="$2"
       shift 2
       ;;
@@ -87,6 +83,20 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Load the lab key only for a real server start. Dry-run, smoke, and
+# THREATFUSION_IGNORE_DOTENV=1 keep the process on the environment it was given.
+if [[ "${THREATFUSION_IGNORE_DOTENV:-}" != "1" && "$MODE" != "dry-run" && "$MODE" != "smoke" ]]; then
+  if [[ -f "$ROOT/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "$ROOT/.env"
+    set +a
+  fi
+fi
+if [[ -n "$CLI_PORT" ]]; then
+  PORT="$CLI_PORT"
+fi
 
 [[ "$PORT" =~ ^[0-9]+$ ]] || die "PORT must be an integer, got '${PORT}'"
 if (( PORT < 1 || PORT > 65535 )); then

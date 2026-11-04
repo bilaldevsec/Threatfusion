@@ -231,7 +231,7 @@
                     <div><b>Affected assets:</b> <span id="inspectorAssets">endpoints unavailable</span></div>
                     <label for="liveCopilotQuestion">Advisory question</label>
                     <input id="liveCopilotQuestion" type="text" value="command and control beacon">
-                    <button id="btnLiveCopilot" type="button">Ask the advisory copilot</button>
+                    <button id="btnAskCopilot" data-copilot-button="live" type="button">Ask the advisory copilot</button>
                     <div id="advisoryProgress" hidden>Advisory request running</div>
                     <div id="liveCopilotAnswer" data-evidence-state="unavailable"></div>
                   </article>
@@ -361,7 +361,7 @@
             <div class="graph-col">
               <h3>Analyze</h3>
               <button class="graph-node" type="button" data-graph-node="ground" data-node-tone="cyan"><span class="node-badge node-badge-cyan">GND</span><span class="node-copy">verify_explanation_groundedness()</span></button>
-              <button class="graph-node" type="button" data-graph-node="gemini" data-node-tone="purple"><span class="node-badge node-badge-purple">AI</span><span class="node-copy">Gemini 2.5 Flash Copilot</span></button>
+              <button class="graph-node" type="button" data-graph-node="gemini" data-node-tone="purple"><span class="node-badge node-badge-purple">AI</span><span class="node-copy">Gemini 3.5 Flash Copilot</span></button>
             </div>
             <div class="graph-col">
               <h3>Report &amp; Respond</h3>
@@ -568,7 +568,7 @@
             <span class="shield-pill" data-copy-hash="bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9" title="Click to copy SHA-256 digest">Model Weights Frozen &amp; Verified</span>
             <span class="shield-pill">SOAR Audit Ledger: Intact</span>
           </div>
-          <p>Advisory model default: gemini-2.5-flash. A missing key uses the local corpus.</p>
+          <p>Advisory model default: gemini-3.5-flash. A missing key uses the local corpus.</p>
           <p>99%+ Alert Noise Eliminated on the inspected January benchmark only.</p>
         </details>
       </section>

@@ -37,6 +37,7 @@ SOC_COPILOT_SYSTEM_PROMPT = (
 )
 
 _MODEL_LABELS = {
+    "gemini-3.5-flash": "Gemini 3.5 Flash",
     "gemini-2.5-flash": "Gemini 2.5 Flash",
     "gemini-2.0-flash": "Gemini 2.0 Flash",
     "gemini-1.5-pro": "Gemini 1.5 Pro",
@@ -44,11 +45,11 @@ _MODEL_LABELS = {
 
 
 def resolve_gemini_model(explicit: str | None = None) -> str:
-    """Return an explicit model, else GEMINI_MODEL, else gemini-2.5-flash."""
+    """Return an explicit model, else GEMINI_MODEL, else gemini-3.5-flash."""
     if explicit and explicit.strip():
         return explicit.strip()
     configured = os.environ.get("GEMINI_MODEL", "").strip()
-    return configured or "gemini-2.5-flash"
+    return configured or "gemini-3.5-flash"
 
 
 def model_display_name(model_name: str) -> str:
@@ -90,9 +91,10 @@ def advisory_provider_status() -> dict[str, Any]:
 class GeminiAdvisoryConfig:
     """Configuration for Gemini Advisory debrief client."""
 
-    model_name: str = "gemini-2.5-flash"
+    model_name: str = "gemini-3.5-flash"
     timeout_seconds: float = 5.0
     max_output_tokens: int = 512
+    temperature: float = 0.0
     api_key_env_var: str = "GEMINI_API_KEY"
     endpoint_url_template: str = (
         "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
@@ -411,18 +413,24 @@ class GeminiAdvisoryCallable:
         payload = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {
-                "temperature": 0.0,
+                "temperature": self.config.temperature,
                 "maxOutputTokens": self.config.max_output_tokens,
             },
         }
-        endpoint_url = self.config.get_endpoint_url(api_key or "mock-api-key")
+        endpoint_url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self.config.model_name}:generateContent"
+        )
         if self._transport_callable is not None:
             response_dict = self._transport_callable(endpoint_url, payload)
         else:
             request = urllib.request.Request(
                 endpoint_url,
                 data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "x-goog-api-key": api_key,
+                    "Content-Type": "application/json",
+                },
                 method="POST",
             )
             try:

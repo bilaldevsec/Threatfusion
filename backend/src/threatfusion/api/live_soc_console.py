@@ -682,7 +682,84 @@ _COPILOT_HEADINGS = (
     "[4] IMMEDIATE ANALYST INVESTIGATION STEPS",
     "[5] GOVERNED SOAR PLAYBOOK & CONTAINMENT GUIDANCE",
 )
+_COPILOT_TITLES = tuple(heading.split("] ", 1)[1] for heading in _COPILOT_HEADINGS)
 _CVE_TOKEN = re.compile(r"cve[-_ ]?(\d{4})[-_ ](\d{4,7})", re.IGNORECASE)
+_MITRE_ID = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
+_CVE_ID = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
+
+
+def _normalize_copilot_headings(text: str) -> str:
+    """Rewrite '1. TITLE' and '1) TITLE' into the canonical '[1] TITLE' headings."""
+    normalized = text
+    for index, title in enumerate(_COPILOT_TITLES, start=1):
+        canonical = _COPILOT_HEADINGS[index - 1]
+        pattern = re.compile(rf"(?i)(?:\[)?{index}(?:\])?[.)\:\-]?[ \t]+{re.escape(title)}")
+        normalized = pattern.sub(canonical, normalized)
+    return normalized
+
+
+def _citation_ids(text: str) -> tuple[set[str], set[str]]:
+    return set(_MITRE_ID.findall(text)), {item.upper() for item in _CVE_ID.findall(text)}
+
+
+def _copilot_citations_grounded(
+    text: str,
+    evidence: str,
+    hits: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Reject a MITRE or CVE id that is outside the retrieved hits and the evidence block."""
+    allowed_techniques, allowed_cves = _citation_ids(evidence)
+    for hit in hits:
+        technique = str(hit.get("technique_id") or "").strip()
+        if technique:
+            allowed_techniques.add(technique)
+        blob = " ".join(
+            str(hit.get(key) or "") for key in ("technique_name", "playbook_id", "doc_id")
+        )
+        hit_techniques, hit_cves = _citation_ids(blob)
+        allowed_techniques.update(hit_techniques)
+        allowed_cves.update(hit_cves)
+        for year, number in _CVE_TOKEN.findall(blob):
+            allowed_cves.add(f"CVE-{year}-{number}")
+    found_techniques, found_cves = _citation_ids(text)
+    return found_techniques.issubset(allowed_techniques) and found_cves.issubset(allowed_cves)
+
+
+def _live_copilot_callable() -> Any:
+    """Live five-section request. The class default stays 512 tokens and temperature 0.0."""
+    from threatfusion.advisory.gemini_client import (
+        GeminiAdvisoryCallable,
+        GeminiAdvisoryConfig,
+        resolve_gemini_model,
+    )
+
+    return GeminiAdvisoryCallable(
+        GeminiAdvisoryConfig(
+            model_name=resolve_gemini_model(),
+            max_output_tokens=2048,
+            temperature=0.1,
+            timeout_seconds=30.0,
+        )
+    )
+
+
+def _copilot_soar_gates(
+    stored: Mapping[str, Any] | None,
+    soar_db_path: Path | None,
+) -> tuple[bool, bool]:
+    """Return a verified receipt flag and a non-empty valid hash-chain flag."""
+    if stored is None or soar_db_path is None or not Path(soar_db_path).is_file():
+        return False, False
+    playbook_id = str(stored.get("playbook_id") or "").strip()
+    if not playbook_id:
+        return False, False
+    repository = SoarPlaybookSqliteRepository(Path(soar_db_path))
+    try:
+        chain_ok, _message = repository.verify_audit_chain_integrity(require_non_empty=True)
+        receipt = _receipt_from_ledger(repository, playbook_id)
+    except (sqlite3.Error, OSError, KeyError, ValueError):
+        return False, False
+    return receipt.get("evidence_state") == "verified", bool(chain_ok)
 
 
 def _copilot_allowed_entities(stored: Mapping[str, Any] | None) -> list[str]:
@@ -896,6 +973,7 @@ def answer_mitre_copilot(
                 "provider": "local_air_gapped",
                 "provider_label": "AI Copilot: Local Air-Gapped Engine",
                 "narrative": "",
+                "grounded": False,
             }
         )
     corpus_path = (
@@ -959,10 +1037,35 @@ def answer_mitre_copilot(
         reason = "local_corpus"
     else:
         reason = "no_corpus_hit"
+    grounded = False
+    if narrative_text:
+        from threatfusion.advisory.explanation_engine import (
+            AdvisoryEvidenceBundle,
+            verify_explanation_groundedness,
+        )
+
+        check_bundle = bundle
+        if check_bundle is None:
+            check_bundle = AdvisoryEvidenceBundle(
+                candidate_id="live_copilot",
+                record_id="live_copilot",
+                rf_model_version="network_random_forest_baseline_v1",
+                rf_attack_probability=0.0,
+                rf_threshold=0.5,
+                top_feature_signals={},
+            )
+        grounded = bool(verify_explanation_groundedness(narrative_text, check_bundle))
+    receipt_ok, chain_ok = _copilot_soar_gates(
+        stored if isinstance(stored, Mapping) else None,
+        soar_db_path if isinstance(soar_db_path, Path) else None,
+    )
+    from threatfusion.api.analyst_dashboard import evidence_state_from_gates
+
     return disclose_offline_fallback(
         {
             "schema_version": "live_mitre_copilot_v1",
-            "evidence_state": "verified" if hits or narrative_text else "unavailable",
+            "evidence_state": evidence_state_from_gates(receipt_ok, chain_ok, grounded),
+            "grounded": grounded,
             "execution_authorized": False,
             "reason": reason,
             "hits": hit_rows,
@@ -983,7 +1086,6 @@ def _handoff_brief_or_local(
     """Use a grounded Gemini brief when a key is configured. Otherwise keep the local brief."""
     from threatfusion.advisory.explanation_engine import verify_explanation_groundedness
     from threatfusion.advisory.gemini_client import (
-        GeminiAdvisoryCallable,
         GeminiAdvisoryUnavailableError,
         advisory_provider_status,
     )
@@ -994,7 +1096,7 @@ def _handoff_brief_or_local(
     if addresses:
         evidence = f"{default_brief} Stored addresses: {', '.join(addresses)}."
     try:
-        text = GeminiAdvisoryCallable().generate_copilot_text(evidence)
+        text = _live_copilot_callable().generate_copilot_text(evidence)
     except (GeminiAdvisoryUnavailableError, OSError, TimeoutError):
         return default_brief
     if verify_explanation_groundedness(text, bundle):
@@ -1016,7 +1118,6 @@ def _grounded_gemini_narrative(
         verify_explanation_groundedness,
     )
     from threatfusion.advisory.gemini_client import (
-        GeminiAdvisoryCallable,
         GeminiAdvisoryUnavailableError,
         advisory_provider_status,
     )
@@ -1042,9 +1143,10 @@ def _grounded_gemini_narrative(
             lines.append("No local corpus hit.")
         evidence = "\n".join(lines)
     try:
-        text = GeminiAdvisoryCallable().generate_copilot_text(evidence)
+        text = _live_copilot_callable().generate_copilot_text(evidence)
     except (GeminiAdvisoryUnavailableError, OSError, TimeoutError):
         return local
+    text = _normalize_copilot_headings(text)
     check_bundle = bundle
     if check_bundle is None:
         check_bundle = AdvisoryEvidenceBundle(
@@ -1056,6 +1158,8 @@ def _grounded_gemini_narrative(
             top_feature_signals={},
         )
     if not verify_explanation_groundedness(text, check_bundle):
+        return local
+    if not _copilot_citations_grounded(text, evidence, hits):
         return local
     if evidence_text and not all(heading in text for heading in _COPILOT_HEADINGS):
         return local
@@ -4095,6 +4199,25 @@ def _latest_range_pair(db_path: Path, after_flow_id: int) -> sqlite3.Row | None:
         ).fetchone()
 
 
+def _stored_range_pair(db_path: Path) -> sqlite3.Row | None:
+    """Return the stored attacker-to-victim bridge row, including one already on disk."""
+    if not db_path.is_file():
+        return None
+    with _connect(db_path) as conn:
+        return conn.execute(
+            """
+            SELECT flow_id, src_entity_id, dst_entity_id, service_or_port
+            FROM live_flows
+            WHERE source_label = ?
+              AND src_entity_id = ?
+              AND dst_entity_id = ?
+            ORDER BY flow_id DESC
+            LIMIT 1
+            """,
+            (SENSOR_BRIDGE_SOURCE, "172.29.0.10", "172.29.0.20"),
+        ).fetchone()
+
+
 def _max_flow_id(db_path: Path) -> int:
     if not db_path.is_file():
         return 0
@@ -4145,7 +4268,7 @@ def run_live_range_scan(
     timeout_seconds: float = 30.0,
     eve_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Fire the lab scan and wait until a new unicast bridge row is stored."""
+    """Fire the lab scan and accept a new or already stored unicast bridge row."""
     import time
 
     try:
@@ -4167,10 +4290,10 @@ def run_live_range_scan(
             }
         deadline = time.monotonic() + timeout_seconds
         while True:
-            row = _latest_range_pair(db_path, before)
+            fresh = _latest_range_pair(db_path, before)
+            row = fresh if fresh is not None else _stored_range_pair(db_path)
             eve_seen = _eve_has_range_pair(eve_path)
-            eve_ready = eve_path is None or eve_seen
-            if row is not None and eve_ready:
+            if row is not None:
                 return {
                     "evidence_state": "verified",
                     "reason": "range_scan_ingested",

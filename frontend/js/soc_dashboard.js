@@ -1276,6 +1276,8 @@
         renderIncidentQueue();
         renderForensicDrawer();
         showSocView('detail');
+        const flowId = selectedLiveFlowId();
+        if (Number.isInteger(flowId) && flowId > 0) askLiveCopilot();
       });
       const copyButton = itemEl.querySelector('.copy-incident-id');
       if (copyButton) {
@@ -2025,10 +2027,12 @@
       });
     });
 
-    const copilotButton = document.getElementById('btnLiveCopilot');
-    if (copilotButton) {
-      copilotButton.addEventListener('click', () => { askLiveCopilot(); });
-    }
+    ['btnLiveCopilot', 'btnAskCopilot'].forEach((id) => {
+      const copilotButton = document.getElementById(id);
+      if (copilotButton) {
+        copilotButton.addEventListener('click', () => { askLiveCopilot(); });
+      }
+    });
     const noteButton = document.getElementById('btnSaveAnalystNote');
     if (noteButton) {
       noteButton.addEventListener('click', () => { saveLiveAnalystNote(); });
@@ -3062,7 +3066,8 @@
   }
 
   function copilotBadgeLabel(provider) {
-    return provider === 'gemini' ? 'Live Gemini 2.5 Flash' : 'Local Air-Gapped Engine';
+    if (provider === 'gemini') return 'Live Gemini 3.5 Flash (Grounded API Call)';
+    return 'Local Air-Gapped Engine';
   }
 
   async function askLiveCopilot() {

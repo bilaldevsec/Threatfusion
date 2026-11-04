@@ -9,8 +9,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-if [ -f "$ROOT/.env" ]; then
+# Source the lab key only when this script starts the console (--up).
+if [[ "${1:-}" == "--up" && "${THREATFUSION_IGNORE_DOTENV:-}" != "1" && -f "$ROOT/.env" ]]; then
   set -a
+  # shellcheck disable=SC1091
   . "$ROOT/.env"
   set +a
 fi
@@ -107,6 +109,7 @@ cmd_up() {
   [[ "$engine" == 1 ]] || die "Suricata did not log Engine started within 120s"
   nohup env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 \
     "$PYTHON" "${ROOT}/scripts/follow_suricata_eve.py" \
+    --console-url "http://${BIND_HOST}:${PORT}/api/v1/live/sensor" \
     >"$FOLLOWER_LOG" 2>&1 &
   echo $! >"$FOLLOWER_PIDFILE"
   curl -fsS -X POST "http://${BIND_HOST}:${PORT}/api/v1/live/purge-bridge-noise" \

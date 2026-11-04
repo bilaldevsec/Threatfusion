@@ -175,6 +175,38 @@ def test_flow_copilot_brief_names_only_stored_endpoints(
     bundle = _copilot_grounding_bundle(row, ["172.29.0.10"])
     assert verify_explanation_groundedness(narrative, bundle) is True
     assert set(IP_REGEX.findall(narrative)) == {"172.29.0.10"}
+    assert answer["grounded"] is True
+    assert answer["evidence_state"] == "unavailable"
+
+
+def test_copilot_heading_aliases_stay_on_retrieved_citations() -> None:
+    from threatfusion.api.live_soc_console import (
+        _copilot_citations_grounded,
+        _normalize_copilot_headings,
+    )
+
+    normalized = _normalize_copilot_headings(
+        "1. EXECUTIVE TRIAGE & MODEL AUTHORITY\n"
+        "2) CORRELATED TELEMETRY & EVIDENCE LOCKER\n"
+        "3 MITRE ATT&CK & CVE THREAT INTELLIGENCE\n"
+    )
+    assert "[1] EXECUTIVE TRIAGE & MODEL AUTHORITY" in normalized
+    assert "[2] CORRELATED TELEMETRY & EVIDENCE LOCKER" in normalized
+    assert "[3] MITRE ATT&CK & CVE THREAT INTELLIGENCE" in normalized
+    evidence = "Retrieved T1110 and CVE-2024-12345 for 172.29.0.10."
+    assert _copilot_citations_grounded(
+        "Technique T1110 maps to CVE-2024-12345.",
+        evidence,
+        [],
+    )
+    assert (
+        _copilot_citations_grounded(
+            "Technique T1499 maps to CVE-1999-0001.",
+            evidence,
+            [],
+        )
+        is False
+    )
 
 
 def test_copilot_refuses_containment_and_drift_reads_rows(tmp_path: Path) -> None:

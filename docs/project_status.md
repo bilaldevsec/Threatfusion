@@ -21,11 +21,16 @@ heatmap, and a journal/table timeline toggle. Hunt rows are labeled
 The heatmap counts frozen Random Forest verified Attack rows. Lab rows stay
 out unless `include_lab=true`, and they do not mark a cell verified.
 The Stage 5 copilot brief uses the selected stored flow. `scripts/run_live_product.sh`
-and `scripts/run_full_range_demo.sh` export `$ROOT/.env` before the server starts.
-Pytest does not source that file. A missing `GEMINI_API_KEY` keeps the offline
-five-section brief, and a live `gemini-2.5-flash` reply is shown only when it
-stays on the stored endpoints. `GeminiAdvisoryConfig` stays at 512 tokens and
-temperature 0.0.
+sources `$ROOT/.env` only when it starts the server. `--dry-run`, `--smoke`, and
+`THREATFUSION_IGNORE_DOTENV=1` skip that file. `scripts/run_full_range_demo.sh`
+sources it only for `--up`. Pytest does not source that file. A missing
+`GEMINI_API_KEY` keeps the offline five-section brief. A live `gemini-3.5-flash`
+reply is shown only when every address is a stored endpoint and every MITRE/CVE
+id was retrieved or already in the evidence block. `GeminiAdvisoryConfig` stays
+at 512 tokens and temperature 0.0. The live five-section request uses 2048 tokens,
+temperature 0.1, a 30 second timeout, and thinking budget 0. `evidence_state` is
+`verified` only when that brief is grounded and the flow has a verified SOAR
+receipt with a valid hash chain.
 TF-008, TF-009, TF-010, and TF-011 remain open.
 
 Repository evidence takes precedence over older phase summaries. In particular, the aggregate Phase 0
@@ -2002,7 +2007,7 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 
 ### Master-detail console, Gemini copilot, CVE corpus, and agy probe (2026-10-31)
 
-- The live console uses a 40/60 queue and investigation pane. `99.9889%` and `1.25s` stay labeled as the inspected January benchmark. A live MTTR is shown only from a stored n8n callback. `Muhammad Bilal` shows a verified `lab_operator` badge only when the enrolled certificate stamp is verified. `GEMINI_MODEL` selects the advisory model and the unset default remains `gemini-2.5-flash`. A missing key, a network failure, a groundedness miss, or the $5.00 ceiling returns the local corpus. Eight CVE playbooks were appended beside the original ten techniques. `scripts/run_adversarial_redteam_probe.py` runs five refusals on a temporary database. Screenshot 02 shows the local engine because no `GEMINI_API_KEY` was set. After the console title and the 18-document corpus count were aligned, `pytest -q` exited 0 and the range was stopped. TF-003, TF-012, TF-002, TF-008, TF-009, TF-010, and TF-011 stay **open**.
+- The live console uses a 40/60 queue and investigation pane. `99.9889%` and `1.25s` stay labeled as the inspected January benchmark. A live MTTR is shown only from a stored n8n callback. `Muhammad Bilal` shows a verified `lab_operator` badge only when the enrolled certificate stamp is verified. `GEMINI_MODEL` selects the advisory model and the unset default remains `gemini-3.5-flash`. A missing key, a network failure, a groundedness miss, or the $5.00 ceiling returns the local corpus. Eight CVE playbooks were appended beside the original ten techniques. `scripts/run_adversarial_redteam_probe.py` runs five refusals on a temporary database. Screenshot 02 shows the local engine because no `GEMINI_API_KEY` was set. After the console title and the 18-document corpus count were aligned, `pytest -q` exited 0 and the range was stopped. TF-003, TF-012, TF-002, TF-008, TF-009, TF-010, and TF-011 stay **open**.
 
 ### Bridge noise filter and guided demo panel (2026-10-31)
 
