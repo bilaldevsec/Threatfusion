@@ -719,14 +719,73 @@ def _citation_ids(text: str) -> tuple[set[str], set[str]]:
     return set(_MITRE_ID.findall(text)), {item.upper() for item in _CVE_ID.findall(text)}
 
 
+def _indexed_corpus_ids() -> tuple[set[str], set[str]]:
+    """Technique and CVE ids that already exist in the 18-document local corpus."""
+    techniques: set[str] = set()
+    cves: set[str] = set()
+    for doc in CANONICAL_MITRE_AND_PLAYBOOK_CORPUS:
+        blob = " ".join(
+            (
+                doc.doc_id,
+                doc.technique_id,
+                doc.technique_name,
+                doc.tactic,
+                doc.description,
+                doc.playbook_id,
+            )
+        )
+        found_techniques, found_cves = _citation_ids(blob)
+        techniques.add(doc.technique_id)
+        techniques.update(found_techniques)
+        cves.update(found_cves)
+        for year, number in _CVE_TOKEN.findall(blob):
+            cves.add(f"CVE-{year}-{number}")
+    return techniques, cves
+
+
+def _ensure_copilot_headings(text: str) -> str:
+    """Insert a missing canonical heading and keep the live prose."""
+    repaired = text.strip()
+    if not repaired:
+        return repaired
+    missing = [heading for heading in _COPILOT_HEADINGS if heading not in repaired]
+    if not missing:
+        return repaired
+    present = [heading for heading in _COPILOT_HEADINGS if heading in repaired]
+    if not present:
+        paragraphs = [part.strip() for part in re.split(r"\n\s*\n", repaired) if part.strip()]
+        if len(paragraphs) >= len(_COPILOT_HEADINGS):
+            chunks: list[str] = []
+            last = len(_COPILOT_HEADINGS) - 1
+            for index, heading in enumerate(_COPILOT_HEADINGS):
+                body = paragraphs[index] if index < last else "\n\n".join(paragraphs[index:])
+                chunks.append(f"{heading}\n{body}")
+            return "\n\n".join(chunks)
+        chunks = [f"{_COPILOT_HEADINGS[0]}\n{repaired}"]
+        chunks.extend(_COPILOT_HEADINGS[1:])
+        return "\n".join(chunks)
+    for heading in missing:
+        index = _COPILOT_HEADINGS.index(heading)
+        later = next((item for item in _COPILOT_HEADINGS[index + 1 :] if item in repaired), "")
+        if later:
+            repaired = repaired.replace(later, f"{heading}\n{later}", 1)
+        else:
+            repaired = f"{repaired}\n{heading}"
+    return repaired
+
+
 def _copilot_citations_grounded(
     text: str,
     evidence: str,
     hits: Sequence[Mapping[str, Any]],
+    flow_hits: Sequence[Mapping[str, Any]] = (),
 ) -> bool:
-    """Reject a MITRE or CVE id that is outside the retrieved hits and the evidence block."""
+    """Reject a MITRE or CVE id outside the flow hits, the indexed corpus, and the evidence."""
     allowed_techniques, allowed_cves = _citation_ids(evidence)
-    for hit in hits:
+    corpus_techniques, corpus_cves = _indexed_corpus_ids()
+    allowed_techniques.update(corpus_techniques)
+    allowed_cves.update(corpus_cves)
+    for hit in tuple(hits) + tuple(flow_hits):
         technique = str(hit.get("technique_id") or "").strip()
         if technique:
             allowed_techniques.add(technique)
@@ -864,7 +923,7 @@ def _copilot_grounding_bundle(
     )
 
 
-def _five_section_flow_brief(
+def _local_air_gapped_brief(
     stored: Mapping[str, Any],
     locker: Mapping[str, Any],
     memory: Sequence[Mapping[str, Any]],
@@ -872,7 +931,7 @@ def _five_section_flow_brief(
     cves: Sequence[str],
     allowed: Sequence[str],
 ) -> str:
-    """Offline brief. Every address in it is one of the stored endpoints."""
+    """Offline senior-analyst brief. Every address in it is one of the stored endpoints."""
     decision = str(stored.get("decision") or "unavailable")
     raw_probability = stored.get("rf_attack_probability")
     try:
@@ -881,6 +940,15 @@ def _five_section_flow_brief(
         )
     except (TypeError, ValueError):
         probability = "unavailable"
+    try:
+        above = float(raw_probability) >= 0.5 if raw_probability is not None else False
+    except (TypeError, ValueError):
+        above = False
+    threshold_clause = (
+        f"**{decision}** is above the `0.5000` threshold."
+        if above
+        else f"**{decision}** is below the `0.5000` threshold."
+    )
     digest = str(stored.get("model_sha256") or "")
     digest_text = digest if _SHA256_HEX.fullmatch(digest) else "unavailable"
     source = _safe_copilot_clause(str(stored.get("source_label") or "unavailable"), allowed)
@@ -891,13 +959,13 @@ def _five_section_flow_brief(
         scenario = match.group(1) if match else "none"
     src = str(stored.get("src_entity_id") or "").strip()
     dst = str(stored.get("dst_entity_id") or "").strip()
-    endpoint = ""
+    endpoint = "Stored endpoints were not recorded on this flow."
     if src in allowed and dst in allowed:
-        endpoint = f"Stored endpoints {src} to {dst}."
+        endpoint = f"Stored endpoints `{src}` to `{dst}`."
     elif src in allowed:
-        endpoint = f"Stored source {src}."
+        endpoint = f"Stored source `{src}`."
     elif dst in allowed:
-        endpoint = f"Stored destination {dst}."
+        endpoint = f"Stored destination `{dst}`."
     protocol = _safe_copilot_clause(str(stored.get("flow_protocol") or "unavailable"), allowed)
     service = _safe_copilot_clause(str(stored.get("service_or_port") or "unavailable"), allowed)
     queries = {
@@ -913,49 +981,76 @@ def _five_section_flow_brief(
         for row in memory
         if (clause := _safe_copilot_clause(str(row.get("expected_behavior_rule") or ""), allowed))
     ]
-    technique_text = ", ".join(techniques) if techniques else "none retrieved"
-    cve_text = ", ".join(cves) if cves else "none retrieved"
+    technique_text = ", ".join(f"`{item}`" for item in techniques) if techniques else "`none`"
+    cve_text = ", ".join(f"`{item}`" for item in cves) if cves else "`none`"
+    memory_text = (
+        "Context memory rules: " + " ".join(rules) + "."
+        if rules
+        else "No stored context memory rule names an address outside this flow."
+    )
     if decision == "Attack":
         containment = (
-            "Containment is recommended and remains unauthorized until a human approves "
-            "the SHA-256 hash-chained playbook, n8n webhook dispatch, victim firewall "
-            "isolation, and rollback verification."
+            "**Containment stays unauthorized.** A human must approve the SHA-256 hash-chained "
+            "playbook before any n8n webhook, victim firewall isolation, or rollback check. "
+            "`execution_authorized` remains false. The frozen forest recommendation does not "
+            "dispatch a response by itself."
         )
     else:
-        containment = f"Containment is blocked. The frozen Random Forest decision is {decision}."
+        containment = (
+            f"**Containment is blocked.** The frozen Random Forest decision is `{decision}`. "
+            "Do not isolate an endpoint while the score stays below the attack threshold. "
+            "`execution_authorized` remains false until a later stored Attack row is approved."
+        )
     sections = (
         f"{_COPILOT_HEADINGS[0]}\n"
-        f"Frozen Random Forest decision {decision}. Attack probability {probability}. "
-        f"Model digest {digest_text}. production_fusion_enabled is false. "
-        "The secondary v2 autoencoder does not decide this alert. "
-        f"Source label {source or 'unavailable'}."
-        + (f" Scenario label {scenario}." if scenario else "")
-        + (f" Case title {title}." if title else ""),
+        f"The frozen Random Forest is the only alert authority on this stored flow. "
+        f"{threshold_clause} Attack probability is `{probability}`. "
+        f"The scoring-time digest is `{digest_text}`. "
+        "**production_fusion_enabled is false**, so the secondary v2 autoencoder does not "
+        "decide this alert. "
+        f"Source label `{source or 'unavailable'}`."
+        + (f" Scenario label `{scenario}`." if scenario else "")
+        + (f" Case title `{title}`." if title else ""),
         f"{_COPILOT_HEADINGS[1]}\n"
-        "Dual-window correlation uses a 30.0s burst and a 600.0s campaign. "
-        f"{endpoint} Protocol {protocol or 'unavailable'}. Service or port {service or 'unavailable'}. "
-        f"entity_historical_frequency count {frequency.get('entity_count', 0)}. "
-        f"destination_port_protocol_baseline flow_count {baseline.get('flow_count', 0)}. "
-        "correlated_campaign_soar_ledger "
-        f"stitched_flow_count {campaign.get('stitched_flow_count', 0)} "
-        f"soar_receipt_status {campaign.get('soar_receipt_status', 'unavailable')}. "
-        + (
-            "Context memory rules: " + " ".join(rules) + "."
-            if rules
-            else "No stored context memory rule for these endpoints."
-        ),
+        "Dual-window correlation uses a `30.0s` burst and a `600.0s` campaign. "
+        f"{endpoint} Protocol `{protocol or 'unavailable'}`. "
+        f"Service or port `{service or 'unavailable'}`. "
+        f"**entity_historical_frequency** count `{frequency.get('entity_count', 0)}`. "
+        "The port and protocol baseline counts prior flows to this service and reports "
+        f"`destination_port_protocol_baseline` flow_count `{baseline.get('flow_count', 0)}`. "
+        "The campaign ledger records "
+        f"`stitched_flow_count` `{campaign.get('stitched_flow_count', 0)}` and "
+        f"`soar_receipt_status` `{campaign.get('soar_receipt_status', 'unavailable')}`. "
+        f"{memory_text}",
         f"{_COPILOT_HEADINGS[2]}\n"
-        f"Retrieved MITRE ATT&CK technique IDs: {technique_text}. "
-        f"Retrieved CVE IDs: {cve_text}.",
+        "Only indexed corpus techniques and CVEs already retrieved for this flow may be cited. "
+        f"**Retrieved MITRE ATT&CK technique IDs:** {technique_text}. "
+        f"**Retrieved CVE IDs:** {cve_text}. "
+        "An identifier that is not in the local corpus, the flow hit, or this evidence block "
+        "is a hallucination and must not be treated as a finding.",
         f"{_COPILOT_HEADINGS[3]}\n"
-        "Verify Context Memory for the stored endpoints. Inspect the 5-node Attack Topology. "
-        "Record a grounded verdict on this flow.",
+        "Open the stored endpoints in Context Memory and confirm the expected behavior rule. "
+        "Inspect the 5-node Attack Topology and the Evidence Locker frequency and baseline. "
+        "Record a grounded analyst verdict that names only the stored source and destination. "
+        "Do not add an address that is absent from this flow.",
         f"{_COPILOT_HEADINGS[4]}\n{containment}",
     )
-    brief = "\n".join(sections)
+    brief = "\n\n".join(sections)
     if not _text_uses_only_entities(brief, allowed):
         return ""
     return brief
+
+
+def _five_section_flow_brief(
+    stored: Mapping[str, Any],
+    locker: Mapping[str, Any],
+    memory: Sequence[Mapping[str, Any]],
+    techniques: Sequence[str],
+    cves: Sequence[str],
+    allowed: Sequence[str],
+) -> str:
+    """Offline brief. Every address in it is one of the stored endpoints."""
+    return _local_air_gapped_brief(stored, locker, memory, techniques, cves, allowed)
 
 
 def answer_mitre_copilot(
@@ -1031,18 +1126,21 @@ def answer_mitre_copilot(
         local_narrative = _five_section_flow_brief(
             stored, locker, memory, techniques, cves, allowed
         )
+        _attach_chroma_rag_hits([stored], db_path)
         bundle = _copilot_grounding_bundle(stored, allowed)
         if local_narrative:
             from threatfusion.advisory.explanation_engine import verify_explanation_groundedness
 
             if not verify_explanation_groundedness(local_narrative, bundle):
                 local_narrative = ""
+    flow_hits = stored.get("chroma_rag_hits") if isinstance(stored, Mapping) else None
     narrative = _grounded_gemini_narrative(
         asked,
         hit_rows,
         evidence_text=local_narrative or None,
         bundle=bundle,
         local_narrative=local_narrative,
+        flow_hits=flow_hits if isinstance(flow_hits, list) else (),
     )
     provider = str(narrative.get("provider") or "local_air_gapped")
     narrative_text = str(narrative.get("narrative") or "")
@@ -1128,6 +1226,7 @@ def _grounded_gemini_narrative(
     evidence_text: str | None = None,
     bundle: Any | None = None,
     local_narrative: str = "",
+    flow_hits: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Return a Gemini brief only when it names no address outside the evidence."""
     from threatfusion.advisory.explanation_engine import (
@@ -1165,7 +1264,7 @@ def _grounded_gemini_narrative(
         )
     except (GeminiAdvisoryUnavailableError, OSError, TimeoutError):
         return local
-    text = _normalize_copilot_headings(text)
+    text = _ensure_copilot_headings(_normalize_copilot_headings(text))
     check_bundle = bundle
     if check_bundle is None:
         check_bundle = AdvisoryEvidenceBundle(
@@ -1178,7 +1277,7 @@ def _grounded_gemini_narrative(
         )
     if not verify_explanation_groundedness(text, check_bundle):
         return local
-    if not _copilot_citations_grounded(text, evidence, hits):
+    if not _copilot_citations_grounded(text, evidence, hits, flow_hits):
         return local
     if evidence_text and not all(heading in text for heading in _COPILOT_HEADINGS):
         return local
@@ -1894,15 +1993,29 @@ _ATTACK_SHAPED_UDP: dict[str, float] = {
     "protocol_other": 0,
 }
 
+
+def _lab_scenario_provenance(port: int, protocol: str) -> dict[str, Any]:
+    """RFC1918 lab pair used by the four labeled scenario replays."""
+    return {
+        "entity_namespace_id": "lab:edge-01",
+        "src_entity_id": "10.0.0.4",
+        "dst_entity_id": "10.0.0.5",
+        "protocol": protocol,
+        "service_or_port": str(port),
+        "clock_synchronized": True,
+    }
+
+
 # The technique id is the scenario label. The frozen forest does not emit it.
 LIVE_SCENARIO_REPLAYS: tuple[dict[str, Any], ...] = (
     {
         "scenario_id": "web_exploit",
         "title": "Web exploit replay",
         "scenario_label": "T1190",
-        "dst_port": 80,
+        "dst_port": 443,
         "protocol_tcp": 0,
         "protocol_udp": 1,
+        "provenance": _lab_scenario_provenance(443, "udp"),
     },
     {
         "scenario_id": "ssh_brute",
@@ -1911,6 +2024,7 @@ LIVE_SCENARIO_REPLAYS: tuple[dict[str, Any], ...] = (
         "dst_port": 22,
         "protocol_tcp": 0,
         "protocol_udp": 1,
+        "provenance": _lab_scenario_provenance(22, "udp"),
     },
     {
         "scenario_id": "internal_recon",
@@ -1920,22 +2034,16 @@ LIVE_SCENARIO_REPLAYS: tuple[dict[str, Any], ...] = (
         "protocol_tcp": 0,
         "protocol_udp": 1,
         "guard_value": "10.0.0.4",
-        "provenance": {
-            "entity_namespace_id": "lab:edge-01",
-            "src_entity_id": "10.0.0.4",
-            "dst_entity_id": "10.0.0.5",
-            "protocol": "udp",
-            "service_or_port": "445",
-            "clock_synchronized": True,
-        },
+        "provenance": _lab_scenario_provenance(445, "udp"),
     },
     {
         "scenario_id": "benign_false_alarm",
         "title": "Benign false alarm",
         "scenario_label": None,
-        "dst_port": 80,
+        "dst_port": 8080,
         "protocol_tcp": 1,
         "protocol_udp": 0,
+        "provenance": _lab_scenario_provenance(8080, "tcp"),
     },
 )
 
@@ -2018,6 +2126,11 @@ def replay_live_scenarios(
         row["scenario_id"] = spec["scenario_id"]
         row["scenario_label"] = label
         row["case_title"] = title
+        provenance = spec.get("provenance")
+        if isinstance(provenance, Mapping):
+            row["src_entity_id"] = provenance.get("src_entity_id")
+            row["dst_entity_id"] = provenance.get("dst_entity_id")
+            row["service_or_port"] = provenance.get("service_or_port")
         guard_value = spec.get("guard_value")
         if isinstance(guard_value, str):
             status, guard = private_ip_guard_response(guard_value)

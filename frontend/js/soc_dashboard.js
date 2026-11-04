@@ -1234,14 +1234,12 @@
       ? timelineTableHtml(groups)
       : timelineJournalHtml(groups);
     if (!reportEvents.length) {
-      const line = events.map(event => String(event.summary || event.kind || '')).join('\n');
-      const live = document.getElementById('liveTimeline');
-      if (live) {
-        live.textContent = line;
-        live.setAttribute('data-evidence-state', 'unavailable');
+      const drawer = document.getElementById('liveTimelineDrawer');
+      if (drawer) {
+        drawer.textContent = events.length + ' stage events recorded for this flow';
+        drawer.setAttribute('data-correlated-flow-count', String(events.length));
+        drawer.setAttribute('data-evidence-state', 'unavailable');
       }
-      const attack = document.getElementById('attackTimelineEvents');
-      if (attack) attack.textContent = line;
     }
   }
 

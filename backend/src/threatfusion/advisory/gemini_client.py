@@ -109,6 +109,24 @@ class GeminiAdvisoryUnavailableError(RuntimeError):
     """Raised when Gemini Advisory LLM service is unavailable, misconfigured, or unparseable."""
 
 
+_COPILOT_FALLBACK_MODELS = (
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+    "gemini-2.5-flash",
+)
+
+
+def _copilot_retryable_failure(exc: BaseException) -> bool:
+    """HTTP 503, HTTP 429, and timeouts may be retried on the next model."""
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in {429, 503}
+    return isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
+
+
 def build_grounded_gemini_prompt(bundle: AdvisoryEvidenceBundle) -> str:
     """Build a strictly grounded prompt for Gemini advisory debrief generation.
 
@@ -417,25 +435,33 @@ class GeminiAdvisoryCallable:
                 "maxOutputTokens": self.config.max_output_tokens,
             },
         }
-        endpoint_url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self.config.model_name}:generateContent"
-        )
-        if self._transport_callable is not None:
-            response_dict = self._transport_callable(endpoint_url, payload)
-        else:
-            request = urllib.request.Request(
-                endpoint_url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "x-goog-api-key": api_key,
-                    "Content-Type": "application/json",
-                },
-                method="POST",
+        models: list[str] = []
+        for model_name in (self.config.model_name, *_COPILOT_FALLBACK_MODELS):
+            if model_name and model_name not in models:
+                models.append(model_name)
+        last_error: BaseException | None = None
+        for model_name in models:
+            endpoint_url = (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{model_name}:generateContent"
             )
             try:
-                with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as resp:
-                    response_dict = json.loads(resp.read().decode("utf-8"))
+                if self._transport_callable is not None:
+                    response_dict = self._transport_callable(endpoint_url, payload)
+                else:
+                    request = urllib.request.Request(
+                        endpoint_url,
+                        data=json.dumps(payload).encode("utf-8"),
+                        headers={
+                            "x-goog-api-key": api_key,
+                            "Content-Type": "application/json",
+                        },
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(
+                        request, timeout=self.config.timeout_seconds
+                    ) as resp:
+                        response_dict = json.loads(resp.read().decode("utf-8"))
             except (
                 urllib.error.HTTPError,
                 urllib.error.URLError,
@@ -443,19 +469,27 @@ class GeminiAdvisoryCallable:
                 OSError,
                 json.JSONDecodeError,
             ) as exc:
+                if _copilot_retryable_failure(exc):
+                    last_error = exc
+                    continue
                 raise GeminiAdvisoryUnavailableError(
                     f"Gemini copilot request failed: {exc}"
                 ) from exc
-        if not isinstance(response_dict, dict):
-            raise GeminiAdvisoryUnavailableError("Gemini copilot response was not an object.")
-        candidates = response_dict.get("candidates")
-        if not isinstance(candidates, list) or not candidates:
-            raise GeminiAdvisoryUnavailableError("Gemini copilot response contains no candidates.")
-        content = candidates[0].get("content") if isinstance(candidates[0], dict) else None
-        parts = content.get("parts") if isinstance(content, dict) else None
-        if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict):
-            raise GeminiAdvisoryUnavailableError("Gemini copilot response has no text.")
-        text = str(parts[0].get("text") or "").strip()
-        if not text:
-            raise GeminiAdvisoryUnavailableError("Gemini copilot response text is empty.")
-        return text
+            if not isinstance(response_dict, dict):
+                raise GeminiAdvisoryUnavailableError("Gemini copilot response was not an object.")
+            candidates = response_dict.get("candidates")
+            if not isinstance(candidates, list) or not candidates:
+                raise GeminiAdvisoryUnavailableError(
+                    "Gemini copilot response contains no candidates."
+                )
+            content = candidates[0].get("content") if isinstance(candidates[0], dict) else None
+            parts = content.get("parts") if isinstance(content, dict) else None
+            if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict):
+                raise GeminiAdvisoryUnavailableError("Gemini copilot response has no text.")
+            text = str(parts[0].get("text") or "").strip()
+            if not text:
+                raise GeminiAdvisoryUnavailableError("Gemini copilot response text is empty.")
+            return text
+        raise GeminiAdvisoryUnavailableError(
+            f"Gemini copilot request failed: {last_error}"
+        ) from last_error

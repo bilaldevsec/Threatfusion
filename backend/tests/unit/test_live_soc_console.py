@@ -159,6 +159,8 @@ def test_flow_copilot_brief_names_only_stored_endpoints(
     ):
         assert heading in narrative
     assert "172.29.0.10" in narrative
+    assert "**" in narrative
+    assert "`172.29.0.10`" in narrative
     assert "not-recorded" not in narrative
     assert "198.51.100.99" not in narrative
     from threatfusion.advisory.explanation_engine import (
@@ -205,6 +207,22 @@ def test_copilot_heading_aliases_stay_on_retrieved_citations() -> None:
             evidence,
             [],
         )
+        is False
+    )
+    assert _copilot_citations_grounded("Retrieved technique T1071.001.", "Stored flow only.", [])
+    assert (
+        _copilot_citations_grounded(
+            "Retrieved technique T1071.001.",
+            "Stored flow only.",
+            [],
+            flow_hits=[
+                {"technique_id": "T1071.001", "playbook_id": "pb-c2-web-traffic-isolation-v1"}
+            ],
+        )
+        is True
+    )
+    assert (
+        _copilot_citations_grounded("Hallucinated technique T9999.", "Stored flow only.", [])
         is False
     )
 
@@ -793,6 +811,13 @@ def test_four_scenario_replay_uses_the_frozen_forest(tmp_path: Path) -> None:
     assert by_id["internal_recon"]["external_lookup_performed"] is False
     assert by_id["benign_false_alarm"]["decision"] == "Benign"
     assert by_id["benign_false_alarm"]["scenario_label"] is None
+    assert by_id["web_exploit"]["src_entity_id"] == "10.0.0.4"
+    assert by_id["web_exploit"]["dst_entity_id"] == "10.0.0.5"
+    assert by_id["web_exploit"]["service_or_port"] == "443"
+    assert by_id["ssh_brute"]["service_or_port"] == "22"
+    assert by_id["internal_recon"]["service_or_port"] == "445"
+    assert by_id["benign_false_alarm"]["service_or_port"] == "8080"
+    assert by_id["benign_false_alarm"]["src_entity_id"] == "10.0.0.4"
     html = (REPO_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
     script = (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")
     assert 'id="btnReplayScenarios"' in html

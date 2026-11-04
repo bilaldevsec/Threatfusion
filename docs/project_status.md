@@ -26,9 +26,14 @@ sources `$ROOT/.env` only when it starts the server. `--dry-run`, `--smoke`, and
 sources it only for `--up`, then posts the four labeled scenarios after the
 console and follower are up. Pytest does not source that file. A missing
 `GEMINI_API_KEY` keeps the offline five-section brief. A live `gemini-3.5-flash`
-reply is asked for 2-4 sentences and bullets under each canonical heading, and
-it is shown only when every address is a stored endpoint and every MITRE/CVE
-id was retrieved or already in the evidence block. The console escapes that
+reply is asked for 2-4 sentences and bullets under each canonical heading.
+HTTP 503, HTTP 429, and timeouts retry once across `gemini-3.5-flash`,
+`gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, and
+`gemini-2.5-flash`. A missing canonical heading is inserted around the live
+prose. Indexed corpus technique IDs, including `T1071.001`, stay allowed.
+`T9999` and any IPv4 outside the stored endpoints, including `198.51.100.99`
+and `203.0.113.99`, still reject the live reply. The reply is shown only when
+every address is a stored endpoint. The console escapes that
 narrative before turning heading lines, bold markers, and code markers into
 HTML. `GeminiAdvisoryConfig` stays at 512 tokens and temperature 0.0. The live
 five-section request uses 2048 tokens, temperature 0.1, and a 30 second timeout.
