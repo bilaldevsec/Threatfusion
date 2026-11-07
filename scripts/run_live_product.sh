@@ -23,7 +23,7 @@ elif [[ -x "${ROOT}/threatfusion-venv/bin/python" ]]; then
 elif [[ -x "${ROOT}/.venv/bin/python" ]]; then
   PYTHON="${ROOT}/.venv/bin/python"
 else
-  PYTHON="${ROOT}/threatfusion-venv/bin/python"
+  PYTHON="$(command -v python3 || command -v python)"
 fi
 SERVER="${ROOT}/scripts/run_misp_and_callback_contract_server.py"
 CHILD_PID=""

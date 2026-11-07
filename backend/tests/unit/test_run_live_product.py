@@ -40,6 +40,7 @@ def _env(tmp_path: Path) -> dict[str, str]:
     env.pop("THREATFUSION_LIVE_CONSOLE_DB", None)
     env["TMPDIR"] = str(tmp_path)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["THREATFUSION_PYTHON"] = str(PYTHON)
     return env
 
 

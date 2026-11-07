@@ -41,7 +41,13 @@ if [[ "${1:-}" == "--up" ]]; then
 fi
 
 PORT="${PORT:-8766}"
-PYTHON="${ROOT}/threatfusion-venv/bin/python"
+if [[ -n "${THREATFUSION_PYTHON:-}" ]]; then
+  PYTHON="${THREATFUSION_PYTHON}"
+elif [[ -x "${ROOT}/threatfusion-venv/bin/python" ]]; then
+  PYTHON="${ROOT}/threatfusion-venv/bin/python"
+else
+  PYTHON="$(command -v python3 || command -v python)"
+fi
 SERVER="${ROOT}/scripts/run_misp_and_callback_contract_server.py"
 DEMO_DIR="${TMPDIR:-/tmp}/threatfusion-range-demo"
 CONSOLE_PIDFILE="${DEMO_DIR}/console.pid"
