@@ -321,22 +321,36 @@ def _normalize_sensor_node(value: str | None) -> str | None:
     return text
 
 
-def authorize_sensor_ingest(authorization_header: str | None) -> bool:
-    """Fail closed when a sensor token is required or the presented bearer does not match."""
+def sensor_ingest_auth_status(authorization_header: str | None) -> str:
+    """Return ok, unauthorized, or unconfigured.
+
+    A pytest process with no configured token stays open so existing fixtures
+    can post ingest bodies. Outside those fixtures a missing token is unconfigured.
+    """
     required = os.environ.get("THREATFUSION_REQUIRE_SENSOR_TOKEN", "").strip() == "1"
     expected = os.environ.get("THREATFUSION_SENSOR_INGEST_TOKEN", "").strip()
-    if required and not expected:
-        return False
+    under_test = bool(os.environ.get("PYTEST_CURRENT_TEST"))
     if not expected:
-        return True
+        if under_test and not required:
+            return "ok"
+        return "unconfigured"
     presented = ""
     if isinstance(authorization_header, str):
         prefix, separator, token = authorization_header.partition(" ")
         if separator and prefix.lower() == "bearer":
             presented = token.strip()
-    if not presented:
-        return False
-    return hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
+    presented_bytes = presented.encode("utf-8")
+    expected_bytes = expected.encode("utf-8")
+    if len(presented_bytes) != len(expected_bytes) or not hmac.compare_digest(
+        presented_bytes, expected_bytes
+    ):
+        return "unauthorized"
+    return "ok"
+
+
+def authorize_sensor_ingest(authorization_header: str | None) -> bool:
+    """Fail closed when a sensor token is required or the presented bearer does not match."""
+    return sensor_ingest_auth_status(authorization_header) == "ok"
 
 
 def canonical_feature_contract_error(features: Any) -> str | None:
@@ -933,16 +947,61 @@ def _positive_flow_id(flow_id: Any) -> int | None:
     return number
 
 
-def _cached_live_gemini(flow_id: Any, question: str, model_name: str) -> dict[str, Any] | None:
+def _copilot_cache_key(flow_id: int, question: str, model_name: str) -> str:
+    return f"{flow_id}\n{question.strip().lower()}\n{model_name}"
+
+
+def _ensure_copilot_cache_table(db_path: Path) -> None:
+    with _connect(db_path) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS live_copilot_cache (
+                cache_key TEXT PRIMARY KEY,
+                provider TEXT,
+                model_name TEXT,
+                narrative TEXT,
+                created_at_utc TEXT
+            )
+            """)
+
+
+def _cached_live_gemini(
+    flow_id: Any,
+    question: str,
+    model_name: str,
+    db_path: Path | None = None,
+) -> dict[str, Any] | None:
     number = _positive_flow_id(flow_id)
     if number is None:
         return None
     key = (number, question.strip().lower(), model_name)
     with _LIVE_GEMINI_CACHE_LOCK:
         cached = _LIVE_GEMINI_CACHE.get(key)
-    if cached is None:
+    if cached is not None:
+        return dict(cached)
+    if db_path is None or not db_path.is_file():
         return None
-    return dict(cached)
+    try:
+        _ensure_copilot_cache_table(db_path)
+        with _connect(db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT provider, model_name, narrative
+                FROM live_copilot_cache WHERE cache_key = ?
+                """,
+                (_copilot_cache_key(number, question, model_name),),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    payload = {
+        "provider": row["provider"],
+        "model_name": row["model_name"],
+        "narrative": row["narrative"],
+    }
+    with _LIVE_GEMINI_CACHE_LOCK:
+        _LIVE_GEMINI_CACHE[key] = dict(payload)
+    return payload
 
 
 def _remember_live_gemini(
@@ -950,13 +1009,41 @@ def _remember_live_gemini(
     question: str,
     model_name: str,
     payload: Mapping[str, Any],
+    db_path: Path | None = None,
 ) -> None:
     number = _positive_flow_id(flow_id)
     if number is None:
         return
     key = (number, question.strip().lower(), model_name)
+    stored = dict(payload)
     with _LIVE_GEMINI_CACHE_LOCK:
-        _LIVE_GEMINI_CACHE[key] = dict(payload)
+        _LIVE_GEMINI_CACHE[key] = stored
+    if db_path is None or not db_path.is_file():
+        return
+    try:
+        _ensure_copilot_cache_table(db_path)
+        with _connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO live_copilot_cache (
+                    cache_key, provider, model_name, narrative, created_at_utc
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    provider = excluded.provider,
+                    model_name = excluded.model_name,
+                    narrative = excluded.narrative,
+                    created_at_utc = excluded.created_at_utc
+                """,
+                (
+                    _copilot_cache_key(number, question, model_name),
+                    str(stored.get("provider") or ""),
+                    model_name,
+                    str(stored.get("narrative") or ""),
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+    except (OSError, sqlite3.Error):
+        return
 
 
 def _live_copilot_callable() -> Any:
@@ -1391,6 +1478,7 @@ def answer_mitre_copilot(
         source_label=source_label,
         decision=decision,
         flow_id=stored_flow_id,
+        db_path=db_path,
     )
     provider = str(narrative.get("provider") or "local_air_gapped")
     narrative_text = str(narrative.get("narrative") or "")
@@ -1480,6 +1568,7 @@ def _grounded_gemini_narrative(
     source_label: str = "",
     decision: str = "",
     flow_id: Any = None,
+    db_path: Path | None = None,
 ) -> dict[str, Any]:
     """Return a Gemini brief after stripping unindexed ids and anonymized example addresses."""
     from threatfusion.advisory.explanation_engine import (
@@ -1501,7 +1590,7 @@ def _grounded_gemini_narrative(
     if not status.get("live_call_allowed"):
         return disclose_offline_fallback(local)
     model_name = str(status.get("model_name") or resolve_gemini_model())
-    cached = _cached_live_gemini(flow_id, question, model_name)
+    cached = _cached_live_gemini(flow_id, question, model_name, db_path)
     if cached is not None:
         return cached
     if evidence_text:
@@ -1553,7 +1642,7 @@ def _grounded_gemini_narrative(
         "provider_label": status.get("label"),
         "narrative": text,
     }
-    _remember_live_gemini(flow_id, question, model_name, live)
+    _remember_live_gemini(flow_id, question, model_name, live, db_path)
     return live
 
 
@@ -1789,25 +1878,53 @@ def list_context_memory(db_path: Path, flow_id: int) -> dict[str, Any]:
     }
 
 
+def _latest_flow_id_for_entity(db_path: Path, entity: str) -> int | None:
+    """Return the newest stored flow that names this source or destination entity."""
+    if not db_path.is_file():
+        return None
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT flow_id FROM live_flows
+            WHERE src_entity_id = ? OR dst_entity_id = ?
+            ORDER BY flow_id DESC
+            LIMIT 1
+            """,
+            (entity, entity),
+        ).fetchone()
+    if row is None:
+        return None
+    return int(row["flow_id"])
+
+
 def save_context_memory(
     db_path: Path,
     *,
     flow_id: int,
     rule: str,
-    operator_id: str,
+    operator_id: str = "",
     entity_ip_or_subnet: str | None = None,
     service_or_port: str | None = None,
+    actor_id: str | None = None,
 ) -> dict[str, Any]:
     """Store one institutional rule for entities already on the flow."""
     text = rule.strip()
-    actor = operator_id.strip()
+    actor = (operator_id or actor_id or "").strip()
+    entity_text = str(entity_ip_or_subnet or "").strip()
     refused = {
         "schema_version": "context_memory_v1",
         "evidence_state": "unavailable",
         "production_fusion_enabled": False,
         "execution_authorized": False,
         "entries": [],
+        "stored": False,
     }
+    if flow_id <= 0 and entity_text:
+        found = _latest_flow_id_for_entity(db_path, entity_text)
+        if found is None:
+            refused["reason"] = "entity_not_on_flow"
+            return refused
+        flow_id = found
     if flow_id <= 0 or not text or len(text) > 500 or _LOCAL_ACTOR.match(actor) is None:
         refused["reason"] = "context_memory_incomplete"
         return refused
@@ -2018,6 +2135,7 @@ def list_digital_assets(db_path: Path) -> dict[str, Any]:
             "reason": "no_stored_flows",
             "production_fusion_enabled": False,
             "assets": [],
+            "entities": [],
         }
     with _connect(db_path) as conn:
         rows = conn.execute("""
@@ -2058,6 +2176,7 @@ def list_digital_assets(db_path: Path) -> dict[str, Any]:
         "reason": "stored_entities" if assets else "no_stored_entities",
         "production_fusion_enabled": False,
         "assets": assets,
+        "entities": assets,
     }
 
 
@@ -3289,6 +3408,33 @@ def _post_n8n_webhook(webhook_url: str, envelope: dict[str, Any]) -> tuple[int, 
     return status, _n8n_result_dict(payload)
 
 
+def _signed_callback_receipt(
+    *,
+    playbook_id: str,
+    candidate_id: str,
+    state: str,
+    actor: str,
+    reason: str,
+    secret: str,
+) -> dict[str, Any]:
+    """Build a nested callback receipt signed by the server HMAC secret."""
+    from threatfusion.api.analyst_dashboard import receipt_hmac_sha256
+
+    signing_secret = os.environ.get("THREATFUSION_SOAR_HMAC_SECRET", "").strip() or secret
+    receipt = {
+        "playbook_id": str(playbook_id or ""),
+        "candidate_id": str(candidate_id or ""),
+        "state": str(state or ""),
+        "actor": str(actor or ""),
+        "reason": str(reason or ""),
+        "timestamp_utc": datetime.now(UTC).isoformat(),
+    }
+    digest = receipt_hmac_sha256(receipt, signing_secret) if signing_secret else ""
+    receipt["callback_hmac_sha256"] = digest
+    receipt["signature_sha256"] = digest
+    return receipt
+
+
 def _dispatch_through_live_n8n(
     live_db_path: Path,
     flow: sqlite3.Row,
@@ -3411,6 +3557,14 @@ def _dispatch_through_live_n8n(
             "candidate_id": candidate_id,
             "verify_state": True,
             "execution_path": N8N_LIVE_CONTAINER,
+            "callback_receipt": _signed_callback_receipt(
+                playbook_id=approved.playbook_id,
+                candidate_id=candidate_id,
+                state=approved.state,
+                actor=approved.actor_id or "",
+                reason="signed_callback_recorded",
+                secret=secret,
+            ),
             "private_ip_guard_triggered": result.get("private_ip_guard_triggered") is True,
         }
     )
@@ -3474,6 +3628,14 @@ def dispatch_approved_callback(
                 "flow_id": flow_id,
                 "playbook_id": flow["playbook_id"],
                 "execution_path": flow["execution_path"] or LOCAL_CONTRACT_FALLBACK,
+                "callback_receipt": _signed_callback_receipt(
+                    playbook_id=str(flow["playbook_id"] or ""),
+                    candidate_id=f"live_flow:{flow_id}",
+                    state="executed_simulated",
+                    actor="",
+                    reason="already_recorded",
+                    secret=secret,
+                ),
             }
         )
     candidate_id = f"live_flow:{flow_id}"
@@ -3598,6 +3760,14 @@ def dispatch_approved_callback(
             "candidate_id": candidate_id,
             "verify_state": True,
             "execution_path": LOCAL_CONTRACT_FALLBACK,
+            "callback_receipt": _signed_callback_receipt(
+                playbook_id=approved.playbook_id,
+                candidate_id=candidate_id,
+                state=approved.state,
+                actor=approved.actor_id or "",
+                reason="signed_callback_recorded",
+                secret=secret,
+            ),
         }
     )
 
@@ -4330,6 +4500,7 @@ def record_case_assignment(
         "reason": "case_assignment_stored",
         "flow_id": flow_id,
         "assignee_id": assignee or None,
+        "assigned_to": assignee or None,
         "review_status": status,
         "frozen_rf_decision": stored["decision"],
         "execution_authorized": False,

@@ -48,8 +48,17 @@ CONSOLE_PIDFILE="${DEMO_DIR}/console.pid"
 FOLLOWER_PIDFILE="${DEMO_DIR}/follower.pid"
 FOLLOWER_LOG="${DEMO_DIR}/follower.log"
 
-export THREATFUSION_SOAR_HMAC_SECRET="${THREATFUSION_SOAR_HMAC_SECRET:-lab-only-not-a-production-secret}"
-export THREATFUSION_MISP_API_KEY="${THREATFUSION_MISP_API_KEY:-lab-only-misp-key-16xx}"
+if [[ "${1:-}" != "--dry-run" ]]; then
+  if [[ -z "${THREATFUSION_SOAR_HMAC_SECRET:-}" ]]; then
+    export THREATFUSION_SOAR_HMAC_SECRET="$("$PYTHON" -c 'import secrets; print(secrets.token_hex(32), end="")')"
+  fi
+  if [[ -z "${THREATFUSION_MISP_API_KEY:-}" ]]; then
+    export THREATFUSION_MISP_API_KEY="$("$PYTHON" -c 'import secrets; print(secrets.token_hex(32), end="")')"
+  fi
+  if [[ -z "${THREATFUSION_SENSOR_INGEST_TOKEN:-}" ]]; then
+    export THREATFUSION_SENSOR_INGEST_TOKEN="$("$PYTHON" -c 'import secrets; print(secrets.token_hex(32), end="")')"
+  fi
+fi
 export THREATFUSION_N8N_WEBHOOK_URL="${THREATFUSION_N8N_WEBHOOK_URL:-http://127.0.0.1:5678/webhook/threatfusion-live-console}"
 export THREATFUSION_LIVE_CONSOLE_DB="${DEMO_DIR}/threatfusion-live-console.sqlite3"
 export THREATFUSION_SOAR_LEDGER_DB_PATH="${DEMO_DIR}/threatfusion-live-soar.sqlite3"

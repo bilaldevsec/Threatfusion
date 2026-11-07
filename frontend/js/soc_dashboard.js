@@ -432,13 +432,21 @@
           const t3El = document.getElementById('tier3Count');
           const t4El = document.getElementById('tier4Count');
 
-          if (mttiEl && data.telemetry_source === 'live_measured' && data.mtti_seconds_mean !== undefined) {
+          const measured = data.telemetry_source === 'live_measured';
+          if (mttrEl && !measured) {
+            mttrEl.textContent = '0';
+            mttrEl.dataset.kpiBasis = 'reference_benchmark_not_measured';
+          }
+          if (mttiEl && measured && data.mtti_seconds_mean !== undefined) {
             mttiEl.textContent = `${Number(data.mtti_seconds_mean).toFixed(2)}s`;
           }
-          if (mttrEl && data.telemetry_source === 'live_measured' && data.mttr_seconds_mean !== undefined) {
-            mttrEl.textContent = `${Number(data.mttr_seconds_mean).toFixed(3)}s`;
+          if (mttrEl && measured) {
+            const liveMttr = data.live_measured_mttr_seconds;
+            mttrEl.textContent = liveMttr === null || liveMttr === undefined
+              ? '0'
+              : `${Number(liveMttr).toFixed(3)}s`;
           }
-          if (data.noise_reduction_funnel) {
+          if (measured && data.noise_reduction_funnel) {
             const fn = data.noise_reduction_funnel;
             if (compEl && fn.noise_compression_ratio_pct !== undefined) {
               compEl.textContent = `${Number(fn.noise_compression_ratio_pct).toFixed(4)}%`;
@@ -2580,7 +2588,8 @@
       item.executionPath === 'n8n_live_container' && Number.isFinite(Number(item.mttrSeconds))
     );
     if (!hit) {
-      node.textContent = 'no stored n8n callback';
+      node.textContent = '0';
+      node.dataset.kpiBasis = 'reference_benchmark_not_measured';
       if (detail) detail.textContent = 'Shown only after a stored n8n callback. The January benchmark is separate.';
       return;
     }

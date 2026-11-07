@@ -205,6 +205,26 @@ def _operator_policy_dir() -> Path | None:
     return Path(configured) if configured else None
 
 
+def _three_proof_state(result: dict[str, Any]) -> str:
+    """Verified only when the receipt, hash chain, and groundedness gates all pass."""
+    from threatfusion.api.analyst_dashboard import (
+        _is_verified_receipt_dict,
+        evidence_state_from_gates,
+    )
+
+    receipt = result.get("callback_receipt")
+    receipt_ok = isinstance(receipt, dict) and _is_verified_receipt_dict(receipt)
+    chain_ok = result.get("audit_chain_verified") is True and bool(result.get("entry_sha256"))
+    grounded_ok = result.get("grounded") is True or result.get("decision_unchanged") is True
+    return evidence_state_from_gates(receipt_ok, chain_ok, grounded_ok)
+
+
+def _with_three_proof_state(result: dict[str, Any]) -> dict[str, Any]:
+    published = dict(result)
+    published["evidence_state"] = _three_proof_state(result)
+    return published
+
+
 class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
     """HTTP Request Handler implementing MISP restSearch, state verification, and callback."""
 
@@ -525,7 +545,58 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         return self._live_db_path().with_name("threatfusion-live-soar.sqlite3")
 
     def _presented_operator_fingerprint(self) -> str:
-        return (self.headers.get("X-ThreatFusion-Cert-SHA256") or "").strip()
+        return (
+            self.headers.get("X-ThreatFusion-Client-Cert-Sha256")
+            or self.headers.get("X-ThreatFusion-Cert-SHA256")
+            or ""
+        ).strip()
+
+    def _reject_actor_mismatch(self, actor_id: str) -> bool:
+        """HTTP 403 when a presented certificate does not match this actor."""
+        presented = self._presented_operator_fingerprint()
+        if not presented:
+            return False
+        from threatfusion.operations.human_credentials import verify_operator_identity
+
+        stamp = verify_operator_identity(_operator_policy_dir(), actor_id, presented)
+        if stamp.get("identity_verified") is True:
+            return False
+        self._send_json(
+            403,
+            {
+                "error": "actor_identity_mismatch",
+                "evidence_state": "unavailable",
+                "identity_verified": False,
+            },
+        )
+        return True
+
+    def _sensor_auth_rejected(self) -> bool:
+        """401 for a bad bearer. 503 when no sensor token is configured outside pytest."""
+        from threatfusion.api.live_soc_console import sensor_ingest_auth_status
+
+        status = sensor_ingest_auth_status(self.headers.get("Authorization"))
+        if status == "ok":
+            return False
+        if status == "unconfigured":
+            self._send_json(
+                503,
+                {
+                    "error": "sensor_token_unconfigured",
+                    "evidence_state": "unavailable",
+                    "production_fusion_enabled": False,
+                },
+            )
+            return True
+        self._send_json(
+            401,
+            {
+                "error": "sensor_ingest_unauthorized",
+                "evidence_state": "unavailable",
+                "production_fusion_enabled": False,
+            },
+        )
+        return True
 
     def _live_write_authorized(self) -> bool:
         """Accept the process CSRF token, a bearer token, or the in-process test header."""
@@ -553,6 +624,12 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return False
         origin = (self.headers.get("Origin") or "").strip()
         if origin == "":
+            if not self._live_write_authorized():
+                self._send_json(
+                    401,
+                    {"error": "write_token_required", "evidence_state": "unavailable"},
+                )
+                return True
             return False
         host = urllib.parse.urlparse(origin).hostname
         allowed = {"127.0.0.1", "localhost", "::1"}
@@ -695,20 +772,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
         if path == "/api/v1/live/sensor":
             from threatfusion.api.live_soc_console import (
-                authorize_sensor_ingest,
                 correlate_stored_attacks,
                 record_suricata_bridge_flow,
             )
 
-            if not authorize_sensor_ingest(self.headers.get("Authorization")):
-                self._send_json(
-                    401,
-                    {
-                        "error": "sensor_ingest_unauthorized",
-                        "evidence_state": "unavailable",
-                        "production_fusion_enabled": False,
-                    },
-                )
+            if self._sensor_auth_rejected():
                 return
             try:
                 req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
@@ -745,15 +813,13 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
         if path == "/api/v1/live/ingest":
             from threatfusion.api.live_soc_console import (
-                authorize_sensor_ingest,
                 canonical_feature_contract_error,
                 correlate_stored_attacks,
                 persist_scored_flow,
                 score_canonical_flow,
             )
 
-            if not authorize_sensor_ingest(self.headers.get("Authorization")):
-                self._send_json(401, {"error": "sensor_token_required"})
+            if self._sensor_auth_rejected():
                 return
             try:
                 req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
@@ -782,7 +848,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 self._live_db_path(),
                 self._incidents_db_path(),
             )
-            self._send_json(200, stored)
+            self._send_json(200, _with_three_proof_state(stored))
             return
 
         if path == "/api/v1/live/notes":
@@ -903,17 +969,26 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
             raw_flow = req_data.get("flow_id")
+            actor_id = str(req_data.get("actor_id") or "")
+            if self._reject_actor_mismatch(actor_id):
+                return
             result = record_analyst_verdict(
                 self._live_db_path(),
                 flow_id=raw_flow if isinstance(raw_flow, int) else 0,
-                verdict=str(req_data.get("verdict") or ""),
+                verdict=str(req_data.get("verdict") or req_data.get("analyst_verdict") or ""),
                 rationale=str(req_data.get("rationale") or ""),
-                actor_id=str(req_data.get("actor_id") or ""),
+                actor_id=actor_id,
                 policy_dir=_operator_policy_dir(),
                 presented_fingerprint=self._presented_operator_fingerprint(),
             )
-            status = 200 if result.get("evidence_state") == "verified" else 400
-            self._send_json(status, result)
+            reason = str(result.get("reason") or "")
+            if reason in {"explanation_not_grounded", "entity_not_on_flow"}:
+                status = 422
+            elif reason == "analyst_verdict_stored" or result.get("evidence_state") == "verified":
+                status = 200
+            else:
+                status = 400
+            self._send_json(status, _with_three_proof_state(result))
             return
 
         if path == "/api/v1/live/context-memory":
@@ -930,11 +1005,15 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             raw_flow = req_data.get("flow_id")
             entity = req_data.get("entity_ip_or_subnet")
             service = req_data.get("service_or_port")
+            operator_id = str(req_data.get("operator_id") or req_data.get("actor_id") or "")
+            if self._reject_actor_mismatch(operator_id):
+                return
             result = save_context_memory(
                 self._live_db_path(),
                 flow_id=raw_flow if isinstance(raw_flow, int) else 0,
                 rule=str(req_data.get("expected_behavior_rule") or ""),
-                operator_id=str(req_data.get("operator_id") or ""),
+                operator_id=operator_id,
+                actor_id=str(req_data.get("actor_id") or ""),
                 entity_ip_or_subnet=entity if isinstance(entity, str) else None,
                 service_or_port=service if isinstance(service, str) else None,
             )
@@ -979,13 +1058,25 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
             raw_flow = req_data.get("flow_id")
+            assignee = str(req_data.get("assignee_id") or req_data.get("assigned_to") or "")
+            raw_status = req_data.get("review_status")
+            review_status = (
+                str(raw_status).strip()
+                if isinstance(raw_status, str) and str(raw_status).strip()
+                else "in_review"
+            )
+            if self._reject_actor_mismatch(assignee):
+                return
             result = record_case_assignment(
                 self._live_db_path(),
                 flow_id=raw_flow if isinstance(raw_flow, int) else 0,
-                assignee_id=str(req_data.get("assignee_id") or ""),
-                review_status=str(req_data.get("review_status") or ""),
+                assignee_id=assignee,
+                review_status=review_status,
                 policy_dir=_operator_policy_dir(),
             )
+            if isinstance(result, dict):
+                result["assignee_id"] = result.get("assignee_id") or assignee or None
+                result["assigned_to"] = result.get("assigned_to") or result.get("assignee_id")
             status = 200 if result.get("evidence_state") == "verified" else 400
             self._send_json(status, result)
             return
@@ -1062,7 +1153,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                     self._incidents_db_path(),
                 )
             status = 200 if result.get("member_count") else 400
-            self._send_json(status, result)
+            self._send_json(status, _with_three_proof_state(result))
             return
 
         if path == "/api/v1/live/replay":
@@ -1110,17 +1201,23 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 return
             raw_flow = req_data.get("flow_id")
             flow_id = raw_flow if isinstance(raw_flow, int) else 0
+            actor_id = str(req_data.get("actor_id") or "")
+            if self._reject_actor_mismatch(actor_id):
+                return
             result = approve_live_soar(
                 self._live_db_path(),
                 self._live_soar_path(),
                 flow_id=flow_id,
-                actor_id=str(req_data.get("actor_id") or ""),
+                actor_id=actor_id,
                 reason=str(req_data.get("reason") or ""),
                 policy_dir=_operator_policy_dir(),
                 presented_fingerprint=self._presented_operator_fingerprint(),
             )
-            status = 200 if result.get("evidence_state") == "verified" else 400
-            self._send_json(status, result)
+            operational = (
+                result.get("evidence_state") == "verified"
+                or result.get("ledger_state") == "approved"
+            )
+            self._send_json(200 if operational else 400, _with_three_proof_state(result))
             return
 
         if path == "/api/v1/live/soar/dispatch":

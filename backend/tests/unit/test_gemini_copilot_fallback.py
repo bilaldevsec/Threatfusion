@@ -143,7 +143,7 @@ def test_copilot_raises_after_every_fallback_times_out(monkeypatch: pytest.Monke
 
     with pytest.raises(GeminiAdvisoryUnavailableError):
         GeminiAdvisoryCallable(transport_callable=transport).generate_copilot_text("evidence")
-    assert len(seen) == 5
+    assert len(seen) == 7
 
 
 def _five_section_reply(*sentences: str) -> str:

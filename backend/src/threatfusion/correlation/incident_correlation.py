@@ -137,6 +137,8 @@ class OperationalVelocityReport:
                 "analyst_toil_saved_pct": self.analyst_toil_saved_pct,
                 "telemetry_source": "reference_benchmark",
                 "evidence_state": "reference_benchmark",
+                "measurement_label": "reference_benchmark_not_measured",
+                "live_measured_mttr_seconds": None,
             }
         )
         return {
@@ -160,6 +162,10 @@ class OperationalVelocityReport:
             "velocity_decomposition": decomp,
             "telemetry_source": decomp.get("telemetry_source", "reference_benchmark"),
             "evidence_state": decomp.get("evidence_state", "reference_benchmark"),
+            "measurement_label": decomp.get(
+                "measurement_label", "reference_benchmark_not_measured"
+            ),
+            "live_measured_mttr_seconds": decomp.get("live_measured_mttr_seconds"),
         }
 
 
@@ -198,19 +204,27 @@ def build_operational_velocity_report(
     ]
     if mttr_vals:
         mttr_mean = round(sum(mttr_vals) / len(mttr_vals), 6)
+        mttr_speedup = round(MTTR_MANUAL_BASELINE_SECONDS / max(0.000001, mttr_mean), 2)
+        live_measured_mttr: float | None = mttr_mean
     else:
-        mttr_mean = 4.500000
-
-    mttr_speedup = round(MTTR_MANUAL_BASELINE_SECONDS / max(0.000001, mttr_mean), 2)
+        mttr_mean = 0.0
+        mttr_speedup = 0.0
+        live_measured_mttr = None
 
     # Velocity Decomposition Calculations
     ttd_val = DEFAULT_TTD_MEAN_MS if ttd_mean_ms is None else float(ttd_mean_ms)
     tta_val = DEFAULT_TTA_MEAN_MS if tta_mean_ms is None else float(tta_mean_ms)
     tti_val = mtti_mean
     total_time_to_conclusion = round((ttd_val / 1000.0) + (tta_val / 1000.0) + tti_val, 6)
-    toil_saved_sec = round(max(0.0, manual_l1_triage_baseline_seconds - total_time_to_conclusion), 6)
+    toil_saved_sec = round(
+        max(0.0, manual_l1_triage_baseline_seconds - total_time_to_conclusion), 6
+    )
     toil_saved_pct = round(
-        max(0.0, (1.0 - (total_time_to_conclusion / max(0.000001, manual_l1_triage_baseline_seconds))) * 100.0),
+        max(
+            0.0,
+            (1.0 - (total_time_to_conclusion / max(0.000001, manual_l1_triage_baseline_seconds)))
+            * 100.0,
+        ),
         4,
     )
 
@@ -236,6 +250,12 @@ def build_operational_velocity_report(
         "analyst_toil_saved_pct": toil_saved_pct,
         "telemetry_source": telemetry_source,
         "evidence_state": evidence_state,
+        "measurement_label": ("live_measured" if mttr_vals else "reference_benchmark_not_measured"),
+        "live_measured_mttr_seconds": live_measured_mttr,
+        "reference_mtti_seconds": 1.25,
+        "reference_ttd_mean_ms": 18.4,
+        "reference_speedup_ratio": 864.0,
+        "reference_noise_compression_pct": 99.9889,
     }
 
     # Merge per_incident_timings
@@ -266,6 +286,7 @@ def build_operational_velocity_report(
         "tier3_correlated_incidents": 24,
         "tier4_actionable_soar_playbooks": 8,
         "noise_compression_ratio_pct": 99.9889,
+        "measurement_label": "reference_benchmark_not_measured",
     }
     funnel = noise_reduction_funnel if noise_reduction_funnel is not None else default_funnel
 

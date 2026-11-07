@@ -5,7 +5,7 @@
 # and POST /attributes/restSearch.
 # Approval, verify-state, and the HMAC callback share one ledger: THREATFUSION_SOAR_LEDGER_DB_PATH
 # when set, otherwise threatfusion-live-soar.sqlite3 beside the console database.
-# The HMAC and MISP values below are lab defaults, not production credentials.
+# HMAC, MISP, and sensor tokens are ephemeral when the environment does not set them.
 # production_fusion_enabled stays false. This script does not enable fusion.
 set -euo pipefail
 
@@ -39,7 +39,9 @@ Usage: scripts/run_live_product.sh [--dry-run | --smoke | --seed-demo] [--port P
   --seed-demo Start both surfaces, store the four labeled scenarios, and keep serving.
   --port N    Listen on 127.0.0.1:N (default 8766, or PORT).
 
-Lab defaults: THREATFUSION_SOAR_HMAC_SECRET and THREATFUSION_MISP_API_KEY.
+Unset THREATFUSION_SOAR_HMAC_SECRET, THREATFUSION_MISP_API_KEY, and
+THREATFUSION_SENSOR_INGEST_TOKEN are filled with a random 32-byte hex token
+when the process actually starts. --dry-run does not export those tokens.
 Set THREATFUSION_SOAR_LEDGER_DB_PATH to choose the shared approval ledger.
 EOF
 }
@@ -124,17 +126,30 @@ if (( PORT < 1 || PORT > 65535 )); then
   die "PORT ${PORT} is outside 1-65535"
 fi
 
-export THREATFUSION_SOAR_HMAC_SECRET="${THREATFUSION_SOAR_HMAC_SECRET:-lab-only-not-a-production-secret}"
-export THREATFUSION_MISP_API_KEY="${THREATFUSION_MISP_API_KEY:-lab-only-misp-key-16xx}"
+[[ -x "$PYTHON" ]] || die "Python interpreter not found or not executable: ${PYTHON}"
 
-if (( ${#THREATFUSION_SOAR_HMAC_SECRET} < 16 )); then
+ephemeral_secret() {
+  "$PYTHON" -c 'import secrets; print(secrets.token_hex(32), end="")'
+}
+
+if [[ "$MODE" != "dry-run" ]]; then
+  if [[ -z "${THREATFUSION_SOAR_HMAC_SECRET:-}" ]]; then
+    export THREATFUSION_SOAR_HMAC_SECRET="$(ephemeral_secret)"
+  fi
+  if [[ -z "${THREATFUSION_MISP_API_KEY:-}" ]]; then
+    export THREATFUSION_MISP_API_KEY="$(ephemeral_secret)"
+  fi
+  if [[ -z "${THREATFUSION_SENSOR_INGEST_TOKEN:-}" ]]; then
+    export THREATFUSION_SENSOR_INGEST_TOKEN="$(ephemeral_secret)"
+  fi
+fi
+
+if [[ -n "${THREATFUSION_SOAR_HMAC_SECRET:-}" && ${#THREATFUSION_SOAR_HMAC_SECRET} -lt 16 ]]; then
   die "THREATFUSION_SOAR_HMAC_SECRET must be at least 16 characters"
 fi
-if (( ${#THREATFUSION_MISP_API_KEY} < 16 )); then
+if [[ -n "${THREATFUSION_MISP_API_KEY:-}" && ${#THREATFUSION_MISP_API_KEY} -lt 16 ]]; then
   die "THREATFUSION_MISP_API_KEY must be at least 16 characters"
 fi
-
-[[ -x "$PYTHON" ]] || die "Python interpreter not found or not executable: ${PYTHON}"
 [[ -f "$SERVER" ]] || die "Contract server script not found: ${SERVER}"
 for rel in frontend/index.html frontend/css/soc_unicorn.css frontend/js/soc_dashboard.js; do
   [[ -f "${ROOT}/${rel}" ]] || die "SOC console file missing: ${rel}"

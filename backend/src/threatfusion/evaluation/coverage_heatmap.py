@@ -103,22 +103,18 @@ def _rf_confirmed_counts(live_db_path: Path | None) -> tuple[dict[str, int], str
     try:
         tables = {
             row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
         if "live_flows" not in tables:
             return counts, "live_store_unavailable"
         columns = {row[1] for row in connection.execute("PRAGMA table_info(live_flows)")}
         if not _REQUIRED_FLOW_COLUMNS.issubset(columns):
             return counts, "live_store_unavailable"
-        rows = connection.execute(
-            """
+        rows = connection.execute("""
             SELECT decision, evidence_state, production_fusion_enabled, model_sha256,
                    case_title, source_label
             FROM live_flows
-            """
-        )
+            """)
         matched = False
         for decision, evidence_state, fusion, model_sha, case_title, source_label in rows:
             if decision != "Attack" or evidence_state != "verified" or int(fusion or 0) != 0:
@@ -156,7 +152,10 @@ def _lab_counts(lab_chain_path: Path | None, *, include_lab: bool) -> dict[str, 
     for item in hypotheses:
         if not isinstance(item, dict):
             continue
-        if item.get("classification") != LAB_CLASSIFICATION or item.get("alert_created") is not False:
+        if (
+            item.get("classification") != LAB_CLASSIFICATION
+            or item.get("alert_created") is not False
+        ):
             continue
         technique_id = item.get("technique_id")
         if isinstance(technique_id, str) and technique_id in known:
@@ -218,6 +217,7 @@ def build_coverage_heatmap(
     return {
         "alert_authority": "frozen_random_forest",
         "cells": cells,
+        "rows": cells,
         "claimed": claimed,
         "include_lab": include,
         "mapping_version": MAPPING_VERSION,

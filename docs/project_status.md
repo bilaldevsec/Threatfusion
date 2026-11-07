@@ -43,7 +43,12 @@ reply is kept. A Benign or corpus-only reply that names `T9999` still falls
 back to the local brief. On a `recorded_unsw_nb15` row with no inspected
 entities, other IPv4 literals are removed and the live reply is kept.
 `198.51.100.99` and `203.0.113.99` still reject the live reply. A successful
-live reply is cached by flow id, question, and model name. A stored
+live reply is cached by flow id, question, and model name in memory and in
+the `live_copilot_cache` SQLite table on the console database. Gemini calls
+send the API key only in `x-goog-api-key`. `GEMINI_ENABLED=false` or `0`
+blocks a live call, and each hop checks the spend ceiling before it runs.
+`gemini-3.5-flash-lite` and `gemini-3.1-flash-lite` are on the fallback list.
+A stored
 `incident_v1` row, or any selected row without a flow id, asks the copilot
 with the first Attack flow id in the loaded queue. The console escapes that
 narrative before turning heading lines, bold markers, and code markers into

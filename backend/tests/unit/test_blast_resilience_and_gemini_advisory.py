@@ -351,7 +351,8 @@ class TestGeminiAdvisoryGroundednessAndOutageIsolation:
 
         url = config.get_endpoint_url("secret_test_key")
         assert "gemini-3.5-flash" in url
-        assert "key=secret_test_key" in url
+        assert "key=" not in url
+        assert "secret_test_key" not in url
 
     def test_build_grounded_gemini_prompt_serialization(
         self, bundle_for_advisory: AdvisoryEvidenceBundle

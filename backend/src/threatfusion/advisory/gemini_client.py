@@ -69,11 +69,39 @@ def copilot_budget_blocks_live_call() -> bool:
     return bool(evaluate_budget_kill_switch(spend).get("should_detach_billing"))
 
 
+def gemini_enabled_blocks() -> bool:
+    """``GEMINI_ENABLED=false`` or ``0`` blocks a live call. An unset flag does not."""
+    return os.environ.get("GEMINI_ENABLED", "").strip().lower() in {"false", "0"}
+
+
+_LIVE_GEMINI_CALL_USD = 0.000001
+
+
+def _record_gemini_live_spend() -> None:
+    """Add one live-call increment to the recorded spend meter."""
+    raw = os.environ.get("THREATFUSION_CLOUD_SPEND_USD", "0").strip() or "0"
+    try:
+        spend = float(raw)
+    except ValueError:
+        return
+    os.environ["THREATFUSION_CLOUD_SPEND_USD"] = f"{spend + _LIVE_GEMINI_CALL_USD:.6f}"
+
+
+def _refuse_blocked_live_gemini() -> None:
+    """Raise before a hop when the operator flag or the spend ceiling blocks the call."""
+    if gemini_enabled_blocks():
+        raise GeminiAdvisoryUnavailableError("GEMINI_ENABLED blocks live Gemini calls.")
+    if copilot_budget_blocks_live_call():
+        raise GeminiAdvisoryUnavailableError(
+            "Cloud budget kill switch is active at the $5.00 ceiling."
+        )
+
+
 def advisory_provider_status() -> dict[str, Any]:
     """Describe the copilot the console will use. This does not call the network."""
     model_name = resolve_gemini_model()
     key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not key or copilot_budget_blocks_live_call():
+    if not key or gemini_enabled_blocks() or copilot_budget_blocks_live_call():
         return {
             "provider": "local_air_gapped",
             "model_name": model_name,
@@ -98,12 +126,13 @@ class GeminiAdvisoryConfig:
     temperature: float = 0.0
     api_key_env_var: str = "GEMINI_API_KEY"
     endpoint_url_template: str = (
-        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     )
 
     def get_endpoint_url(self, api_key: str) -> str:
-        """Format the REST endpoint URL with the target model and API key."""
-        return self.endpoint_url_template.format(model=self.model_name, key=api_key)
+        """Return the model URL. The key travels only in the x-goog-api-key header."""
+        del api_key
+        return self.endpoint_url_template.format(model=self.model_name)
 
 
 class GeminiAdvisoryUnavailableError(RuntimeError):
@@ -116,6 +145,8 @@ _COPILOT_FALLBACK_MODELS = (
     "gemini-3.7-flash",
     "gemini-3.8-flash",
     "gemini-2.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
 )
 
 
@@ -247,10 +278,7 @@ class GeminiAdvisoryCallable:
 
     def __call__(self, bundle: AdvisoryEvidenceBundle) -> EvidenceBoundExplanation:
         """Generate an advisory explanation from bundle using Gemini REST API."""
-        if copilot_budget_blocks_live_call():
-            raise GeminiAdvisoryUnavailableError(
-                "Cloud budget kill switch is active at the $5.00 ceiling."
-            )
+        _refuse_blocked_live_gemini()
         if self._transport_callable is None:
             api_key = os.environ.get(self.config.api_key_env_var, "").strip()
             if not api_key:
@@ -287,14 +315,19 @@ class GeminiAdvisoryCallable:
             req = urllib.request.Request(
                 endpoint_url,
                 data=req_data,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "x-goog-api-key": api_key,
+                    "Content-Type": "application/json",
+                },
                 method="POST",
             )
             try:
                 with urllib.request.urlopen(req, timeout=self.config.timeout_seconds) as resp:
                     raw_body = resp.read().decode("utf-8")
                     response_dict = json.loads(raw_body)
+                _record_gemini_live_spend()
             except urllib.error.HTTPError as exc:
+                _record_gemini_live_spend()
                 raise GeminiAdvisoryUnavailableError(
                     f"Gemini API HTTP error {exc.code}: {exc.reason}"
                 ) from exc
@@ -407,10 +440,7 @@ class GeminiAdvisoryCallable:
 
     def generate_copilot_text(self, evidence_text: str) -> str:
         """Ask Gemini for a short brief. The caller must check groundedness."""
-        if copilot_budget_blocks_live_call():
-            raise GeminiAdvisoryUnavailableError(
-                "Cloud budget kill switch is active at the $5.00 ceiling."
-            )
+        _refuse_blocked_live_gemini()
         api_key = os.environ.get(self.config.api_key_env_var, "").strip()
         if self._transport_callable is None and not api_key:
             raise GeminiAdvisoryUnavailableError(
@@ -442,6 +472,7 @@ class GeminiAdvisoryCallable:
                 models.append(model_name)
         last_error: BaseException | None = None
         for model_name in models:
+            _refuse_blocked_live_gemini()
             endpoint_url = (
                 "https://generativelanguage.googleapis.com/v1beta/models/"
                 f"{model_name}:generateContent"
@@ -463,6 +494,7 @@ class GeminiAdvisoryCallable:
                         request, timeout=self.config.timeout_seconds
                     ) as resp:
                         response_dict = json.loads(resp.read().decode("utf-8"))
+                    _record_gemini_live_spend()
             except (
                 urllib.error.HTTPError,
                 urllib.error.URLError,
@@ -470,6 +502,8 @@ class GeminiAdvisoryCallable:
                 OSError,
                 json.JSONDecodeError,
             ) as exc:
+                if isinstance(exc, urllib.error.HTTPError):
+                    _record_gemini_live_spend()
                 if _copilot_retryable_failure(exc):
                     last_error = exc
                     if (

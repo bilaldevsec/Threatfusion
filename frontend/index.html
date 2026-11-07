@@ -370,7 +370,7 @@
             </div>
           </div>
           <aside class="kpi-rail" aria-label="Graph KPI rail">
-            <div class="kpi-item"><span>Time to Investigate</span><strong id="kpiTime">1.25s benchmark</strong></div>
+            <div class="kpi-item"><span>Time to Investigate</span><strong id="kpiTime" data-kpi-basis="reference_benchmark_not_measured">1.25s benchmark</strong></div>
             <div class="kpi-item"><span>Stored Flows</span><strong id="liveHeroFlowCount">0</strong></div>
             <div class="kpi-item"><span>Campaigns</span><strong id="liveHeroCampaignCount">0</strong></div>
             <div class="kpi-item"><span>Incidents</span><strong id="liveHeroIncidentCount">0</strong></div>
@@ -408,7 +408,7 @@
           <span class="badge" data-evidence-state="verified">COMPLETED</span>
           <span>LIVE BRIDGE FLOWS <strong id="liveHeroBridgeCount">Live bridge rows: 0</strong></span>
           <span>JANUARY BENCHMARK: 216,568 FLOWS</span>
-          <span>NOISE REDUCTION: 99.9889%</span>
+          <span data-kpi-basis="reference_benchmark_not_measured">NOISE REDUCTION: 99.9889% reference_benchmark_not_measured</span>
         </div>
         <article class="card" id="mitreCoverageMatrix" style="background: #111827;">
           <h3>Read-only MITRE and CVE coverage</h3>
@@ -512,24 +512,25 @@
           <section class="velocity-ribbon" id="velocityRibbon" aria-label="Operational Velocity &amp; Noise Funnel Ribbon">
             <div class="velocity-card">
               <span class="velocity-label">MTTI: Inspected January benchmark</span>
-              <span class="velocity-value" id="valMtti">1.25s</span>
+              <span class="velocity-value" id="valMtti" data-kpi-basis="reference_benchmark_not_measured">1.25s</span>
+              <span class="velocity-detail">864x reference_benchmark_not_measured</span>
             </div>
             <div class="velocity-card">
               <span class="velocity-label">Live MTTR from a stored n8n callback</span>
-              <span class="velocity-value" id="valMttr">no stored n8n callback</span>
+              <span class="velocity-value" id="valMttr" data-kpi-basis="reference_benchmark_not_measured">0</span>
               <span class="velocity-detail" id="valMttrDetail">Shown only after a stored n8n callback. The January benchmark is separate.</span>
             </div>
             <div class="velocity-card">
               <span class="velocity-label">Noise reduction: inspected January benchmark</span>
-              <span class="velocity-value" id="valCompression">99.9889%</span>
+              <span class="velocity-value" id="valCompression" data-kpi-basis="reference_benchmark_not_measured">99.9889%</span>
               <span class="velocity-detail">Inspected January benchmark, 216,568 flows. Not the live queue.</span>
             </div>
           </section>
           <section class="hero-investor-strip" data-layer="hero-investor-hook" aria-label="Layer 1 Top Hero Strip">
             <div class="hero-investor-card" style="background: #111827;">
-              <span class="badge" data-evidence-state="verified" id="toilSavedBadge">99.85% Analyst Toil Saved</span>
+              <span class="badge" data-evidence-state="reference_benchmark_not_measured" id="toilSavedBadge">99.85% Analyst Toil Saved</span>
               <div class="velocity-formula-bar" id="velocityFormulaBar">TTD (Time to Detect, ms) + TTA (Time to Acknowledge, ms) + TTI (Time to Investigate, s) = Total Time to Conclusion</div>
-              <div><b>TTD:</b> <span id="heroValTtd">18.4 ms</span></div>
+              <div><b>TTD:</b> <span id="heroValTtd" data-kpi-basis="reference_benchmark_not_measured">18.4 ms reference_benchmark_not_measured</span></div>
               <div><b>TTA:</b> <span id="heroValTta">12.6 ms</span></div>
               <div><b>TTI:</b> <span id="heroValTti">1.25 s</span></div>
               <div>Total Time to Conclusion: <b id="heroValConclusion">1.281s</b> vs 15-min (900.0s) Manual Baseline &middot; Saved: <b id="heroValToilSaved">898.719s</b> (MTTI 1080s / MTTR 2700s benchmarks)</div>
@@ -537,7 +538,7 @@
           </section>
           <section class="funnel-container" id="frozenBenchmarkBaseline" aria-label="Frozen Benchmark Evaluation Baseline">
             <h2>Frozen Benchmark Evaluation Baseline</h2>
-            <span class="badge" data-evidence-state="verified" id="funnelBadge">Noise Compression Ratio: 99.9889%</span>
+            <span class="badge" data-evidence-state="reference_benchmark_not_measured" id="funnelBadge">Noise Compression Ratio: 99.9889% reference_benchmark_not_measured</span>
             <p>January evaluation, 216,568 flows. These figures are not the live queue. Reference Benchmark (Inspected January Split).</p>
             <div class="funnel-grid">
               <div class="funnel-card tier-1"><div class="funnel-count" id="tier1Count">216,568</div><div>Raw Ingested Flows</div></div>
