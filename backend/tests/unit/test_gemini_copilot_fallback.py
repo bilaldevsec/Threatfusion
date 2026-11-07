@@ -230,6 +230,122 @@ def test_missing_heading_is_kept_and_foreign_ids_are_still_rejected(
     assert invented["narrative"] == "local brief"
 
 
+def test_attack_rows_keep_live_text_after_unindexed_ids_are_rewritten(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from threatfusion.api import live_soc_console as console
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.delenv("THREATFUSION_CLOUD_SPEND_USD", raising=False)
+    console._LIVE_GEMINI_CACHE.clear()
+
+    class _Client:
+        def __init__(self, text: str) -> None:
+            self.calls = 0
+            self._text = text
+
+        def generate_copilot_text(self, evidence_text: str) -> str:
+            del evidence_text
+            self.calls += 1
+            return self._text
+
+    client = _Client(
+        _five_section_reply(
+            "Related sub-technique T1498.001 and external CVE-2099-1111 expand indexed T1498"
+        )
+    )
+    monkeypatch.setattr(console, "_live_copilot_callable", lambda: client)
+    hits = [
+        {
+            "technique_id": "T1498",
+            "technique_name": "Network Denial of Service",
+            "playbook_id": "pb-dos",
+            "doc_id": "mitre-t1498",
+        }
+    ]
+    kept = console._grounded_gemini_narrative(
+        "Review this attack",
+        hits,
+        evidence_text="Stored decision Attack. Technique T1498.",
+        local_narrative="local brief",
+        flow_hits=hits,
+        decision="Attack",
+        source_label="recorded_unsw_nb15",
+        flow_id=7,
+    )
+    assert kept["provider"] == "gemini"
+    assert "T1498.001" not in kept["narrative"]
+    assert "CVE-2099-1111" not in kept["narrative"]
+    assert "T1498" in kept["narrative"]
+    again = console._grounded_gemini_narrative(
+        "  review this attack  ",
+        hits,
+        evidence_text="Stored decision Attack. Technique T1498.",
+        local_narrative="local brief",
+        flow_hits=hits,
+        decision="Attack",
+        source_label="recorded_unsw_nb15",
+        flow_id=7,
+    )
+    assert again["narrative"] == kept["narrative"]
+    assert client.calls == 1
+    console._LIVE_GEMINI_CACHE.clear()
+
+
+def test_anonymized_study_rows_strip_example_ips_and_keep_poison_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from threatfusion.api import live_soc_console as console
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.delenv("THREATFUSION_CLOUD_SPEND_USD", raising=False)
+
+    class _Client:
+        def __init__(self, text: str) -> None:
+            self._text = text
+
+        def generate_copilot_text(self, evidence_text: str) -> str:
+            del evidence_text
+            return self._text
+
+    monkeypatch.setattr(
+        console,
+        "_live_copilot_callable",
+        lambda: _Client(
+            _five_section_reply(
+                "Example address 8.8.8.8 is not stored on this anonymized study row"
+            )
+        ),
+    )
+    kept = console._grounded_gemini_narrative(
+        "review study",
+        [],
+        evidence_text="Stored decision Benign.",
+        local_narrative="local brief",
+        source_label="recorded_unsw_nb15",
+    )
+    assert kept["provider"] == "gemini"
+    assert "8.8.8.8" not in kept["narrative"]
+    assert "anonymized study row" in kept["narrative"]
+
+    monkeypatch.setattr(
+        console,
+        "_live_copilot_callable",
+        lambda: _Client(
+            _five_section_reply("Contact 198.51.100.99 and 203.0.113.99 about this study row")
+        ),
+    )
+    blocked = console._grounded_gemini_narrative(
+        "review poison",
+        [],
+        evidence_text="Stored decision Benign.",
+        local_narrative="local brief",
+        source_label="recorded_unsw_nb15",
+    )
+    assert blocked["provider"] == "local_air_gapped"
+    assert blocked["narrative"] == "local brief"
+
+
 def test_copilot_without_a_key_returns_the_local_corpus(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -53,7 +53,15 @@ def test_adapter_converts_units_derives_features_and_retains_metadata() -> None:
 
 @pytest.mark.parametrize(
     ("raw_protocol", "expected"),
-    [("6", "tcp"), ("17", "udp"), ("1", "icmp"), ("0", "other")],
+    [
+        ("6", "tcp"),
+        ("17", "udp"),
+        ("1", "icmp"),
+        ("ipv6-icmp", "icmp"),
+        ("icmpv6", "icmp"),
+        ("58", "icmp"),
+        ("0", "other"),
+    ],
 )
 def test_protocol_normalization(raw_protocol: str, expected: str) -> None:
     assert adapt_cic_benchmark_row(_row(Protocol=raw_protocol)).protocol == expected

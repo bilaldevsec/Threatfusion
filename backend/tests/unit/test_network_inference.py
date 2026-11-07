@@ -514,6 +514,38 @@ def test_runtime_version_mismatch_precedes_deserialization(monkeypatch):
         )
 
 
+def test_python_3_11_patch_passes_the_version_gate_and_3_12_does_not(monkeypatch):
+    original = inference._dependency_versions()
+    configured = dict(original)
+    configured["python"] = "3.11.16"
+    patched = dict(original)
+    patched["python"] = "3.11.18"
+    assert inference._runtime_dependencies_compatible(configured, patched) is True
+    next_minor = dict(original)
+    next_minor["python"] = "3.12.1"
+    assert inference._runtime_dependencies_compatible(configured, next_minor) is False
+    sklearn_drift = dict(patched)
+    sklearn_drift["scikit-learn"] = "9.9.9"
+    assert inference._runtime_dependencies_compatible(configured, sklearn_drift) is False
+
+    monkeypatch.setattr(
+        inference.joblib, "load", lambda *_args, **_kwargs: pytest.fail("deserialized")
+    )
+    payload = json.dumps({"dependencies": configured}).encode()
+    monkeypatch.setattr(inference, "_dependency_versions", lambda: patched)
+    with pytest.raises(NetworkInferenceError, match="random_forest_provenance_mismatch"):
+        inference._verify_model(
+            {"configuration": payload, "report": b"{}", "model": b"not a pickle"},
+            NetworkModelChoice.RANDOM_FOREST,
+        )
+    monkeypatch.setattr(inference, "_dependency_versions", lambda: next_minor)
+    with pytest.raises(NetworkInferenceError, match="artifact_runtime_version_mismatch"):
+        inference._verify_model(
+            {"configuration": payload, "report": b"{}", "model": b"not a pickle"},
+            NetworkModelChoice.RANDOM_FOREST,
+        )
+
+
 @pytest.mark.parametrize("value", [True, False, "1e1000", float("-inf"), -1, 0.1, 2**53 + 1])
 def test_numeric_edge_cases_precede_transformation(unit_boundary, monkeypatch, value):
     class Spy:

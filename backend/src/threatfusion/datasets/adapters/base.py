@@ -141,7 +141,7 @@ def normalize_protocol(value: Any) -> str:
         return "tcp"
     if text in {"udp", "17"}:
         return "udp"
-    if text in {"icmp", "1"}:
+    if text in {"icmp", "1", "ipv6-icmp", "icmpv6", "58"}:
         return "icmp"
 
     return "other"

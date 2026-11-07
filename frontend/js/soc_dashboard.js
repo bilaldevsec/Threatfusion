@@ -1413,8 +1413,8 @@
         renderIncidentQueue();
         renderForensicDrawer();
         showSocView('detail');
-        const flowId = selectedLiveFlowId();
-        if (Number.isInteger(flowId) && flowId > 0) askLiveCopilot();
+        const flowId = copilotFlowIdForSelection(inc);
+        if (Number.isInteger(flowId) && flowId > 0) askLiveCopilot(flowId);
       });
       const copyButton = itemEl.querySelector('.copy-incident-id');
       if (copyButton) {
@@ -3344,21 +3344,50 @@
     return number;
   }
 
+  function firstConstituentAttackFlowId() {
+    const rows = activeIncidents();
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      if (!row || row.decision !== 'Attack') continue;
+      const raw = row.flowId != null ? row.flowId : row.flow_id;
+      const number = Number(raw);
+      if (Number.isInteger(number) && number > 0) return number;
+    }
+    return null;
+  }
+
+  function copilotFlowIdForSelection(inc) {
+    const direct = selectedLiveFlowId();
+    if (Number.isInteger(direct) && direct > 0) return direct;
+    const row = inc || selectedIncident();
+    const identity = row ? String(row.id || '') : '';
+    const src = row && row.provenance ? row.provenance.srcIp : '';
+    const dst = row && row.provenance ? row.provenance.dstIp : '';
+    if (identity.indexOf('incident_v1:') === 0 || isStoredIncident(row, src, dst) || direct == null) {
+      return firstConstituentAttackFlowId();
+    }
+    return null;
+  }
+
   function copilotBadgeLabel(provider) {
     if (provider === 'gemini') return 'Live Gemini 3.5 Flash (Grounded API Call)';
     return 'Local Air-Gapped Engine';
   }
 
-  async function askLiveCopilot() {
+  async function askLiveCopilot(flowIdOverride) {
     const input = document.getElementById('liveCopilotQuestion');
     const question = input ? input.value : '';
     const progress = document.getElementById('advisoryProgress');
+    const override = Number(flowIdOverride);
+    const flowId = Number.isInteger(override) && override > 0
+      ? override
+      : copilotFlowIdForSelection();
     if (progress) progress.hidden = false;
     try {
       const resp = await fetch('/api/v1/live/copilot', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: question, flow_id: selectedLiveFlowId() })
+        body: JSON.stringify({ question: question, flow_id: flowId })
       });
       const data = await resp.json();
       const answer = document.getElementById('liveCopilotAnswer');

@@ -335,6 +335,43 @@ def _model_snapshot(directory: Path, choice: NetworkModelChoice) -> dict[str, by
     }
 
 
+def _python_minor_compatible(expected: object, actual: object) -> bool:
+    """Accept any 3.11 patch. Reject 3.12 and every other major.minor pair."""
+
+    def minor(value: object) -> tuple[int, int] | None:
+        if not isinstance(value, str):
+            return None
+        parts = value.split(".")
+        if len(parts) < 2:
+            return None
+        try:
+            major = int(parts[0])
+            minor_version = int(parts[1])
+        except ValueError:
+            return None
+        if major != 3 or minor_version != 11:
+            return None
+        return major, minor_version
+
+    expected_minor = minor(expected)
+    return expected_minor is not None and expected_minor == minor(actual)
+
+
+def _runtime_dependencies_compatible(configured: object, runtime: Mapping[str, str]) -> bool:
+    """Match Python on 3.11.x and require every other dependency, including scikit-learn, exact."""
+    if not isinstance(configured, dict) or set(configured) != set(runtime):
+        return False
+    for name, expected in configured.items():
+        actual = runtime.get(name)
+        if name == "python":
+            if not _python_minor_compatible(expected, actual):
+                return False
+            continue
+        if expected != actual:
+            return False
+    return True
+
+
 def _verify_model(snapshot: dict[str, bytes], choice: NetworkModelChoice) -> _LoadedModel:
     logistic = choice is NetworkModelChoice.LOGISTIC_REGRESSION
     expected_schema = (
@@ -345,7 +382,9 @@ def _verify_model(snapshot: dict[str, bytes], choice: NetworkModelChoice) -> _Lo
         snapshot["configuration"], f"{choice.value}_configuration_unreadable"
     )
     report = _read_json(snapshot["report"], f"{choice.value}_report_unreadable")
-    if configuration.get("dependencies") != _dependency_versions():
+    if not _runtime_dependencies_compatible(
+        configuration.get("dependencies"), _dependency_versions()
+    ):
         raise NetworkInferenceError("artifact_runtime_version_mismatch")
     pre = configuration.get("preprocessing", {})
     decision = configuration.get("decision_threshold", {})

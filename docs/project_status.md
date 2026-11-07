@@ -32,17 +32,24 @@ the file. `--dry-run`, `--smoke`, `THREATFUSION_IGNORE_DOTENV=1`, and
 it only for `--up`. Pytest does not source that file. A missing
 `GEMINI_API_KEY` keeps the offline five-section brief. A live `gemini-3.5-flash`
 reply is asked for 2-4 sentences and bullets under each canonical heading.
-HTTP 503, HTTP 429, and timeouts retry once across `gemini-3.5-flash`,
+HTTP 503, HTTP 429, and timeouts retry across `gemini-3.5-flash`,
 `gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, and
-`gemini-2.5-flash`. A heading with no prose falls back to the local brief.
+`gemini-2.5-flash`. HTTP 503 and HTTP 429 wait 1.0 second before the next
+model. A heading with no prose falls back to the local brief.
 Indexed corpus technique IDs, including `T1071.001`, stay allowed when every
-section has sentences. `T9999` and any IPv4 outside the stored endpoints,
-including `198.51.100.99` and `203.0.113.99`, still reject the live reply.
-The reply is shown only when every address is a stored endpoint. The console
-escapes that narrative before turning heading lines, bold markers, and code
-markers into HTML. `GeminiAdvisoryConfig` stays at 512 tokens and temperature
-0.0. The live five-section request uses 2048 tokens, temperature 0.1, and a
-30 second timeout. `evidence_state` is `verified` only when that brief is
+section has sentences. On an Attack row, a MITRE or CVE id outside that
+allowed set is replaced with the flow's verified technique id and the live
+reply is kept. A Benign or corpus-only reply that names `T9999` still falls
+back to the local brief. On a `recorded_unsw_nb15` row with no inspected
+entities, other IPv4 literals are removed and the live reply is kept.
+`198.51.100.99` and `203.0.113.99` still reject the live reply. A successful
+live reply is cached by flow id, question, and model name. A stored
+`incident_v1` row, or any selected row without a flow id, asks the copilot
+with the first Attack flow id in the loaded queue. The console escapes that
+narrative before turning heading lines, bold markers, and code markers into
+HTML. `GeminiAdvisoryConfig` stays at 512 tokens and temperature 0.0. The
+live five-section request uses 4096 tokens, temperature 0.1, and a 30 second
+timeout. `evidence_state` is `verified` only when that brief is
 grounded and the flow has a verified SOAR receipt with a valid hash chain.
 An empty correlation timeline falls back to five stored-flow stage rows and
 one status line. A row with correlated partners says it is a 30s/600s campaign.

@@ -47,6 +47,50 @@ if BACKEND_SRC.exists() and str(BACKEND_SRC) not in sys.path:
     sys.path.insert(0, str(BACKEND_SRC))
 
 MAX_POST_BODY_BYTES = 1048576
+_ALLOWED_HTTP_HOSTS = frozenset(
+    {
+        "127.0.0.1",
+        "localhost",
+        "[::1]",
+        "::1",
+        "host.docker.internal",
+        "172.17.0.1",
+        "172.28.0.10",
+        "172.28.0.11",
+        "172.29.0.1",
+        "testserver",
+    }
+)
+
+
+class DuplicateJsonKeyError(ValueError):
+    """Raised when a JSON object repeats a key."""
+
+
+def _host_without_port(value: str) -> str:
+    """Return the host from a Host header, without a numeric :port suffix."""
+    text = value.strip().lower()
+    if text.startswith("["):
+        end = text.find("]")
+        if end != -1:
+            return text[: end + 1]
+    if text.count(":") == 1:
+        host, port = text.rsplit(":", 1)
+        if port.isdigit():
+            return host
+    return text
+
+
+def _json_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build an object and refuse a repeated key at this object level."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise DuplicateJsonKeyError(key)
+        result[key] = value
+    return result
+
+
 _LIVE_CSRF_TOKEN = secrets.token_urlsafe(32)
 _TEST_CLIENT_HEADER_VALUE = "in-process"
 
@@ -254,6 +298,27 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         except sqlite3.Error:
             return
 
+    def _rejected_host_header(self) -> bool:
+        """Refuse a Host that is not this console, the lab bridge, or the test client."""
+        host = _host_without_port(str(self.headers.get("Host") or ""))
+        if host in _ALLOWED_HTTP_HOSTS:
+            return False
+        self._send_json(403, {"error": "invalid_host_header"})
+        return True
+
+    def _rejected_duplicate_json_keys(self, body_bytes: bytes) -> bool:
+        """Refuse duplicate object keys before HMAC verification or route handling."""
+        if not body_bytes or not body_bytes.strip():
+            return False
+        try:
+            json.loads(body_bytes.decode("utf-8"), object_pairs_hook=_json_object_pairs)
+        except DuplicateJsonKeyError:
+            self._send_json(400, {"error": "duplicate_json_keys_rejected"})
+            return True
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        return False
+
     def _rejected_content_length(self) -> bool:
         raw = self.headers.get("Content-Length")
         if raw is None or str(raw).strip() == "":
@@ -292,6 +357,8 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
     def do_GET(self) -> None:
+        if self._rejected_host_header():
+            return
         path = self.path.split("?")[0]
         if path in ("/", "/index.html"):
             index_path = REPO_ROOT / "frontend" / "index.html"
@@ -552,6 +619,8 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         self._send_json_bytes(405, body, allow="GET")
 
     def do_PUT(self) -> None:
+        if self._rejected_host_header():
+            return
         path = self.path.split("?")[0]
         if path == "/api/v1/live/coverage-heatmap":
             self._send_coverage_method_not_allowed()
@@ -559,6 +628,8 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         self.send_error(501)
 
     def do_DELETE(self) -> None:
+        if self._rejected_host_header():
+            return
         path = self.path.split("?")[0]
         if path == "/api/v1/live/coverage-heatmap":
             self._send_coverage_method_not_allowed()
@@ -566,6 +637,8 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         self.send_error(501)
 
     def do_POST(self) -> None:
+        if self._rejected_host_header():
+            return
         path = self.path.split("?")[0]
         if path == "/api/v1/live/coverage-heatmap":
             self._send_coverage_method_not_allowed()
@@ -574,6 +647,8 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return
         content_length = int(str(self.headers.get("Content-Length")).strip())
         body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
+        if self._rejected_duplicate_json_keys(body_bytes):
+            return
         if self._csrf_origin_rejected(path):
             return
         if path.startswith("/api/v1/live/") and not self._live_write_authorized():

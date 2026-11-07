@@ -23,9 +23,7 @@ LAB_PACK_SCHEMA_VERSION = "lab_hunt_pack_v1"
 LAB_CHAIN_SCHEMA_VERSION = "lab_hunt_hash_chain_v1"
 LAB_CLASSIFICATION = "LAB HYPOTHESIS — NOT AN ALERT"
 LAB_CHAIN_GENESIS = "0" * 64
-FORBIDDEN_PRODUCTION_DB_NAMES = frozenset(
-    {"soar.sqlite3", "alerts.sqlite3", "incidents.sqlite3"}
-)
+FORBIDDEN_PRODUCTION_DB_NAMES = frozenset({"soar.sqlite3", "alerts.sqlite3", "incidents.sqlite3"})
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _RECORD_KEYS = frozenset({"record_id", "actor", "technique_id", "observed_at", "fields"})
@@ -42,6 +40,7 @@ _HASHED_ENTRY_KEYS = (
 
 _SANDBOX_DEPTH = 0
 _ORIGINAL_CONNECT: Any = None
+_ORIGINAL_CONNECT_EX: Any = None
 _ORIGINAL_CREATE_CONNECTION: Any = None
 
 
@@ -72,6 +71,10 @@ def _blocked_connect(self: socket.socket, _address: Any) -> None:
     raise LabHuntSandboxError("outbound socket connection refused")
 
 
+def _blocked_connect_ex(self: socket.socket, _address: Any) -> int:
+    raise LabHuntSandboxError("outbound socket connection refused")
+
+
 def _blocked_create_connection(*_args: Any, **_kwargs: Any) -> socket.socket:
     raise LabHuntSandboxError("outbound socket connection refused")
 
@@ -79,11 +82,13 @@ def _blocked_create_connection(*_args: Any, **_kwargs: Any) -> socket.socket:
 @contextmanager
 def lab_network_sandbox() -> Iterator[None]:
     """Refuse outbound socket connections until the block is released."""
-    global _SANDBOX_DEPTH, _ORIGINAL_CONNECT, _ORIGINAL_CREATE_CONNECTION
+    global _SANDBOX_DEPTH, _ORIGINAL_CONNECT, _ORIGINAL_CONNECT_EX, _ORIGINAL_CREATE_CONNECTION
     if _SANDBOX_DEPTH == 0:
         _ORIGINAL_CONNECT = socket.socket.connect
+        _ORIGINAL_CONNECT_EX = socket.socket.connect_ex
         _ORIGINAL_CREATE_CONNECTION = socket.create_connection
         socket.socket.connect = _blocked_connect  # type: ignore[method-assign]
+        socket.socket.connect_ex = _blocked_connect_ex  # type: ignore[method-assign]
         socket.create_connection = _blocked_create_connection
     _SANDBOX_DEPTH += 1
     try:
@@ -92,14 +97,18 @@ def lab_network_sandbox() -> Iterator[None]:
         _SANDBOX_DEPTH -= 1
         if _SANDBOX_DEPTH == 0:
             socket.socket.connect = _ORIGINAL_CONNECT  # type: ignore[method-assign]
+            socket.socket.connect_ex = _ORIGINAL_CONNECT_EX  # type: ignore[method-assign]
             socket.create_connection = _ORIGINAL_CREATE_CONNECTION
             _ORIGINAL_CONNECT = None
+            _ORIGINAL_CONNECT_EX = None
             _ORIGINAL_CREATE_CONNECTION = None
 
 
 def probe_outbound_socket_blocked() -> None:
     """Abort when a connect would be allowed, or when a connect is attempted."""
     if socket.socket.connect is not _blocked_connect:
+        raise LabHuntSandboxError("outbound socket connection is allowed")
+    if socket.socket.connect_ex is not _blocked_connect_ex:
         raise LabHuntSandboxError("outbound socket connection is allowed")
     if socket.create_connection is not _blocked_create_connection:
         raise LabHuntSandboxError("outbound socket connection is allowed")
@@ -323,9 +332,7 @@ def verify_lab_hash_chain(path: Path) -> bool:
             return False
         if entry.get("sequence_id") != index + 1:
             return False
-        expected = canonical_sha256(
-            {key: entry[key] for key in _HASHED_ENTRY_KEYS if key in entry}
-        )
+        expected = canonical_sha256({key: entry[key] for key in _HASHED_ENTRY_KEYS if key in entry})
         if entry.get("entry_sha256") != expected:
             return False
         prev = expected

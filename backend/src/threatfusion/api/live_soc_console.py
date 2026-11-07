@@ -710,6 +710,9 @@ _CVE_TOKEN = re.compile(r"cve[-_ ]?(\d{4})[-_ ](\d{4,7})", re.IGNORECASE)
 _MITRE_ID = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
 _CVE_ID = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
 _SCENARIO_LABEL_RE = re.compile(r"scenario label (T\d+(?:\.\d+)?)")
+_POISON_IPV4 = frozenset({"198.51.100.99", "203.0.113.99"})
+_LIVE_GEMINI_CACHE: dict[tuple[int, str, str], dict[str, Any]] = {}
+_LIVE_GEMINI_CACHE_LOCK = threading.Lock()
 _COPILOT_BRIEF_INSTRUCTION = (
     "Write 2-4 authoritative sentences plus bullets under each canonical heading "
     "[1] EXECUTIVE TRIAGE & MODEL AUTHORITY, "
@@ -812,13 +815,12 @@ def _copilot_sections_have_prose(text: str) -> bool:
     return True
 
 
-def _copilot_citations_grounded(
-    text: str,
+def _allowed_citation_ids(
     evidence: str,
     hits: Sequence[Mapping[str, Any]],
     flow_hits: Sequence[Mapping[str, Any]] = (),
-) -> bool:
-    """Reject a MITRE or CVE id outside the flow hits, the indexed corpus, and the evidence."""
+) -> tuple[set[str], set[str]]:
+    """Technique and CVE ids already present on the flow, the corpus, or the evidence."""
     allowed_techniques, allowed_cves = _citation_ids(evidence)
     corpus_techniques, corpus_cves = _indexed_corpus_ids()
     allowed_techniques.update(corpus_techniques)
@@ -835,8 +837,126 @@ def _copilot_citations_grounded(
         allowed_cves.update(hit_cves)
         for year, number in _CVE_TOKEN.findall(blob):
             allowed_cves.add(f"CVE-{year}-{number}")
+    return allowed_techniques, allowed_cves
+
+
+def _copilot_citations_grounded(
+    text: str,
+    evidence: str,
+    hits: Sequence[Mapping[str, Any]],
+    flow_hits: Sequence[Mapping[str, Any]] = (),
+) -> bool:
+    """Reject a MITRE or CVE id outside the flow hits, the indexed corpus, and the evidence."""
+    allowed_techniques, allowed_cves = _allowed_citation_ids(evidence, hits, flow_hits)
     found_techniques, found_cves = _citation_ids(text)
     return found_techniques.issubset(allowed_techniques) and found_cves.issubset(allowed_cves)
+
+
+def _flow_verified_technique_id(
+    flow_hits: Sequence[Mapping[str, Any]],
+    hits: Sequence[Mapping[str, Any]],
+) -> str:
+    """Prefer the stored flow hit, then a retrieved hit, as the replacement id."""
+    for group in (flow_hits, hits):
+        for hit in group:
+            technique = str(hit.get("technique_id") or "").strip().upper()
+            if _MITRE_ID.fullmatch(technique):
+                return technique
+    return ""
+
+
+def _rewrite_unindexed_citations(
+    text: str,
+    evidence: str,
+    hits: Sequence[Mapping[str, Any]],
+    flow_hits: Sequence[Mapping[str, Any]],
+    *,
+    malicious: bool,
+) -> str:
+    """On an Attack row, swap an unindexed technique or CVE for the verified technique."""
+    if not malicious:
+        return text
+    allowed_techniques, allowed_cves = _allowed_citation_ids(evidence, hits, flow_hits)
+    found_techniques, found_cves = _citation_ids(text)
+    if found_techniques.issubset(allowed_techniques) and found_cves.issubset(allowed_cves):
+        return text
+    replacement = _flow_verified_technique_id(flow_hits, hits)
+
+    def mitre(match: re.Match[str]) -> str:
+        token = match.group(0)
+        if token in allowed_techniques:
+            return token
+        return replacement
+
+    def cve(match: re.Match[str]) -> str:
+        if match.group(0).upper() in allowed_cves:
+            return match.group(0)
+        return replacement
+
+    return _CVE_ID.sub(cve, _MITRE_ID.sub(mitre, text))
+
+
+def _bundle_inspected_entities(bundle: Any) -> tuple[str, ...]:
+    enrichment = getattr(bundle, "enrichment_result", None)
+    if enrichment is None:
+        return ()
+    entities = getattr(enrichment, "inspected_entities", ()) or ()
+    return tuple(str(item).strip() for item in entities if str(item).strip())
+
+
+def _strip_anonymized_study_ips(
+    text: str,
+    *,
+    source_label: str,
+    inspected: Sequence[str],
+) -> str:
+    """Drop example IPv4 on an anonymized study row. Poison addresses stay in the text."""
+    if source_label != "recorded_unsw_nb15" or tuple(inspected):
+        return text
+    from threatfusion.advisory.explanation_engine import IP_REGEX
+
+    def repl(match: re.Match[str]) -> str:
+        if match.group(0) in _POISON_IPV4:
+            return match.group(0)
+        return ""
+
+    return re.sub(r"[ \t]{2,}", " ", IP_REGEX.sub(repl, text))
+
+
+def _positive_flow_id(flow_id: Any) -> int | None:
+    try:
+        number = int(flow_id)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return number
+
+
+def _cached_live_gemini(flow_id: Any, question: str, model_name: str) -> dict[str, Any] | None:
+    number = _positive_flow_id(flow_id)
+    if number is None:
+        return None
+    key = (number, question.strip().lower(), model_name)
+    with _LIVE_GEMINI_CACHE_LOCK:
+        cached = _LIVE_GEMINI_CACHE.get(key)
+    if cached is None:
+        return None
+    return dict(cached)
+
+
+def _remember_live_gemini(
+    flow_id: Any,
+    question: str,
+    model_name: str,
+    payload: Mapping[str, Any],
+) -> None:
+    number = _positive_flow_id(flow_id)
+    if number is None:
+        return
+    key = (number, question.strip().lower(), model_name)
+    with _LIVE_GEMINI_CACHE_LOCK:
+        _LIVE_GEMINI_CACHE[key] = dict(payload)
 
 
 def _live_copilot_callable() -> Any:
@@ -850,7 +970,7 @@ def _live_copilot_callable() -> Any:
     return GeminiAdvisoryCallable(
         GeminiAdvisoryConfig(
             model_name=resolve_gemini_model(),
-            max_output_tokens=2048,
+            max_output_tokens=4096,
             temperature=0.1,
             timeout_seconds=30.0,
         )
@@ -1258,6 +1378,9 @@ def answer_mitre_copilot(
             if not verify_explanation_groundedness(local_narrative, bundle):
                 local_narrative = ""
     flow_hits = stored.get("chroma_rag_hits") if isinstance(stored, Mapping) else None
+    source_label = str(stored.get("source_label") or "") if isinstance(stored, Mapping) else ""
+    decision = str(stored.get("decision") or "") if isinstance(stored, Mapping) else ""
+    stored_flow_id = stored.get("flow_id") if isinstance(stored, Mapping) else None
     narrative = _grounded_gemini_narrative(
         asked,
         hit_rows,
@@ -1265,6 +1388,9 @@ def answer_mitre_copilot(
         bundle=bundle,
         local_narrative=local_narrative,
         flow_hits=flow_hits if isinstance(flow_hits, list) else (),
+        source_label=source_label,
+        decision=decision,
+        flow_id=stored_flow_id,
     )
     provider = str(narrative.get("provider") or "local_air_gapped")
     narrative_text = str(narrative.get("narrative") or "")
@@ -1351,8 +1477,11 @@ def _grounded_gemini_narrative(
     bundle: Any | None = None,
     local_narrative: str = "",
     flow_hits: Sequence[Mapping[str, Any]] = (),
+    source_label: str = "",
+    decision: str = "",
+    flow_id: Any = None,
 ) -> dict[str, Any]:
-    """Return a Gemini brief only when it names no address outside the evidence."""
+    """Return a Gemini brief after stripping unindexed ids and anonymized example addresses."""
     from threatfusion.advisory.explanation_engine import (
         AdvisoryEvidenceBundle,
         verify_explanation_groundedness,
@@ -1360,6 +1489,7 @@ def _grounded_gemini_narrative(
     from threatfusion.advisory.gemini_client import (
         GeminiAdvisoryUnavailableError,
         advisory_provider_status,
+        resolve_gemini_model,
     )
 
     status = advisory_provider_status()
@@ -1370,6 +1500,10 @@ def _grounded_gemini_narrative(
     }
     if not status.get("live_call_allowed"):
         return disclose_offline_fallback(local)
+    model_name = str(status.get("model_name") or resolve_gemini_model())
+    cached = _cached_live_gemini(flow_id, question, model_name)
+    if cached is not None:
+        return cached
     if evidence_text:
         evidence = evidence_text
     else:
@@ -1399,17 +1533,28 @@ def _grounded_gemini_narrative(
             rf_threshold=0.5,
             top_feature_signals={},
         )
+    inspected = _bundle_inspected_entities(check_bundle)
+    text = _strip_anonymized_study_ips(text, source_label=source_label, inspected=inspected)
+    text = _rewrite_unindexed_citations(
+        text,
+        evidence,
+        hits,
+        flow_hits,
+        malicious=decision == "Attack",
+    )
     if not verify_explanation_groundedness(text, check_bundle):
         return local
     if not _copilot_citations_grounded(text, evidence, hits, flow_hits):
         return local
     if evidence_text and not _copilot_sections_have_prose(text):
         return local
-    return {
+    live = {
         "provider": "gemini",
         "provider_label": status.get("label"),
         "narrative": text,
     }
+    _remember_live_gemini(flow_id, question, model_name, live)
+    return live
 
 
 def drift_for_stored_flows(db_path: Path) -> dict[str, Any]:

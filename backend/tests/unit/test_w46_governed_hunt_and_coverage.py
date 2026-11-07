@@ -38,9 +38,7 @@ from threatfusion.evaluation.lab_hunt_runner import (
 from threatfusion.evaluation.timeline_journal import group_consecutive_timeline_by_actor
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-_RUNNER_PATH = (
-    REPO_ROOT / "backend" / "src" / "threatfusion" / "evaluation" / "lab_hunt_runner.py"
-)
+_RUNNER_PATH = REPO_ROOT / "backend" / "src" / "threatfusion" / "evaluation" / "lab_hunt_runner.py"
 _HEATMAP_PATH = (
     REPO_ROOT / "backend" / "src" / "threatfusion" / "evaluation" / "coverage_heatmap.py"
 )
@@ -105,8 +103,7 @@ def _pack() -> dict[str, object]:
 
 def _live_db(path: Path, rows: list[tuple[object, ...]]) -> None:
     connection = sqlite3.connect(path)
-    connection.execute(
-        """
+    connection.execute("""
         CREATE TABLE live_flows (
             flow_id INTEGER PRIMARY KEY,
             decision TEXT,
@@ -116,8 +113,7 @@ def _live_db(path: Path, rows: list[tuple[object, ...]]) -> None:
             case_title TEXT,
             source_label TEXT
         )
-        """
-    )
+        """)
     connection.executemany(
         """
         INSERT INTO live_flows (
@@ -203,6 +199,8 @@ def test_rt_w46_l1_outbound_socket_is_refused(tmp_path: Path) -> None:
         with pytest.raises(LabHuntSandboxError, match="refused"):
             socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("203.0.113.10", 443))
         with pytest.raises(LabHuntSandboxError, match="refused"):
+            socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect_ex(("203.0.113.10", 443))
+        with pytest.raises(LabHuntSandboxError, match="refused"):
             socket.create_connection(("203.0.113.10", 443), timeout=0.2)
     chain = tmp_path / "lab_hunt_chain.json"
     with pytest.raises(LabHuntSandboxError, match="allowed"):
@@ -241,9 +239,7 @@ def test_rt_w46_h1_each_filter_step_uses_canonical_json(tmp_path: Path) -> None:
         assert entry["entry_sha256"] == canonical_sha256(payload)
         assert " " not in canonical_json(payload)
         previous = entry["entry_sha256"]
-    assert document["entries"][-1]["hypotheses_sha256"] == canonical_sha256(
-        document["hypotheses"]
-    )
+    assert document["entries"][-1]["hypotheses_sha256"] == canonical_sha256(document["hypotheses"])
 
 
 def test_rt_w46_h2_chain_file_is_separate_from_product_databases(tmp_path: Path) -> None:
@@ -336,7 +332,9 @@ def test_rt_w46_e1_heatmap_canonical_json_is_byte_identical(tmp_path: Path, monk
     assert payload["production_fusion_enabled"] is False
     assert payload["read_only"] is True
     assert len(payload["claimed"]) == 18
-    assert [item[0] for item in STATIC_MITRE_CVE_MAPPING] == [item["id"] for item in payload["claimed"]]
+    assert [item[0] for item in STATIC_MITRE_CVE_MAPPING] == [
+        item["id"] for item in payload["claimed"]
+    ]
     assert all(item["evidence_state"] == "unavailable" for item in payload["claimed"])
     by_id = {cell["id"]: cell for cell in payload["cells"]}
     assert by_id["T1190"]["rf_confirmed_count"] == 1

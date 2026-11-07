@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -471,6 +472,12 @@ class GeminiAdvisoryCallable:
             ) as exc:
                 if _copilot_retryable_failure(exc):
                     last_error = exc
+                    if (
+                        isinstance(exc, urllib.error.HTTPError)
+                        and exc.code in {429, 503}
+                        and model_name != models[-1]
+                    ):
+                        time.sleep(1.0)
                     continue
                 raise GeminiAdvisoryUnavailableError(
                     f"Gemini copilot request failed: {exc}"
