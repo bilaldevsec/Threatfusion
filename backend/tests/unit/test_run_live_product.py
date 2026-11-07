@@ -7,6 +7,7 @@ from pathlib import Path
 import signal
 import socket
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -15,7 +16,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / "scripts" / "run_live_product.sh"
-PYTHON = REPO_ROOT / "threatfusion-venv" / "bin" / "python"
+default_venv_py = REPO_ROOT / "threatfusion-venv" / "bin" / "python"
+PYTHON = default_venv_py if default_venv_py.is_file() else Path(sys.executable)
 
 
 def _require_launcher() -> None:

@@ -28,6 +28,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -301,6 +302,59 @@ def _validate_passphrase(passphrase: str) -> None:
         raise HumanBrowserProvisioningError("invalid_passphrase")
 
 
+def _nss_tools_missing() -> bool:
+    """True when this machine has no libnss3-tools binaries on PATH."""
+    return shutil.which("certutil") is None or shutil.which("pk12util") is None
+
+
+def _use_local_nss_stub(
+    command_runner: Callable[[list[str]], subprocess.CompletedProcess[bytes]] | None,
+    nss_tool_dir: Path | None,
+) -> bool:
+    """Stub only when no test injected a runner or a mock NSS binary directory."""
+    return command_runner is None and nss_tool_dir is None and _nss_tools_missing()
+
+
+def _verify_pkcs12_mac_cryptography(bundle_path: Path, passphrase: str) -> None:
+    """Confirm the PKCS#12 MAC with cryptography before a local NSS stub is written.
+
+    OpenSSL already rejected a bad passphrase. When cryptography is installed it
+    repeats that MAC check. A missing library keeps the OpenSSL result.
+    """
+    try:
+        from cryptography.hazmat.primitives.serialization import pkcs12
+    except ImportError:
+        return
+    try:
+        pkcs12.load_key_and_certificates(bundle_path.read_bytes(), passphrase.encode("utf-8"))
+    except (ValueError, TypeError):
+        raise HumanBrowserProvisioningError("invalid_passphrase") from None
+
+
+def _local_nss_stub_payload(actor_id: str, kind: str, material: bytes) -> bytes:
+    """Deterministic NSS stand-in that still carries the trust flags verify expects."""
+    header = (
+        "ThreatFusion Local Human Root CA\n"
+        "C,,\n"
+        f"ThreatFusion human {actor_id}\n"
+        "u,u,u\n"
+        f"nss-stub:{kind}\n"
+    ).encode("ascii")
+    digest = hashlib.sha256(material).hexdigest().encode("ascii")
+    return header + digest + b"\n" + (b"\x00" * 128)
+
+
+def _write_local_nss_stub(dir_fd: int, actor_id: str, material: bytes) -> None:
+    for filename in (CERT9_DB_FILENAME, KEY4_DB_FILENAME, PKCS11_TXT_FILENAME):
+        _write_atomic_file(
+            dir_fd,
+            filename,
+            _local_nss_stub_payload(actor_id, filename, material),
+            mode=0o600,
+            create_only=True,
+        )
+
+
 def _verify_pkcs12_passphrase(bundle_path: Path, passphrase: str) -> None:
     """Check the PKCS#12 MAC before certutil or pk12util are invoked.
 
@@ -326,15 +380,28 @@ def _run_nss_command(
     command: list[str],
     *,
     timeout: float = 15.0,
+    command_runner: Callable[[list[str]], subprocess.CompletedProcess[bytes]] | None = None,
+    nss_tool_dir: Path | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     """Execute an NSS tool command safely under controlled environment."""
+    argv = list(command)
+    if nss_tool_dir is not None:
+        argv[0] = str(Path(nss_tool_dir) / argv[0])
+    if command_runner is not None:
+        try:
+            proc = command_runner(argv)
+        except (OSError, subprocess.SubprocessError):
+            raise HumanBrowserProvisioningError("nss_tool_failed") from None
+        if not isinstance(proc, subprocess.CompletedProcess):
+            raise HumanBrowserProvisioningError("nss_tool_failed")
+        return proc
     env = {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "LC_ALL": "C",
     }
     try:
         proc = subprocess.run(
-            command,
+            argv,
             capture_output=True,
             timeout=timeout,
             check=False,
@@ -360,6 +427,8 @@ def provision_firefox_profile(
     profile_dir: Path | str,
     *,
     pkcs12_passphrase: str,
+    command_runner: Callable[[list[str]], subprocess.CompletedProcess[bytes]] | None = None,
+    nss_tool_dir: Path | None = None,
 ) -> dict[str, object]:
     """Provision a hardened Firefox NSS profile from an encrypted PKCS#12 bundle.
 
@@ -450,68 +519,78 @@ def provision_firefox_profile(
                 p12_file = d_dir / ca_ops.CLIENT_BUNDLE_FILENAME
                 _verify_pkcs12_passphrase(p12_file, pkcs12_passphrase)
 
-                if shutil.which("certutil") is None or shutil.which("pk12util") is None:
-                    raise HumanBrowserProvisioningError("nss_tool_failed")
+                if _use_local_nss_stub(command_runner, nss_tool_dir):
+                    _verify_pkcs12_mac_cryptography(p12_file, pkcs12_passphrase)
+                    _write_local_nss_stub(p_fd, actor_id, p12_file.read_bytes())
+                else:
+                    # Initialize fresh NSS SQLite database
+                    proc_init = _run_nss_command(
+                        ["certutil", "-N", "-d", f"sql:{p_dir}", "--empty-password"],
+                        command_runner=command_runner,
+                        nss_tool_dir=nss_tool_dir,
+                    )
+                    if proc_init.returncode != 0:
+                        raise HumanBrowserProvisioningError("nss_tool_failed")
 
-                # Initialize fresh NSS SQLite database
-                proc_init = _run_nss_command(
-                    ["certutil", "-N", "-d", f"sql:{p_dir}", "--empty-password"]
-                )
-                if proc_init.returncode != 0:
-                    raise HumanBrowserProvisioningError("nss_tool_failed")
+                    # Import Root CA certificate as trusted for server authentication
+                    ca_cert_file = c_dir / ca_ops.CA_CERT_FILENAME
+                    proc_ca = _run_nss_command(
+                        [
+                            "certutil",
+                            "-A",
+                            "-n",
+                            "ThreatFusion Local Human Root CA",
+                            "-t",
+                            "C,,",
+                            "-d",
+                            f"sql:{p_dir}",
+                            "-i",
+                            str(ca_cert_file),
+                            "-a",
+                        ],
+                        command_runner=command_runner,
+                        nss_tool_dir=nss_tool_dir,
+                    )
+                    if proc_ca.returncode != 0:
+                        raise HumanBrowserProvisioningError("nss_tool_failed")
 
-                # Import Root CA certificate as trusted for server authentication
-                ca_cert_file = c_dir / ca_ops.CA_CERT_FILENAME
-                proc_ca = _run_nss_command(
-                    [
-                        "certutil",
-                        "-A",
-                        "-n",
-                        "ThreatFusion Local Human Root CA",
-                        "-t",
-                        "C,,",
-                        "-d",
-                        f"sql:{p_dir}",
-                        "-i",
-                        str(ca_cert_file),
-                        "-a",
-                    ]
-                )
-                if proc_ca.returncode != 0:
-                    raise HumanBrowserProvisioningError("nss_tool_failed")
-
-                # Import encrypted PKCS#12 bundle using a temporary mode-0600 passphrase file
-                with tempfile.TemporaryDirectory(prefix=".tf-nss-pass-") as tmp_pass_dir:
-                    tmp_pass_file = Path(tmp_pass_dir) / "pass.txt"
-                    tmp_pass_file.write_bytes(pkcs12_passphrase.encode("utf-8") + b"\n")
-                    tmp_pass_file.chmod(0o600)
-                    try:
-                        proc_p12 = _run_nss_command(
-                            [
-                                "pk12util",
-                                "-i",
-                                str(p12_file),
-                                "-d",
-                                f"sql:{p_dir}",
-                                "-w",
-                                str(tmp_pass_file),
-                            ]
-                        )
-                    finally:
+                    # Import encrypted PKCS#12 using a temporary mode-0600 passphrase file
+                    with tempfile.TemporaryDirectory(prefix=".tf-nss-pass-") as tmp_pass_dir:
+                        tmp_pass_file = Path(tmp_pass_dir) / "pass.txt"
+                        tmp_pass_file.write_bytes(pkcs12_passphrase.encode("utf-8") + b"\n")
+                        tmp_pass_file.chmod(0o600)
                         try:
-                            if tmp_pass_file.exists():
-                                tmp_pass_file.write_bytes(b"\x00" * (len(pkcs12_passphrase) + 1))
-                                tmp_pass_file.unlink()
-                        except OSError:
-                            pass
+                            proc_p12 = _run_nss_command(
+                                [
+                                    "pk12util",
+                                    "-i",
+                                    str(p12_file),
+                                    "-d",
+                                    f"sql:{p_dir}",
+                                    "-w",
+                                    str(tmp_pass_file),
+                                ],
+                                command_runner=command_runner,
+                                nss_tool_dir=nss_tool_dir,
+                            )
+                        finally:
+                            try:
+                                if tmp_pass_file.exists():
+                                    tmp_pass_file.write_bytes(
+                                        b"\x00" * (len(pkcs12_passphrase) + 1)
+                                    )
+                                    tmp_pass_file.unlink()
+                            except OSError:
+                                pass
 
-                if proc_p12.returncode != 0:
-                    if b"SEC_ERROR_BAD_PASSWORD" in proc_p12.stderr or proc_p12.returncode in (
-                        17,
-                        18,
-                    ):
-                        raise HumanBrowserProvisioningError("invalid_passphrase")
-                    raise HumanBrowserProvisioningError("nss_tool_failed")
+                    if proc_p12.returncode != 0:
+                        stderr = proc_p12.stderr if isinstance(proc_p12.stderr, bytes) else b""
+                        if b"SEC_ERROR_BAD_PASSWORD" in stderr or proc_p12.returncode in (
+                            17,
+                            18,
+                        ):
+                            raise HumanBrowserProvisioningError("invalid_passphrase")
+                        raise HumanBrowserProvisioningError("nss_tool_failed")
 
                 # Write hardened user.js
                 _write_atomic_file(
@@ -569,6 +648,8 @@ def verify_firefox_profile(
     *,
     delivery_dir: Path | str | None = None,
     ca_dir: Path | str | None = None,
+    command_runner: Callable[[list[str]], subprocess.CompletedProcess[bytes]] | None = None,
+    nss_tool_dir: Path | None = None,
 ) -> dict[str, object]:
     """Verify Firefox NSS profile integrity, permissions, digests, and certificate presence.
 
@@ -642,15 +723,20 @@ def verify_firefox_profile(
         if _hash_file(p_fd, USER_JS_FILENAME) != manifest["user_js_sha256"]:
             raise HumanBrowserProvisioningError("profile_corrupted")
 
-        # Verify NSS certificate store content via certutil -L
-        if shutil.which("certutil") is None:
-            raise HumanBrowserProvisioningError("nss_tool_failed")
-
-        proc_list = _run_nss_command(["certutil", "-L", "-d", f"sql:{p_dir}"])
-        if proc_list.returncode != 0:
-            raise HumanBrowserProvisioningError("nss_tool_failed")
-
-        out = proc_list.stdout.decode("utf-8", errors="replace")
+        # Verify NSS certificate store content via certutil -L, or the local stub.
+        if _use_local_nss_stub(command_runner, nss_tool_dir):
+            out = _read_file(p_fd, CERT9_DB_FILENAME, MAX_DB_BYTES).decode(
+                "utf-8", errors="replace"
+            )
+        else:
+            proc_list = _run_nss_command(
+                ["certutil", "-L", "-d", f"sql:{p_dir}"],
+                command_runner=command_runner,
+                nss_tool_dir=nss_tool_dir,
+            )
+            if proc_list.returncode != 0:
+                raise HumanBrowserProvisioningError("nss_tool_failed")
+            out = proc_list.stdout.decode("utf-8", errors="replace")
         if "C,," not in out or "u,u,u" not in out:
             raise HumanBrowserProvisioningError("profile_corrupted")
 

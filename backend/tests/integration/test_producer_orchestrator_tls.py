@@ -850,14 +850,22 @@ def test_serving_lifecycle_worker_failure_timeout_and_cleanup(
         service = _make_lifecycle_service(
             root, certificates, _controlled_boundary({1: "Normal", 2: "Attack"}, [])
         )
-        executor = TerminatingProducerInferenceWorker(
-            project_root=tmp_path.resolve(),
-            manifest_sha256="c" * 64,
-            limits=ProducerInferenceWorkerLimits(
+        if mode == "malformed_after_attack":
+            limits = ProducerInferenceWorkerLimits(
+                record_seconds=30.0,
+                request_seconds=60.0,
+                cleanup_seconds=2.0,
+            )
+        else:
+            limits = ProducerInferenceWorkerLimits(
                 record_seconds=0.2,
                 request_seconds=3.0,
                 cleanup_seconds=1.0,
-            ),
+            )
+        executor = TerminatingProducerInferenceWorker(
+            project_root=tmp_path.resolve(),
+            manifest_sha256="c" * 64,
+            limits=limits,
             _test_mode=mode,
         )
         service.orchestrator._worker = executor

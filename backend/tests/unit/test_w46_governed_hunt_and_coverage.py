@@ -9,6 +9,7 @@ import re
 import socket
 import sqlite3
 import subprocess
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -141,7 +142,8 @@ def test_rt_w46_g9_2_coverage_helper_stays_outside_advisory() -> None:
     imports = _imports(_HEATMAP_PATH)
     for token in _FORBIDDEN_IMPORT_TOKENS:
         assert all(token not in item for item in imports)
-    python = REPO_ROOT / "threatfusion-venv" / "bin" / "python"
+    default_venv_py = REPO_ROOT / "threatfusion-venv" / "bin" / "python"
+    python = default_venv_py if default_venv_py.is_file() else Path(sys.executable)
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
     env["PYTHONPATH"] = str(REPO_ROOT / "backend" / "src")

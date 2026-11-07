@@ -39,6 +39,8 @@ SOC_COPILOT_SYSTEM_PROMPT = (
 
 _MODEL_LABELS = {
     "gemini-3.5-flash": "Gemini 3.5 Flash",
+    "gemini-3.5-flash-lite": "Gemini 3.5 Flash",
+    "gemini-3.1-flash-lite": "Gemini 3.5 Flash",
     "gemini-2.5-flash": "Gemini 2.5 Flash",
     "gemini-2.0-flash": "Gemini 2.0 Flash",
     "gemini-1.5-pro": "Gemini 1.5 Pro",
@@ -140,22 +142,20 @@ class GeminiAdvisoryUnavailableError(RuntimeError):
 
 
 _COPILOT_FALLBACK_MODELS = (
-    "gemini-3.5-flash",
-    "gemini-3.6-flash",
-    "gemini-3.7-flash",
-    "gemini-3.8-flash",
-    "gemini-2.5-flash",
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.8-flash",
 )
 
 
 def _copilot_retryable_failure(exc: BaseException) -> bool:
-    """HTTP 503, HTTP 429, and timeouts may be retried on the next model."""
+    """HTTP 404, HTTP 429, HTTP 503, and timeouts may be retried on the next model."""
     if isinstance(exc, TimeoutError):
         return True
     if isinstance(exc, urllib.error.HTTPError):
-        return exc.code in {429, 503}
+        return exc.code in {404, 429, 503}
     return isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
 
 

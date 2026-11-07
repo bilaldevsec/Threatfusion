@@ -95,11 +95,13 @@ def test_copilot_retries_503_and_timeout_across_fallback_models(
         seen.append(endpoint_url)
         if endpoint_url.endswith("models/gemini-3.5-flash:generateContent"):
             raise urllib.error.HTTPError(
+                endpoint_url, 404, "not found", hdrs=None, fp=io.BytesIO(b"{}")
+            )
+        if endpoint_url.endswith("models/gemini-3.5-flash-lite:generateContent"):
+            raise urllib.error.HTTPError(
                 endpoint_url, 503, "unavailable", hdrs=None, fp=io.BytesIO(b"{}")
             )
-        if endpoint_url.endswith("models/gemini-3.6-flash:generateContent"):
-            raise TimeoutError("timed out")
-        if endpoint_url.endswith("models/gemini-3.7-flash:generateContent"):
+        if endpoint_url.endswith("models/gemini-3.1-flash-lite:generateContent"):
             return {"candidates": [{"content": {"parts": [{"text": "live brief"}]}}]}
         raise AssertionError(endpoint_url)
 
@@ -107,8 +109,8 @@ def test_copilot_retries_503_and_timeout_across_fallback_models(
     assert text == "live brief"
     assert [url.rsplit("/", 1)[-1] for url in seen] == [
         "gemini-3.5-flash:generateContent",
-        "gemini-3.6-flash:generateContent",
-        "gemini-3.7-flash:generateContent",
+        "gemini-3.5-flash-lite:generateContent",
+        "gemini-3.1-flash-lite:generateContent",
     ]
     assert all("key=" not in url for url in seen)
 
@@ -143,7 +145,7 @@ def test_copilot_raises_after_every_fallback_times_out(monkeypatch: pytest.Monke
 
     with pytest.raises(GeminiAdvisoryUnavailableError):
         GeminiAdvisoryCallable(transport_callable=transport).generate_copilot_text("evidence")
-    assert len(seen) == 7
+    assert len(seen) == 5
 
 
 def _five_section_reply(*sentences: str) -> str:

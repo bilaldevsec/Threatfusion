@@ -32,10 +32,11 @@ the file. `--dry-run`, `--smoke`, `THREATFUSION_IGNORE_DOTENV=1`, and
 it only for `--up`. Pytest does not source that file. A missing
 `GEMINI_API_KEY` keeps the offline five-section brief. A live `gemini-3.5-flash`
 reply is asked for 2-4 sentences and bullets under each canonical heading.
-HTTP 503, HTTP 429, and timeouts retry across `gemini-3.5-flash`,
-`gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, and
-`gemini-2.5-flash`. HTTP 503 and HTTP 429 wait 1.0 second before the next
-model. A heading with no prose falls back to the local brief.
+HTTP 404, HTTP 503, HTTP 429, and timeouts retry across
+`gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-3.5-flash`,
+`gemini-3.6-flash`, and `gemini-3.8-flash`. HTTP 503 and HTTP 429 wait 1.0
+second before the next model. A retired model name that returns HTTP 404 does
+not stop the chain. A heading with no prose falls back to the local brief.
 Indexed corpus technique IDs, including `T1071.001`, stay allowed when every
 section has sentences. On an Attack row, a MITRE or CVE id outside that
 allowed set is replaced with the flow's verified technique id and the live
@@ -47,7 +48,6 @@ live reply is cached by flow id, question, and model name in memory and in
 the `live_copilot_cache` SQLite table on the console database. Gemini calls
 send the API key only in `x-goog-api-key`. `GEMINI_ENABLED=false` or `0`
 blocks a live call, and each hop checks the spend ceiling before it runs.
-`gemini-3.5-flash-lite` and `gemini-3.1-flash-lite` are on the fallback list.
 A stored
 `incident_v1` row, or any selected row without a flow id, asks the copilot
 with the first Attack flow id in the loaded queue. The console escapes that

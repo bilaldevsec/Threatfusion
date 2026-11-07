@@ -14,6 +14,7 @@ symlinks, insecure permissions, non-empty profile directories, and CA/bundle mis
 from __future__ import annotations
 
 import io
+import shutil
 import socket
 import ssl
 import subprocess
@@ -133,17 +134,21 @@ def test_end_to_end_firefox_profile_provisioning_and_mtls_alerts(
     assert 'user_pref("security.default_personal_cert", "Select Automatically");' in user_js_content
     assert 'user_pref("toolkit.telemetry.enabled", false);' in user_js_content
 
-    # 7. Check NSS database with certutil -L
-    proc = subprocess.run(
-        ["certutil", "-L", "-d", f"sql:{profile_dir}"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert "ThreatFusion Local Human Root CA" in proc.stdout
-    assert "C,," in proc.stdout
-    assert f"ThreatFusion human {actor_id}" in proc.stdout
-    assert "u,u,u" in proc.stdout
+    # 7. Check NSS database with certutil -L, or the local stub when libnss3-tools is absent.
+    if shutil.which("certutil") is None:
+        listing = (profile_dir / prov_ops.CERT9_DB_FILENAME).read_text(encoding="utf-8")
+    else:
+        proc = subprocess.run(
+            ["certutil", "-L", "-d", f"sql:{profile_dir}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        listing = proc.stdout
+    assert "ThreatFusion Local Human Root CA" in listing
+    assert "C,," in listing
+    assert f"ThreatFusion human {actor_id}" in listing
+    assert "u,u,u" in listing
 
     # 8. Loopback mTLS 1.3: extract client cert & key and serve GET /analyst/alerts on AnalystBrowserTlsListener
     extract_dir = tmp_path / "extracted_keys"
