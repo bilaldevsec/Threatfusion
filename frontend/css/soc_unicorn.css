@@ -2015,7 +2015,10 @@ label[for="shiftHandoffNote"],
 #constitutionalHealth,
 #agyAuditStatus,
 #liveDriftStatus,
-#liveWorkbenchStatus {
+#liveWorkbenchStatus,
+#actionStatusBanner,
+#containmentLiveStatus,
+#conclusionSoarStatus {
   display: block;
   background: #111827 !important;
   color: #F8FAFC !important;
@@ -2119,6 +2122,24 @@ label[for="shiftHandoffNote"],
   border: 1px solid rgba(248, 250, 252, 0.14);
   border-radius: 10px;
   padding: 0.85rem 1rem;
+}
+
+#actionStatusBanner[data-evidence-state="verified"],
+#containmentLiveStatus[data-evidence-state="verified"],
+#conclusionSoarStatus[data-evidence-state="verified"],
+#inspectorPlaybookNote[data-evidence-state="verified"] {
+  border-color: #3DDC97 !important;
+  color: #bbf7d0 !important;
+}
+
+#actionStatusBanner[data-evidence-state="unavailable"],
+#containmentLiveStatus[data-evidence-state="unavailable"],
+#conclusionSoarStatus[data-evidence-state="unavailable"] {
+  border-color: #f85149 !important;
+}
+
+button.is-complete {
+  box-shadow: inset 0 0 0 2px #3DDC97;
 }
 
 .graph-popover h3 {

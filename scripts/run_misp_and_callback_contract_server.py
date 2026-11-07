@@ -700,7 +700,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         return False
 
     def _origin_host_allowed(self, hostname: str) -> bool:
-        allowed = {"127.0.0.1", "localhost", "::1"}
+        allowed = set(_ALLOWED_HTTP_HOSTS) | {"127.0.0.1", "localhost", "::1", "172.17.0.1"}
         bind_host = str(self.server.server_address[0])
         if bind_host not in {"0.0.0.0", "::", ""}:
             allowed.add(bind_host.lower())

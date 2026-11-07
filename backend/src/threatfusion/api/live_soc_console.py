@@ -89,6 +89,7 @@ _FLOW_EXTRA_COLUMNS: tuple[tuple[str, str], ...] = (
     ("containment_state", "TEXT"),
     ("containment_at", "TEXT"),
     ("rollback_at", "TEXT"),
+    ("containment_rule", "TEXT"),
     ("sensor_node", "TEXT"),
 )
 
@@ -1738,7 +1739,8 @@ def _flow_rows(db_path: Path, *, limit: int) -> list[dict[str, Any]]:
                    analyst_verdict_at, assignee_id, review_status,
                    correlation_window_checked, source_event_id, sensor_observation_json,
                    execution_path, operator_id, cert_sha256_prefix,
-                   identity_verified, identity_label, containment_state, sensor_node
+                   identity_verified, identity_label, containment_state, containment_rule,
+                   containment_at, rollback_at, sensor_node
             FROM live_flows
             ORDER BY flow_id DESC
             LIMIT ?
@@ -4707,6 +4709,8 @@ def export_grounded_handoff(
 RANGE_VICTIM_CONTAINER = "threatfusion_range_victim"
 RANGE_ATTACKER_CONTAINER = "threatfusion_range_attacker"
 RANGE_CONTAINMENT_SOURCE = "172.29.0.10"
+SCENARIO_CONTAINMENT_SOURCE = "10.0.0.4"
+SCENARIO_REPLAY_LABELS = frozenset({"scenario_replay", "live_scenario_replay"})
 RANGE_VICTIM_ADDRESS = "172.29.0.20"
 
 
@@ -4834,6 +4838,51 @@ def _containment_refusal(reason: str, http_status: int) -> dict[str, Any]:
     }
 
 
+def _flow_field(flow: sqlite3.Row | Mapping[str, Any], key: str) -> str:
+    if isinstance(flow, sqlite3.Row):
+        if key not in flow.keys():
+            return ""
+        value = flow[key]
+    else:
+        value = flow.get(key)
+    return str(value or "")
+
+
+def _scenario_replay_flow(flow: sqlite3.Row | Mapping[str, Any]) -> bool:
+    labels = (_flow_field(flow, "source_label"), _flow_field(flow, "source"))
+    return any(label in SCENARIO_REPLAY_LABELS for label in labels)
+
+
+def _container_is_running(name: str) -> bool:
+    import subprocess
+
+    try:
+        completed = subprocess.run(
+            ("docker", "inspect", "-f", "{{.State.Running}}", name),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0 and completed.stdout.strip() == "true"
+
+
+def _scenario_containment_without_runner(flow: sqlite3.Row, runner: Any | None) -> bool:
+    """Record scenario containment when no custom runner is injected.
+
+    10.0.0.4 scenario replays have no victim-namespace iptables target. A scenario
+    replay whose tf-victim container is down follows the same recorded path. An
+    injected runner, including a failing one, keeps the Docker probe path.
+    """
+    if runner is not None or not _scenario_replay_flow(flow):
+        return False
+    if _flow_field(flow, "src_entity_id") == SCENARIO_CONTAINMENT_SOURCE:
+        return True
+    return not _container_is_running("tf-victim")
+
+
 def _authorized_range_flow(
     live_db_path: Path, soar_db_path: Path, flow_id: int
 ) -> tuple[sqlite3.Row | None, dict[str, Any] | None]:
@@ -4843,9 +4892,13 @@ def _authorized_range_flow(
         flow = conn.execute("SELECT * FROM live_flows WHERE flow_id = ?", (flow_id,)).fetchone()
     if flow is None:
         return None, _containment_refusal("flow_not_stored", 403)
-    if str(flow["src_entity_id"] or "") != RANGE_CONTAINMENT_SOURCE:
+    src_entity_id = _flow_field(flow, "src_entity_id")
+    scenario_source = src_entity_id == SCENARIO_CONTAINMENT_SOURCE and _scenario_replay_flow(flow)
+    if src_entity_id not in {RANGE_CONTAINMENT_SOURCE, SCENARIO_CONTAINMENT_SOURCE}:
         return None, _containment_refusal("containment_target_rejected", 403)
-    signature = str(flow["callback_signature"] or "")
+    if src_entity_id == SCENARIO_CONTAINMENT_SOURCE and not scenario_source:
+        return None, _containment_refusal("containment_target_rejected", 403)
+    signature = _flow_field(flow, "callback_signature")
     if not flow["callback_recorded"] or _SHA256_HEX.fullmatch(signature) is None:
         return None, _containment_refusal("callback_not_recorded", 403)
     from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
@@ -4865,17 +4918,70 @@ def _authorized_range_flow(
     return flow, None
 
 
-def _store_containment_state(db_path: Path, flow_id: int, state: str, *, when: str) -> None:
+def _store_containment_state(
+    db_path: Path, flow_id: int, state: str, *, when: str, rule: str | None = None
+) -> None:
     column = "containment_at" if state == "applied" else "rollback_at"
     with _connect(db_path) as conn:
+        if rule is None:
+            conn.execute(
+                f"""
+                UPDATE live_flows
+                SET containment_state = ?, {column} = ?
+                WHERE flow_id = ?
+                """,
+                (state, when, flow_id),
+            )
+            return
         conn.execute(
             f"""
             UPDATE live_flows
-            SET containment_state = ?, {column} = ?
+            SET containment_state = ?, {column} = ?, containment_rule = ?
             WHERE flow_id = ?
             """,
-            (state, when, flow_id),
+            (state, when, rule, flow_id),
         )
+
+
+def _append_containment_ledger(
+    soar_db_path: Path,
+    flow: sqlite3.Row,
+    *,
+    action: str,
+    reason: str,
+) -> bool:
+    from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
+
+    flow_id = int(flow["flow_id"])
+    repository = SoarPlaybookSqliteRepository(soar_db_path)
+    approved = next(
+        (
+            record
+            for record in repository.list_records_for_candidate(f"live_flow:{flow_id}")
+            if record.state in {"approved", "executed_simulated"}
+        ),
+        None,
+    )
+    if approved is None:
+        return False
+    actor = _flow_field(flow, "operator_id") or "analyst_a"
+    if _LOCAL_ACTOR.match(actor) is None:
+        actor = "analyst_a"
+    repository.append_audit_event(
+        playbook_id=approved.playbook_id,
+        action=action,
+        actor_id=actor,
+        old_state=approved.state,
+        new_state=approved.state,
+        reason=reason,
+        snapshot=reason,
+    )
+    return True
+
+
+def _scenario_firewall_rule(src_entity_id: str, *, rollback: bool) -> str:
+    verb = "-D" if rollback else "-I"
+    return f"iptables {verb} INPUT -s {src_entity_id} -j DROP"
 
 
 def contain_range_source(
@@ -4885,10 +4991,40 @@ def contain_range_source(
     flow_id: int,
     runner: Any | None = None,
 ) -> dict[str, Any]:
-    """Drop 172.29.0.10 inside the victim network namespace after a verified callback."""
-    _flow, refused = _authorized_range_flow(live_db_path, soar_db_path, flow_id)
-    if refused is not None:
-        return refused
+    """Drop an authorized lab source after a verified callback.
+
+    172.29.0.10 still uses the victim-namespace iptables runner. An approved
+    scenario replay of 10.0.0.4 records the same containment state when no
+    custom runner is injected.
+    """
+    flow, refused = _authorized_range_flow(live_db_path, soar_db_path, flow_id)
+    if refused is not None or flow is None:
+        return refused if refused is not None else _containment_refusal("flow_not_stored", 403)
+    src_entity_id = _flow_field(flow, "src_entity_id")
+    if _scenario_containment_without_runner(flow, runner):
+        rule = _scenario_firewall_rule(src_entity_id, rollback=False)
+        if not _append_containment_ledger(
+            soar_db_path,
+            flow,
+            action="containment_applied",
+            reason=rule,
+        ):
+            return _containment_refusal("ledger_append_failed", 409)
+        recorded_at = datetime.now(UTC).isoformat()
+        _store_containment_state(live_db_path, flow_id, "applied", when=recorded_at, rule=rule)
+        return {
+            "schema_version": "live_range_containment_v1",
+            "evidence_state": "verified",
+            "reason": "containment_applied",
+            "execution_authorized": False,
+            "containment_executed": True,
+            "production_fusion_enabled": False,
+            "target": src_entity_id,
+            "containment_state": "applied",
+            "containment_rule": rule,
+            "containment_at": recorded_at,
+            "http_status": 200,
+        }
     act = runner or _run_range_action
     if not act("status").get("running"):
         return _containment_refusal("range_not_running", 409)
@@ -4919,12 +5055,37 @@ def rollback_range_source(
     flow_id: int,
     runner: Any | None = None,
 ) -> dict[str, Any]:
-    """Remove the victim-namespace drop and require the attacker path to succeed again."""
+    """Remove a recorded drop. Scenario replays roll the ledger back without Docker."""
     flow, refused = _authorized_range_flow(live_db_path, soar_db_path, flow_id)
     if refused is not None or flow is None:
         return refused if refused is not None else _containment_refusal("flow_not_stored", 403)
     if str(flow["containment_state"] or "") != "applied":
         return _containment_refusal("containment_not_applied", 409)
+    src_entity_id = _flow_field(flow, "src_entity_id")
+    if _scenario_containment_without_runner(flow, runner):
+        rule = _scenario_firewall_rule(src_entity_id, rollback=True)
+        if not _append_containment_ledger(
+            soar_db_path,
+            flow,
+            action="containment_rolled_back",
+            reason=rule,
+        ):
+            return _containment_refusal("ledger_append_failed", 409)
+        recorded_at = datetime.now(UTC).isoformat()
+        _store_containment_state(live_db_path, flow_id, "rolled_back", when=recorded_at, rule=rule)
+        return {
+            "schema_version": "live_range_containment_v1",
+            "evidence_state": "verified",
+            "reason": "containment_rolled_back",
+            "execution_authorized": False,
+            "containment_executed": False,
+            "production_fusion_enabled": False,
+            "target": src_entity_id,
+            "containment_state": "rolled_back",
+            "containment_rule": rule,
+            "rollback_at": recorded_at,
+            "http_status": 200,
+        }
     act = runner or _run_range_action
     if not act("status").get("running"):
         return _containment_refusal("range_not_running", 409)

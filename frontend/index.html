@@ -210,6 +210,7 @@
               </div>
             </div>
           </div>
+          <div id="actionStatusBanner" role="status" aria-live="polite" data-evidence-state="unavailable">No analyst action recorded yet.</div>
           <nav class="inspector-tab-nav" aria-label="Investigation Inspector Tabs">
             <button class="inspector-tab-btn active" data-tab-target="1" type="button">Summary</button>
             <button class="inspector-tab-btn" data-tab-target="2" type="button">Findings &amp; Telemetry</button>
@@ -256,9 +257,11 @@
                     <div id="citedRationale" data-evidence-state="unavailable">unavailable</div>
                     <div id="caseAssignmentDisplay" data-evidence-state="unavailable">No assignee stored.</div>
                     <div id="inspectorFusionNote">production_fusion_enabled is false. The autoencoder does not decide this alert. Containment stays unauthorized.</div>
+                    <div id="conclusionSoarStatus" data-evidence-state="unavailable">Containment stays unauthorized until an analyst approves a stored playbook.</div>
                   </article>
                   <article class="card" style="background: #111827;">
                     <h3>Containment &amp; SOAR Actions</h3>
+                    <div id="containmentLiveStatus" data-evidence-state="unavailable">Containment stays unauthorized until an analyst approves a stored playbook.</div>
                     <ol class="soar-actions">
                       <li>
                         <button id="btnGuidedApprove" type="button">1. Approve Playbook (SHA-256 Chain)</button>

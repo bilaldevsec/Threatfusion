@@ -141,6 +141,62 @@ def test_rollback_refuses_before_containment_is_applied(tmp_path: Path) -> None:
     assert runner.calls == []
 
 
+def test_scenario_replay_records_containment_without_a_runner(tmp_path: Path) -> None:
+    live_db, soar_db, flow_id = _ready(tmp_path, source="10.0.0.4")
+    with sqlite3.connect(live_db) as conn:
+        conn.execute(
+            "UPDATE live_flows SET source_label = ? WHERE flow_id = ?",
+            ("live_scenario_replay", flow_id),
+        )
+    dropped = contain_range_source(live_db, soar_db, flow_id=flow_id)
+    assert dropped["http_status"] == 200
+    assert dropped["evidence_state"] == "verified"
+    assert dropped["reason"] == "containment_applied"
+    assert dropped["containment_executed"] is True
+    assert dropped["containment_rule"] == "iptables -I INPUT -s 10.0.0.4 -j DROP"
+    with sqlite3.connect(live_db) as conn:
+        state, rule = conn.execute(
+            "SELECT containment_state, containment_rule FROM live_flows WHERE flow_id = ?",
+            (flow_id,),
+        ).fetchone()
+    assert state == "applied"
+    assert rule == "iptables -I INPUT -s 10.0.0.4 -j DROP"
+    with sqlite3.connect(soar_db) as conn:
+        actions = [
+            row[0]
+            for row in conn.execute("SELECT action FROM soar_audit_events ORDER BY rowid ASC")
+        ]
+    assert "containment_applied" in actions
+    restored = rollback_range_source(live_db, soar_db, flow_id=flow_id)
+    assert restored["reason"] == "containment_rolled_back"
+    assert restored["containment_executed"] is False
+    assert restored["containment_rule"] == "iptables -D INPUT -s 10.0.0.4 -j DROP"
+    with sqlite3.connect(live_db) as conn:
+        state = conn.execute(
+            "SELECT containment_state FROM live_flows WHERE flow_id = ?",
+            (flow_id,),
+        ).fetchone()[0]
+    assert state == "rolled_back"
+
+
+def test_injected_failing_runner_still_reports_range_down_for_the_lab_source(
+    tmp_path: Path,
+) -> None:
+    live_db, soar_db, flow_id = _ready(tmp_path)
+    stopped = _Runner(running=False)
+    down = contain_range_source(live_db, soar_db, flow_id=flow_id, runner=stopped)
+    assert down["reason"] == "range_not_running"
+    assert down["containment_executed"] is False
+
+
+def test_unknown_containment_target_is_rejected(tmp_path: Path) -> None:
+    live_db, soar_db, flow_id = _ready(tmp_path, source="203.0.113.50")
+    refused = contain_range_source(live_db, soar_db, flow_id=flow_id, runner=_Runner())
+    assert refused["reason"] == "containment_target_rejected"
+    assert refused["http_status"] == 403
+    assert refused["containment_executed"] is False
+
+
 def test_drop_and_rollback_follow_the_victim_probe(tmp_path: Path) -> None:
     live_db, soar_db, flow_id = _ready(tmp_path)
     runner = _Runner()
