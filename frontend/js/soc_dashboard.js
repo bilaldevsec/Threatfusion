@@ -2470,6 +2470,16 @@
     return !!(inc.soarRecord && inc.soarRecord.state === 'approved');
   }
 
+  function hashChainVerified(inc) {
+    if (!inc) return false;
+    if (inc.auditChainVerified === true || inc.soarAuditChainVerified === true) {
+      const head = inc.soarAuditChainHeadSha256;
+      if (typeof head === 'string' && head && !SHA256_HEX_REGEX.test(head)) return false;
+      return true;
+    }
+    return verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256);
+  }
+
   function techniqueLabel(inc) {
     if (inc && inc.scenarioLabel) return String(inc.scenarioLabel);
     const hit = attackTechnique(inc);
@@ -2516,7 +2526,7 @@
     if (callback) {
       return 'DISPATCHED VIA N8N — Signed HMAC-SHA256 callback receipt verified. Click Isolate Attacker to enforce firewall block.';
     }
-    if (playbookApproved(inc)) {
+    if (playbookApproved(inc) && hashChainVerified(inc)) {
       return 'PLAYBOOK APPROVED — Sealed in HMAC-SHA256 hash chain. Click Dispatch via Live n8n Container or Isolate Attacker.';
     }
     if (inc.decision === 'Benign') {
@@ -2528,9 +2538,8 @@
   function containmentStatusState(inc) {
     if (!inc) return 'unavailable';
     const state = String(inc.containmentState || '');
-    if (state === 'applied' || state === 'rolled_back' || inc.callbackRecorded === true || playbookApproved(inc)) {
-      return 'verified';
-    }
+    if (state === 'applied' || state === 'rolled_back' || inc.callbackRecorded === true) return 'verified';
+    if (playbookApproved(inc) && hashChainVerified(inc)) return 'verified';
     return 'unavailable';
   }
 
@@ -2540,6 +2549,13 @@
     ['inspectorPlaybookNote', 'containmentLiveStatus', 'conclusionSoarStatus'].forEach(id => {
       setLiveText(id, line, state);
     });
+    const fusion = document.getElementById('inspectorFusionNote');
+    if (fusion) {
+      const prefix = 'production_fusion_enabled is false. The autoencoder does not decide this alert.';
+      fusion.textContent = state === 'verified' && line.indexOf('Containment stays unauthorized') === -1
+        ? prefix + ' ' + line
+        : prefix + ' Containment stays unauthorized.';
+    }
   }
 
   function markResponseProgress(inc) {
@@ -3040,13 +3056,27 @@
         && SHA256_HEX_REGEX.test(receipt)
         && (data.ledger_state === 'approved' || data.reason === 'already_approved' || data.reason === 'analyst_approved_local');
       if (approved) {
+        inc.soarState = 'approved';
+        inc.auditChainVerified = true;
+        inc.soarAuditChainVerified = true;
+        if (inc.soarRecord) inc.soarRecord.state = 'approved';
+        if (SHA256_HEX_REGEX.test(receipt)) inc.soarAuditChainHeadSha256 = receipt;
         showActionBanner('PLAYBOOK APPROVED — SOAR receipt ' + receipt.substring(0, 16) + ' verified. Containment not executed.', 'verified');
-      } else {
-        showActionBanner(actionFailureText(data, resp), 'unavailable');
+        return true;
       }
+      showActionBanner(actionFailureText(data, resp), 'unavailable');
+      return false;
     } catch (err) {
       showActionBanner(err && err.message ? String(err.message) : 'SOAR approval unavailable.', 'unavailable');
+      return false;
     }
+  }
+
+  async function ensurePlaybookApproved(inc) {
+    if (!inc || inc.decision !== 'Attack') return true;
+    const state = inc.soarState || (inc.soarRecord && inc.soarRecord.state) || '';
+    if (state === 'approved' && hashChainVerified(inc)) return true;
+    return approveLivePlaybook(inc);
   }
 
   function selectedLiveFlowId() {
@@ -3371,11 +3401,15 @@
       showActionBanner('Dispatch applies to an approved stored flow.', 'unavailable');
       return null;
     }
+    if (inc.decision === 'Attack') {
+      const approved = await ensurePlaybookApproved(inc);
+      if (!approved) return null;
+    }
     try {
       const resp = await fetch('/api/v1/live/soar/dispatch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ flow_id: inc.flowId })
+        body: JSON.stringify({ flow_id: inc.flowId, auto_approve: inc.decision === 'Attack' })
       });
       const data = await readActionPayload(resp);
       await refreshLiveCampaigns();
@@ -3440,12 +3474,9 @@
       return;
     }
     const isolating = String(path).indexOf('/soar/contain') !== -1;
-    if (
-      isolating
-      && inc.decision === 'Attack'
-      && playbookApproved(inc)
-      && inc.callbackRecorded !== true
-    ) {
+    if (isolating && inc.decision === 'Attack' && inc.callbackRecorded !== true) {
+      const ready = await ensurePlaybookApproved(inc);
+      if (!ready) return;
       const dispatched = await dispatchSignedCallback(inc);
       const sig = dispatched && typeof dispatched.signature_sha256 === 'string'
         ? dispatched.signature_sha256

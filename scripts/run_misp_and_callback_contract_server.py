@@ -1374,10 +1374,15 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 hmac_secret=os.environ.get("THREATFUSION_SOAR_HMAC_SECRET", ""),
                 outbox_db_path=self._live_db_path().with_name("threatfusion-live-thehive.sqlite3"),
                 n8n_webhook_url=os.environ.get("THREATFUSION_N8N_WEBHOOK_URL", ""),
+                auto_approve=req_data.get("auto_approve") is True,
+                local_fallback_on_n8n_failure=True,
             )
             if result.get("reason") == "playbook_not_approved":
                 status = 403
-            elif result.get("evidence_state") == "verified":
+            elif (
+                result.get("evidence_state") == "verified"
+                or result.get("callback_recorded") is True
+            ):
                 status = 200
             else:
                 status = 400

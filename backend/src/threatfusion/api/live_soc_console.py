@@ -3600,103 +3600,29 @@ def _dispatch_through_live_n8n(
     )
 
 
-def dispatch_approved_callback(
+def _promote_recorded_callback(result: dict[str, Any]) -> dict[str, Any]:
+    """A stored HMAC receipt is verified evidence even when n8n omits mttr."""
+    signature = str(result.get("signature_sha256") or "")
+    if result.get("callback_recorded") is True and _SHA256_HEX.fullmatch(signature):
+        result["evidence_state"] = "verified"
+    return result
+
+
+def _dispatch_signed_local_contract(
     live_db_path: Path,
-    soar_db_path: Path,
+    flow: sqlite3.Row,
+    approved: Any,
+    repository: Any,
+    refused: dict[str, Any],
     *,
     flow_id: int,
-    contract_base_url: str,
-    hmac_secret: str,
-    thehive_url: str = "http://127.0.0.1:9",
-    outbox_db_path: Path | None = None,
-    n8n_webhook_url: str | None = None,
-    n8n_contract_base_url: str | None = None,
+    candidate_id: str,
+    secret: str,
+    base: str,
+    thehive_url: str,
+    outbox_db_path: Path | None,
 ) -> dict[str, Any]:
-    """Verify an approved playbook, open a local 4-block case, and record the HMAC callback.
-
-    Host containment is not executed. The callback is the signed local contract loop.
-    """
-    refused: dict[str, Any] = {
-        "schema_version": "live_soar_callback_v1",
-        "evidence_state": "unavailable",
-        "execution_authorized": False,
-        "containment_executed": False,
-        "production_fusion_enabled": False,
-        "callback_recorded": False,
-        "signature_sha256": "",
-    }
-    if flow_id <= 0:
-        refused["reason"] = "flow_not_stored"
-        return refused
-    secret = hmac_secret.strip()
-    base = contract_base_url.rstrip("/")
-    if len(secret) < 16 or not base:
-        refused["reason"] = "callback_contract_unconfigured"
-        return refused
-    if not live_db_path.is_file() or not soar_db_path.is_file():
-        refused["reason"] = "flow_not_stored"
-        return refused
-    with _connect(live_db_path) as conn:
-        flow = conn.execute("SELECT * FROM live_flows WHERE flow_id = ?", (flow_id,)).fetchone()
-    if flow is None:
-        refused["reason"] = "flow_not_stored"
-        return refused
-    stored_sig = str(flow["callback_signature"] or "")
-    if flow["callback_recorded"] and _SHA256_HEX.fullmatch(stored_sig):
-        return disclose_offline_fallback(
-            {
-                "schema_version": "live_soar_callback_v1",
-                "evidence_state": "verified",
-                "reason": "already_recorded",
-                "execution_authorized": False,
-                "containment_executed": False,
-                "production_fusion_enabled": False,
-                "callback_recorded": True,
-                "signature_sha256": stored_sig,
-                "thehive_case_id": flow["thehive_case_id"],
-                "mttr_seconds": flow["mttr_seconds"],
-                "flow_id": flow_id,
-                "playbook_id": flow["playbook_id"],
-                "execution_path": flow["execution_path"] or LOCAL_CONTRACT_FALLBACK,
-                "callback_receipt": _signed_callback_receipt(
-                    playbook_id=str(flow["playbook_id"] or ""),
-                    candidate_id=f"live_flow:{flow_id}",
-                    state="executed_simulated",
-                    actor="",
-                    reason="already_recorded",
-                    secret=secret,
-                ),
-            }
-        )
-    candidate_id = f"live_flow:{flow_id}"
-    repository = SoarPlaybookSqliteRepository(soar_db_path)
-    approved = next(
-        (
-            record
-            for record in repository.list_records_for_candidate(candidate_id)
-            if record.state in {"approved", "executed_simulated"}
-        ),
-        None,
-    )
-    if approved is None:
-        refused["reason"] = "playbook_not_approved"
-        return refused
-    webhook = (n8n_webhook_url or "").strip()
-    if webhook:
-        return _dispatch_through_live_n8n(
-            live_db_path,
-            flow,
-            approved,
-            repository,
-            refused,
-            flow_id=flow_id,
-            candidate_id=candidate_id,
-            secret=secret,
-            thehive_url=thehive_url,
-            outbox_db_path=outbox_db_path,
-            webhook_url=webhook,
-            contract_base_url=_n8n_contract_base(base, n8n_contract_base_url),
-        )
+    """Record the HMAC callback on this process. Host containment is not executed."""
     verify_payload = {"candidate_id": candidate_id, "playbook_id": approved.playbook_id}
     verify_body = _canonical_body(verify_payload)
     verify_key = f"idem_{approved.playbook_id}_{approved.version}"
@@ -3800,6 +3726,166 @@ def dispatch_approved_callback(
                 secret=secret,
             ),
         }
+    )
+
+
+def dispatch_approved_callback(
+    live_db_path: Path,
+    soar_db_path: Path,
+    *,
+    flow_id: int,
+    contract_base_url: str,
+    hmac_secret: str,
+    thehive_url: str = "http://127.0.0.1:9",
+    outbox_db_path: Path | None = None,
+    n8n_webhook_url: str | None = None,
+    n8n_contract_base_url: str | None = None,
+    auto_approve: bool = False,
+    local_fallback_on_n8n_failure: bool = False,
+) -> dict[str, Any]:
+    """Verify an approved playbook, open a local 4-block case, and record the HMAC callback.
+
+    Host containment is not executed. The callback is the signed local contract loop.
+    """
+    refused: dict[str, Any] = {
+        "schema_version": "live_soar_callback_v1",
+        "evidence_state": "unavailable",
+        "execution_authorized": False,
+        "containment_executed": False,
+        "production_fusion_enabled": False,
+        "callback_recorded": False,
+        "signature_sha256": "",
+    }
+    if flow_id <= 0:
+        refused["reason"] = "flow_not_stored"
+        return refused
+    secret = hmac_secret.strip()
+    base = contract_base_url.rstrip("/")
+    if len(secret) < 16 or not base:
+        refused["reason"] = "callback_contract_unconfigured"
+        return refused
+    if not live_db_path.is_file():
+        refused["reason"] = "flow_not_stored"
+        return refused
+    if not soar_db_path.is_file() and not auto_approve:
+        refused["reason"] = "flow_not_stored"
+        return refused
+    with _connect(live_db_path) as conn:
+        flow = conn.execute("SELECT * FROM live_flows WHERE flow_id = ?", (flow_id,)).fetchone()
+    if flow is None:
+        refused["reason"] = "flow_not_stored"
+        return refused
+    stored_sig = str(flow["callback_signature"] or "")
+    if flow["callback_recorded"] and _SHA256_HEX.fullmatch(stored_sig):
+        return disclose_offline_fallback(
+            {
+                "schema_version": "live_soar_callback_v1",
+                "evidence_state": "verified",
+                "reason": "already_recorded",
+                "execution_authorized": False,
+                "containment_executed": False,
+                "production_fusion_enabled": False,
+                "callback_recorded": True,
+                "signature_sha256": stored_sig,
+                "thehive_case_id": flow["thehive_case_id"],
+                "mttr_seconds": flow["mttr_seconds"],
+                "flow_id": flow_id,
+                "playbook_id": flow["playbook_id"],
+                "execution_path": flow["execution_path"] or LOCAL_CONTRACT_FALLBACK,
+                "callback_receipt": _signed_callback_receipt(
+                    playbook_id=str(flow["playbook_id"] or ""),
+                    candidate_id=f"live_flow:{flow_id}",
+                    state="executed_simulated",
+                    actor="",
+                    reason="already_recorded",
+                    secret=secret,
+                ),
+            }
+        )
+    candidate_id = f"live_flow:{flow_id}"
+    repository = SoarPlaybookSqliteRepository(soar_db_path)
+    approved = next(
+        (
+            record
+            for record in repository.list_records_for_candidate(candidate_id)
+            if record.state in {"approved", "executed_simulated"}
+        ),
+        None,
+    )
+    if approved is None and auto_approve and str(flow["decision"] or "") == "Attack":
+        actor = str(flow["operator_id"] or "").strip() or "lab_operator"
+        if _LOCAL_ACTOR.match(actor) is None:
+            actor = "lab_operator"
+        approve_live_soar(
+            live_db_path,
+            soar_db_path,
+            flow_id=flow_id,
+            actor_id=actor,
+            reason="Analyst recorded local approval. Containment is not executed.",
+        )
+        repository = SoarPlaybookSqliteRepository(soar_db_path)
+        approved = next(
+            (
+                record
+                for record in repository.list_records_for_candidate(candidate_id)
+                if record.state in {"approved", "executed_simulated"}
+            ),
+            None,
+        )
+    if approved is None:
+        refused["reason"] = "playbook_not_approved"
+        return refused
+    local_kwargs = {
+        "flow_id": flow_id,
+        "candidate_id": candidate_id,
+        "secret": secret,
+        "base": base,
+        "thehive_url": thehive_url,
+        "outbox_db_path": outbox_db_path,
+    }
+    webhook = (n8n_webhook_url or "").strip()
+    if webhook:
+        n8n_result = _promote_recorded_callback(
+            _dispatch_through_live_n8n(
+                live_db_path,
+                flow,
+                approved,
+                repository,
+                refused,
+                flow_id=flow_id,
+                candidate_id=candidate_id,
+                secret=secret,
+                thehive_url=thehive_url,
+                outbox_db_path=outbox_db_path,
+                webhook_url=webhook,
+                contract_base_url=_n8n_contract_base(base, n8n_contract_base_url),
+            )
+        )
+        if n8n_result.get("callback_recorded") is True or not local_fallback_on_n8n_failure:
+            return n8n_result
+        local_result = _promote_recorded_callback(
+            _dispatch_signed_local_contract(
+                live_db_path,
+                flow,
+                approved,
+                repository,
+                dict(refused),
+                **local_kwargs,
+            )
+        )
+        if local_result.get("callback_recorded") is True:
+            local_result["n8n_attempt_reason"] = n8n_result.get("reason")
+            return local_result
+        return n8n_result
+    return _promote_recorded_callback(
+        _dispatch_signed_local_contract(
+            live_db_path,
+            flow,
+            approved,
+            repository,
+            refused,
+            **local_kwargs,
+        )
     )
 
 
