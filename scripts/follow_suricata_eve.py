@@ -12,6 +12,7 @@ import json
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -103,7 +104,13 @@ def sensor_payload(
 
 def _console_csrf(url: str, timeout: float) -> str:
     health = url.split("/api/v1/live/", 1)[0] + "/api/v1/live/health"
-    request = urllib.request.Request(health, method="GET")
+    parsed = urllib.parse.urlparse(health)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    request = urllib.request.Request(
+        health,
+        headers={"Origin": origin, "Sec-Fetch-Site": "same-origin"},
+        method="GET",
+    )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         payload = json.loads(response.read().decode("utf-8"))
     token = payload.get("csrf_token") if isinstance(payload, dict) else ""

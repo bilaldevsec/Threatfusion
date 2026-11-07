@@ -213,6 +213,14 @@ class TestApprovalGatedSoarLedger:
                     expected_version=3,
                 )
 
+            with pytest.raises(SoarStateTransitionError, match="actor does not match"):
+                engine.rollback_executed_action(
+                    executed.playbook_id,
+                    actor_id="other-analyst",
+                    rollback_reason="A different actor cannot roll this action back",
+                    expected_version=3,
+                )
+
             # Step 4: Reversible Rollback
             rolled_back = engine.rollback_executed_action(
                 executed.playbook_id,

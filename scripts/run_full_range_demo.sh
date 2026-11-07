@@ -11,29 +11,35 @@ cd "$ROOT"
 
 # Source the lab key only when this script starts the console (--up).
 load_gemini_dotenv() {
-  if [[ "${THREATFUSION_IGNORE_DOTENV:-}" == "1" || "${THREATFUSION_OFFLINE_ONLY:-}" == "1" ]]; then
+  local offline="${THREATFUSION_OFFLINE_ONLY:-}"
+  offline="${offline,,}"
+  if [[ "${THREATFUSION_IGNORE_DOTENV:-}" == "1" || "$offline" == "1" || "$offline" == "true" ]]; then
     return 0
   fi
   local env_file="$1"
-  [[ -f "$env_file" ]] || return 0
-  local line key value
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line#"${line%%[![:space:]]*}"}"
-    [[ -z "$line" || "$line" == \#* ]] && continue
-    [[ "$line" == export\ * ]] && line="${line#export }"
-    [[ "$line" == *=* ]] || continue
-    key="${line%%=*}"
-    value="${line#*=}"
-    key="${key%"${key##*[![:space:]]}"}"
-    if [[ "$key" != "GEMINI_API_KEY" && "$key" != "GEMINI_MODEL" ]]; then
-      continue
-    fi
-    if [[ ${#value} -ge 2 && ( "$value" == \"*\" || "$value" == \'*\' ) ]]; then
-      value="${value:1:${#value}-2}"
-    fi
-    printf -v "$key" '%s' "$value"
-    export "$key"
-  done < "$env_file"
+  if [[ -f "$env_file" ]]; then
+    local line key value
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line#"${line%%[![:space:]]*}"}"
+      [[ -z "$line" || "$line" == \#* ]] && continue
+      [[ "$line" == export\ * ]] && line="${line#export }"
+      [[ "$line" == *=* ]] || continue
+      key="${line%%=*}"
+      value="${line#*=}"
+      key="${key%"${key##*[![:space:]]}"}"
+      if [[ "$key" != "GEMINI_API_KEY" && "$key" != "GEMINI_MODEL" && "$key" != "GEMINI_ENABLED" ]]; then
+        continue
+      fi
+      if [[ ${#value} -ge 2 && ( "$value" == \"*\" || "$value" == \'*\' ) ]]; then
+        value="${value:1:${#value}-2}"
+      fi
+      printf -v "$key" '%s' "$value"
+      export "$key"
+    done < "$env_file"
+  fi
+  if [[ -n "${GEMINI_API_KEY:-}" ]]; then
+    export GEMINI_ENABLED="${GEMINI_ENABLED:-true}"
+  fi
 }
 
 if [[ "${1:-}" == "--up" ]]; then
@@ -151,7 +157,7 @@ cmd_up() {
     >"$FOLLOWER_LOG" 2>&1 &
   echo $! >"$FOLLOWER_PIDFILE"
   local csrf
-  csrf="$(curl -fsS "http://${BIND_HOST}:${PORT}/api/v1/live/health" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin).get("csrf_token",""))')"
+  csrf="$(curl -fsS -H "Origin: http://${BIND_HOST}:${PORT}" -H "Sec-Fetch-Site: same-origin" "http://${BIND_HOST}:${PORT}/api/v1/live/health" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin).get("csrf_token",""))')"
   curl -fsS -X POST "http://${BIND_HOST}:${PORT}/api/v1/live/purge-bridge-noise" \
     -H 'Content-Type: application/json' -H "X-ThreatFusion-CSRF: ${csrf}" -d '{}' >/dev/null
   if ! curl -fsS -X POST "http://${BIND_HOST}:${PORT}/api/v1/live/scenarios" \
@@ -177,7 +183,7 @@ cmd_scan() {
   echo "waiting for 172.29.0.10 -> 172.29.0.20 in eve.json and the live queue"
   local response
   local csrf
-  csrf="$(curl -fsS "http://${BIND_HOST}:${PORT}/api/v1/live/health" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin).get("csrf_token",""))')"
+  csrf="$(curl -fsS -H "Origin: http://${BIND_HOST}:${PORT}" -H "Sec-Fetch-Site: same-origin" "http://${BIND_HOST}:${PORT}/api/v1/live/health" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin).get("csrf_token",""))')"
   response="$(curl -fsS -X POST "http://${BIND_HOST}:${PORT}/api/v1/live/range-scan" \
     -H 'Content-Type: application/json' -H "X-ThreatFusion-CSRF: ${csrf}" -d '{}')" || die "range scan was not ingested"
   printf '%s\n' "$response"

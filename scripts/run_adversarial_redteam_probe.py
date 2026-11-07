@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -51,8 +52,8 @@ def _post(
         return exc.code, parsed if isinstance(parsed, dict) else {}
 
 
-def _get(base: str, path: str) -> tuple[int, dict]:
-    request = urllib.request.Request(f"{base}{path}", method="GET")
+def _get(base: str, path: str, headers: dict[str, str] | None = None) -> tuple[int, dict]:
+    request = urllib.request.Request(f"{base}{path}", headers=headers or {}, method="GET")
     with urllib.request.urlopen(request, timeout=30) as response:
         return response.status, json.loads(response.read().decode("utf-8"))
 
@@ -94,7 +95,13 @@ def _paint(ok: bool, text: str) -> str:
 
 
 def _live_headers(base: str) -> dict[str, str]:
-    _status, health = _get(base, "/api/v1/live/health")
+    parsed = urllib.parse.urlparse(base)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    _status, health = _get(
+        base,
+        "/api/v1/live/health",
+        headers={"Origin": origin, "Sec-Fetch-Site": "same-origin"},
+    )
     token = str(health.get("csrf_token") or "")
     return {"X-ThreatFusion-CSRF": token} if token else {}
 

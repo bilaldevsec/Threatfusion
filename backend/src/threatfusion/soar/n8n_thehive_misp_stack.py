@@ -142,7 +142,7 @@ class MispQueryResult:
     tags: tuple[str, ...]
     event_id: str | None
     private_ip_guard_triggered: bool
-    query_mode: str  # "rfc1918_guard_suppressed" | "rest_api" | "verified_snapshot_fallback"
+    query_mode: str  # "rfc1918_guard_suppressed" | "rest_api" | "offline_snapshot_unverified"
     timestamp_utc: str
     transport_error: str | None = None
 
@@ -285,34 +285,19 @@ class MispDeterministicClient:
             json.JSONDecodeError,
         ) as exc:
             transport_err = f"{type(exc).__name__}: {str(exc)[:100]}"
-            # Fall back closed to canonical verified snapshot
-            snap = CANONICAL_MISP_SNAPSHOT.get(clean_ind.lower())
-            if snap:
-                res = MispQueryResult(
-                    indicator=clean_ind,
-                    indicator_type=indicator_type,
-                    matched=snap["matched"],
-                    threat_level=snap["threat_level"],
-                    tags=snap["tags"],
-                    event_id=snap["event_id"],
-                    private_ip_guard_triggered=False,
-                    query_mode="verified_snapshot_fallback",
-                    timestamp_utc=now_str,
-                    transport_error=transport_err,
-                )
-            else:
-                res = MispQueryResult(
-                    indicator=clean_ind,
-                    indicator_type=indicator_type,
-                    matched=False,
-                    threat_level="undefined",
-                    tags=(),
-                    event_id=None,
-                    private_ip_guard_triggered=False,
-                    query_mode="verified_snapshot_fallback",
-                    timestamp_utc=now_str,
-                    transport_error=transport_err,
-                )
+            # A transport failure is not a verified snapshot match.
+            res = MispQueryResult(
+                indicator=clean_ind,
+                indicator_type=indicator_type,
+                matched=False,
+                threat_level="undefined",
+                tags=(),
+                event_id=None,
+                private_ip_guard_triggered=False,
+                query_mode="offline_snapshot_unverified",
+                timestamp_utc=now_str,
+                transport_error=transport_err,
+            )
             self._record_query(res)
             return res
 

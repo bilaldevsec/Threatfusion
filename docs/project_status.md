@@ -17,9 +17,20 @@ bare 64-hex signature, is rejected. The SOAR ledger hash is that same secret.
 The head is sealed, delete and update of audit rows abort, and an empty
 ledger does not verify. Outbound MISP lookups use the strict address guard.
 Incomplete 14-feature ingest returns HTTP 422 and writes no row. Mutating
-`POST /api/v1/live/*` requires the process CSRF token, a bearer token, or the
-in-process test header. The receipt, the chain, and the explanation must all
-pass before `data-evidence-state="verified"`.
+`POST /api/v1/live/*` requires the process CSRF token, a configured
+`THREATFUSION_LIVE_WRITE_TOKEN` of at least 16 characters, or the in-process
+test header while pytest is running. An arbitrary Bearer token is rejected.
+This HTTP listener does not treat a certificate fingerprint header as a
+client certificate. Live Gemini stays off unless `GEMINI_ENABLED` is `true`,
+`1`, `yes`, or `on`. Missing `certutil` or `pk12util` fails Firefox
+provisioning closed instead of writing placeholder NSS files. Ledger rollback
+requires the executing actor and a valid audit chain, and a range rollback
+requires containment already applied on that flow. A stored
+`audit_chain_verified` flag is not a chain verification. The receipt, the
+recomputed chain, and groundedness must all pass before
+`data-evidence-state="verified"`. Production and a security-verified turnkey
+release remain NO-GO pending runtime evidence. `TF-008` through `TF-011`
+stay open.
 RFC W46-01 adds a lab-only hunt pack runner, a read-only ATT&CK/CVE coverage
 heatmap, and a journal/table timeline toggle. Hunt rows are labeled
 `LAB HYPOTHESIS — NOT AN ALERT` and are hashed into a separate chain file.

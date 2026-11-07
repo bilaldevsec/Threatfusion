@@ -52,6 +52,7 @@ def test_missing_key_and_budget_ceiling_do_not_call_the_network(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_ENABLED", raising=False)
     monkeypatch.delenv("THREATFUSION_CLOUD_SPEND_USD", raising=False)
     status = advisory_provider_status()
     assert status["provider"] == "local_air_gapped"
@@ -59,6 +60,10 @@ def test_missing_key_and_budget_ceiling_do_not_call_the_network(
     with pytest.raises(GeminiAdvisoryUnavailableError):
         GeminiAdvisoryCallable().generate_copilot_text("Stored decision Benign.")
     monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-used")
+    still_off = advisory_provider_status()
+    assert still_off["provider"] == "local_air_gapped"
+    assert still_off["live_call_allowed"] is False
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
     monkeypatch.setenv("THREATFUSION_CLOUD_SPEND_USD", "5.00")
     blocked = advisory_provider_status()
     assert blocked["live_call_allowed"] is False
@@ -87,6 +92,7 @@ def test_copilot_retries_503_and_timeout_across_fallback_models(
 
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
     monkeypatch.delenv("THREATFUSION_CLOUD_SPEND_USD", raising=False)
     seen: list[str] = []
 
@@ -121,6 +127,7 @@ def test_copilot_does_not_hop_models_on_http_401(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
     seen: list[str] = []
 
     def transport(endpoint_url: str, payload: dict) -> dict:
@@ -136,6 +143,7 @@ def test_copilot_does_not_hop_models_on_http_401(monkeypatch: pytest.MonkeyPatch
 def test_copilot_raises_after_every_fallback_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
     seen: list[str] = []
 
     def transport(endpoint_url: str, payload: dict) -> dict:
@@ -164,6 +172,7 @@ def test_missing_heading_is_kept_and_foreign_ids_are_still_rejected(
     from threatfusion.api import live_soc_console as console
 
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
     monkeypatch.delenv("THREATFUSION_CLOUD_SPEND_USD", raising=False)
 
     class _Client:
@@ -238,6 +247,7 @@ def test_attack_rows_keep_live_text_after_unindexed_ids_are_rewritten(
     from threatfusion.api import live_soc_console as console
 
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
     monkeypatch.delenv("THREATFUSION_CLOUD_SPEND_USD", raising=False)
     console._LIVE_GEMINI_CACHE.clear()
 
@@ -300,6 +310,7 @@ def test_anonymized_study_rows_strip_example_ips_and_keep_poison_blocked(
     from threatfusion.api import live_soc_console as console
 
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
     monkeypatch.delenv("THREATFUSION_CLOUD_SPEND_USD", raising=False)
 
     class _Client:

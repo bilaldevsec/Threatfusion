@@ -434,8 +434,12 @@ def run_full_soc_demo(output_dir: Path | str) -> dict[str, Any]:
     misp_hash_res = misp_client.query_indicator(
         "44d88612fea8a8f36de82e1278abb02f", indicator_type="md5"
     )
-    assert misp_hash_res.matched is True
-    assert "malware:eicar" in misp_hash_res.tags
+    if misp_hash_res.query_mode == "rest_api":
+        assert misp_hash_res.matched is True
+        assert "malware:eicar" in misp_hash_res.tags
+    else:
+        assert misp_hash_res.query_mode == "offline_snapshot_unverified"
+        assert misp_hash_res.matched is False
 
     # Milestone #32: Deterministic TheHive Case Creation (Approval-Gated)
     thehive_client = TheHiveDeterministicClient(outbox_db_path=soar_outbox_db)

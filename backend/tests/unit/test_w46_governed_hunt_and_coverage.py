@@ -204,6 +204,10 @@ def test_rt_w46_l1_outbound_socket_is_refused(tmp_path: Path) -> None:
             socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect_ex(("203.0.113.10", 443))
         with pytest.raises(LabHuntSandboxError, match="refused"):
             socket.create_connection(("203.0.113.10", 443), timeout=0.2)
+        with pytest.raises(LabHuntSandboxError, match="refused"):
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b"x", ("203.0.113.10", 53))
+        with pytest.raises(LabHuntSandboxError, match="refused"):
+            socket.getaddrinfo("203.0.113.10", 53)
     chain = tmp_path / "lab_hunt_chain.json"
     with pytest.raises(LabHuntSandboxError, match="allowed"):
         run_lab_hunt_pack(_fixture(), _pack(), chain, allow_network=True)

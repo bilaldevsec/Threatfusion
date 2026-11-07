@@ -86,32 +86,38 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Load only the Gemini key and model. Dry-run, smoke, and the offline flags
-# keep the process on the environment it was given.
+# Load the Gemini key, model, and enable flag. Dry-run, smoke, and the offline
+# flags keep the process on the environment it was given.
 load_gemini_dotenv() {
-  if [[ "${THREATFUSION_IGNORE_DOTENV:-}" == "1" || "${THREATFUSION_OFFLINE_ONLY:-}" == "1" ]]; then
+  local offline="${THREATFUSION_OFFLINE_ONLY:-}"
+  offline="${offline,,}"
+  if [[ "${THREATFUSION_IGNORE_DOTENV:-}" == "1" || "$offline" == "1" || "$offline" == "true" ]]; then
     return 0
   fi
   local env_file="$1"
-  [[ -f "$env_file" ]] || return 0
-  local line key value
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line#"${line%%[![:space:]]*}"}"
-    [[ -z "$line" || "$line" == \#* ]] && continue
-    [[ "$line" == export\ * ]] && line="${line#export }"
-    [[ "$line" == *=* ]] || continue
-    key="${line%%=*}"
-    value="${line#*=}"
-    key="${key%"${key##*[![:space:]]}"}"
-    if [[ "$key" != "GEMINI_API_KEY" && "$key" != "GEMINI_MODEL" ]]; then
-      continue
-    fi
-    if [[ ${#value} -ge 2 && ( "$value" == \"*\" || "$value" == \'*\' ) ]]; then
-      value="${value:1:${#value}-2}"
-    fi
-    printf -v "$key" '%s' "$value"
-    export "$key"
-  done < "$env_file"
+  if [[ -f "$env_file" ]]; then
+    local line key value
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line#"${line%%[![:space:]]*}"}"
+      [[ -z "$line" || "$line" == \#* ]] && continue
+      [[ "$line" == export\ * ]] && line="${line#export }"
+      [[ "$line" == *=* ]] || continue
+      key="${line%%=*}"
+      value="${line#*=}"
+      key="${key%"${key##*[![:space:]]}"}"
+      if [[ "$key" != "GEMINI_API_KEY" && "$key" != "GEMINI_MODEL" && "$key" != "GEMINI_ENABLED" ]]; then
+        continue
+      fi
+      if [[ ${#value} -ge 2 && ( "$value" == \"*\" || "$value" == \'*\' ) ]]; then
+        value="${value:1:${#value}-2}"
+      fi
+      printf -v "$key" '%s' "$value"
+      export "$key"
+    done < "$env_file"
+  fi
+  if [[ -n "${GEMINI_API_KEY:-}" ]]; then
+    export GEMINI_ENABLED="${GEMINI_ENABLED:-true}"
+  fi
 }
 
 if [[ "$MODE" != "dry-run" && "$MODE" != "smoke" ]]; then
@@ -287,7 +293,15 @@ import sys
 import urllib.request
 
 host, port = sys.argv[1], sys.argv[2]
-with urllib.request.urlopen(f"http://{host}:{port}/api/v1/live/health", timeout=10) as health:
+health_request = urllib.request.Request(
+    f"http://{host}:{port}/api/v1/live/health",
+    headers={
+        "Origin": f"http://{host}:{port}",
+        "Sec-Fetch-Site": "same-origin",
+    },
+    method="GET",
+)
+with urllib.request.urlopen(health_request, timeout=10) as health:
     token = json.load(health).get("csrf_token", "")
 headers = {"Content-Type": "application/json", "X-ThreatFusion-CSRF": token}
 request = urllib.request.Request(

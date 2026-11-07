@@ -55,7 +55,31 @@ def _signed_n8n_receipt() -> dict[str, str]:
     receipt["signature_sha256"] = receipt_hmac_sha256(
         receipt, os.environ["THREATFUSION_SOAR_HMAC_SECRET"]
     )
+    receipt["callback_verified"] = True
+    receipt["hmac_signature_verified"] = True
+    receipt["evidence_state"] = "verified"
     return receipt
+
+
+def _canonical_ledger_chain(secret: str, candidate_id: str) -> tuple[dict[str, object], ...]:
+    from threatfusion.soar.playbook_ledger import (
+        SOAR_AUDIT_GENESIS_HASH,
+        compute_canonical_audit_entry_hash,
+    )
+
+    fields = {
+        "prev_entry_sha256": SOAR_AUDIT_GENESIS_HASH,
+        "sequence_id": 1,
+        "playbook_id": "pb-1",
+        "candidate_id": candidate_id,
+        "state": "approved",
+        "actor": "lab_operator",
+        "reason": "reviewed",
+        "timestamp_utc": "2026-10-18T10:00:00Z",
+    }
+    entry = dict(fields)
+    entry["entry_sha256"] = compute_canonical_audit_entry_hash(**fields, ledger_secret=secret)
+    return (entry,)
 
 
 import http.server
@@ -277,18 +301,25 @@ class TestMispDeterministicClient:
 
         # EICAR MD5
         res_eicar = client.query_indicator("44d88612fea8a8f36de82e1278abb02f", indicator_type="md5")
-        assert res_eicar.matched is True
-        assert res_eicar.threat_level == "high"
-        assert "malware:eicar" in res_eicar.tags
-        assert res_eicar.query_mode in ("verified_snapshot_fallback", "rest_api")
+        if res_eicar.query_mode == "rest_api":
+            assert res_eicar.matched is True
+            assert res_eicar.threat_level == "high"
+            assert "malware:eicar" in res_eicar.tags
+        else:
+            assert res_eicar.query_mode == "offline_snapshot_unverified"
+            assert res_eicar.matched is False
 
         # Mirai SHA256
         res_mirai = client.query_indicator(
             "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
             indicator_type="sha256",
         )
-        assert res_mirai.matched is True
-        assert "malware:mirai" in res_mirai.tags
+        if res_mirai.query_mode == "rest_api":
+            assert res_mirai.matched is True
+            assert "malware:mirai" in res_mirai.tags
+        else:
+            assert res_mirai.query_mode == "offline_snapshot_unverified"
+            assert res_mirai.matched is False
 
     def test_misp_client_unknown_indicator(self, tmp_path: Path) -> None:
         """Verify unknown public indicator returns clean non-match."""
@@ -1032,7 +1063,12 @@ class TestEndToEndSocDemoAndDashboardIntegration:
             track_b["misp_hash_and_ioc_lookup"]["dest_ip_query"]["private_ip_guard_triggered"]
             is True
         )
-        assert track_b["misp_hash_and_ioc_lookup"]["sample_malware_hash_query"]["matched"] is True
+        hash_query = track_b["misp_hash_and_ioc_lookup"]["sample_malware_hash_query"]
+        if hash_query["query_mode"] == "rest_api":
+            assert hash_query["matched"] is True
+        else:
+            assert hash_query["query_mode"] == "offline_snapshot_unverified"
+            assert hash_query["matched"] is False
 
         assert "thehive_case_record" in track_b
         assert track_b["thehive_case_record"]["case_id"].startswith("case_")
@@ -1204,6 +1240,12 @@ class TestEndToEndSocDemoAndDashboardIntegration:
             },
             soar_audit_chain_verified=True,
             soar_audit_chain_head_sha256="a" * 64,
+            soar_audit_chain_entries=_canonical_ledger_chain(
+                os.environ.setdefault(
+                    "THREATFUSION_SOAR_HMAC_SECRET", "lab-only-not-a-production-secret"
+                ),
+                "alert_cand_m32_test_02",
+            ),
             thehive_case_record={"case_id": "case_12345"},
             n8n_playbook_receipt=_signed_n8n_receipt(),
         )
@@ -1814,6 +1856,9 @@ class TestMilestone36ArchitecturalElevation:
         )
 
         os.environ.setdefault("THREATFUSION_SOAR_HMAC_SECRET", "lab-only-not-a-production-secret")
+        valid_chain = _canonical_ledger_chain(
+            os.environ["THREATFUSION_SOAR_HMAC_SECRET"], "cand_m37_01"
+        )
         valid_receipt = {
             "execution_id": "exec_n8n_test_01",
             "playbook_id": "pb-1",
@@ -1826,16 +1871,6 @@ class TestMilestone36ArchitecturalElevation:
         valid_receipt["signature_sha256"] = receipt_hmac_sha256(
             valid_receipt, os.environ["THREATFUSION_SOAR_HMAC_SECRET"]
         )
-        valid_chain = (
-            {
-                "entry_hash": "GENESIS_BLOCK_00000000000000000000000000000000000000000000000000000000",
-                "prev_hash": "GENESIS_BLOCK_00000000000000000000000000000000000000000000000000000000",
-            },
-            {
-                "entry_hash": "44d88612fea8a8f36de82e1278abb02f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d",
-                "prev_hash": "GENESIS_BLOCK_00000000000000000000000000000000000000000000000000000000",
-            },
-        )
 
         # 1. Valid verified card
         card_valid = TriageQueueCardView(
@@ -1847,6 +1882,8 @@ class TestMilestone36ArchitecturalElevation:
             soar_receipt=valid_receipt,
             audit_chain=valid_chain,
             explanation="Deterministic Frozen Random Forest detected Web Protocols on host 10.0.0.5.",
+            audit_chain_valid=True,
+            hmac_signature_verified=True,
         )
         inspector = build_five_tab_investigation_inspector(card_valid)
         assert inspector["evidence_state"] == "verified"
@@ -2037,7 +2074,7 @@ class TestMegaMilestone38FailClosedEvidence:
             {"entry_sha256": "a" * 64, "prev_entry_sha256": "0" * 64},
             {"entry_sha256": "b" * 64, "prev_entry_sha256": "c" * 64},
         )
-        assert verify_audit_chain_integrity(linked) is True
+        assert verify_audit_chain_integrity(linked) is False
         assert verify_audit_chain_integrity(broken) is False
 
         card = TriageQueueCardView(
@@ -2093,8 +2130,15 @@ class TestMegaMilestone38FailClosedEvidence:
             incident_timings=[{"incident_id": "inc_live", "t_investigation": 2.0}]
         )
         measured_dict = measured.to_dict()
-        assert measured_dict["telemetry_source"] == "live_measured"
-        assert measured_dict["evidence_state"] == "verified"
+        assert measured_dict["telemetry_source"] == "reference_benchmark_not_measured"
+        assert measured_dict["evidence_state"] == "reference_benchmark"
+        both = build_operational_velocity_report(
+            incident_timings=[{"incident_id": "inc_live", "t_investigation": 2.0}],
+            response_timings=[{"candidate_id": "inc_live", "t_response": 4.5}],
+        )
+        both_dict = both.to_dict()
+        assert both_dict["telemetry_source"] == "live_measured"
+        assert both_dict["evidence_state"] == "verified"
 
     def test_host_alias_body_cap_idempotency_restart_and_wal(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -2324,10 +2368,7 @@ class TestMegaMilestone38FailClosedEvidence:
         receipt["signature_sha256"] = receipt_hmac_sha256(
             receipt, os.environ["THREATFUSION_SOAR_HMAC_SECRET"]
         )
-        chain = (
-            {"entry_sha256": "a" * 64, "prev_entry_sha256": "0" * 64},
-            {"entry_sha256": "b" * 64, "prev_entry_sha256": "a" * 64},
-        )
+        chain = _canonical_ledger_chain(os.environ["THREATFUSION_SOAR_HMAC_SECRET"], "flow-a")
         assert classify_soar_operator_state() == "pending_approval"
         assert classify_soar_operator_state(playbook_state="approved") == "approved_local"
         assert (

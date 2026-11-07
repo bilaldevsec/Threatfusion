@@ -202,10 +202,11 @@ def build_operational_velocity_report(
         for t in resp_timings
         if "t_response" in t and t["t_response"] is not None
     ]
+    positive_mttr_vals = [value for value in mttr_vals if value > 0.0]
     if mttr_vals:
         mttr_mean = round(sum(mttr_vals) / len(mttr_vals), 6)
         mttr_speedup = round(MTTR_MANUAL_BASELINE_SECONDS / max(0.000001, mttr_mean), 2)
-        live_measured_mttr: float | None = mttr_mean
+        live_measured_mttr: float | None = mttr_mean if positive_mttr_vals else None
     else:
         mttr_mean = 0.0
         mttr_speedup = 0.0
@@ -228,10 +229,12 @@ def build_operational_velocity_report(
         4,
     )
 
-    has_measured_timings = bool(mtti_vals or mttr_vals)
-    if has_measured_timings:
+    if mtti_vals and positive_mttr_vals:
         telemetry_source = "live_measured"
         evidence_state = "verified"
+    elif mtti_vals or mttr_vals:
+        telemetry_source = "reference_benchmark_not_measured"
+        evidence_state = "reference_benchmark"
     elif strict_measured_only:
         telemetry_source = "reference_benchmark"
         evidence_state = "unavailable"
@@ -250,7 +253,11 @@ def build_operational_velocity_report(
         "analyst_toil_saved_pct": toil_saved_pct,
         "telemetry_source": telemetry_source,
         "evidence_state": evidence_state,
-        "measurement_label": ("live_measured" if mttr_vals else "reference_benchmark_not_measured"),
+        "measurement_label": (
+            "live_measured"
+            if mtti_vals and positive_mttr_vals
+            else "reference_benchmark_not_measured"
+        ),
         "live_measured_mttr_seconds": live_measured_mttr,
         "reference_mtti_seconds": 1.25,
         "reference_ttd_mean_ms": 18.4,

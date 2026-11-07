@@ -149,12 +149,34 @@ def evidence_state_from_gates(receipt_ok: bool, chain_ok: bool, grounded_ok: boo
     return "unavailable"
 
 
+def _n8n_hive_dispatch_verified(hive: Any, n8n: Any) -> bool:
+    """Accept a dispatch only when the callback itself is marked verified.
+
+    A case id, an execution id, and 64 hex characters are not a receipt.
+    """
+    if not isinstance(hive, dict) or not isinstance(n8n, dict):
+        return False
+    case_id = str(hive.get("case_id", "")).strip()
+    execution_id = str(n8n.get("execution_id", "")).strip()
+    signature = str(n8n.get("signature_sha256", "")).strip()
+    if not (
+        case_id.startswith("case_")
+        and execution_id.startswith("exec_")
+        and re.fullmatch(r"[0-9a-fA-F]{64}", signature)
+    ):
+        return False
+    if n8n.get("callback_verified") is not True and hive.get("callback_verified") is not True:
+        return False
+    if n8n.get("hmac_signature_verified") is False or hive.get("hmac_signature_verified") is False:
+        return False
+    evidence = n8n.get("evidence_state")
+    if evidence is None:
+        evidence = hive.get("evidence_state")
+    return evidence == "verified"
+
+
 def _is_hex64(value: str) -> bool:
     return bool(re.fullmatch(r"[0-9a-fA-F]{64}", value))
-
-
-def _is_genesis_anchor(value: str) -> bool:
-    return value == ("0" * 64) or value.startswith("GENESIS")
 
 
 _CANONICAL_CHAIN_FIELDS = (
@@ -180,9 +202,13 @@ def _verify_canonical_audit_entries(entries: Sequence[Mapping[str, Any]]) -> boo
     """Recompute each digest from the canonical fields. Genesis is ``0`` * 64."""
     from threatfusion.soar.playbook_ledger import (
         SOAR_AUDIT_GENESIS_HASH,
+        SoarError,
         compute_canonical_audit_entry_hash,
     )
 
+    secret = os.environ.get("THREATFUSION_SOAR_HMAC_SECRET", "").strip()
+    if not secret:
+        return False
     expected_prev = SOAR_AUDIT_GENESIS_HASH
     for index, record in enumerate(entries):
         try:
@@ -194,16 +220,20 @@ def _verify_canonical_audit_entries(entries: Sequence[Mapping[str, Any]]) -> boo
         prev = str(record.get("prev_entry_sha256") or "")
         if prev != expected_prev:
             return False
-        digest = compute_canonical_audit_entry_hash(
-            prev_entry_sha256=prev,
-            sequence_id=sequence_id,
-            playbook_id=str(record.get("playbook_id") or ""),
-            candidate_id=str(record.get("candidate_id") or ""),
-            state=str(record.get("state") or ""),
-            actor=str(record.get("actor") or ""),
-            reason=None if record.get("reason") is None else str(record.get("reason")),
-            timestamp_utc=str(record.get("timestamp_utc") or ""),
-        )
+        try:
+            digest = compute_canonical_audit_entry_hash(
+                prev_entry_sha256=prev,
+                sequence_id=sequence_id,
+                playbook_id=str(record.get("playbook_id") or ""),
+                candidate_id=str(record.get("candidate_id") or ""),
+                state=str(record.get("state") or ""),
+                actor=str(record.get("actor") or ""),
+                reason=None if record.get("reason") is None else str(record.get("reason")),
+                timestamp_utc=str(record.get("timestamp_utc") or ""),
+                ledger_secret=secret,
+            )
+        except SoarError:
+            return False
         stored = str(record.get("entry_sha256") or record.get("entry_hash") or "")
         if not re.fullmatch(r"[0-9a-f]{64}", stored) or not hmac.compare_digest(digest, stored):
             return False
@@ -212,48 +242,21 @@ def _verify_canonical_audit_entries(entries: Sequence[Mapping[str, Any]]) -> boo
 
 
 def verify_audit_chain_integrity(entries: Any) -> bool:
-    """Verify cryptographic audit hash chain integrity across ledger entries.
+    """Verify a keyed canonical audit chain.
 
-    Canonical entries are recomputed from ``prev_entry_sha256``, ``sequence_id``,
+    Entries are recomputed from ``prev_entry_sha256``, ``sequence_id``,
     ``playbook_id``, ``candidate_id``, ``state``, ``actor``, ``reason``, and
-    ``timestamp_utc``, starting at genesis ``0`` * 64. A reordered, truncated,
-    or tampered canonical chain is rejected. Legacy fixtures that only link
-    ``entry_sha256`` values keep the previous parent-link check. An empty
+    ``timestamp_utc``, starting at genesis ``0`` * 64. A chain that only links
+    digests, or a chain sealed with no server secret, is not verified. An empty
     entry list is not a verified chain.
     """
     if not entries:
         return False
     if not isinstance(entries, (list, tuple)):
         return False
-    if _entries_use_canonical_chain(entries):
-        return _verify_canonical_audit_entries(entries)
-    previous_entry_hash: str | None = None
-    for index, record in enumerate(entries):
-        if not isinstance(record, dict):
-            return False
-        entry_hash = (
-            record.get("entry_hash")
-            or record.get("audit_hash")
-            or record.get("sha256")
-            or record.get("entry_sha256")
-            or record.get("hash_chain_sha256")
-        )
-        if not entry_hash or not isinstance(entry_hash, str):
-            return False
-        entry_clean = entry_hash.strip()
-        if not (_is_hex64(entry_clean) or entry_clean.startswith("GENESIS")):
-            return False
-        previous = record.get("prev_hash") or record.get("prev_entry_sha256")
-        if previous is None:
-            return False
-        previous_clean = str(previous).strip()
-        if index == 0:
-            if not (_is_genesis_anchor(previous_clean) or _is_hex64(previous_clean)):
-                return False
-        elif previous_entry_hash is None or previous_clean != previous_entry_hash:
-            return False
-        previous_entry_hash = entry_clean
-    return True
+    if not _entries_use_canonical_chain(entries):
+        return False
+    return _verify_canonical_audit_entries(entries)
 
 
 def classify_soar_operator_state(
@@ -454,8 +457,8 @@ class TriageQueueCardView:
     audit_chain: tuple[dict[str, Any], ...] = field(default_factory=tuple)
     explanation: dict[str, Any] | str | None = None
     thehive_case_id: str | None = None
-    audit_chain_valid: bool = True
-    hmac_signature_verified: bool = True
+    audit_chain_valid: bool = False
+    hmac_signature_verified: bool = False
     t_investigation: float = 1.25
     model_identity: str = "network_random_forest"
     model_version: str = "full-network-random-forest-6d69c72-v1"
@@ -897,6 +900,7 @@ class DashboardAlertDetail:
     soar_recommendations: tuple[object, ...] | None = None
     soar_audit_chain_verified: bool = False
     soar_audit_chain_head_sha256: str | None = None
+    soar_audit_chain_entries: tuple[object, ...] | None = None
     thehive_case_record: dict[str, object] | None = None
     n8n_playbook_receipt: dict[str, object] | None = None
 
@@ -1128,6 +1132,11 @@ def _parse_detail(payload: dict[str, object]) -> DashboardAlertDetail:
         soar_audit_chain_head_sha256=(
             str(payload.get("soar_audit_chain_head_sha256"))
             if payload.get("soar_audit_chain_head_sha256") is not None
+            else None
+        ),
+        soar_audit_chain_entries=(
+            tuple(payload["soar_audit_chain_entries"])
+            if isinstance(payload.get("soar_audit_chain_entries"), (list, tuple))
             else None
         ),
         thehive_case_record=(
@@ -1478,8 +1487,8 @@ def render_dashboard_html(
             )
             query_mode = str(ti.get("query_mode", ""))
             misp_source = ""
-            if query_mode == "verified_snapshot_fallback":
-                misp_source = "<div><b>MISP Source:</b> Local Verified Snapshot Fallback</div>"
+            if query_mode in {"offline_snapshot_unverified", "verified_snapshot_fallback"}:
+                misp_source = "<div><b>MISP Source:</b> Offline snapshot unverified</div>"
             ti_block = f"""
             <h3>Threat-Intel &amp; Provenance</h3>
             <div class="evidence-grid">
@@ -1531,29 +1540,8 @@ def render_dashboard_html(
             </table>
             """
 
-        # Finding #5: Strict Cryptographic & Schema Validation for Badges
-        # 1. SOAR Cryptographic Audit Chain Validation
-        valid_soar_chain = False
-        if sel.soar_audit_chain_verified is True and sel.soar_audit_chain_head_sha256:
-            if re.fullmatch(r"[0-9a-fA-F]{64}", sel.soar_audit_chain_head_sha256):
-                valid_soar_chain = True
-        elif sel.soar_recommendations and len(sel.soar_recommendations) > 0:
-            entries_valid = True
-            for r in sel.soar_recommendations:
-                if not isinstance(r, dict):
-                    entries_valid = False
-                    break
-                h = (
-                    r.get("entry_hash")
-                    or r.get("audit_hash")
-                    or r.get("sha256")
-                    or r.get("entry_sha256")
-                )
-                if not h or not isinstance(h, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", h):
-                    entries_valid = False
-                    break
-            if entries_valid:
-                valid_soar_chain = True
+        # A stored boolean or a lone digest is not a chain verification.
+        valid_soar_chain = verify_audit_chain_integrity(sel.soar_audit_chain_entries)
 
         if valid_soar_chain:
             soar_chain_badge = (
@@ -1611,36 +1599,16 @@ def render_dashboard_html(
             )
 
         # 3. n8n Deterministic Playbook & TheHive Case Status Validation
-        valid_dispatch = False
-        has_hive = False
-        has_n8n = False
-        if sel.thehive_case_record and isinstance(sel.thehive_case_record, dict):
-            cid = str(sel.thehive_case_record.get("case_id", ""))
-            if cid.startswith("case_"):
-                has_hive = True
-        if sel.n8n_playbook_receipt and isinstance(sel.n8n_playbook_receipt, dict):
-            eid = str(sel.n8n_playbook_receipt.get("execution_id", ""))
-            sig = str(sel.n8n_playbook_receipt.get("signature_sha256", ""))
-            if eid.startswith("exec_") and re.fullmatch(r"[0-9a-fA-F]{64}", sig):
-                has_n8n = True
-        if has_hive and has_n8n:
-            valid_dispatch = True
-        elif sel.soar_recommendations:
+        valid_dispatch = _n8n_hive_dispatch_verified(
+            sel.thehive_case_record, sel.n8n_playbook_receipt
+        )
+        if not valid_dispatch and sel.soar_recommendations:
             for rec in sel.soar_recommendations:
-                if isinstance(rec, dict):
-                    r_hive = rec.get("thehive_case_record")
-                    r_n8n = rec.get("n8n_playbook_receipt")
-                    if isinstance(r_hive, dict) and isinstance(r_n8n, dict):
-                        cid = str(r_hive.get("case_id", ""))
-                        eid = str(r_n8n.get("execution_id", ""))
-                        sig = str(r_n8n.get("signature_sha256", ""))
-                        if (
-                            cid.startswith("case_")
-                            and eid.startswith("exec_")
-                            and re.fullmatch(r"[0-9a-fA-F]{64}", sig)
-                        ):
-                            valid_dispatch = True
-                            break
+                if isinstance(rec, dict) and _n8n_hive_dispatch_verified(
+                    rec.get("thehive_case_record"), rec.get("n8n_playbook_receipt")
+                ):
+                    valid_dispatch = True
+                    break
 
         if valid_dispatch:
             n8n_hive_badge = (

@@ -42,6 +42,8 @@ _SANDBOX_DEPTH = 0
 _ORIGINAL_CONNECT: Any = None
 _ORIGINAL_CONNECT_EX: Any = None
 _ORIGINAL_CREATE_CONNECTION: Any = None
+_ORIGINAL_SENDTO: Any = None
+_ORIGINAL_GETADDRINFO: Any = None
 
 
 class LabHuntSchemaError(ValueError):
@@ -79,17 +81,31 @@ def _blocked_create_connection(*_args: Any, **_kwargs: Any) -> socket.socket:
     raise LabHuntSandboxError("outbound socket connection refused")
 
 
+def _blocked_sendto(self: socket.socket, *_args: Any, **_kwargs: Any) -> None:
+    del self
+    raise LabHuntSandboxError("outbound socket connection refused")
+
+
+def _blocked_getaddrinfo(*_args: Any, **_kwargs: Any) -> list[Any]:
+    raise LabHuntSandboxError("outbound socket connection refused")
+
+
 @contextmanager
 def lab_network_sandbox() -> Iterator[None]:
     """Refuse outbound socket connections until the block is released."""
     global _SANDBOX_DEPTH, _ORIGINAL_CONNECT, _ORIGINAL_CONNECT_EX, _ORIGINAL_CREATE_CONNECTION
+    global _ORIGINAL_SENDTO, _ORIGINAL_GETADDRINFO
     if _SANDBOX_DEPTH == 0:
         _ORIGINAL_CONNECT = socket.socket.connect
         _ORIGINAL_CONNECT_EX = socket.socket.connect_ex
         _ORIGINAL_CREATE_CONNECTION = socket.create_connection
+        _ORIGINAL_SENDTO = socket.socket.sendto
+        _ORIGINAL_GETADDRINFO = socket.getaddrinfo
         socket.socket.connect = _blocked_connect  # type: ignore[method-assign]
         socket.socket.connect_ex = _blocked_connect_ex  # type: ignore[method-assign]
         socket.create_connection = _blocked_create_connection
+        socket.socket.sendto = _blocked_sendto  # type: ignore[method-assign]
+        socket.getaddrinfo = _blocked_getaddrinfo
     _SANDBOX_DEPTH += 1
     try:
         yield
@@ -99,9 +115,13 @@ def lab_network_sandbox() -> Iterator[None]:
             socket.socket.connect = _ORIGINAL_CONNECT  # type: ignore[method-assign]
             socket.socket.connect_ex = _ORIGINAL_CONNECT_EX  # type: ignore[method-assign]
             socket.create_connection = _ORIGINAL_CREATE_CONNECTION
+            socket.socket.sendto = _ORIGINAL_SENDTO  # type: ignore[method-assign]
+            socket.getaddrinfo = _ORIGINAL_GETADDRINFO
             _ORIGINAL_CONNECT = None
             _ORIGINAL_CONNECT_EX = None
             _ORIGINAL_CREATE_CONNECTION = None
+            _ORIGINAL_SENDTO = None
+            _ORIGINAL_GETADDRINFO = None
 
 
 def probe_outbound_socket_blocked() -> None:
@@ -111,6 +131,10 @@ def probe_outbound_socket_blocked() -> None:
     if socket.socket.connect_ex is not _blocked_connect_ex:
         raise LabHuntSandboxError("outbound socket connection is allowed")
     if socket.create_connection is not _blocked_create_connection:
+        raise LabHuntSandboxError("outbound socket connection is allowed")
+    if socket.socket.sendto is not _blocked_sendto:
+        raise LabHuntSandboxError("outbound socket connection is allowed")
+    if socket.getaddrinfo is not _blocked_getaddrinfo:
         raise LabHuntSandboxError("outbound socket connection is allowed")
     try:
         socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("203.0.113.10", 443))

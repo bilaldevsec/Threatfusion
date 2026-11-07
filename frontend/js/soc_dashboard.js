@@ -7,7 +7,12 @@
 (function () {
   'use strict';
 
-  let liveCsrfToken = '';
+  function embeddedLiveCsrf() {
+    const meta = document.querySelector('meta[name="threatfusion-csrf-token"]');
+    if (!meta) return '';
+    return String(meta.getAttribute('content') || '');
+  }
+  let liveCsrfToken = embeddedLiveCsrf();
   const nativeFetch = window.fetch.bind(window);
   async function ensureLiveCsrf() {
     if (liveCsrfToken) return liveCsrfToken;
@@ -97,7 +102,7 @@
 
   /**
    * Validate TheHive Case Record & n8n Playbook Receipt.
-   * Must have non-empty case_id and valid 64-char hex execution receipt signature.
+   * A 64-hex signature is not enough: the callback must be verified.
    */
   function verifyHiveAndN8nReceipt(hiveCase, n8nReceipt) {
     if (!hiveCase || typeof hiveCase !== 'object') return false;
@@ -108,7 +113,13 @@
     const execId = typeof n8nReceipt.execution_id === 'string' ? n8nReceipt.execution_id.trim() : '';
     if (!execId) return false;
     const sig = typeof n8nReceipt.signature_sha256 === 'string' ? n8nReceipt.signature_sha256.trim() : '';
-    return SHA256_HEX_REGEX.test(sig);
+    if (!SHA256_HEX_REGEX.test(sig)) return false;
+    if (n8nReceipt.callback_verified !== true && hiveCase.callback_verified !== true) return false;
+    if (n8nReceipt.hmac_signature_verified === false || hiveCase.hmac_signature_verified === false) {
+      return false;
+    }
+    const evidence = n8nReceipt.evidence_state || hiveCase.evidence_state;
+    return evidence === 'verified';
   }
 
   // ========================================================================

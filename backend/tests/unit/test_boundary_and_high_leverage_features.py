@@ -34,6 +34,7 @@ from threatfusion.models.multi_signal_risk import (
 )
 from threatfusion.soar.playbook_ledger import (
     SOAR_AUDIT_GENESIS_HASH,
+    SoarError,
     SoarPlaybookSqliteRepository,
     compute_soar_audit_entry_hash,
 )
@@ -310,8 +311,22 @@ class TestTamperEvidentSoarAuditTrail:
             assert "broken at row index" in msg
             assert "prev_entry_sha256" in msg
 
-    def test_compute_soar_audit_entry_hash(self) -> None:
-        """Verify deterministic hashing utility produces 64-char sha256."""
+    def test_compute_soar_audit_entry_hash(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A keyed digest is 64 hex characters. An empty key is refused."""
+        monkeypatch.delenv("THREATFUSION_SOAR_HMAC_SECRET", raising=False)
+        with pytest.raises(SoarError, match="missing_ledger_secret"):
+            compute_soar_audit_entry_hash(
+                event_id="test_ev",
+                playbook_id="test_pb",
+                action="test_act",
+                actor_id="test_actor",
+                old_state="none",
+                new_state="pending",
+                reason=None,
+                snapshot=None,
+                timestamp_utc="2026-10-18T00:00:00Z",
+                prev_entry_sha256=SOAR_AUDIT_GENESIS_HASH,
+            )
         h = compute_soar_audit_entry_hash(
             event_id="test_ev",
             playbook_id="test_pb",
@@ -323,6 +338,7 @@ class TestTamperEvidentSoarAuditTrail:
             snapshot=None,
             timestamp_utc="2026-10-18T00:00:00Z",
             prev_entry_sha256=SOAR_AUDIT_GENESIS_HASH,
+            ledger_secret="lab-only-not-a-production-secret",
         )
         assert len(h) == 64
 

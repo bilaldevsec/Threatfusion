@@ -30,11 +30,17 @@ from threatfusion.alerts.correlation_engine import EntityProvenanceContract
 
 SOAR_SCHEMA_VERSION = "soar_ledger_sqlite_v1"
 SOAR_AUDIT_GENESIS_HASH = "0" * 64
-_PROCESS_LEDGER_SECRET = secrets.token_hex(32)
+_LEDGER_KEY_SUFFIX = ".ledger_hmac_key"
+
+
+class SoarError(RuntimeError):
+    """Base SOAR domain error."""
 
 
 def _ledger_hmac(secret: str | None, canonical_repr: str) -> str:
-    key = os.environ.get("THREATFUSION_SOAR_HMAC_SECRET", "") if secret is None else secret
+    key = secret if secret is not None else os.environ.get("THREATFUSION_SOAR_HMAC_SECRET")
+    if not key:
+        raise SoarError("missing_ledger_secret")
     return hmac.new(key.encode("utf-8"), canonical_repr.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
@@ -97,12 +103,10 @@ def compute_soar_audit_entry_hash(
 
 
 def seal_head_hmac(secret: str, expected_count: int, head_entry_sha256: str) -> str:
+    if not secret:
+        raise SoarError("missing_ledger_secret")
     material = f"{int(expected_count)}:{head_entry_sha256}"
     return hmac.new(secret.encode("utf-8"), material.encode("utf-8"), hashlib.sha256).hexdigest()
-
-
-class SoarError(RuntimeError):
-    """Base SOAR domain error."""
 
 
 class SoarStateTransitionError(SoarError):
@@ -197,13 +201,70 @@ class SoarPlaybookSqliteRepository:
     def __init__(self, db_path: Path | str, ledger_secret: str | None = None) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        if ledger_secret is None:
-            secret = os.environ.get("THREATFUSION_SOAR_HMAC_SECRET", "")
-        else:
-            secret = ledger_secret
-        self._ledger_secret = secret if secret else _PROCESS_LEDGER_SECRET
+        self._ledger_secret = self._resolve_ledger_secret(ledger_secret)
         self._append_lock = threading.Lock()
         self._init_db()
+
+    def _hmac_key_path(self) -> Path:
+        return self.db_path.with_name(self.db_path.name + _LEDGER_KEY_SUFFIX)
+
+    def _read_sidecar_key(self) -> str:
+        path = self._hmac_key_path()
+        if path.is_symlink() or not path.is_file():
+            return ""
+        try:
+            stored = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+        try:
+            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+        return stored
+
+    def _write_sidecar_key(self, key: str) -> str:
+        if not key:
+            return ""
+        path = self._hmac_key_path()
+        if path.is_symlink():
+            return ""
+        existing = self._read_sidecar_key()
+        if existing:
+            return existing
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            return self._read_sidecar_key()
+        except OSError:
+            return ""
+        try:
+            os.write(fd, (key + "\n").encode("utf-8"))
+        except OSError:
+            return ""
+        finally:
+            os.close(fd)
+        try:
+            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+        return key
+
+    def _resolve_ledger_secret(self, ledger_secret: str | None) -> str:
+        """Use an explicit secret, the environment, or a mode-0600 sidecar.
+
+        An empty key is never used. When ``THREATFUSION_SOAR_HMAC_SECRET`` is
+        unset, the sidecar lets a second process open the same SQLite path and
+        recompute the same seal.
+        """
+        env_name = "THREATFUSION_SOAR_HMAC_SECRET"
+        env_value = os.environ.get(env_name, "")
+        if ledger_secret:
+            if env_name not in os.environ:
+                self._write_sidecar_key(ledger_secret)
+            return ledger_secret
+        if env_value:
+            return env_value
+        return self._read_sidecar_key() or self._write_sidecar_key(secrets.token_hex(32))
 
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=5.0)
@@ -544,7 +605,10 @@ class SoarPlaybookSqliteRepository:
         """Verify the keyed hash chain and the sealed head counter.
 
         An empty ledger is not sound. A tail deletion or an unkeyed rewrite fails.
+        A ledger with no resolvable HMAC secret is not sound.
         """
+        if not self._ledger_secret:
+            return False, "missing_ledger_secret"
         with self._get_connection() as conn:
             cursor = conn.execute("SELECT * FROM soar_audit_events ORDER BY rowid ASC")
             all_rows = cursor.fetchall()
@@ -1004,6 +1068,18 @@ class ApprovalGatedSoarEngine:
             raise SoarOptimisticConcurrencyError(
                 f"Optimistic lock conflict on {playbook_id}: "
                 f"expected version {expected_version}, found {record.version}"
+            )
+        if record.actor_id != actor_id.strip():
+            raise SoarStateTransitionError(
+                f"Cannot rollback action {playbook_id}: actor does not match the executor."
+            )
+        chain_ok, chain_message = self.repository.verify_audit_chain_integrity(
+            playbook_id, require_non_empty=True
+        )
+        if not chain_ok:
+            raise SoarStateTransitionError(
+                f"Cannot rollback action {playbook_id}: audit chain verification failed "
+                f"({chain_message})."
             )
 
         now_str = datetime.now(UTC).isoformat()

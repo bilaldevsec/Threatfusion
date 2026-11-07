@@ -27,6 +27,7 @@ import argparse
 from datetime import UTC, datetime
 import hashlib
 import hmac
+import html
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -206,7 +207,7 @@ def _operator_policy_dir() -> Path | None:
 
 
 def _three_proof_state(result: dict[str, Any]) -> str:
-    """Verified only when the receipt, hash chain, and groundedness gates all pass."""
+    """Verified only when the receipt, recomputed chain message, and groundedness all pass."""
     from threatfusion.api.analyst_dashboard import (
         _is_verified_receipt_dict,
         evidence_state_from_gates,
@@ -214,9 +215,63 @@ def _three_proof_state(result: dict[str, Any]) -> str:
 
     receipt = result.get("callback_receipt")
     receipt_ok = isinstance(receipt, dict) and _is_verified_receipt_dict(receipt)
-    chain_ok = result.get("audit_chain_verified") is True and bool(result.get("entry_sha256"))
-    grounded_ok = result.get("grounded") is True or result.get("decision_unchanged") is True
+    chain_message = str(result.get("chain_message") or "")
+    chain_ok = (
+        result.get("audit_chain_verified") is True
+        and bool(result.get("entry_sha256"))
+        and chain_message.startswith("SOAR audit chain verified")
+    )
+    grounded_ok = result.get("grounded") is True
     return evidence_state_from_gates(receipt_ok, chain_ok, grounded_ok)
+
+
+def http_client_certificate_fingerprint(headers: Any) -> str:
+    """Return no fingerprint. A request header is not a TLS client certificate."""
+    del headers
+    return ""
+
+
+_MIN_LIVE_WRITE_TOKEN_CHARS = 16
+
+
+def live_write_token_matches(authorization_header: str | None) -> bool:
+    """True only when the bearer matches ``THREATFUSION_LIVE_WRITE_TOKEN``."""
+    expected = os.environ.get("THREATFUSION_LIVE_WRITE_TOKEN", "").strip()
+    if len(expected) < _MIN_LIVE_WRITE_TOKEN_CHARS or not isinstance(authorization_header, str):
+        return False
+    prefix, separator, token = authorization_header.partition(" ")
+    if not separator or prefix.lower() != "bearer":
+        return False
+    presented = token.strip().encode("utf-8")
+    expected_bytes = expected.encode("utf-8")
+    if len(presented) != len(expected_bytes):
+        return False
+    return hmac.compare_digest(presented, expected_bytes)
+
+
+def _port_from_host_header(value: str | None) -> int | None:
+    """Return the port in a Host header, or None when the header omits one."""
+    if not value:
+        return None
+    text = value.strip()
+    if text.startswith("["):
+        end = text.find("]")
+        if end < 0:
+            return None
+        rest = text[end + 1 :]
+        if not rest.startswith(":"):
+            return None
+        try:
+            return int(rest[1:])
+        except ValueError:
+            return None
+    if ":" not in text:
+        return None
+    _host, _sep, port_text = text.rpartition(":")
+    try:
+        return int(port_text)
+    except ValueError:
+        return None
 
 
 def _with_three_proof_state(result: dict[str, Any]) -> dict[str, Any]:
@@ -381,8 +436,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return
         path = self.path.split("?")[0]
         if path in ("/", "/index.html"):
-            index_path = REPO_ROOT / "frontend" / "index.html"
-            self._send_file(index_path, "text/html; charset=utf-8")
+            self._send_console_index()
             return
         if path == "/css/soc_unicorn.css":
             css_path = REPO_ROOT / "frontend" / "css" / "soc_unicorn.css"
@@ -396,12 +450,18 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             self._send_json(200, self._advisory_status_payload())
             return
         if path == "/api/v1/live/health":
-            self._send_json(200, {"status": "ok", "csrf_token": _LIVE_CSRF_TOKEN})
+            payload: dict[str, Any] = {"status": "ok"}
+            if self._health_csrf_visible():
+                payload["csrf_token"] = _LIVE_CSRF_TOKEN
+            self._send_json(200, payload)
             return
         if path == "/api/v1/live/operator/stamp":
             from threatfusion.api.live_soc_console import operator_stamp
 
-            self._send_json(200, operator_stamp("lab_operator", _operator_policy_dir()))
+            self._send_json(
+                200,
+                operator_stamp("lab_operator", _operator_policy_dir(), ""),
+            )
             return
         if path in ("/healthz", "/api/v1/heartbeat", "/api/status"):
             self._send_json(200, {"status": "ok", "service": "threatfusion_soc_contract_server"})
@@ -545,11 +605,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         return self._live_db_path().with_name("threatfusion-live-soar.sqlite3")
 
     def _presented_operator_fingerprint(self) -> str:
-        return (
-            self.headers.get("X-ThreatFusion-Client-Cert-Sha256")
-            or self.headers.get("X-ThreatFusion-Cert-SHA256")
-            or ""
-        ).strip()
+        return http_client_certificate_fingerprint(self.headers)
 
     def _reject_actor_mismatch(self, actor_id: str) -> bool:
         """HTTP 403 when a presented certificate does not match this actor."""
@@ -599,7 +655,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         return True
 
     def _live_write_authorized(self) -> bool:
-        """Accept the process CSRF token, a bearer token, or the in-process test header."""
+        """Accept the process CSRF token, the configured write token, or pytest's test header."""
         presented = (self.headers.get("X-ThreatFusion-CSRF") or "").strip()
         if (
             presented
@@ -607,10 +663,10 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             and hmac.compare_digest(presented, _LIVE_CSRF_TOKEN)
         ):
             return True
-        authorization = self.headers.get("Authorization") or ""
-        prefix, separator, token = authorization.partition(" ")
-        if separator and prefix.lower() == "bearer" and token.strip():
+        if live_write_token_matches(self.headers.get("Authorization")):
             return True
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
+            return False
         test_client = (self.headers.get("X-ThreatFusion-Test-Client") or "").strip()
         return bool(
             test_client
@@ -622,6 +678,8 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         """Refuse a browser POST whose Origin is not this loopback listener."""
         if not path.startswith("/api/v1/live/"):
             return False
+        if path == "/api/v1/live/sensor":
+            return False
         origin = (self.headers.get("Origin") or "").strip()
         if origin == "":
             if not self._live_write_authorized():
@@ -631,15 +689,80 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 )
                 return True
             return False
-        host = urllib.parse.urlparse(origin).hostname
+        parsed = urllib.parse.urlparse(origin)
+        host = parsed.hostname
+        if parsed.scheme != "http" or host is None or not self._origin_host_allowed(host):
+            self._send_json(403, {"error": "csrf_origin_mismatch"})
+            return True
+        if parsed.port is not None and parsed.port not in self._accepted_origin_ports():
+            self._send_json(403, {"error": "csrf_origin_mismatch"})
+            return True
+        return False
+
+    def _origin_host_allowed(self, hostname: str) -> bool:
         allowed = {"127.0.0.1", "localhost", "::1"}
         bind_host = str(self.server.server_address[0])
         if bind_host not in {"0.0.0.0", "::", ""}:
             allowed.add(bind_host.lower())
-        if host is None or host.lower() not in allowed:
-            self._send_json(403, {"error": "csrf_origin_mismatch"})
+        return hostname.lower() in allowed
+
+    def _accepted_origin_ports(self) -> set[int]:
+        ports = {int(self.server.server_address[1])}
+        header_port = _port_from_host_header(self.headers.get("Host"))
+        if header_port is not None:
+            ports.add(header_port)
+        return ports
+
+    def _same_origin_browser(self) -> bool:
+        """True for a same-origin browser fetch or a matching Origin/Referer."""
+        fetch_site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if fetch_site == "same-origin":
             return True
+        listening = int(self.server.server_address[1])
+        header_port = _port_from_host_header(self.headers.get("Host"))
+        for header_name in ("Origin", "Referer"):
+            raw = (self.headers.get(header_name) or "").strip()
+            if not raw:
+                continue
+            parsed = urllib.parse.urlparse(raw)
+            if parsed.scheme != "http" or parsed.hostname is None:
+                continue
+            if not self._origin_host_allowed(parsed.hostname):
+                continue
+            if parsed.port is None:
+                if listening == 80 or header_port == 80:
+                    return True
+                continue
+            if parsed.port == listening or parsed.port == header_port:
+                return True
         return False
+
+    def _health_csrf_visible(self) -> bool:
+        """Disclose the console CSRF token only to an already-authorized caller."""
+        if self._live_write_authorized():
+            return True
+        return self._same_origin_browser()
+
+    def _send_console_index(self) -> None:
+        """Serve the console page with the process CSRF token embedded for this browser."""
+        index_path = REPO_ROOT / "frontend" / "index.html"
+        if not index_path.is_file():
+            self._send_json(404, {"error": "Not Found", "path": str(index_path)})
+            return
+        page = index_path.read_text(encoding="utf-8")
+        token = html.escape(_LIVE_CSRF_TOKEN, quote=True)
+        meta = f'<meta name="threatfusion-csrf-token" content="{token}">'
+        if "<head>" in page:
+            page = page.replace("<head>", "<head>\n  " + meta, 1)
+        else:
+            page = meta + page
+        content = page.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
 
     def _advisory_status_payload(self) -> dict[str, Any]:
         from threatfusion.advisory.gemini_client import advisory_provider_status
@@ -728,7 +851,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return
         if self._csrf_origin_rejected(path):
             return
-        if path.startswith("/api/v1/live/") and not self._live_write_authorized():
+        if (
+            path.startswith("/api/v1/live/")
+            and path != "/api/v1/live/sensor"
+            and not self._live_write_authorized()
+        ):
             self._send_json(401, {"error": "write_token_required"})
             return
 
@@ -870,6 +997,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 author_id=str(req_data.get("author_id") or ""),
                 note_text=str(req_data.get("note_text") or ""),
             )
+            if result.get("reason") == "flow_not_found":
+                self._send_json(422, result)
+                return
             status = 200 if result.get("evidence_state") == "verified" else 400
             self._send_json(status, result)
             return

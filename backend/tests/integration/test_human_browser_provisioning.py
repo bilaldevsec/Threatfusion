@@ -31,6 +31,11 @@ from threatfusion.operations.human_listener_lifecycle import HumanListenerLifecy
 certificates = api.certificates
 
 
+def _require_real_nss_tools() -> None:
+    if shutil.which("certutil") is None or shutil.which("pk12util") is None:
+        pytest.skip("libnss3-tools is required to build a Firefox certificate store")
+
+
 @pytest.fixture
 def ca_dir(tmp_path: Path) -> Path:
     directory = tmp_path / "threatfusion-ca"
@@ -68,6 +73,7 @@ def test_end_to_end_firefox_profile_provisioning_and_mtls_alerts(
     certificates: dict[str, tuple[Path, Path]],
 ) -> None:
     """End-to-end chain from CA init to profile provisioning, verification, and mTLS browser access."""
+    _require_real_nss_tools()
     # 1. Initialize Human Root CA
     ca_ops.init_human_ca(ca_dir)
 
@@ -272,6 +278,7 @@ def test_verify_firefox_profile_tampered_cert9_db(
     ca_dir: Path, delivery_dir: Path, profile_dir: Path
 ) -> None:
     """Tampering with cert9.db causes verification to fail closed with profile_corrupted."""
+    _require_real_nss_tools()
     ca_ops.init_human_ca(ca_dir)
     passphrase = "CorrectPassphrase123!"
     ca_ops.issue_human_client_bundle(
@@ -302,6 +309,7 @@ def test_verify_firefox_profile_tampered_user_js(
     ca_dir: Path, delivery_dir: Path, profile_dir: Path
 ) -> None:
     """Tampering with user.js causes verification to fail closed with profile_corrupted."""
+    _require_real_nss_tools()
     ca_ops.init_human_ca(ca_dir)
     passphrase = "CorrectPassphrase123!"
     ca_ops.issue_human_client_bundle(
@@ -397,6 +405,7 @@ def test_verify_firefox_profile_unexpected_files(
     ca_dir: Path, delivery_dir: Path, profile_dir: Path
 ) -> None:
     """Extra unexpected files inside profile_dir trigger unexpected_files failure."""
+    _require_real_nss_tools()
     ca_ops.init_human_ca(ca_dir)
     passphrase = "CorrectPassphrase123!"
     ca_ops.issue_human_client_bundle(
@@ -429,6 +438,7 @@ def test_cli_provision_and_verify(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """CLI subcommands execute successfully with environment and stdin passphrase sources."""
+    _require_real_nss_tools()
     ca_ops.init_human_ca(ca_dir)
     passphrase = "CorrectPassphrase123!"
     ca_ops.issue_human_client_bundle(

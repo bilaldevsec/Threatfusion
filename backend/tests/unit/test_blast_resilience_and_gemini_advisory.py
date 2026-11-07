@@ -314,6 +314,10 @@ class TestBlastResilienceAndCloudBudgetKillSwitch:
 class TestGeminiAdvisoryGroundednessAndOutageIsolation:
     """Tests for outage-isolated Gemini Advisory Engine and Anti-Hallucination verification."""
 
+    @pytest.fixture(autouse=True)
+    def _opt_in_to_live_gemini(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GEMINI_ENABLED", "true")
+
     @pytest.fixture
     def bundle_for_advisory(self) -> AdvisoryEvidenceBundle:
         return AdvisoryEvidenceBundle(

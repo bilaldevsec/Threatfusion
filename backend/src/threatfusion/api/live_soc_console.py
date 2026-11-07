@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import ipaddress
 import json
 import math
@@ -225,8 +226,13 @@ def score_canonical_flow(
         try:
             import joblib
 
-            model = joblib.load(model_path)
-        except (OSError, ImportError, ValueError, EOFError):
+            raw_bytes = model_path.read_bytes()
+            digest = hashlib.sha256(raw_bytes).hexdigest()
+            if digest != expected:
+                base["reason"] = "frozen_random_forest_unverified"
+                return base
+            model = joblib.load(io.BytesIO(raw_bytes))
+        except (OSError, ImportError, ValueError, EOFError, KeyError, Exception):
             base["reason"] = "frozen_random_forest_unreadable"
             return base
     width = getattr(model, "n_features_in_", None)
@@ -687,13 +693,30 @@ def list_live_flows(db_path: Path, *, limit: int = 20) -> list[dict[str, Any]]:
 def add_analyst_note(
     db_path: Path, *, flow_id: int | None, author_id: str, note_text: str
 ) -> dict[str, Any]:
-    """Store one analyst note. Empty text is refused."""
+    """Store one analyst note. Empty text and unknown flows are refused."""
     text = note_text.strip()
     author = author_id.strip()
     if not text or not author:
-        return {"evidence_state": "unavailable", "reason": "note_incomplete"}
+        return {"evidence_state": "unavailable", "reason": "note_incomplete", "stored": False}
+    if not isinstance(flow_id, int) or isinstance(flow_id, bool) or flow_id <= 0:
+        return {
+            "evidence_state": "unavailable",
+            "reason": "flow_not_found",
+            "stored": False,
+            "flow_id": flow_id,
+        }
     created = datetime.now(UTC).isoformat()
     with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT flow_id FROM live_flows WHERE flow_id = ?", (flow_id,)
+        ).fetchone()
+        if row is None:
+            return {
+                "evidence_state": "unavailable",
+                "reason": "flow_not_found",
+                "stored": False,
+                "flow_id": flow_id,
+            }
         cursor = conn.execute(
             """
             INSERT INTO analyst_notes (flow_id, author_id, note_text, created_at_utc)
@@ -3240,6 +3263,12 @@ def approve_live_soar(
     if row is None:
         refused["reason"] = "flow_not_stored"
         return refused
+    presented = presented_fingerprint.strip() if isinstance(presented_fingerprint, str) else ""
+    stamp = operator_stamp(author, policy_dir, presented if presented else None)
+    if presented and stamp.get("identity_verified") is not True:
+        refused["reason"] = "operator_identity_unverified"
+        refused.update(stamp)
+        return refused
     candidate_id = f"live_flow:{flow_id}"
     repository = SoarPlaybookSqliteRepository(soar_db_path)
     engine = ApprovalGatedSoarEngine(repository)
@@ -3252,7 +3281,6 @@ def approve_live_soar(
         receipt["flow_id"] = flow_id
         receipt["candidate_id"] = candidate_id
         _store_flow_receipt(live_db_path, flow_id, receipt)
-        stamp = operator_stamp(author, policy_dir, presented_fingerprint)
         _store_operator_stamp(live_db_path, flow_id, stamp)
         receipt.update(stamp)
         return receipt
@@ -3278,7 +3306,6 @@ def approve_live_soar(
     receipt["candidate_id"] = candidate_id
     receipt["ledger_state"] = updated.state
     _store_flow_receipt(live_db_path, flow_id, receipt)
-    stamp = operator_stamp(author, policy_dir, presented_fingerprint)
     _store_operator_stamp(live_db_path, flow_id, stamp)
     receipt.update(stamp)
     return receipt
@@ -3538,10 +3565,11 @@ def _dispatch_through_live_n8n(
         mttr_seconds=float(mttr),
         execution_path=N8N_LIVE_CONTAINER,
     )
+    mttr_state = "verified" if float(mttr) > 0.0 else "unavailable"
     return disclose_offline_fallback(
         {
             "schema_version": "live_soar_callback_v1",
-            "evidence_state": "verified",
+            "evidence_state": mttr_state,
             "reason": "signed_callback_recorded",
             "execution_authorized": False,
             "containment_executed": False,
@@ -3739,10 +3767,11 @@ def dispatch_approved_callback(
         mttr_seconds=mttr,
         execution_path=LOCAL_CONTRACT_FALLBACK,
     )
+    mttr_state = "verified" if mttr > 0.0 else "unavailable"
     return disclose_offline_fallback(
         {
             "schema_version": "live_soar_callback_v1",
-            "evidence_state": "verified",
+            "evidence_state": mttr_state,
             "reason": "signed_callback_recorded",
             "execution_authorized": False,
             "containment_executed": False,
@@ -4119,7 +4148,7 @@ def build_glass_box_checklist(row: Mapping[str, Any]) -> dict[str, Any]:
             "detail": "Stored addresses were classified locally. No external lookup was performed.",
         }
     entry = str(row.get("entry_sha256") or "")
-    chain_ok = row.get("audit_chain_verified") == 1 and _SHA256_HEX.match(entry) is not None
+    recorded = row.get("audit_chain_verified") == 1 and _SHA256_HEX.fullmatch(entry) is not None
     return {
         "schema_version": "glass_box_evidence_v1",
         "frozen_rf_decision": row.get("decision"),
@@ -4145,12 +4174,13 @@ def build_glass_box_checklist(row: Mapping[str, Any]) -> dict[str, Any]:
             misp,
             {
                 "id": "soar_hash_chain",
-                "status": "verified" if chain_ok else "pending",
-                "passed": chain_ok,
+                "status": "recorded" if recorded else "pending",
+                "passed": False,
                 "detail": (
-                    "SHA-256 chain verified."
-                    if chain_ok
-                    else "No verified hash-chain receipt is stored."
+                    "The stored audit_chain_verified flag is not a chain verification. "
+                    "Recompute the ledger hash chain before treating this row as verified."
+                    if recorded
+                    else "No hash-chain receipt is stored."
                 ),
             },
         ],
@@ -4890,9 +4920,11 @@ def rollback_range_source(
     runner: Any | None = None,
 ) -> dict[str, Any]:
     """Remove the victim-namespace drop and require the attacker path to succeed again."""
-    _flow, refused = _authorized_range_flow(live_db_path, soar_db_path, flow_id)
-    if refused is not None:
-        return refused
+    flow, refused = _authorized_range_flow(live_db_path, soar_db_path, flow_id)
+    if refused is not None or flow is None:
+        return refused if refused is not None else _containment_refusal("flow_not_stored", 403)
+    if str(flow["containment_state"] or "") != "applied":
+        return _containment_refusal("containment_not_applied", 409)
     act = runner or _run_range_action
     if not act("status").get("running"):
         return _containment_refusal("range_not_running", 409)

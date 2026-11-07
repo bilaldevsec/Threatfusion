@@ -8,8 +8,9 @@ Enforces Section 13.D of ThreatFusion:
 - Strict anti-hallucination instruction: No uninspected IP addresses, exact model
   version and probability match, Section 8 invariant (fusion disabled) affirmation,
   and citation keys strictly bounded to allowed evidence keys.
-- Complete outage isolation: If GEMINI_API_KEY is unset, or if network/HTTP/timeout/JSON
-  errors occur, raises GeminiAdvisoryUnavailableError so AdvisoryExplanationEngine
+- Complete outage isolation: Live calls stay off unless GEMINI_ENABLED is
+  explicitly true. A missing GEMINI_API_KEY, or a network/HTTP/timeout/JSON
+  error, raises GeminiAdvisoryUnavailableError so AdvisoryExplanationEngine
   fails closed to the deterministic evidence template.
 """
 
@@ -71,9 +72,13 @@ def copilot_budget_blocks_live_call() -> bool:
     return bool(evaluate_budget_kill_switch(spend).get("should_detach_billing"))
 
 
+_GEMINI_ENABLED_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
 def gemini_enabled_blocks() -> bool:
-    """``GEMINI_ENABLED=false`` or ``0`` blocks a live call. An unset flag does not."""
-    return os.environ.get("GEMINI_ENABLED", "").strip().lower() in {"false", "0"}
+    """Live Gemini stays off unless ``GEMINI_ENABLED`` is ``1``, ``true``, ``yes``, or ``on``."""
+    flag = os.environ.get("GEMINI_ENABLED", "").strip().lower()
+    return flag not in _GEMINI_ENABLED_VALUES
 
 
 _LIVE_GEMINI_CALL_USD = 0.000001
@@ -92,7 +97,9 @@ def _record_gemini_live_spend() -> None:
 def _refuse_blocked_live_gemini() -> None:
     """Raise before a hop when the operator flag or the spend ceiling blocks the call."""
     if gemini_enabled_blocks():
-        raise GeminiAdvisoryUnavailableError("GEMINI_ENABLED blocks live Gemini calls.")
+        raise GeminiAdvisoryUnavailableError(
+            "GEMINI_ENABLED must be true before a live Gemini call."
+        )
     if copilot_budget_blocks_live_call():
         raise GeminiAdvisoryUnavailableError(
             "Cloud budget kill switch is active at the $5.00 ceiling."

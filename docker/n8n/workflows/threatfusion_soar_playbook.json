@@ -82,7 +82,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"returnFormat\": \"json\",\n  \"value\": \"{{ $json.body.target_entity }}\",\n  \"type\": \"ip-dst\"\n}",
+        "jsonBody": "={{ {\n  returnFormat: 'json',\n  value: $json.body.target_entity,\n  type: 'ip-dst'\n} }}",
         "options": {
           "timeout": 3000
         }
@@ -115,7 +115,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"title\": \"[ThreatFusion Incident] {{ $('node-1-webhook-trigger').item.json.body.action_type }}: {{ $('node-1-webhook-trigger').item.json.body.target_entity }}\",\n  \"description\": \"Autonomously triggered from approved ThreatFusion candidate {{ $('node-1-webhook-trigger').item.json.body.candidate_id }}. Queue Rank: {{ $('node-1-webhook-trigger').item.json.body.queue_priority_rank }}\",\n  \"severity\": 3,\n  \"tlp\": 2,\n  \"pap\": 2,\n  \"tags\": [\n    \"threatfusion:autonomous\",\n    \"mitre:{{ $('node-1-webhook-trigger').item.json.body.mitre_technique_id }}\",\n    \"soar:approved\"\n  ]\n}",
+        "jsonBody": "={{ {\n  title: '[ThreatFusion Incident] ' + $('node-1-webhook-trigger').item.json.body.action_type + ': ' + $('node-1-webhook-trigger').item.json.body.target_entity,\n  description: 'Autonomously triggered from approved ThreatFusion candidate ' + $('node-1-webhook-trigger').item.json.body.candidate_id + '. Queue Rank: ' + $('node-1-webhook-trigger').item.json.body.queue_priority_rank,\n  severity: 3,\n  tlp: 2,\n  pap: 2,\n  tags: [\n    'threatfusion:autonomous',\n    'mitre:' + $('node-1-webhook-trigger').item.json.body.mitre_technique_id,\n    'soar:approved'\n  ]\n} }}",
         "options": {
           "timeout": 3000
         }
@@ -152,7 +152,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"execution_id\": \"{{ $('node-1-webhook-trigger').item.json.body.execution_id || 'exec_auto' }}\",\n  \"playbook_id\": \"{{ $('node-1-webhook-trigger').item.json.body.playbook_id }}\",\n  \"candidate_id\": \"{{ $('node-1-webhook-trigger').item.json.body.candidate_id }}\",\n  \"n8n_status\": \"completed\",\n  \"thehive_case_created\": true,\n  \"misp_correlated\": true\n}",
+        "jsonBody": "={{ {\n  execution_id: $('node-1-webhook-trigger').item.json.body.execution_id || 'exec_auto',\n  playbook_id: $('node-1-webhook-trigger').item.json.body.playbook_id,\n  candidate_id: $('node-1-webhook-trigger').item.json.body.candidate_id,\n  n8n_status: 'completed',\n  thehive_case_created: true,\n  misp_correlated: true\n} }}",
         "options": {
           "timeout": 3000
         }

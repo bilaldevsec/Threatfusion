@@ -1322,8 +1322,16 @@ def _check_6_functional_probe(expected_src_root: Path) -> CheckResult:
             misp_hash_probe = misp_probe.query_indicator(
                 "44d88612fea8a8f36de82e1278abb02f", indicator_type="md5"
             )
-            if not misp_hash_probe.matched or "malware:eicar" not in misp_hash_probe.tags:
-                failures.append("M32 MISP query on EICAR hash failed to match canonical snapshot")
+            if misp_hash_probe.query_mode == "rest_api":
+                if not misp_hash_probe.matched or "malware:eicar" not in misp_hash_probe.tags:
+                    failures.append("M32 MISP live query on EICAR hash did not match")
+            elif (
+                misp_hash_probe.query_mode != "offline_snapshot_unverified"
+                or misp_hash_probe.matched
+            ):
+                failures.append(
+                    "M32 MISP transport failure was presented as a verified snapshot match"
+                )
 
             # 3. Probe TheHive & n8n Mandatory Approval & Hash-Chain Guards
             soar_probe_repo = SoarPlaybookSqliteRepository(m32_dir / "probe_soar_ledger.sqlite3")

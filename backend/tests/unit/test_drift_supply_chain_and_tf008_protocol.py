@@ -510,6 +510,28 @@ def test_run_full_soc_demo_incorporates_soar_chain_queue_ranker_and_drift(
 
 def test_analyst_dashboard_renders_soar_audit_chain_badge_and_queue_rank() -> None:
     """Analyst dashboard alert detail HTML renders SOAR hash chain badge and queue rank indicator."""
+    import os
+
+    from threatfusion.soar.playbook_ledger import (
+        SOAR_AUDIT_GENESIS_HASH,
+        compute_canonical_audit_entry_hash,
+    )
+
+    secret = os.environ.setdefault(
+        "THREATFUSION_SOAR_HMAC_SECRET", "lab-only-not-a-production-secret"
+    )
+    fields = {
+        "prev_entry_sha256": SOAR_AUDIT_GENESIS_HASH,
+        "sequence_id": 1,
+        "playbook_id": "pb-1",
+        "candidate_id": "alert_cand_m31_unicorn_01",
+        "state": "approved",
+        "actor": "lab_operator",
+        "reason": "reviewed",
+        "timestamp_utc": "2026-10-18T10:00:00Z",
+    }
+    entry = dict(fields)
+    entry["entry_sha256"] = compute_canonical_audit_entry_hash(**fields, ledger_secret=secret)
     detail = DashboardAlertDetail(
         alert_candidate_id="alert_cand_m31_unicorn_01",
         source_event_id="src_event_unicorn_01",
@@ -531,7 +553,8 @@ def test_analyst_dashboard_renders_soar_audit_chain_badge_and_queue_rank() -> No
         last_transition_id=None,
         history=(),
         soar_audit_chain_verified=True,
-        soar_audit_chain_head_sha256="a" * 64,
+        soar_audit_chain_head_sha256=str(entry["entry_sha256"]),
+        soar_audit_chain_entries=(entry,),
     )
 
     queue = DashboardAlertQueue(items=(), total_loaded=0, limit=10, offset=0)

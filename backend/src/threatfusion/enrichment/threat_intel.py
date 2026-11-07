@@ -12,7 +12,6 @@ Enforces Section 13.C of ThreatFusion:
 
 from __future__ import annotations
 
-import ipaddress
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -150,24 +149,15 @@ class SourcedThreatIntelEnricher:
         public_ips_to_query: list[str] = []
 
         # Rule 2: Private / Loopback / Link-Local IP Guard
-        for ip_str in raw_ips:
-            try:
-                ip_obj = ipaddress.ip_address(ip_str)
-            except ValueError:
-                # Non-IP entity or malformed IP string
-                continue
+        from threatfusion.correlation.misp_client import external_lookup_allowed
 
-            if (
-                ip_obj.is_private
-                or ip_obj.is_loopback
-                or ip_obj.is_link_local
-                or ip_obj.is_reserved
-            ):
-                private_guard_triggered = True
-                role = self.internal_lab_registry.get(ip_str, "internal_private_entity")
-                internal_annotations[ip_str] = role
-            else:
+        for ip_str in raw_ips:
+            if external_lookup_allowed(ip_str):
                 public_ips_to_query.append(ip_str)
+                continue
+            private_guard_triggered = True
+            role = self.internal_lab_registry.get(ip_str, "internal_private_entity")
+            internal_annotations[ip_str] = role
 
         # If all entities are private / internal lab entities:
         if raw_ips and not public_ips_to_query:

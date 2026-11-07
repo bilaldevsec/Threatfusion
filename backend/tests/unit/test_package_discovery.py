@@ -5,12 +5,52 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import sysconfig
 import warnings
 
 import pytest
 from setuptools import find_packages
 
 from threatfusion.datasets.adapters.base import SourceRowValidationError, parse_required_timestamp
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _threatfusion_installed_in_site_packages() -> bool:
+    """True when this interpreter can import threatfusion without a source PYTHONPATH."""
+    purelib = Path(sysconfig.get_path("purelib"))
+    if (purelib / "threatfusion" / "__init__.py").is_file():
+        return True
+    if not purelib.is_dir():
+        return False
+    for child in purelib.iterdir():
+        name = child.name
+        if name.startswith("threatfusion") and child.suffix in {
+            ".dist-info",
+            ".egg-info",
+            ".egg-link",
+        }:
+            return True
+        if "threatfusion" in name and name.endswith(".pth"):
+            return True
+    for pth in purelib.glob("*.pth"):
+        try:
+            text = pth.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "threatfusion" in text:
+            return True
+    return False
+
+
+def _discovery_subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if not _threatfusion_installed_in_site_packages():
+        env["PYTHONPATH"] = os.pathsep.join([str(REPO_ROOT / "backend" / "src"), str(REPO_ROOT)])
+    return env
+
 
 ALL_THREATFUSION_PACKAGES = [
     "threatfusion",
@@ -51,9 +91,7 @@ def test_setuptools_find_packages_discovers_top_level_src() -> None:
 
 def test_subprocess_import_zero_pythonpath_external_cwd(tmp_path: Path) -> None:
     """Subprocess imports of threatfusion and all subpackages succeed from external cwd without PYTHONPATH."""
-    env = os.environ.copy()
-    env.pop("PYTHONPATH", None)
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env = _discovery_subprocess_env()
 
     script = "\n".join(
         [
@@ -89,8 +127,7 @@ def test_subprocess_import_zero_pythonpath_external_cwd(tmp_path: Path) -> None:
 
 def test_clean_source_alias_resolution(tmp_path: Path) -> None:
     """src alias resolves directly to threatfusion package namespace without side-effects."""
-    env = os.environ.copy()
-    env.pop("PYTHONPATH", None)
+    env = _discovery_subprocess_env()
 
     script = (
         "import src\n"

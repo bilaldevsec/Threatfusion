@@ -132,6 +132,15 @@ def test_containment_refuses_without_the_exact_callback_and_when_the_range_is_do
     assert "drop" not in stopped.calls
 
 
+def test_rollback_refuses_before_containment_is_applied(tmp_path: Path) -> None:
+    live_db, soar_db, flow_id = _ready(tmp_path)
+    runner = _Runner()
+    refused = rollback_range_source(live_db, soar_db, flow_id=flow_id, runner=runner)
+    assert refused["reason"] == "containment_not_applied"
+    assert refused["http_status"] == 409
+    assert runner.calls == []
+
+
 def test_drop_and_rollback_follow_the_victim_probe(tmp_path: Path) -> None:
     live_db, soar_db, flow_id = _ready(tmp_path)
     runner = _Runner()
