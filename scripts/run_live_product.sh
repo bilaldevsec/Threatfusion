@@ -229,10 +229,34 @@ if [[ "$MODE" == "dry-run" ]]; then
   exit 0
 fi
 
+# human_credentials rejects a policy directory whose parent is group-writable.
+# /tmp is a root-owned sticky directory and stays unchanged.
+prepare_operator_policy_dir() {
+  local policy_dir="$1"
+  local parent mode uid
+  mkdir -p "$policy_dir"
+  chmod 0700 "$policy_dir"
+  parent="$(dirname "$policy_dir")"
+  if [[ "$parent" == "/" || "$parent" == "." ]]; then
+    return 0
+  fi
+  mode="$(stat -c '%a' "$parent")"
+  uid="$(stat -c '%u' "$parent")"
+  if [[ "$mode" == 1* && "$uid" == "0" ]]; then
+    return 0
+  fi
+  case "$parent" in
+    /tmp/*|/var/tmp/*)
+      chmod 0700 "$parent"
+      ;;
+  esac
+}
+
 mkdir -p "$(dirname "$THREATFUSION_LIVE_CONSOLE_DB")" "$(dirname "$THREATFUSION_SOAR_LEDGER_DB_PATH")"
 if [[ -z "${THREATFUSION_OPERATOR_POLICY_DIR:-}" ]]; then
   export THREATFUSION_OPERATOR_POLICY_DIR="$(dirname "$THREATFUSION_LIVE_CONSOLE_DB")/operator-policy"
 fi
+prepare_operator_policy_dir "$THREATFUSION_OPERATOR_POLICY_DIR"
 
 shutdown_child() {
   trap - EXIT INT TERM
@@ -293,6 +317,7 @@ if [[ "$MODE" == "seed-demo" ]]; then
   "$PYTHON" - "$HOST" "$PORT" "$ROOT" <<'PY'
 import json
 import os
+import stat
 import sys
 import urllib.request
 from pathlib import Path
@@ -326,10 +351,22 @@ policy_dir = os.environ.get("THREATFUSION_OPERATOR_POLICY_DIR", "").strip()
 if not policy_dir:
     sys.stderr.write("error: seed-demo did not enroll lab_operator\n")
     sys.exit(1)
+directory = Path(policy_dir).expanduser().resolve()
+directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+os.chmod(directory, 0o700)
+parent = directory.parent
+if parent != parent.parent:
+    info = parent.stat()
+    sticky_root = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
+    parent_text = str(parent)
+    if info.st_mode & 0o022 and not sticky_root and (
+        parent_text.startswith("/tmp/") or parent_text.startswith("/var/tmp/")
+    ):
+        os.chmod(parent, 0o700)
 sys.path.insert(0, str(Path(root) / "backend" / "src"))
 from threatfusion.api.live_soc_console import enroll_lab_operator
 
-stamp = enroll_lab_operator(Path(policy_dir), "lab_operator")
+stamp = enroll_lab_operator(directory, "lab_operator")
 if stamp.get("evidence_state") != "verified" or stamp.get("reason") not in {
     "lab_operator_enrolled",
     "already_enrolled",

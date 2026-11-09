@@ -1428,13 +1428,7 @@
         + '<td>' + escapeHtml(sourceDisplayName(inc.sourceLabel)) + '</td>'
         + '<td>' + escapeHtml(triage) + ' <span class="priority-pill priority-info">' + escapeHtml(rfDecisionLabel(inc)) + '</span>' + escapeHtml(analystNote) + '</td>';
       itemEl.addEventListener('click', () => {
-        selectedIncidentId = inc.id;
-        renderIncidentQueue();
-        renderForensicDrawer();
-        showSocView('detail');
-        const flowId = copilotFlowIdForSelection(inc);
-        if (Number.isInteger(flowId) && flowId > 0) askLiveCopilot(flowId);
-        loadModelProofForSelection(inc);
+        selectInvestigation(inc);
       });
       const copyButton = itemEl.querySelector('.copy-incident-id');
       if (copyButton) {
@@ -2437,18 +2431,15 @@
     }
     const proofDos = document.getElementById('btnProofDos');
     if (proofDos) {
-      proofDos.addEventListener('click', () => { fillModelProofInputs(MODEL_PROOF_PRESETS.dos); });
+      proofDos.addEventListener('click', () => { runModelProofPreset(MODEL_PROOF_PRESETS.dos); });
     }
     const proofNormal = document.getElementById('btnProofNormal');
     if (proofNormal) {
-      proofNormal.addEventListener('click', () => { fillModelProofInputs(MODEL_PROOF_PRESETS.normal); });
+      proofNormal.addEventListener('click', () => { runModelProofPreset(MODEL_PROOF_PRESETS.normal); });
     }
     const proofReset = document.getElementById('btnProofReset');
     if (proofReset) {
-      proofReset.addEventListener('click', () => {
-        const inc = selectedIncident();
-        if (inc && inc.dnnFeatures) fillModelProofInputs(inc.dnnFeatures);
-      });
+      proofReset.addEventListener('click', () => { restoreStoredModelProof(); });
     }
     const proofRun = document.getElementById('btnRunModelProof');
     if (proofRun) {
@@ -2739,6 +2730,32 @@
     };
   }
 
+  function incidentChromaHits(row) {
+    const rag = row && Array.isArray(row.rag_recommendations) ? row.rag_recommendations : [];
+    if (rag.length && rag[0] && rag[0].technique_id) {
+      return rag.map(function (hit) {
+        const cosine = Number(hit.cosine_similarity);
+        return {
+          technique_id: String(hit.technique_id),
+          technique_name: hit.technique_name || row.technique_name || '',
+          tactic: hit.tactic || row.tactic || '',
+          playbook_id: hit.playbook_id || row.playbook_id || '',
+          cosine_similarity: Number.isFinite(cosine) ? cosine : 1
+        };
+      });
+    }
+    if (row && row.technique_id) {
+      return [{
+        technique_id: String(row.technique_id),
+        technique_name: row.technique_name || '',
+        tactic: row.tactic || '',
+        playbook_id: row.playbook_id || '',
+        cosine_similarity: 1
+      }];
+    }
+    return [];
+  }
+
   function incidentRowToView(row) {
     const score = Number(row.max_probability_score);
     const flowId = Number(row.flow_id);
@@ -2785,7 +2802,9 @@
         summaryHeadline: 'Stored incident ' + row.incident_id,
         detectionRationale: 'Read from the incidents database. Fusion stays disabled.'
       },
-      chromaRagHits: [],
+      chromaRagHits: incidentChromaHits(row),
+      techniqueId: row.technique_id || '',
+      cveIds: Array.isArray(row.cve_ids) ? row.cve_ids : [],
       soarRecord: {
         playbookId: row.playbook_id || 'none',
         state: row.ledger_state || 'none',
@@ -3510,7 +3529,7 @@
       aeError: loss,
       aeLoss: loss,
       aeAnomalyFlag: !!(flow && flow.ae_anomaly_flag === true),
-      status: flow && flow.ae_anomaly_flag === true ? 'ANOMALY_CONFIRMED' : 'NORMAL',
+      status: flow && flow.ae_anomaly_flag === true ? 'ANOMALY_CONFIRMED' : 'LOSS_WITHIN_BENIGN_THRESHOLD',
       topFeatures: flow && Array.isArray(flow.ae_top_features) ? flow.ae_top_features : []
     };
   }
@@ -3526,7 +3545,8 @@
     }
     const probability = Number(inc.dnnAttackProbability);
     if (inc.decision === 'Benign' || (Number.isFinite(probability) && probability < 0.5)) {
-      node.textContent = 'PyTorch DNN (9-Class): Normal';
+      const percent = Number.isFinite(probability) ? ' (' + (probability * 100).toFixed(1) + '%)' : '';
+      node.textContent = 'PyTorch DNN (9-Class): Normal' + percent;
       return;
     }
     if (!Number.isFinite(probability)) {
@@ -3535,6 +3555,29 @@
     }
     const category = inc.unswAttackCategory ? String(inc.unswAttackCategory) : 'unavailable';
     node.textContent = 'PyTorch DNN (9-Class): ' + category + ' · ' + (probability * 100).toFixed(1) + '%';
+  }
+
+  function clearStaleContainmentBanner() {
+    ['actionStatusBanner', 'campaignQueueStatus'].forEach(function (id) {
+      const node = document.getElementById(id);
+      if (!node) return;
+      const text = String(node.textContent || '');
+      if (text.indexOf('SIMULATED SCENARIO CONTAINMENT') === -1 && text.indexOf('playbook_not_approved') === -1) {
+        return;
+      }
+      node.textContent = 'Containment stays unauthorized until an analyst approves a stored playbook.';
+      node.setAttribute('data-evidence-state', 'unavailable');
+    });
+  }
+
+  function selectInvestigation(inc) {
+    if (!inc) return;
+    clearStaleContainmentBanner();
+    selectedIncidentId = inc.id;
+    renderIncidentQueue();
+    renderForensicDrawer();
+    showSocView('detail');
+    loadModelProofForSelection(inc);
   }
 
   async function loadModelProofForSelection(inc) {
@@ -3634,6 +3677,37 @@
         + (block.ae_anomaly_flag ? 'Anomaly' : 'Normal'),
       'Advisory Consensus: ' + (Number.isFinite(consensus) ? consensus.toFixed(4) : 'unavailable')
     ].join('\n');
+  }
+
+  function runModelProofPreset(preset) {
+    fillModelProofInputs(preset);
+    runLiveModelProof();
+  }
+
+  async function restoreStoredModelProof() {
+    const inc = selectedIncident();
+    const results = document.getElementById('modelProofResults');
+    if (!inc || !inc.flowId) {
+      if (results) results.textContent = 'Select a stored flow first.';
+      return;
+    }
+    if (inc.dnnFeatures) fillModelProofInputs(inc.dnnFeatures);
+    try {
+      const resp = await fetch('/api/v1/live/model-proof?flow_id=' + encodeURIComponent(String(inc.flowId)));
+      const data = await readActionPayload(resp);
+      if (results && data && data.original) {
+        const latency = Number(data.inference_latency_ms);
+        results.textContent = [
+          proofScoreLine(data.original),
+          'Inference Latency (ms): ' + (Number.isFinite(latency) ? latency.toFixed(3) : 'unavailable')
+        ].join('\n');
+        results.setAttribute('data-evidence-state', data.evidence_state || 'advisory_simulation');
+      } else if (results) {
+        results.textContent = actionFailureText(data, resp);
+      }
+    } catch (err) {
+      if (results) results.textContent = 'Live inference unavailable.';
+    }
   }
 
   async function runLiveModelProof() {

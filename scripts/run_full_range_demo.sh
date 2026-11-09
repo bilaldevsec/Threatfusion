@@ -110,9 +110,34 @@ stop_pidfile() {
   fi
 }
 
+# human_credentials rejects a policy directory whose parent is group-writable.
+# /tmp is a root-owned sticky directory and stays unchanged. The demo directory
+# created by mkdir -p is mode 0775, so enrollment must tighten that parent.
+prepare_operator_policy_dir() {
+  local policy_dir="$1"
+  local parent mode uid
+  mkdir -p "$policy_dir"
+  chmod 0700 "$policy_dir"
+  parent="$(dirname "$policy_dir")"
+  if [[ "$parent" == "/" || "$parent" == "." ]]; then
+    return 0
+  fi
+  mode="$(stat -c '%a' "$parent")"
+  uid="$(stat -c '%u' "$parent")"
+  if [[ "$mode" == 1* && "$uid" == "0" ]]; then
+    return 0
+  fi
+  case "$parent" in
+    /tmp/*|/var/tmp/*)
+      chmod 0700 "$parent"
+      ;;
+  esac
+}
+
 cmd_up() {
   require_tools
   mkdir -p "$DEMO_DIR"
+  prepare_operator_policy_dir "$THREATFUSION_OPERATOR_POLICY_DIR"
   mkdir -p "${ROOT}/docker/range/eve"
   local BIND_HOST="127.0.0.1"
   if command -v ip >/dev/null 2>&1; then
@@ -164,26 +189,38 @@ cmd_up() {
     -H 'Content-Type: application/json' -H "X-ThreatFusion-CSRF: ${csrf}" -d '{}' >/dev/null; then
     echo "scenario replay did not store rows" >&2
   fi
-  if ! "$PYTHON" - "$ROOT" "$THREATFUSION_OPERATOR_POLICY_DIR" <<'PY'
+  prepare_operator_policy_dir "$THREATFUSION_OPERATOR_POLICY_DIR"
+  "$PYTHON" - "$ROOT" "$THREATFUSION_OPERATOR_POLICY_DIR" <<'PY'
+import os
+import stat
 import sys
 from pathlib import Path
 
-root = Path(sys.argv[1])
+root = Path(sys.argv[1]).resolve()
 sys.path.insert(0, str(root / "backend" / "src"))
 from threatfusion.api.live_soc_console import enroll_lab_operator
 
-stamp = enroll_lab_operator(Path(sys.argv[2]), "lab_operator")
+directory = Path(sys.argv[2]).expanduser().resolve()
+directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+os.chmod(directory, 0o700)
+parent = directory.parent
+if parent != parent.parent:
+    info = parent.stat()
+    sticky_root = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
+    parent_text = str(parent)
+    if info.st_mode & 0o022 and not sticky_root and (
+        parent_text.startswith("/tmp/") or parent_text.startswith("/var/tmp/")
+    ):
+        os.chmod(parent, 0o700)
+stamp = enroll_lab_operator(directory, "lab_operator")
 accepted = stamp.get("evidence_state") == "verified" and stamp.get("reason") in {
     "lab_operator_enrolled",
     "already_enrolled",
 }
 if not accepted:
     sys.stderr.write("operator certificate enrollment did not complete\n")
-    sys.exit(1)
+    raise SystemExit(1)
 PY
-  then
-    echo "operator certificate enrollment did not complete" >&2
-  fi
   echo "Analyst URL: http://${BIND_HOST}:${PORT}/"
   echo "Suricata engine started. Follower pid $(cat "$FOLLOWER_PIDFILE")."
 }
