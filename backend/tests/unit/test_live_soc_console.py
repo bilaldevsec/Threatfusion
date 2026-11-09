@@ -998,8 +998,8 @@ def test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr(
         missing_status, missing = _post_json(
             f"{base}/api/v1/live/soar/dispatch", {"flow_id": stored["flow_id"]}
         )
-        assert missing_status == 400
-        assert missing["reason"] == "flow_not_stored"
+        assert missing_status == 403
+        assert missing["reason"] == "playbook_not_approved"
         assert missing["containment_executed"] is False
         assert missing["production_fusion_enabled"] is False
 

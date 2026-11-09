@@ -164,8 +164,24 @@ cmd_up() {
     -H 'Content-Type: application/json' -H "X-ThreatFusion-CSRF: ${csrf}" -d '{}' >/dev/null; then
     echo "scenario replay did not store rows" >&2
   fi
-  if ! curl -fsS -X POST "http://${BIND_HOST}:${PORT}/api/v1/live/operator/enroll" \
-    -H 'Content-Type: application/json' -H "X-ThreatFusion-CSRF: ${csrf}" -d '{"actor_id":"lab_operator"}' >/dev/null; then
+  if ! "$PYTHON" - "$ROOT" "$THREATFUSION_OPERATOR_POLICY_DIR" <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root / "backend" / "src"))
+from threatfusion.api.live_soc_console import enroll_lab_operator
+
+stamp = enroll_lab_operator(Path(sys.argv[2]), "lab_operator")
+accepted = stamp.get("evidence_state") == "verified" and stamp.get("reason") in {
+    "lab_operator_enrolled",
+    "already_enrolled",
+}
+if not accepted:
+    sys.stderr.write("operator certificate enrollment did not complete\n")
+    sys.exit(1)
+PY
+  then
     echo "operator certificate enrollment did not complete" >&2
   fi
   echo "Analyst URL: http://${BIND_HOST}:${PORT}/"

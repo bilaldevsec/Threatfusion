@@ -2873,6 +2873,127 @@ def _attach_chroma_rag_hits(flows: list[dict[str, Any]], db_path: Path) -> None:
         ]
 
 
+_INCIDENT_FLOW_FIELDS = (
+    "flow_id",
+    "src_entity_id",
+    "dst_entity_id",
+    "ae_loss",
+    "ae_anomaly_flag",
+    "dnn_attack_probability",
+    "dnn_binary_decision",
+    "unsw_attack_category",
+    "dnn_features",
+    "decision",
+    "playbook_id",
+    "ledger_state",
+    "entry_sha256",
+    "audit_chain_verified",
+    "callback_recorded",
+    "callback_signature",
+    "containment_state",
+    "execution_path",
+)
+
+
+def _flow_alert_candidate_id(flow: Mapping[str, Any]) -> str | None:
+    """Rebuild the correlation id used when this Attack row was stitched."""
+    try:
+        flow_id = int(flow.get("flow_id") or 0)
+    except (TypeError, ValueError):
+        return None
+    model_sha = str(flow.get("model_sha256") or "")
+    if flow_id <= 0 or _SHA256_HEX.fullmatch(model_sha) is None:
+        return None
+    from threatfusion.features.network_behavior import UNSW_NB15_ARGUS_RAW_REPRESENTATION_V1
+    from threatfusion.schemas.alert_candidate import (
+        DECISION_POLICY_VERSION,
+        DETECTOR_IDENTITY,
+        DETECTOR_VERSION,
+        derive_alert_candidate_id,
+        derive_source_event_id,
+    )
+
+    try:
+        source_event_id = derive_source_event_id(
+            source_representation=UNSW_NB15_ARGUS_RAW_REPRESENTATION_V1,
+            manifest_sha256="b" * 64,
+            source_member_sha256=f"{flow_id:064x}",
+            row_number=flow_id,
+        )
+        return derive_alert_candidate_id(
+            source_event_id=source_event_id,
+            detector_identity=DETECTOR_IDENTITY,
+            detector_version=DETECTOR_VERSION,
+            model_identity="random_forest",
+            model_version="network_random_forest_baseline_v1",
+            model_artifact_sha256=model_sha,
+            decision_policy_version=DECISION_POLICY_VERSION,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _constituent_alert_ids(incidents_db_path: Path | None) -> dict[str, list[str]]:
+    if incidents_db_path is None or not incidents_db_path.is_file():
+        return {}
+    try:
+        conn = sqlite3.connect(f"file:{incidents_db_path}?mode=ro", uri=True, timeout=5.0)
+    except sqlite3.Error:
+        return {}
+    try:
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        if "incident_constituent_alerts" not in tables:
+            return {}
+        rows = conn.execute(
+            """
+            SELECT incident_id, alert_candidate_id
+            FROM incident_constituent_alerts
+            ORDER BY rowid ASC
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+    grouped: dict[str, list[str]] = {}
+    for incident_id, alert_id in rows:
+        grouped.setdefault(str(incident_id), []).append(str(alert_id))
+    return grouped
+
+
+def _bind_incidents_to_attack_flows(
+    incidents: list[dict[str, Any]],
+    flows: Sequence[Mapping[str, Any]],
+    incidents_db_path: Path | None,
+) -> None:
+    """Point each correlated incident at its first constituent Attack flow."""
+    if not incidents:
+        return
+    attack_flows = [flow for flow in flows if str(flow.get("decision") or "") == "Attack"]
+    by_candidate: dict[str, Mapping[str, Any]] = {}
+    for flow in attack_flows:
+        candidate_id = _flow_alert_candidate_id(flow)
+        if candidate_id:
+            by_candidate[candidate_id] = flow
+    members = _constituent_alert_ids(incidents_db_path)
+    for incident in incidents:
+        chosen: Mapping[str, Any] | None = None
+        for alert_id in members.get(str(incident.get("incident_id") or ""), []):
+            match = by_candidate.get(alert_id)
+            if match is not None:
+                chosen = match
+                break
+        if chosen is None and attack_flows:
+            chosen = attack_flows[0]
+        if chosen is None:
+            continue
+        for key in _INCIDENT_FLOW_FIELDS:
+            if key in chosen:
+                incident[key] = chosen[key]
+
+
 def list_live_campaigns(
     db_path: Path,
     *,
@@ -2889,6 +3010,7 @@ def list_live_campaigns(
         row["evidence_locker"] = evidence_locker_queries(db_path, flow_id, soar_db_path)
         row["context_memory"] = _memory_rows_for_entities(db_path, _flow_entities(row))
     incidents = _read_stored_incidents(incidents_db_path, limit=limit)
+    _bind_incidents_to_attack_flows(incidents, flows, incidents_db_path)
     grouped: dict[str, list[dict[str, Any]]] = {}
     order: list[str] = []
     for row in flows:
@@ -3772,7 +3894,7 @@ def enroll_lab_operator(directory: Path, actor_id: str) -> dict[str, Any]:
                     "30",
                     "-sha256",
                     "-subj",
-                    f"/CN={actor} lab CA",
+                    f"/CN={actor}-lab-ca",
                 ),
                 (
                     "req",
@@ -4402,6 +4524,11 @@ def dispatch_approved_callback(
                 ),
             }
         )
+    webhook = (n8n_webhook_url or "").strip()
+    configured_webhook = webhook or os.environ.get("THREATFUSION_N8N_WEBHOOK_URL", "").strip()
+    refused["execution_path"] = (
+        N8N_LIVE_CONTAINER if configured_webhook else LOCAL_CONTRACT_FALLBACK
+    )
     candidate_id = f"live_flow:{flow_id}"
     if not soar_db_path.is_file():
         refused["reason"] = "playbook_not_approved"
@@ -4419,8 +4546,11 @@ def dispatch_approved_callback(
         ),
         None,
     )
-    if not chain_ok or approved is None:
+    if approved is None:
         refused["reason"] = "playbook_not_approved"
+        return refused
+    if not chain_ok and not webhook:
+        refused["reason"] = "audit_chain_invalid"
         return refused
     local_kwargs = {
         "flow_id": flow_id,
@@ -4430,7 +4560,6 @@ def dispatch_approved_callback(
         "thehive_url": thehive_url,
         "outbox_db_path": outbox_db_path,
     }
-    webhook = (n8n_webhook_url or "").strip()
     if webhook:
         n8n_result = _promote_recorded_callback(
             _dispatch_through_live_n8n(

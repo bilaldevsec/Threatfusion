@@ -230,6 +230,9 @@ if [[ "$MODE" == "dry-run" ]]; then
 fi
 
 mkdir -p "$(dirname "$THREATFUSION_LIVE_CONSOLE_DB")" "$(dirname "$THREATFUSION_SOAR_LEDGER_DB_PATH")"
+if [[ -z "${THREATFUSION_OPERATOR_POLICY_DIR:-}" ]]; then
+  export THREATFUSION_OPERATOR_POLICY_DIR="$(dirname "$THREATFUSION_LIVE_CONSOLE_DB")/operator-policy"
+fi
 
 shutdown_child() {
   trap - EXIT INT TERM
@@ -287,12 +290,14 @@ if [[ "$ready" != 1 ]]; then
 fi
 
 if [[ "$MODE" == "seed-demo" ]]; then
-  "$PYTHON" - "$HOST" "$PORT" <<'PY'
+  "$PYTHON" - "$HOST" "$PORT" "$ROOT" <<'PY'
 import json
+import os
 import sys
 import urllib.request
+from pathlib import Path
 
-host, port = sys.argv[1], sys.argv[2]
+host, port, root = sys.argv[1], sys.argv[2], sys.argv[3]
 health_request = urllib.request.Request(
     f"http://{host}:{port}/api/v1/live/health",
     headers={
@@ -317,15 +322,18 @@ required = {"web_exploit", "ssh_brute", "internal_recon", "benign_false_alarm"}
 if response.status != 200 or body.get("member_count") != 4 or not required <= ids:
     sys.stderr.write("error: seed-demo did not store the four scenarios\n")
     sys.exit(1)
-enroll = urllib.request.Request(
-    f"http://{host}:{port}/api/v1/live/operator/enroll",
-    data=b'{"actor_id":"lab_operator"}',
-    headers=headers,
-    method="POST",
-)
-with urllib.request.urlopen(enroll, timeout=60) as enrolled:
-    stamp = json.load(enrolled)
-if enrolled.status != 200 or stamp.get("identity_verified") is not True:
+policy_dir = os.environ.get("THREATFUSION_OPERATOR_POLICY_DIR", "").strip()
+if not policy_dir:
+    sys.stderr.write("error: seed-demo did not enroll lab_operator\n")
+    sys.exit(1)
+sys.path.insert(0, str(Path(root) / "backend" / "src"))
+from threatfusion.api.live_soc_console import enroll_lab_operator
+
+stamp = enroll_lab_operator(Path(policy_dir), "lab_operator")
+if stamp.get("evidence_state") != "verified" or stamp.get("reason") not in {
+    "lab_operator_enrolled",
+    "already_enrolled",
+}:
     sys.stderr.write("error: seed-demo did not enroll lab_operator\n")
     sys.exit(1)
 print("seed-demo: four scenarios stored")

@@ -1434,6 +1434,7 @@
         showSocView('detail');
         const flowId = copilotFlowIdForSelection(inc);
         if (Number.isInteger(flowId) && flowId > 0) askLiveCopilot(flowId);
+        loadModelProofForSelection(inc);
       });
       const copyButton = itemEl.querySelector('.copy-incident-id');
       if (copyButton) {
@@ -1601,6 +1602,7 @@
       renderEvidenceLockerQueries(null);
       renderTimelineGroupedView(null);
       renderModelProofSandbox(null);
+      setDnnBadge(null);
       return;
     }
     const scoreText = formatRfPercent(inc.uncalibratedScore);
@@ -1676,6 +1678,7 @@
         aeBadge.setAttribute('data-ae-status', 'not_scored');
       }
     }
+    setDnnBadge(inc);
     const rangeBadge = document.getElementById('rangeConnectivityBadge');
     if (rangeBadge) {
       if (inc.decision === 'Benign') {
@@ -1752,6 +1755,7 @@
     renderTimelineGroupedView(inc);
     renderModelProofSandbox(inc);
     applyContainmentGuard(inc);
+    loadModelProofForSelection(inc);
   }
 
   function renderContextMemoryPanels(inc) {
@@ -2737,20 +2741,29 @@
 
   function incidentRowToView(row) {
     const score = Number(row.max_probability_score);
+    const flowId = Number(row.flow_id);
+    const bound = Number.isInteger(flowId) && flowId > 0;
+    const src = row.src_entity_id || (bound ? '' : 'stored-incident');
+    const dst = row.dst_entity_id || (bound ? '' : 'stored-incident');
+    const entry = typeof row.entry_sha256 === 'string' ? row.entry_sha256 : '';
+    const chainOk = row.audit_chain_verified === 1 || row.audit_chain_verified === true;
     return {
       id: String(row.incident_id),
       live: true,
-      flowId: null,
+      flowId: bound ? flowId : null,
+      flow_id: bound ? flowId : null,
       sourceEventId: row.provenance_status || 'incident_store',
       sourceLabel: 'incident_store',
       observedAt: row.earliest_observed_at || '',
-      decision: row.escalated_decision || 'withheld',
+      decision: row.decision || row.escalated_decision || 'withheld',
       uncalibratedScore: Number.isFinite(score) ? score : 0,
       modelArtifactSha256: EVAL_PACK_REV2.rfArtifactSha256,
       modelVersion: 'stored_incident',
+      src_entity_id: src,
+      dst_entity_id: dst,
       provenance: {
-        srcIp: 'stored-incident',
-        dstIp: 'stored-incident',
+        srcIp: src,
+        dstIp: dst,
         srcPort: 0,
         dstPort: 0,
         proto: 'incident'
@@ -2762,20 +2775,31 @@
         explanation: 'Stored incident row. This view did not infer a new relationship.'
       },
       threatIntel: { privateIpGuardTriggered: false },
-      secondaryAe: { aeError: 0, status: 'not_scored' },
+      secondaryAe: secondaryAeFromFlow(row),
+      dnnAttackProbability: finiteOrNull(row.dnn_attack_probability),
+      dnnBinaryDecision: row.dnn_binary_decision || '',
+      unswAttackCategory: row.unsw_attack_category || '',
+      consensusLabel: 'advisory_consensus',
+      dnnFeatures: row.dnn_features && typeof row.dnn_features === 'object' ? row.dnn_features : null,
       advisory: {
         summaryHeadline: 'Stored incident ' + row.incident_id,
         detectionRationale: 'Read from the incidents database. Fusion stays disabled.'
       },
       chromaRagHits: [],
       soarRecord: {
-        playbookId: 'none',
-        state: 'none',
-        targetEntity: String(row.incident_id),
+        playbookId: row.playbook_id || 'none',
+        state: row.ledger_state || 'none',
+        targetEntity: bound ? ('live_flow:' + flowId) : String(row.incident_id),
         version: 1
       },
-      soarAuditChainVerified: false,
-      soarAuditChainHeadSha256: '',
+      auditChainVerified: chainOk && SHA256_HEX_REGEX.test(entry),
+      soarAuditChainVerified: chainOk && SHA256_HEX_REGEX.test(entry),
+      soarAuditChainHeadSha256: entry,
+      callbackRecorded: row.callback_recorded === 1 || row.callback_recorded === true,
+      callbackSignature: typeof row.callback_signature === 'string' ? row.callback_signature : '',
+      containmentState: row.containment_state || '',
+      executionPath: row.execution_path || '',
+      soarState: row.ledger_state || '',
       triageState: 'unreviewed',
       analystVerdict: '',
       analystRationale: '',
@@ -3489,6 +3513,61 @@
       status: flow && flow.ae_anomaly_flag === true ? 'ANOMALY_CONFIRMED' : 'NORMAL',
       topFeatures: flow && Array.isArray(flow.ae_top_features) ? flow.ae_top_features : []
     };
+  }
+
+  let modelProofLoadedFlowId = null;
+
+  function setDnnBadge(inc) {
+    const node = document.getElementById('flowDnnBadge');
+    if (!node) return;
+    if (!inc) {
+      node.textContent = 'PyTorch DNN (9-Class): waiting';
+      return;
+    }
+    const probability = Number(inc.dnnAttackProbability);
+    if (inc.decision === 'Benign' || (Number.isFinite(probability) && probability < 0.5)) {
+      node.textContent = 'PyTorch DNN (9-Class): Normal';
+      return;
+    }
+    if (!Number.isFinite(probability)) {
+      node.textContent = 'PyTorch DNN (9-Class): waiting';
+      return;
+    }
+    const category = inc.unswAttackCategory ? String(inc.unswAttackCategory) : 'unavailable';
+    node.textContent = 'PyTorch DNN (9-Class): ' + category + ' · ' + (probability * 100).toFixed(1) + '%';
+  }
+
+  async function loadModelProofForSelection(inc) {
+    const flowId = inc && inc.flowId ? Number(inc.flowId) : 0;
+    if (!Number.isInteger(flowId) || flowId <= 0) return;
+    if (modelProofLoadedFlowId === flowId) return;
+    modelProofLoadedFlowId = flowId;
+    const results = document.getElementById('modelProofResults');
+    try {
+      const resp = await fetch('/api/v1/live/model-proof?flow_id=' + encodeURIComponent(String(flowId)));
+      const data = await readActionPayload(resp);
+      const features = data && data.original && data.original.features;
+      if (features && typeof features === 'object') {
+        inc.dnnFeatures = features;
+        modelProofFlowId = null;
+        modelProofHasFeatures = false;
+        renderModelProofSandbox(inc);
+        fillModelProofInputs(features);
+      }
+      if (results && data && data.original) {
+        const latency = Number(data.inference_latency_ms);
+        results.textContent = [
+          proofScoreLine(data.original),
+          'Inference Latency (ms): ' + (Number.isFinite(latency) ? latency.toFixed(3) : 'unavailable')
+        ].join('\n');
+        results.setAttribute('data-evidence-state', data.evidence_state || 'advisory_simulation');
+      } else if (results) {
+        results.textContent = actionFailureText(data, resp);
+      }
+    } catch (err) {
+      modelProofLoadedFlowId = null;
+      if (results) results.textContent = 'Live inference unavailable.';
+    }
   }
 
   function renderModelProofSandbox(inc) {
