@@ -1521,21 +1521,26 @@
   }
 
   function applyContainmentGuard(inc) {
-    const benign = !!(inc && inc.decision === 'Benign');
-    const approveBlocked = benign || !realPlaybookId(inc);
-    ['btnIsolateAttacker', 'btnContainRange'].forEach(id => {
-      const node = document.getElementById(id);
-      if (!node) return;
-      node.disabled = benign;
-      if (benign) node.title = CONTAINMENT_DISABLED_TITLE;
-      else node.removeAttribute('title');
-    });
-    ['topBtnApproveSoar', 'btnGuidedApprove'].forEach(id => {
-      const node = document.getElementById(id);
-      if (!node) return;
-      node.disabled = approveBlocked;
-      if (approveBlocked) node.title = benign ? CONTAINMENT_DISABLED_TITLE : 'No playbook is stored for this flow.';
-      else node.removeAttribute('title');
+    const attack = !!(inc && inc.decision === 'Attack');
+    const step2 = !!(inc && inc.auditChainVerified && inc.soarState === 'approved');
+    const step3 = !!(inc && inc.callbackRecorded === true);
+    const step4 = !!(
+      inc && (inc.containmentState === 'applied' || inc.containmentState === 'simulated_applied')
+    );
+    const rules = [
+      [['topBtnApproveSoar', 'btnGuidedApprove', 'btnApprovePlaybook'], attack, 'Approve is available on Attack rows.'],
+      [['btnDispatchCallback'], step2, 'Dispatch requires an approved playbook and a verified hash chain.'],
+      [['btnIsolateAttacker', 'btnContainRange'], step3, 'Isolate requires a recorded callback.'],
+      [['btnRollbackRange'], step4, 'Rollback requires applied or simulated containment.']
+    ];
+    rules.forEach(rule => {
+      rule[0].forEach(id => {
+        const node = document.getElementById(id);
+        if (!node) return;
+        node.disabled = !rule[1];
+        if (node.disabled) node.title = rule[2];
+        else node.removeAttribute('title');
+      });
     });
   }
 
@@ -1595,6 +1600,7 @@
       renderContextMemoryPanels(null);
       renderEvidenceLockerQueries(null);
       renderTimelineGroupedView(null);
+      renderModelProofSandbox(null);
       return;
     }
     const scoreText = formatRfPercent(inc.uncalibratedScore);
@@ -1657,15 +1663,28 @@
     const aeBadge = document.getElementById('flowAeBadge');
     if (aeBadge) {
       const ae = inc.secondaryAe || {};
-      aeBadge.textContent = ae.status === 'ANOMALY_CONFIRMED'
-        ? 'Secondary: v2 AE rank only, not fused'
-        : 'Secondary: v2 AE not scored on this flow';
+      const loss = Number(ae.aeLoss != null ? ae.aeLoss : ae.aeError);
+      const scored = Number.isFinite(loss) && ae.status !== 'not_scored';
+      if (scored) {
+        const anomaly = ae.aeAnomalyFlag === true || (ae.aeAnomalyFlag == null && ae.status === 'ANOMALY_CONFIRMED');
+        aeBadge.textContent = 'v2 AE DL: ' + (anomaly ? 'Anomaly' : 'Normal') + ' (MSE ' + formatMse(loss) + ')';
+        aeBadge.setAttribute('data-ae-status', anomaly ? 'ANOMALY_CONFIRMED' : 'NORMAL');
+        aeBadge.setAttribute('data-ae-loss', String(loss));
+      } else {
+        aeBadge.textContent = aeBadge.getAttribute('data-ae-unscored-label')
+          || 'Secondary: v2 AE not scored on this flow';
+        aeBadge.setAttribute('data-ae-status', 'not_scored');
+      }
     }
     const rangeBadge = document.getElementById('rangeConnectivityBadge');
     if (rangeBadge) {
       if (inc.decision === 'Benign') {
         rangeBadge.textContent = 'Isolation disabled. Frozen RF decision is Benign.';
         rangeBadge.setAttribute('data-connectivity', 'disabled');
+      } else if (inc.containmentState === 'simulated_applied' || inc.containmentState === 'simulated_rolled_back') {
+        rangeBadge.textContent = 'SIMULATED SCENARIO CONTAINMENT (No Host Firewall Rule Executed — Recorded in Ledger)';
+        rangeBadge.setAttribute('data-connectivity', 'simulated');
+        rangeBadge.setAttribute('data-evidence-state', 'simulated');
       } else if (inc.containmentState === 'applied') {
         rangeBadge.textContent = src + ' -> ' + dst + ': BLOCKED (iptables DROP active)';
         rangeBadge.setAttribute('data-connectivity', 'blocked');
@@ -1731,6 +1750,8 @@
     renderContextMemoryPanels(inc);
     renderEvidenceLockerQueries(inc);
     renderTimelineGroupedView(inc);
+    renderModelProofSandbox(inc);
+    applyContainmentGuard(inc);
   }
 
   function renderContextMemoryPanels(inc) {
@@ -2075,6 +2096,7 @@
     if (btnRollback) {
       btnRollback.disabled = true;
     }
+    applyContainmentGuard(inc);
   }
 
   // ========================================================================
@@ -2409,6 +2431,25 @@
         postRangeContainment(inc, '/api/v1/live/soar/rollback');
       });
     }
+    const proofDos = document.getElementById('btnProofDos');
+    if (proofDos) {
+      proofDos.addEventListener('click', () => { fillModelProofInputs(MODEL_PROOF_PRESETS.dos); });
+    }
+    const proofNormal = document.getElementById('btnProofNormal');
+    if (proofNormal) {
+      proofNormal.addEventListener('click', () => { fillModelProofInputs(MODEL_PROOF_PRESETS.normal); });
+    }
+    const proofReset = document.getElementById('btnProofReset');
+    if (proofReset) {
+      proofReset.addEventListener('click', () => {
+        const inc = selectedIncident();
+        if (inc && inc.dnnFeatures) fillModelProofInputs(inc.dnnFeatures);
+      });
+    }
+    const proofRun = document.getElementById('btnRunModelProof');
+    if (proofRun) {
+      proofRun.addEventListener('click', () => { runLiveModelProof(); });
+    }
     const stitchButton = document.getElementById('btnStitchWindows');
     if (stitchButton) {
       stitchButton.addEventListener('click', () => { stitchVerifiedWindows(); });
@@ -2515,6 +2556,9 @@
     if (!inc) return fallback;
     const srcIp = inc.provenance && inc.provenance.srcIp ? String(inc.provenance.srcIp) : '';
     const state = String(inc.containmentState || '');
+    if (state === 'simulated_applied' || state === 'simulated_rolled_back') {
+      return 'SIMULATED SCENARIO CONTAINMENT (No Host Firewall Rule Executed — Recorded in Ledger)';
+    }
     if (state === 'applied') {
       return 'CONTAINMENT APPLIED — Source ' + srcIp + ' blocked at firewall (iptables DROP active). Click Rollback to restore.';
     }
@@ -2538,6 +2582,7 @@
   function containmentStatusState(inc) {
     if (!inc) return 'unavailable';
     const state = String(inc.containmentState || '');
+    if (state === 'simulated_applied' || state === 'simulated_rolled_back') return 'simulated';
     if (state === 'applied' || state === 'rolled_back' || inc.callbackRecorded === true) return 'verified';
     if (playbookApproved(inc) && hashChainVerified(inc)) return 'verified';
     return 'unavailable';
@@ -2560,8 +2605,8 @@
 
   function markResponseProgress(inc) {
     const approved = playbookApproved(inc);
-    const applied = !!(inc && inc.containmentState === 'applied');
-    const rolled = !!(inc && inc.containmentState === 'rolled_back');
+    const applied = !!(inc && (inc.containmentState === 'applied' || inc.containmentState === 'simulated_applied'));
+    const rolled = !!(inc && (inc.containmentState === 'rolled_back' || inc.containmentState === 'simulated_rolled_back'));
     const dispatched = !!(inc && (inc.callbackRecorded === true
       || (typeof inc.callbackSignature === 'string' && SHA256_HEX_REGEX.test(inc.callbackSignature))));
     [
@@ -2637,7 +2682,14 @@
         explanation: flow.case_title || 'Stored live flow. No new entity key was inferred.'
       },
       threatIntel: { privateIpGuardTriggered: false },
-      secondaryAe: { aeError: 0, status: 'not_scored' },
+      auditChainVerified: chainOk && SHA256_HEX_REGEX.test(entry),
+      secondaryAe: secondaryAeFromFlow(flow),
+      dnnAttackProbability: finiteOrNull(flow.dnn_attack_probability),
+      dnnBinaryDecision: flow.dnn_binary_decision || '',
+      unswAttackCategory: flow.unsw_attack_category || '',
+      consensusScore: finiteOrNull(flow.threatfusion_consensus_score),
+      consensusLabel: flow.consensus_label || 'advisory_consensus',
+      dnnFeatures: flow.dnn_features && typeof flow.dnn_features === 'object' ? flow.dnn_features : null,
       advisory: {
         summaryHeadline: flow.source_label === 'suricata_bridge' && flow.sensor_observation
           ? ('Suricata: ' + flow.sensor_observation.suricata_line)
@@ -3396,20 +3448,159 @@
     }
   }
 
+  const MODEL_PROOF_FEATURES = [
+    'dur', 'spkts', 'dpkts', 'sbytes', 'dbytes', 'rate', 'sttl', 'dttl',
+    'sload', 'dload', 'sinpkt', 'dinpkt', 'sjit', 'djit'
+  ];
+  const MODEL_PROOF_PRESETS = {
+    dos: {
+      dur: 0.01, spkts: 800, dpkts: 20, sbytes: 48000, dbytes: 400, rate: 82000,
+      sttl: 254, dttl: 0, sload: 16000000, dload: 200, sinpkt: 0.0002, dinpkt: 0.01,
+      sjit: 0.1, djit: 0.1
+    },
+    normal: {
+      dur: 0.35, spkts: 12, dpkts: 10, sbytes: 900, dbytes: 14000, rate: 60,
+      sttl: 64, dttl: 64, sload: 2400, dload: 32000, sinpkt: 0.02, dinpkt: 0.018,
+      sjit: 0.4, djit: 0.5
+    }
+  };
+  let modelProofFlowId = null;
+  let modelProofHasFeatures = false;
+
+  function finiteOrNull(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function formatMse(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return 'unavailable';
+    if (Math.abs(number) >= 1000) return number.toExponential(4);
+    return number.toFixed(6);
+  }
+
+  function secondaryAeFromFlow(flow) {
+    const loss = Number(flow && flow.ae_loss);
+    if (!Number.isFinite(loss)) return { aeError: 0, status: 'not_scored' };
+    return {
+      aeError: loss,
+      aeLoss: loss,
+      aeAnomalyFlag: !!(flow && flow.ae_anomaly_flag === true),
+      status: flow && flow.ae_anomaly_flag === true ? 'ANOMALY_CONFIRMED' : 'NORMAL',
+      topFeatures: flow && Array.isArray(flow.ae_top_features) ? flow.ae_top_features : []
+    };
+  }
+
+  function renderModelProofSandbox(inc) {
+    const grid = document.getElementById('modelProofFeatureGrid');
+    const results = document.getElementById('modelProofResults');
+    if (!grid) return;
+    const flowId = inc && inc.flowId ? inc.flowId : null;
+    if (!flowId) {
+      modelProofFlowId = null;
+      modelProofHasFeatures = false;
+      grid.textContent = 'Select a stored flow to edit its 14 features.';
+      if (results) results.textContent = 'Before and after scores appear here.';
+      return;
+    }
+    const hasStored = !!(inc.dnnFeatures && typeof inc.dnnFeatures === 'object');
+    if (modelProofFlowId === flowId && grid.querySelector('input') && (modelProofHasFeatures || !hasStored)) {
+      return;
+    }
+    modelProofFlowId = flowId;
+    modelProofHasFeatures = hasStored;
+    const stored = hasStored ? inc.dnnFeatures : {};
+    grid.innerHTML = MODEL_PROOF_FEATURES.map(name => {
+      const value = Number(stored[name]);
+      const shown = Number.isFinite(value) ? value : 0;
+      return '<label>' + escapeHtml(name)
+        + ' <input data-proof-feature="' + escapeHtml(name)
+        + '" type="number" step="any" value="' + escapeHtml(String(shown)) + '"></label>';
+    }).join(' ');
+  }
+
+  function fillModelProofInputs(features) {
+    MODEL_PROOF_FEATURES.forEach(name => {
+      const node = document.querySelector('[data-proof-feature="' + name + '"]');
+      if (!node || !features || !Object.prototype.hasOwnProperty.call(features, name)) return;
+      node.value = String(features[name]);
+    });
+  }
+
+  function readModelProofInputs() {
+    const override = {};
+    MODEL_PROOF_FEATURES.forEach(name => {
+      const node = document.querySelector('[data-proof-feature="' + name + '"]');
+      const value = node ? Number(node.value) : NaN;
+      if (Number.isFinite(value)) override[name] = value;
+    });
+    return override;
+  }
+
+  function proofScoreLine(block) {
+    if (!block) return 'unavailable';
+    const rf = Number(block.rf_attack_probability);
+    const dnn = Number(block.dnn_attack_probability);
+    const ae = Number(block.ae_loss);
+    const consensus = Number(block.threatfusion_consensus_score);
+    return [
+      'Random Forest (ML): ' + String(block.rf_decision || 'withheld') + ' '
+        + (Number.isFinite(rf) ? rf.toFixed(4) : 'unavailable'),
+      'PyTorch DNN (Binary + 9-Class Category): '
+        + (Number.isFinite(dnn) ? dnn.toFixed(4) : 'unavailable') + ' '
+        + String(block.dnn_binary_decision || '') + ' / '
+        + String(block.unsw_attack_category || 'unavailable'),
+      'PyTorch v2 Autoencoder (MSE Loss): '
+        + (Number.isFinite(ae) ? formatMse(ae) : 'unavailable') + ' '
+        + (block.ae_anomaly_flag ? 'Anomaly' : 'Normal'),
+      'Advisory Consensus: ' + (Number.isFinite(consensus) ? consensus.toFixed(4) : 'unavailable')
+    ].join('\n');
+  }
+
+  async function runLiveModelProof() {
+    const inc = selectedIncident();
+    const results = document.getElementById('modelProofResults');
+    if (!inc || !inc.flowId) {
+      if (results) results.textContent = 'Select a stored flow first.';
+      return;
+    }
+    try {
+      const resp = await fetch('/api/v1/live/model-proof', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          flow_id: inc.flowId,
+          features_override: readModelProofInputs()
+        })
+      });
+      const data = await readActionPayload(resp);
+      const latency = Number(data.inference_latency_ms);
+      const text = [
+        'Before',
+        proofScoreLine(data.original),
+        'After',
+        proofScoreLine(data.perturbed),
+        'Inference Latency (ms): ' + (Number.isFinite(latency) ? latency.toFixed(3) : 'unavailable')
+      ].join('\n');
+      if (results) {
+        results.textContent = resp.ok ? text : actionFailureText(data, resp);
+        results.setAttribute('data-evidence-state', data.evidence_state || 'advisory_simulation');
+      }
+    } catch (err) {
+      if (results) results.textContent = 'Live inference unavailable.';
+    }
+  }
+
   async function dispatchSignedCallback(inc) {
     if (!inc || !inc.live || !inc.flowId) {
       showActionBanner('Dispatch applies to an approved stored flow.', 'unavailable');
       return null;
     }
-    if (inc.decision === 'Attack') {
-      const approved = await ensurePlaybookApproved(inc);
-      if (!approved) return null;
-    }
     try {
       const resp = await fetch('/api/v1/live/soar/dispatch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ flow_id: inc.flowId, auto_approve: inc.decision === 'Attack' })
+        body: JSON.stringify({ flow_id: inc.flowId })
       });
       const data = await readActionPayload(resp);
       await refreshLiveCampaigns();
@@ -3473,20 +3664,6 @@
       showActionBanner('Containment applies to a stored bridge flow.', 'unavailable');
       return;
     }
-    const isolating = String(path).indexOf('/soar/contain') !== -1;
-    if (isolating && inc.decision === 'Attack' && inc.callbackRecorded !== true) {
-      const ready = await ensurePlaybookApproved(inc);
-      if (!ready) return;
-      const dispatched = await dispatchSignedCallback(inc);
-      const sig = dispatched && typeof dispatched.signature_sha256 === 'string'
-        ? dispatched.signature_sha256
-        : '';
-      if (!dispatched || dispatched.callback_recorded !== true || !SHA256_HEX_REGEX.test(sig)) {
-        return;
-      }
-      inc.callbackRecorded = true;
-      inc.callbackSignature = sig;
-    }
     try {
       const resp = await fetch(path, {
         method: 'POST',
@@ -3498,10 +3675,20 @@
       renderForensicDrawer();
       const applied = data.reason === 'containment_applied';
       const rolled = data.reason === 'containment_rolled_back';
+      const simulated = data.evidence_state === 'simulated'
+        || data.containment_state === 'simulated_applied'
+        || data.containment_state === 'simulated_rolled_back';
       const srcIp = inc.provenance && inc.provenance.srcIp ? String(inc.provenance.srcIp) : '';
       if (!srcIp || srcIp === '172.29.0.10') {
         if (applied) setRangeConnectivity(true);
         else if (rolled) setRangeConnectivity(false);
+      }
+      if (resp.ok && simulated) {
+        showActionBanner(
+          'SIMULATED SCENARIO CONTAINMENT (No Host Firewall Rule Executed — Recorded in Ledger)',
+          'simulated'
+        );
+        return;
       }
       if (resp.ok && (applied || rolled)) {
         const message = applied

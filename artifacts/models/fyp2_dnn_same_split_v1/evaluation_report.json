@@ -1,0 +1,89 @@
+{
+  "schema_version": "fyp2_dnn_same_split_v1",
+  "model_sha256": "484339c3c017626df3d5c67313844d0b409263b4103780c8c56e414ff63707e4",
+  "dnn_model_pt_sha256": "484339c3c017626df3d5c67313844d0b409263b4103780c8c56e414ff63707e4",
+  "seed": 42,
+  "feature_names": [
+    "dur",
+    "spkts",
+    "dpkts",
+    "sbytes",
+    "dbytes",
+    "rate",
+    "sttl",
+    "dttl",
+    "sload",
+    "dload",
+    "sinpkt",
+    "dinpkt",
+    "sjit",
+    "djit"
+  ],
+  "attack_categories": [
+    "Analysis",
+    "Backdoor",
+    "DoS",
+    "Exploits",
+    "Fuzzers",
+    "Generic",
+    "Reconnaissance",
+    "Shellcode",
+    "Worms"
+  ],
+  "train_rows": 2031363,
+  "test_rows": 507846,
+  "standardization": "train_split_mean_std_only",
+  "split": "chronological_within_label_stratum_later_20_percent_held_out",
+  "source_csvs": [
+    "data/raw/unsw_nb15/official/UNSW-NB15_1.csv",
+    "data/raw/unsw_nb15/official/UNSW-NB15_2.csv",
+    "data/raw/unsw_nb15/official/UNSW-NB15_3.csv",
+    "data/raw/unsw_nb15/official/UNSW-NB15_4.csv"
+  ],
+  "rate_definition": "(spkts + dpkts) / dur when dur > 0 else 0",
+  "accuracy": 0.9745375566608775,
+  "precision": 0.8323190906849706,
+  "recall": 0.9998753000592324,
+  "f1": 0.9084355947685574,
+  "fpr": 0.029126060420291554,
+  "confusion_matrix": {
+    "tp": 64146,
+    "fp": 12923,
+    "tn": 430769,
+    "fn": 8
+  },
+  "nine_class_accuracy": 0.8515914829940455,
+  "train_feature_medians": {
+    "dur": 0.017313,
+    "spkts": 12.0,
+    "dpkts": 14.0,
+    "sbytes": 1540.0,
+    "dbytes": 1948.0,
+    "rate": 3634.357659733264,
+    "sttl": 31.0,
+    "dttl": 29.0,
+    "sload": 575936.875,
+    "dload": 612476.375,
+    "sinpkt": 0.494,
+    "dinpkt": 0.441822,
+    "sjit": 20.272061,
+    "djit": 10.76193
+  },
+  "fyp1_random_forest": {
+    "sha256": "bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9",
+    "model_role": "fyp1_binary_alert_authority",
+    "binary_accuracy": 0.8614068044249634,
+    "nine_class_accuracy": null,
+    "nine_class_head": false,
+    "rows_scored": 507846
+  },
+  "nine_class_accuracy_comparison": {
+    "threatfusion_same_split_dnn": 0.8515914829940455,
+    "fyp1_random_forest_binary_accuracy": 0.8614068044249634,
+    "fyp1_random_forest_nine_class_accuracy": null,
+    "dnn_binary_accuracy": 0.9745375566608775,
+    "note": "FYP-I frozen Random Forest bd2853a6 is a binary alert authority and has no 9-class head. Both scores use this held-out split. The DNN uses the 14 raw UNSW columns. The Random Forest was scored read-only on the canonical 14-feature projection of the same rows and was not modified. The DNN 9-class accuracy counts true Attack rows only. production_fusion_enabled stays false."
+  },
+  "production_fusion_enabled": false,
+  "alert_authority": "frozen_random_forest"
+}

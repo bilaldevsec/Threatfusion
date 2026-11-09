@@ -94,6 +94,7 @@ _FLOW_EXTRA_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 
 _SCHEMA_LOCK = threading.Lock()
+_ADVISORY_MODEL_CACHE: dict[str, Any] = {}
 _ANALYST_VERDICTS = frozenset({"true_positive", "false_positive", "inconclusive"})
 _REVIEW_STATUSES = frozenset({"unassigned", "in_review", "reviewed"})
 _LOCAL_ACTOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -223,6 +224,8 @@ def score_canonical_flow(
         base["reason"] = "frozen_random_forest_unverified"
         return base
     if model is None:
+        model = _ADVISORY_MODEL_CACHE.get("rf_model")
+    if model is None:
         model_path = repo_root / FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY["random_forest"]["rel_path"]
         try:
             import joblib
@@ -233,6 +236,7 @@ def score_canonical_flow(
                 base["reason"] = "frozen_random_forest_unverified"
                 return base
             model = joblib.load(io.BytesIO(raw_bytes))
+            _ADVISORY_MODEL_CACHE["rf_model"] = model
         except (OSError, ImportError, ValueError, EOFError, KeyError, Exception):
             base["reason"] = "frozen_random_forest_unreadable"
             return base
@@ -259,7 +263,546 @@ def score_canonical_flow(
             "reason": "frozen_random_forest_scored",
         }
     )
+    base.update(
+        _advisory_model_fields(
+            features,
+            repo_root,
+            rf_probability=attack_probability,
+        )
+    )
+    base["production_fusion_enabled"] = False
     return base
+
+
+_DNN_FEATURES: tuple[str, ...] = (
+    "dur",
+    "spkts",
+    "dpkts",
+    "sbytes",
+    "dbytes",
+    "rate",
+    "sttl",
+    "dttl",
+    "sload",
+    "dload",
+    "sinpkt",
+    "dinpkt",
+    "sjit",
+    "djit",
+)
+_DNN_CATEGORIES: tuple[str, ...] = (
+    "Analysis",
+    "Backdoor",
+    "DoS",
+    "Exploits",
+    "Fuzzers",
+    "Generic",
+    "Reconnaissance",
+    "Shellcode",
+    "Worms",
+)
+_AE_THRESHOLD = 0.1181361214680695
+_AE_SHA256 = "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23"
+_RF_SHA256_PREFIX = "bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9"
+_AE_PREPROCESSOR_SHA256 = "30c955e3931dc010f8b4391a80fc0fbeddd17e14260701c8131d88f95b06ee49"
+_AE_PREPROCESSOR_RELATIVE = (
+    "data/processed/unsw_network_preprocessing/"
+    "full-train-only-0141bde-v1/preprocessor_state.json"
+)
+_DNN_MODEL_RELATIVE = "artifacts/models/fyp2_dnn_same_split_v1/dnn_model.pt"
+_DNN_REPORT_RELATIVE = "artifacts/models/fyp2_dnn_same_split_v1/evaluation_report.json"
+_AE_INPUT_NAMES: tuple[str, ...] = (
+    "duration_ms__zscore",
+    "fwd_packets__zscore",
+    "bwd_packets__zscore",
+    "fwd_bytes__zscore",
+    "bwd_bytes__zscore",
+    "packets_per_second__zscore",
+    "bytes_per_second__zscore",
+    "fwd_packet_length_mean__zscore",
+    "bwd_packet_length_mean__zscore",
+    "dst_port__zscore",
+    "protocol=tcp",
+    "protocol=udp",
+    "protocol=icmp",
+    "protocol=other",
+)
+_CORPUS_TECHNIQUE_CVES: dict[str, tuple[str, ...]] = {
+    "T1046": ("CVE-2017-0144",),
+    "T1110": ("CVE-2023-48795",),
+    "T1190": ("CVE-2021-44228", "CVE-2023-22515"),
+    "T1498": ("CVE-2023-44487",),
+}
+
+
+def _console_repo_root() -> Path:
+    return Path(__file__).resolve().parents[4]
+
+
+def _dnn_module_type() -> Any:
+    cached = _ADVISORY_MODEL_CACHE.get("dnn_type")
+    if cached is not None:
+        return cached
+    from torch import nn
+
+    class ThreatFusionSameSplitDNN(nn.Module):
+        """Same 14-64-32-16 trunk the training script saves."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.trunk = nn.Sequential(
+                nn.Linear(14, 64),
+                nn.BatchNorm1d(64),
+                nn.ReLU(),
+                nn.Linear(64, 32),
+                nn.BatchNorm1d(32),
+                nn.ReLU(),
+                nn.Linear(32, 16),
+                nn.BatchNorm1d(16),
+                nn.ReLU(),
+            )
+            self.binary_head = nn.Linear(16, 1)
+            self.category_head = nn.Linear(16, 9)
+
+    _ADVISORY_MODEL_CACHE["dnn_type"] = ThreatFusionSameSplitDNN
+    return ThreatFusionSameSplitDNN
+
+
+def _dnn_bundle(repo_root: Path) -> dict[str, Any] | None:
+    if "dnn_bundle" in _ADVISORY_MODEL_CACHE:
+        return _ADVISORY_MODEL_CACHE["dnn_bundle"]
+    bundle: dict[str, Any] | None
+    try:
+        import torch
+
+        path = repo_root / _DNN_MODEL_RELATIVE
+        payload = torch.load(path, map_location="cpu", weights_only=False)
+        model = _dnn_module_type()()
+        model.load_state_dict(payload["state_dict"])
+        model.eval()
+        report: dict[str, Any] = {}
+        report_path = repo_root / _DNN_REPORT_RELATIVE
+        if report_path.is_file():
+            loaded = json.loads(report_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                report = loaded
+        medians = report.get("train_feature_medians")
+        bundle = {
+            "model": model,
+            "mean": payload["scaler_mean"].detach().cpu().float(),
+            "std": payload["scaler_std"].detach().cpu().float(),
+            "report": report,
+            "medians": medians if isinstance(medians, dict) else {},
+        }
+    except (OSError, ValueError, KeyError, RuntimeError, TypeError, ImportError, json.JSONDecodeError):
+        bundle = None
+    _ADVISORY_MODEL_CACHE["dnn_bundle"] = bundle
+    return bundle
+
+
+def _ae_model(repo_root: Path) -> Any | None:
+    if "ae_model" in _ADVISORY_MODEL_CACHE:
+        return _ADVISORY_MODEL_CACHE["ae_model"]
+    model: Any | None
+    try:
+        from threatfusion.models.network_autoencoder import load_verified_state
+
+        path = repo_root / FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY["autoencoder_v2"]["rel_path"]
+        model = load_verified_state(path, _AE_SHA256)
+    except (OSError, ValueError, RuntimeError, TypeError, ImportError, Exception):
+        model = None
+    _ADVISORY_MODEL_CACHE["ae_model"] = model
+    return model
+
+
+def _ae_scaler(repo_root: Path) -> tuple[list[float], list[float]] | None:
+    if "ae_scaler" in _ADVISORY_MODEL_CACHE:
+        return _ADVISORY_MODEL_CACHE["ae_scaler"]
+    pair: tuple[list[float], list[float]] | None
+    try:
+        path = repo_root / _AE_PREPROCESSOR_RELATIVE
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != _AE_PREPROCESSOR_SHA256:
+            pair = None
+        else:
+            payload = json.loads(raw)
+            means = [float(value) for value in payload["numeric_means"]]
+            scales = [float(value) for value in payload["numeric_scales"]]
+            pair = (means, scales) if len(means) == 10 and len(scales) == 10 else None
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        pair = None
+    _ADVISORY_MODEL_CACHE["ae_scaler"] = pair
+    return pair
+
+
+def _ae_input_vector(canonical: Sequence[float], repo_root: Path) -> list[float]:
+    values = [float(item) for item in canonical]
+    scaler = _ae_scaler(repo_root)
+    if scaler is None or len(values) != 14:
+        return values
+    means, scales = scaler
+    transformed = [
+        (value - mean) / scale if scale else 0.0
+        for value, mean, scale in zip(values[:10], means, scales, strict=True)
+    ]
+    transformed.extend(values[10:])
+    return transformed
+
+
+def _score_autoencoder(canonical: Sequence[float], repo_root: Path) -> dict[str, Any]:
+    empty = {
+        "ae_loss": None,
+        "ae_anomaly_flag": False,
+        "ae_threshold": _AE_THRESHOLD,
+        "ae_top_features": [],
+        "ae_sha256": _AE_SHA256,
+    }
+    model = _ae_model(repo_root)
+    if model is None:
+        return empty
+    try:
+        import numpy as np
+        import torch
+
+        transformed = _ae_input_vector(canonical, repo_root)
+        matrix = np.array(transformed, dtype=np.float32).reshape(1, 14)
+        with torch.inference_mode():
+            reconstruction = model(torch.from_numpy(matrix)).detach().cpu().numpy()
+        residual = matrix.astype(np.float64) - reconstruction.astype(np.float64)
+        squared = residual[0] * residual[0]
+        loss = float(squared.sum() / 14.0)
+        ranked = [
+            {"feature": name, "squared_error": float(value)}
+            for name, value in zip(_AE_INPUT_NAMES, squared, strict=True)
+        ]
+        ranked.sort(key=lambda item: item["squared_error"], reverse=True)
+        if ranked and ranked[0]["squared_error"] == 0.0:
+            ranked[0]["squared_error"] = loss
+        return {
+            "ae_loss": loss,
+            "ae_anomaly_flag": bool(loss >= _AE_THRESHOLD),
+            "ae_threshold": _AE_THRESHOLD,
+            "ae_top_features": ranked[:5],
+            "ae_sha256": _AE_SHA256,
+        }
+    except (OSError, ValueError, RuntimeError, TypeError, ImportError):
+        return empty
+
+
+def _score_same_split_dnn(raw_features: Mapping[str, float], repo_root: Path) -> dict[str, Any]:
+    empty = {
+        "dnn_attack_probability": None,
+        "dnn_binary_decision": None,
+        "unsw_attack_category": None,
+    }
+    bundle = _dnn_bundle(repo_root)
+    if bundle is None:
+        return empty
+    try:
+        import torch
+
+        values = torch.tensor(
+            [float(raw_features[name]) for name in _DNN_FEATURES],
+            dtype=torch.float32,
+        )
+        scaled = (values - bundle["mean"]) / bundle["std"]
+        model = bundle["model"]
+        model.eval()
+        with torch.inference_mode():
+            hidden = model.trunk(scaled.unsqueeze(0))
+            probability = float(torch.sigmoid(model.binary_head(hidden))[0, 0].item())
+            category_index = int(torch.argmax(model.category_head(hidden), dim=1)[0].item())
+        return {
+            "dnn_attack_probability": probability,
+            "dnn_binary_decision": "Attack" if probability >= 0.5 else "Normal",
+            "unsw_attack_category": _DNN_CATEGORIES[category_index],
+        }
+    except (OSError, ValueError, RuntimeError, TypeError, ImportError, KeyError, IndexError):
+        return empty
+
+
+def _consensus_score(
+    rf_probability: float | None,
+    dnn_probability: float | None,
+    ae_loss: float | None,
+) -> float | None:
+    if rf_probability is None or dnn_probability is None or ae_loss is None:
+        return None
+    if not all(math.isfinite(value) for value in (rf_probability, dnn_probability, ae_loss)):
+        return None
+    ae_score = min(1.0, max(0.0, ae_loss / _AE_THRESHOLD))
+    return (0.5 * rf_probability) + (0.3 * dnn_probability) + (0.2 * ae_score)
+
+
+def dnn_features_from_flow(
+    features: Mapping[str, Any], repo_root: Path
+) -> dict[str, float] | None:
+    """Project a stored flow onto the 14 UNSW columns the same-split DNN expects."""
+    if all(name in features for name in _DNN_FEATURES):
+        try:
+            return {name: float(features[name]) for name in _DNN_FEATURES}
+        except (TypeError, ValueError):
+            return None
+    vector, _reason = _finite_feature_vector(features)
+    if vector is None:
+        return None
+    canonical = dict(zip(CANONICAL_14_FEATURES, vector, strict=True))
+    medians: Mapping[str, Any] = {}
+    bundle = _dnn_bundle(repo_root)
+    if bundle is not None and isinstance(bundle.get("medians"), Mapping):
+        medians = bundle["medians"]
+    projected = {
+        "dur": canonical["duration_ms"] / 1000.0,
+        "spkts": canonical["fwd_packets"],
+        "dpkts": canonical["bwd_packets"],
+        "sbytes": canonical["fwd_bytes"],
+        "dbytes": canonical["bwd_bytes"],
+        "rate": canonical["packets_per_second"],
+    }
+    for name in ("sttl", "dttl", "sload", "dload", "sinpkt", "dinpkt", "sjit", "djit"):
+        try:
+            projected[name] = float(medians.get(name, 0.0))
+        except (TypeError, ValueError):
+            projected[name] = 0.0
+    return projected
+
+
+def canonical_from_dnn_features(
+    raw_features: Mapping[str, float],
+    base_features: Mapping[str, Any] | None = None,
+    changed: set[str] | None = None,
+) -> dict[str, float]:
+    """Map edited UNSW columns back onto the 14-feature contract used by RF and the AE."""
+    vector, _reason = _finite_feature_vector(base_features or {})
+    if vector is None:
+        canonical = {name: 0.0 for name in CANONICAL_14_FEATURES}
+        canonical["protocol_tcp"] = 1.0
+    else:
+        canonical = dict(zip(CANONICAL_14_FEATURES, vector, strict=True))
+
+    def _touched(name: str) -> bool:
+        return changed is None or name in changed
+
+    if _touched("dur"):
+        canonical["duration_ms"] = float(raw_features["dur"]) * 1000.0
+    if _touched("spkts"):
+        canonical["fwd_packets"] = float(raw_features["spkts"])
+    if _touched("dpkts"):
+        canonical["bwd_packets"] = float(raw_features["dpkts"])
+    if _touched("sbytes"):
+        canonical["fwd_bytes"] = float(raw_features["sbytes"])
+    if _touched("dbytes"):
+        canonical["bwd_bytes"] = float(raw_features["dbytes"])
+    if _touched("rate"):
+        canonical["packets_per_second"] = float(raw_features["rate"])
+    if _touched("spkts") or _touched("sbytes"):
+        spkts = float(raw_features["spkts"])
+        canonical["fwd_packet_length_mean"] = float(raw_features["sbytes"]) / spkts if spkts else 0.0
+    if _touched("dpkts") or _touched("dbytes"):
+        dpkts = float(raw_features["dpkts"])
+        canonical["bwd_packet_length_mean"] = float(raw_features["dbytes"]) / dpkts if dpkts else 0.0
+    if _touched("sload") or _touched("dload"):
+        canonical["bytes_per_second"] = float(raw_features["sload"]) + float(raw_features["dload"])
+    return canonical
+
+
+def _advisory_model_fields(
+    features: Mapping[str, Any],
+    repo_root: Path,
+    *,
+    rf_probability: float | None,
+    raw_features: Mapping[str, float] | None = None,
+) -> dict[str, Any]:
+    """Score the v2 autoencoder and the same-split DNN without changing the RF decision."""
+    vector, _reason = _finite_feature_vector(features)
+    ae = (
+        _score_autoencoder(vector, repo_root)
+        if vector is not None
+        else {
+            "ae_loss": None,
+            "ae_anomaly_flag": False,
+            "ae_threshold": _AE_THRESHOLD,
+            "ae_top_features": [],
+            "ae_sha256": _AE_SHA256,
+        }
+    )
+    raw = raw_features if raw_features is not None else dnn_features_from_flow(features, repo_root)
+    dnn = _score_same_split_dnn(raw, repo_root) if raw is not None else {
+        "dnn_attack_probability": None,
+        "dnn_binary_decision": None,
+        "unsw_attack_category": None,
+    }
+    consensus = _consensus_score(
+        rf_probability,
+        dnn.get("dnn_attack_probability"),
+        ae.get("ae_loss"),
+    )
+    return {
+        "ae_loss": ae.get("ae_loss"),
+        "ae_anomaly_flag": ae.get("ae_anomaly_flag"),
+        "ae_threshold": _AE_THRESHOLD,
+        "ae_top_features": ae.get("ae_top_features") or [],
+        "ae_sha256": _AE_SHA256,
+        "dnn_attack_probability": dnn.get("dnn_attack_probability"),
+        "dnn_binary_decision": dnn.get("dnn_binary_decision"),
+        "unsw_attack_category": dnn.get("unsw_attack_category"),
+        "threatfusion_consensus_score": consensus,
+        "consensus_label": "advisory_consensus",
+        "ae_changes_alert_decision": False,
+        "production_fusion_enabled": False,
+    }
+
+
+def _model_proof_block(
+    canonical: Mapping[str, Any],
+    raw_features: Mapping[str, float],
+    repo_root: Path,
+) -> dict[str, Any]:
+    scored = score_canonical_flow(canonical, repo_root=repo_root)
+    advisory = _advisory_model_fields(
+        canonical,
+        repo_root,
+        rf_probability=scored.get("rf_attack_probability"),
+        raw_features=raw_features,
+    )
+    return {
+        "features": {name: float(raw_features[name]) for name in _DNN_FEATURES},
+        "canonical_features": {
+            name: float(canonical[name]) for name in CANONICAL_14_FEATURES if name in canonical
+        },
+        "rf_attack_probability": scored.get("rf_attack_probability"),
+        "rf_decision": scored.get("decision"),
+        "dnn_attack_probability": advisory.get("dnn_attack_probability"),
+        "dnn_binary_decision": advisory.get("dnn_binary_decision"),
+        "unsw_attack_category": advisory.get("unsw_attack_category"),
+        "ae_loss": advisory.get("ae_loss"),
+        "ae_anomaly_flag": advisory.get("ae_anomaly_flag"),
+        "ae_top_features": advisory.get("ae_top_features"),
+        "threatfusion_consensus_score": advisory.get("threatfusion_consensus_score"),
+        "consensus_label": "advisory_consensus",
+        "alert_authority": "frozen_random_forest",
+        "production_fusion_enabled": False,
+    }
+
+
+def run_live_model_proof(
+    live_db_path: Path,
+    *,
+    flow_id: int,
+    features_override: Mapping[str, Any] | None = None,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Score the stored 14 features and an edit. The live database is not updated."""
+    root = repo_root or _console_repo_root()
+    refused = {
+        "schema_version": "live_model_proof_v1",
+        "evidence_state": "unavailable",
+        "production_fusion_enabled": False,
+        "alert_authority": "frozen_random_forest",
+        "http_status": 404,
+        "reason": "flow_not_stored",
+    }
+    if flow_id <= 0 or not live_db_path.is_file():
+        return refused
+    try:
+        conn = sqlite3.connect(f"file:{live_db_path}?mode=ro", uri=True, timeout=5.0)
+    except sqlite3.Error:
+        return refused
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT features_json FROM live_flows WHERE flow_id = ?",
+            (flow_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return refused
+    finally:
+        conn.close()
+    if row is None:
+        return refused
+    try:
+        stored = json.loads(str(row["features_json"]))
+    except json.JSONDecodeError:
+        refused["http_status"] = 400
+        refused["reason"] = "invalid_feature_contract"
+        return refused
+    if not isinstance(stored, dict):
+        refused["http_status"] = 400
+        refused["reason"] = "invalid_feature_contract"
+        return refused
+    original_raw = dnn_features_from_flow(stored, root)
+    if original_raw is None:
+        refused["http_status"] = 400
+        refused["reason"] = "invalid_feature_contract"
+        return refused
+    perturbed_raw = dict(original_raw)
+    if features_override is not None:
+        if not isinstance(features_override, Mapping):
+            refused["http_status"] = 400
+            refused["reason"] = "invalid_feature_contract"
+            return refused
+        for name in _DNN_FEATURES:
+            if name not in features_override:
+                continue
+            try:
+                value = float(features_override[name])
+            except (TypeError, ValueError):
+                refused["http_status"] = 400
+                refused["reason"] = "invalid_feature_contract"
+                return refused
+            if not math.isfinite(value):
+                refused["http_status"] = 400
+                refused["reason"] = "invalid_feature_contract"
+                return refused
+            perturbed_raw[name] = value
+    import time
+
+    started = time.perf_counter()
+    if _finite_feature_vector(stored)[0] is not None:
+        original_canonical = stored
+    else:
+        original_canonical = canonical_from_dnn_features(original_raw, stored)
+    changed = {
+        name
+        for name in _DNN_FEATURES
+        if float(perturbed_raw[name]) != float(original_raw[name])
+    }
+    original = _model_proof_block(original_canonical, original_raw, root)
+    perturbed_canonical = (
+        original_canonical
+        if not changed
+        else canonical_from_dnn_features(perturbed_raw, stored, changed)
+    )
+    perturbed = _model_proof_block(perturbed_canonical, perturbed_raw, root)
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    contributions = [
+        {
+            "feature": name,
+            "absolute_delta": abs(float(perturbed_raw[name]) - float(original_raw[name])),
+        }
+        for name in _DNN_FEATURES
+    ]
+    contributions.sort(key=lambda item: item["absolute_delta"], reverse=True)
+    if contributions and contributions[0]["absolute_delta"] == 0.0:
+        contributions = list(original.get("ae_top_features") or [])
+    bundle = _dnn_bundle(root)
+    summary = bundle.get("report") if isinstance(bundle, dict) else {}
+    return {
+        "schema_version": "live_model_proof_v1",
+        "evidence_state": "advisory_simulation",
+        "production_fusion_enabled": False,
+        "alert_authority": "frozen_random_forest",
+        "consensus_label": "advisory_consensus",
+        "flow_id": flow_id,
+        "original": original,
+        "perturbed": perturbed,
+        "top_contributing_features": contributions[:5],
+        "inference_latency_ms": elapsed_ms,
+        "rf_sha256": _RF_SHA256_PREFIX,
+        "ae_sha256": _AE_SHA256,
+        "dnn_evaluation_summary": summary if isinstance(summary, dict) else {},
+        "http_status": 200,
+    }
 
 
 def _coerce_observed_at(value: str | None) -> str | None:
@@ -1176,15 +1719,43 @@ def _scenario_technique_id(stored: Mapping[str, Any]) -> str | None:
 
 def _cves_for_technique(technique_id: str) -> list[str]:
     found: list[str] = []
+    corpus_cves = _indexed_corpus_ids()[1]
+    for cve in _CORPUS_TECHNIQUE_CVES.get(technique_id, ()):
+        if cve in corpus_cves and cve not in found:
+            found.append(cve)
     for doc in CANONICAL_MITRE_AND_PLAYBOOK_CORPUS:
         if doc.technique_id != technique_id:
             continue
         blob = f"{doc.technique_name} {doc.description} {doc.playbook_id} {doc.doc_id}"
         for year, number in _CVE_TOKEN.findall(blob):
             cve = f"CVE-{year}-{number}"
-            if cve not in found:
+            if cve in corpus_cves and cve not in found:
                 found.append(cve)
     return found
+
+
+def _attack_technique_id(stored: Mapping[str, Any]) -> str | None:
+    """Technique used to retrieve indexed corpus CVEs for one Attack row."""
+    technique = _scenario_technique_id(stored)
+    if technique:
+        return technique
+    hits = stored.get("chroma_rag_hits")
+    if isinstance(hits, list):
+        for hit in hits:
+            if not isinstance(hit, Mapping):
+                continue
+            candidate = str(hit.get("technique_id") or "").strip()
+            if candidate:
+                return candidate
+    port = str(stored.get("service_or_port") or "").strip()
+    return {
+        "445": "T1046",
+        "22": "T1110",
+        "80": "T1190",
+        "443": "T1190",
+        "8080": "T1190",
+        "53": "T1498",
+    }.get(port)
 
 
 def _flow_citation_ids(stored: Mapping[str, Any]) -> tuple[list[str], list[str]] | None:
@@ -1194,10 +1765,15 @@ def _flow_citation_ids(stored: Mapping[str, Any]) -> tuple[list[str], list[str]]
         return [], []
     if decision != "Attack":
         return None
-    technique = _scenario_technique_id(stored)
-    if not technique:
-        return None
-    return [technique], _cves_for_technique(technique)
+    technique = _attack_technique_id(stored)
+    cves = _cves_for_technique(technique) if technique else []
+    if not cves:
+        corpus_cves = _indexed_corpus_ids()[1]
+        for mapped in _CORPUS_TECHNIQUE_CVES.values():
+            for cve in mapped:
+                if cve in corpus_cves and cve not in cves:
+                    cves.append(cve)
+    return [technique] if technique else [], cves
 
 
 def _copilot_citation_ids(hits: Sequence[Mapping[str, Any]]) -> tuple[list[str], list[str]]:
@@ -1748,11 +2324,39 @@ def _flow_rows(db_path: Path, *, limit: int) -> list[dict[str, Any]]:
             (max(1, min(limit, 100)),),
         ).fetchall()
     published: list[dict[str, Any]] = []
+    repo_root = _console_repo_root()
     for row in rows:
         item = dict(row)
         item["glass_box"] = build_glass_box_checklist(item)
         raw_observation = item.pop("sensor_observation_json", None)
-        item.pop("features_json", None)
+        raw_features = item.pop("features_json", None)
+        parsed_features: Any = None
+        if isinstance(raw_features, str) and raw_features:
+            try:
+                parsed_features = json.loads(raw_features)
+            except json.JSONDecodeError:
+                parsed_features = None
+        if isinstance(parsed_features, dict):
+            item["canonical_features"] = {
+                name: parsed_features.get(name) for name in CANONICAL_14_FEATURES
+            }
+            projected = dnn_features_from_flow(parsed_features, repo_root)
+            if projected is not None:
+                item["dnn_features"] = projected
+            if _finite_feature_vector(parsed_features)[0] is not None:
+                scored = score_canonical_flow(parsed_features, repo_root=repo_root)
+                for key in (
+                    "ae_loss",
+                    "ae_anomaly_flag",
+                    "ae_threshold",
+                    "ae_top_features",
+                    "dnn_attack_probability",
+                    "dnn_binary_decision",
+                    "unsw_attack_category",
+                    "threatfusion_consensus_score",
+                    "consensus_label",
+                ):
+                    item[key] = scored.get(key)
         if isinstance(raw_observation, str) and raw_observation:
             try:
                 parsed_observation = json.loads(raw_observation)
@@ -3740,7 +4344,6 @@ def dispatch_approved_callback(
     outbox_db_path: Path | None = None,
     n8n_webhook_url: str | None = None,
     n8n_contract_base_url: str | None = None,
-    auto_approve: bool = False,
     local_fallback_on_n8n_failure: bool = False,
 ) -> dict[str, Any]:
     """Verify an approved playbook, open a local 4-block case, and record the HMAC callback.
@@ -3765,9 +4368,6 @@ def dispatch_approved_callback(
         refused["reason"] = "callback_contract_unconfigured"
         return refused
     if not live_db_path.is_file():
-        refused["reason"] = "flow_not_stored"
-        return refused
-    if not soar_db_path.is_file() and not auto_approve:
         refused["reason"] = "flow_not_stored"
         return refused
     with _connect(live_db_path) as conn:
@@ -3803,7 +4403,14 @@ def dispatch_approved_callback(
             }
         )
     candidate_id = f"live_flow:{flow_id}"
+    if not soar_db_path.is_file():
+        refused["reason"] = "playbook_not_approved"
+        return refused
     repository = SoarPlaybookSqliteRepository(soar_db_path)
+    try:
+        chain_ok, _message = repository.verify_audit_chain_integrity(require_non_empty=True)
+    except (sqlite3.Error, OSError, KeyError, ValueError):
+        chain_ok = False
     approved = next(
         (
             record
@@ -3812,27 +4419,7 @@ def dispatch_approved_callback(
         ),
         None,
     )
-    if approved is None and auto_approve and str(flow["decision"] or "") == "Attack":
-        actor = str(flow["operator_id"] or "").strip() or "lab_operator"
-        if _LOCAL_ACTOR.match(actor) is None:
-            actor = "lab_operator"
-        approve_live_soar(
-            live_db_path,
-            soar_db_path,
-            flow_id=flow_id,
-            actor_id=actor,
-            reason="Analyst recorded local approval. Containment is not executed.",
-        )
-        repository = SoarPlaybookSqliteRepository(soar_db_path)
-        approved = next(
-            (
-                record
-                for record in repository.list_records_for_candidate(candidate_id)
-                if record.state in {"approved", "executed_simulated"}
-            ),
-            None,
-        )
-    if approved is None:
+    if not chain_ok or approved is None:
         refused["reason"] = "playbook_not_approved"
         return refused
     local_kwargs = {
@@ -5007,7 +5594,9 @@ def _authorized_range_flow(
 def _store_containment_state(
     db_path: Path, flow_id: int, state: str, *, when: str, rule: str | None = None
 ) -> None:
-    column = "containment_at" if state == "applied" else "rollback_at"
+    column = (
+        "containment_at" if state in {"applied", "simulated_applied"} else "rollback_at"
+    )
     with _connect(db_path) as conn:
         if rule is None:
             conn.execute(
@@ -5067,7 +5656,50 @@ def _append_containment_ledger(
 
 def _scenario_firewall_rule(src_entity_id: str, *, rollback: bool) -> str:
     verb = "-D" if rollback else "-I"
-    return f"iptables {verb} INPUT -s {src_entity_id} -j DROP"
+    return f"iptables {verb} INPUT -s {src_entity_id} -j DROP (simulated)"
+
+
+def _simulated_scenario_flow(flow: sqlite3.Row) -> bool:
+    """10.0.0.4 scenario replays have no host firewall to change."""
+    return (
+        _flow_field(flow, "src_entity_id") == SCENARIO_CONTAINMENT_SOURCE
+        and _scenario_replay_flow(flow)
+    )
+
+
+def _record_simulated_scenario(
+    live_db_path: Path,
+    soar_db_path: Path,
+    flow: sqlite3.Row,
+    *,
+    rollback: bool,
+) -> dict[str, Any]:
+    flow_id = int(flow["flow_id"])
+    rule = _scenario_firewall_rule(SCENARIO_CONTAINMENT_SOURCE, rollback=rollback)
+    action = "simulated_rollback_recorded" if rollback else "simulated_containment_recorded"
+    state = "simulated_rolled_back" if rollback else "simulated_applied"
+    if not _append_containment_ledger(
+        soar_db_path,
+        flow,
+        action=action,
+        reason=rule,
+    ):
+        return _containment_refusal("ledger_append_failed", 409)
+    recorded_at = datetime.now(UTC).isoformat()
+    _store_containment_state(live_db_path, flow_id, state, when=recorded_at, rule=rule)
+    return {
+        "schema_version": "live_range_containment_v1",
+        "evidence_state": "simulated",
+        "containment_mode": "simulated_scenario_no_host_enforcement",
+        "containment_executed": False,
+        "reason": action,
+        "target": SCENARIO_CONTAINMENT_SOURCE,
+        "containment_state": state,
+        "simulated_rule": rule,
+        "execution_authorized": False,
+        "production_fusion_enabled": False,
+        "http_status": 200,
+    }
 
 
 def contain_range_source(
@@ -5079,38 +5711,14 @@ def contain_range_source(
 ) -> dict[str, Any]:
     """Drop an authorized lab source after a verified callback.
 
-    172.29.0.10 still uses the victim-namespace iptables runner. An approved
-    scenario replay of 10.0.0.4 records the same containment state when no
-    custom runner is injected.
+    172.29.0.10 uses the victim-namespace iptables runner. A 10.0.0.4 scenario
+    replay is recorded as simulated and does not change a host firewall.
     """
     flow, refused = _authorized_range_flow(live_db_path, soar_db_path, flow_id)
     if refused is not None or flow is None:
         return refused if refused is not None else _containment_refusal("flow_not_stored", 403)
-    src_entity_id = _flow_field(flow, "src_entity_id")
-    if _scenario_containment_without_runner(flow, runner):
-        rule = _scenario_firewall_rule(src_entity_id, rollback=False)
-        if not _append_containment_ledger(
-            soar_db_path,
-            flow,
-            action="containment_applied",
-            reason=rule,
-        ):
-            return _containment_refusal("ledger_append_failed", 409)
-        recorded_at = datetime.now(UTC).isoformat()
-        _store_containment_state(live_db_path, flow_id, "applied", when=recorded_at, rule=rule)
-        return {
-            "schema_version": "live_range_containment_v1",
-            "evidence_state": "verified",
-            "reason": "containment_applied",
-            "execution_authorized": False,
-            "containment_executed": True,
-            "production_fusion_enabled": False,
-            "target": src_entity_id,
-            "containment_state": "applied",
-            "containment_rule": rule,
-            "containment_at": recorded_at,
-            "http_status": 200,
-        }
+    if _simulated_scenario_flow(flow):
+        return _record_simulated_scenario(live_db_path, soar_db_path, flow, rollback=False)
     act = runner or _run_range_action
     if not act("status").get("running"):
         return _containment_refusal("range_not_running", 409)
@@ -5141,37 +5749,16 @@ def rollback_range_source(
     flow_id: int,
     runner: Any | None = None,
 ) -> dict[str, Any]:
-    """Remove a recorded drop. Scenario replays roll the ledger back without Docker."""
+    """Remove a recorded drop. 10.0.0.4 scenario rollback stays on the ledger."""
     flow, refused = _authorized_range_flow(live_db_path, soar_db_path, flow_id)
     if refused is not None or flow is None:
         return refused if refused is not None else _containment_refusal("flow_not_stored", 403)
+    if _simulated_scenario_flow(flow):
+        if str(flow["containment_state"] or "") != "simulated_applied":
+            return _containment_refusal("containment_not_applied", 409)
+        return _record_simulated_scenario(live_db_path, soar_db_path, flow, rollback=True)
     if str(flow["containment_state"] or "") != "applied":
         return _containment_refusal("containment_not_applied", 409)
-    src_entity_id = _flow_field(flow, "src_entity_id")
-    if _scenario_containment_without_runner(flow, runner):
-        rule = _scenario_firewall_rule(src_entity_id, rollback=True)
-        if not _append_containment_ledger(
-            soar_db_path,
-            flow,
-            action="containment_rolled_back",
-            reason=rule,
-        ):
-            return _containment_refusal("ledger_append_failed", 409)
-        recorded_at = datetime.now(UTC).isoformat()
-        _store_containment_state(live_db_path, flow_id, "rolled_back", when=recorded_at, rule=rule)
-        return {
-            "schema_version": "live_range_containment_v1",
-            "evidence_state": "verified",
-            "reason": "containment_rolled_back",
-            "execution_authorized": False,
-            "containment_executed": False,
-            "production_fusion_enabled": False,
-            "target": src_entity_id,
-            "containment_state": "rolled_back",
-            "containment_rule": rule,
-            "rollback_at": recorded_at,
-            "http_status": 200,
-        }
     act = runner or _run_range_action
     if not act("status").get("running"):
         return _containment_refusal("range_not_running", 409)

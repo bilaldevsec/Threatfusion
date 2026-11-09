@@ -577,6 +577,18 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/live/coverage-heatmap":
             self._send_coverage_heatmap()
             return
+        if path == "/api/v1/live/model-proof":
+            from threatfusion.api.live_soc_console import run_live_model_proof
+
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            raw_flow = (query.get("flow_id") or ["0"])[0]
+            try:
+                flow_id = int(raw_flow)
+            except (TypeError, ValueError):
+                flow_id = 0
+            result = run_live_model_proof(self._live_db_path(), flow_id=flow_id, repo_root=REPO_ROOT)
+            self._send_json(int(result.get("http_status") or 404), result)
+            return
 
         self._send_json(404, {"error": "Not Found", "path": path})
 
@@ -1374,7 +1386,6 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 hmac_secret=os.environ.get("THREATFUSION_SOAR_HMAC_SECRET", ""),
                 outbox_db_path=self._live_db_path().with_name("threatfusion-live-thehive.sqlite3"),
                 n8n_webhook_url=os.environ.get("THREATFUSION_N8N_WEBHOOK_URL", ""),
-                auto_approve=req_data.get("auto_approve") is True,
                 local_fallback_on_n8n_failure=True,
             )
             if result.get("reason") == "playbook_not_approved":
@@ -1412,6 +1423,32 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 flow_id=flow_id,
             )
             self._send_json(int(result.get("http_status") or 403), result)
+            return
+
+        if path == "/api/v1/live/model-proof":
+            from threatfusion.api.live_soc_console import run_live_model_proof
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            raw_flow = req_data.get("flow_id")
+            flow_id = raw_flow if isinstance(raw_flow, int) else 0
+            override = req_data.get("features_override")
+            if override is not None and not isinstance(override, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            result = run_live_model_proof(
+                self._live_db_path(),
+                flow_id=flow_id,
+                features_override=override if isinstance(override, dict) else None,
+                repo_root=REPO_ROOT,
+            )
+            self._send_json(int(result.get("http_status") or 404), result)
             return
 
         # 1. MISP Rest Search Endpoint

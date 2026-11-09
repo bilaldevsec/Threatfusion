@@ -174,7 +174,7 @@
             <div class="detail-actions">
               <span class="badge" data-evidence-state="unavailable" id="groundedBadge">Grounded evidence: waiting for a stored flow</span>
               <span class="badge badge-rf-confidence" id="flowRfBadge">Frozen RF: waiting</span>
-              <span class="badge badge-secondary-anomaly" id="flowAeBadge">Secondary: v2 AE not scored on this flow</span>
+              <span class="badge badge-secondary-anomaly" id="flowAeBadge" data-ae-unscored-label="Secondary: v2 AE not scored on this flow" data-ae-rank-label="Secondary: v2 AE rank only, not fused">v2 AE DL: waiting for a stored flow</span>
               <div class="action-group" data-action-group="primary">
                 <span class="action-group-label">Primary</span>
                 <label for="analystVerdictSelect">Verdict</label>
@@ -204,9 +204,9 @@
               </div>
               <div class="action-group" data-action-group="response">
                 <span class="action-group-label">Response</span>
-                <button class="btn btn-approve" id="topBtnApproveSoar" type="button">Approve Playbook</button>
-                <button class="btn" id="btnIsolateAttacker" type="button">Isolate Attacker</button>
-                <button id="btnRollbackRange" type="button">Rollback</button>
+                <button class="btn btn-approve" id="topBtnApproveSoar" type="button" disabled>Approve Playbook</button>
+                <button class="btn" id="btnIsolateAttacker" type="button" disabled>Isolate Attacker</button>
+                <button id="btnRollbackRange" type="button" disabled>Rollback</button>
               </div>
             </div>
           </div>
@@ -264,15 +264,15 @@
                     <div id="containmentLiveStatus" data-evidence-state="unavailable">Containment stays unauthorized until an analyst approves a stored playbook.</div>
                     <ol class="soar-actions">
                       <li>
-                        <button id="btnGuidedApprove" type="button">1. Approve Playbook (SHA-256 Chain)</button>
+                        <button id="btnGuidedApprove" type="button" disabled>1. Approve Playbook (SHA-256 Chain)</button>
                       </li>
                       <li>
-                        <button id="btnDispatchCallback" type="button">2. Dispatch via Live n8n Container</button>
+                        <button id="btnDispatchCallback" type="button" disabled>2. Dispatch via Live n8n Container</button>
                         <div><b>SOAR path:</b> <span id="inspectorExecutionPath">not dispatched</span></div>
                         <div><b>Callback:</b> <span id="inspectorCallback" data-evidence-state="unavailable">Callback receipt: not recorded</span></div>
                       </li>
                       <li>
-                        <button id="btnContainRange" type="button">3. Isolate Attacker (172.29.0.10) in Victim Firewall</button>
+                        <button id="btnContainRange" type="button" disabled>3. Isolate Attacker (172.29.0.10) in Victim Firewall</button>
                         <span class="badge" id="rangeConnectivityBadge" data-evidence-state="unavailable">172.29.0.10 -&gt; 172.29.0.20:80: waiting for a probe</span>
                       </li>
                     </ol>
@@ -305,6 +305,16 @@
                 <div>MISP Source: Local Verified Snapshot Fallback</div>
                 <div><b>Primary decision authority:</b> <span class="badge badge-rf-confidence">Frozen Random Forest</span></div>
                 <div id="forensicDrawer"></div>
+                <div id="modelProofSandbox" data-evidence-state="advisory_simulation">
+                  <h3>Live 14-Feature ML + DL Model Execution Proof &amp; What-If Sandbox</h3>
+                  <div>Edit any of the 14 features, or apply a preset, then run live inference. Stored rows are not modified. The advisory consensus does not promote an alert.</div>
+                  <div id="modelProofFeatureGrid">Select a stored flow to edit its 14 features.</div>
+                  <button id="btnProofDos" type="button">Simulate High-Rate DoS Burst</button>
+                  <button id="btnProofNormal" type="button">Simulate Normal Web Handshake</button>
+                  <button id="btnProofReset" type="button">Reset to Stored Flow</button>
+                  <button id="btnRunModelProof" type="button">Run Live ML+DL Inference</button>
+                  <div id="modelProofResults" data-evidence-state="advisory_simulation">Before and after scores appear here.</div>
+                </div>
               </div>
             </div>
             <div class="inspector-tab-pane" data-inspector-tab="4">

@@ -150,33 +150,40 @@ def test_scenario_replay_records_containment_without_a_runner(tmp_path: Path) ->
         )
     dropped = contain_range_source(live_db, soar_db, flow_id=flow_id)
     assert dropped["http_status"] == 200
-    assert dropped["evidence_state"] == "verified"
-    assert dropped["reason"] == "containment_applied"
-    assert dropped["containment_executed"] is True
-    assert dropped["containment_rule"] == "iptables -I INPUT -s 10.0.0.4 -j DROP"
+    assert dropped["evidence_state"] == "simulated"
+    assert dropped["containment_executed"] is False
+    assert dropped["containment_state"] in {"simulated_applied", "simulated_rolled_back"}
+    assert dropped["containment_state"] == "simulated_applied"
+    assert dropped["reason"] == "simulated_containment_recorded"
+    assert dropped["containment_mode"] == "simulated_scenario_no_host_enforcement"
+    assert dropped["target"] == "10.0.0.4"
+    assert dropped["simulated_rule"] == "iptables -I INPUT -s 10.0.0.4 -j DROP (simulated)"
     with sqlite3.connect(live_db) as conn:
         state, rule = conn.execute(
             "SELECT containment_state, containment_rule FROM live_flows WHERE flow_id = ?",
             (flow_id,),
         ).fetchone()
-    assert state == "applied"
-    assert rule == "iptables -I INPUT -s 10.0.0.4 -j DROP"
+    assert state == "simulated_applied"
+    assert rule == "iptables -I INPUT -s 10.0.0.4 -j DROP (simulated)"
     with sqlite3.connect(soar_db) as conn:
         actions = [
             row[0]
             for row in conn.execute("SELECT action FROM soar_audit_events ORDER BY rowid ASC")
         ]
-    assert "containment_applied" in actions
+    assert "simulated_containment_recorded" in actions
     restored = rollback_range_source(live_db, soar_db, flow_id=flow_id)
-    assert restored["reason"] == "containment_rolled_back"
+    assert restored["evidence_state"] == "simulated"
     assert restored["containment_executed"] is False
-    assert restored["containment_rule"] == "iptables -D INPUT -s 10.0.0.4 -j DROP"
+    assert restored["containment_state"] in {"simulated_applied", "simulated_rolled_back"}
+    assert restored["containment_state"] == "simulated_rolled_back"
+    assert restored["reason"] == "simulated_rollback_recorded"
+    assert restored["simulated_rule"] == "iptables -D INPUT -s 10.0.0.4 -j DROP (simulated)"
     with sqlite3.connect(live_db) as conn:
         state = conn.execute(
             "SELECT containment_state FROM live_flows WHERE flow_id = ?",
             (flow_id,),
         ).fetchone()[0]
-    assert state == "rolled_back"
+    assert state == "simulated_rolled_back"
 
 
 def test_injected_failing_runner_still_reports_range_down_for_the_lab_source(
