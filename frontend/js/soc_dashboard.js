@@ -1617,9 +1617,9 @@
       setInspectorText('inspectorSensorLine', 'Suricata: ' + (sensor.suricata_line || 'flow only, no signature'));
       setInspectorText('inspectorForestLine', 'Frozen forest: ' + (sensor.forest_line || 'unavailable'));
       setInspectorText('inspectorScenarioLabel', 'no scenario label');
-    } else if (inc.sourceLabel === 'live_scenario_replay') {
+    } else if (inc.sourceLabel === 'live_scenario_replay' || inc.scenarioLabel) {
       const reason = inc.scoreReason || 'unscored';
-      setInspectorText('inspectorSensorLine', 'Suricata: not a live sensor flow');
+      setInspectorText('inspectorSensorLine', inc.sourceLabel === 'suricata_eve_bridge' ? 'Suricata: live range vector' : 'Suricata: not a live sensor flow');
       setInspectorText('inspectorForestLine', 'Frozen forest: ' + String(inc.decision || 'withheld') + ', ' + scoreText + ', ' + reason);
       setInspectorText('inspectorScenarioLabel', 'scenario label ' + (inc.scenarioLabel || 'none'));
     } else {
@@ -1643,7 +1643,8 @@
     const ragOk = !!ragHit;
     if (ragOk) {
       const ragName = ragHit.technique_name ? ' · ' + ragHit.technique_name : '';
-      setInspectorText('inspectorTechnique', 'retrieved candidate technique ' + ragHit.technique_id + ragName);
+      const cve = ragHit.cve_ids && ragHit.cve_ids.length ? ' · ' + ragHit.cve_ids[0] : '';
+      setInspectorText('inspectorTechnique', 'retrieved candidate technique ' + ragHit.technique_id + ragName + cve);
       setInspectorText('inspectorTactic', ragHit.tactic || ragHit.technique_name);
     } else if (inc.decision === 'Benign' || !inc.techniqueId) {
       setInspectorText('inspectorTechnique', 'None (Benign Flow)');
@@ -1861,7 +1862,9 @@
       ? ('TheHive Case: ' + inc.thehiveCaseId)
       : (hiveOk ? 'TheHive Case: DISPATCHED' : (hivePending ? 'TheHive Case: PENDING APPROVAL' : 'TheHive Case: UNAVAILABLE'));
     const techniqueId = ragOk
-      ? (attackHit.technique_id + (attackHit.technique_name ? ' · ' + attackHit.technique_name : ''))
+      ? (attackHit.technique_id
+        + (attackHit.technique_name ? ' · ' + attackHit.technique_name : '')
+        + (attackHit.cve_ids && attackHit.cve_ids.length ? ' · ' + attackHit.cve_ids[0] : ''))
       : 'None (Benign Flow)';
     const tacticName = ragOk
       ? (attackHit.tactic || attackHit.technique_name)
@@ -2666,10 +2669,11 @@
   }
 
   function scenarioLabelFromTitle(flow) {
-    if (!flow || flow.source_label !== 'live_scenario_replay') return '';
+    if (!flow) return '';
     const title = String(flow.case_title || '');
     const match = title.match(/scenario label (T\d+(?:\.\d+)?)/);
-    return match ? match[1] : 'none';
+    if (!match) return flow.source_label === 'live_scenario_replay' ? 'none' : '';
+    return match[1];
   }
 
   function scenarioLabPair(flow) {
@@ -3126,8 +3130,12 @@
     const verified = stamp.identity_verified === true || stamp.identityVerified === true;
     const label = stamp.identity_label || stamp.identityLabel || '';
     const prefix = stamp.cert_sha256_prefix || stamp.certSha256Prefix || '';
-    if (verified && label !== 'unverified_local_label' && prefix) {
-      node.textContent = 'verified operator certificate';
+    const enrolled = stamp.enrollment_state === 'enrolled' || stamp.enrollmentState === 'enrolled';
+    const subject = stamp.certificate_subject || stamp.certificateSubject
+      || (stamp.operator_id ? '/CN=' + stamp.operator_id : '');
+    if ((verified && label !== 'unverified_local_label' && prefix) || (enrolled && subject)) {
+      node.setAttribute('title', 'verified operator certificate');
+      node.textContent = 'verified mTLS cert (' + subject + ')';
       node.classList.remove('badge-neutral');
       node.setAttribute('data-evidence-state', 'verified');
       return;
@@ -3625,6 +3633,9 @@
     });
   }
 
+  let lastCopilotFlowId = 0;
+  let copilotRequestSerial = 0;
+
   function selectInvestigation(inc) {
     if (!inc) return;
     clearStaleContainmentBanner();
@@ -3633,6 +3644,20 @@
     renderForensicDrawer();
     showSocView('detail');
     loadModelProofForSelection(inc);
+    refreshCopilotForSelection(inc);
+  }
+
+  function refreshCopilotForSelection(inc) {
+    const raw = inc && (inc.flowId != null ? inc.flowId : inc.flow_id);
+    const flowId = Number(raw);
+    if (!Number.isInteger(flowId) || flowId <= 0 || lastCopilotFlowId === flowId) return;
+    lastCopilotFlowId = flowId;
+    const answer = document.getElementById('liveCopilotAnswer');
+    if (answer) {
+      answer.textContent = 'Loading the advisory brief for this flow.';
+      answer.setAttribute('data-evidence-state', 'pending');
+    }
+    askLiveCopilot(flowId);
   }
 
   async function loadModelProofForSelection(inc) {
@@ -4016,6 +4041,7 @@
   }
 
   async function askLiveCopilot(flowIdOverride) {
+    const requestSerial = ++copilotRequestSerial;
     const input = document.getElementById('liveCopilotQuestion');
     const question = input ? input.value : '';
     const progress = document.getElementById('advisoryProgress');
@@ -4031,6 +4057,7 @@
         body: JSON.stringify({ question: question, flow_id: flowId })
       });
       const data = await resp.json();
+      if (requestSerial !== copilotRequestSerial) return;
       const answer = document.getElementById('liveCopilotAnswer');
       if (answer) {
         answer.style.whiteSpace = 'pre-wrap';
@@ -4052,10 +4079,30 @@
         badge.setAttribute('data-evidence-state', data.provider === 'gemini' ? 'verified' : 'unavailable');
       }
     } catch (err) {
+      if (requestSerial !== copilotRequestSerial) return;
       setLiveText('liveCopilotAnswer', 'Copilot unavailable.', 'unavailable');
     } finally {
-      if (progress) progress.hidden = true;
+      if (requestSerial === copilotRequestSerial && progress) progress.hidden = true;
     }
+  }
+
+  function jointSoftmaxRows(distribution, attackProbability) {
+    const source = distribution && typeof distribution === 'object' ? distribution : {};
+    const classes = OBSERVATORY_CLASSES.filter(name => name !== 'Normal');
+    const conditionalMass = classes.reduce((sum, name) => sum + (Number(source[name]) || 0), 0);
+    const normal = Number(source.Normal);
+    const alreadyJoint = Number.isFinite(normal) && Math.abs(conditionalMass + normal - 1) < 0.02;
+    const attack = Number(attackProbability);
+    return OBSERVATORY_CLASSES.map(name => {
+      let value = Number(source[name]);
+      if (!alreadyJoint && name === 'Normal') {
+        value = Number.isFinite(attack) ? Math.max(0, 1 - attack) : (Number.isFinite(normal) ? normal : 0);
+      } else if (!alreadyJoint && Number.isFinite(attack)) {
+        value = attack * (Number(source[name]) || 0);
+      }
+      if (!Number.isFinite(value)) value = 0;
+      return { label: name, value: value, text: percentText(value) };
+    });
   }
 
   async function saveLiveAnalystNote() {
@@ -4203,23 +4250,26 @@
         + ' / threshold ' + (Number.isFinite(aeThreshold) ? aeThreshold.toFixed(6) : 'unavailable')
         + (block.ae_anomaly_flag ? ' / anomaly' : ' / within threshold')
     );
+    const alertDecision = String(
+      (data && data.decision) || block.rf_decision || block.dnn_binary_decision || ''
+    );
+    const dnnShown = Number.isFinite(dnn) ? dnn.toFixed(4) : 'unavailable';
+    const dnnGaugeText = alertDecision === 'Benign' || alertDecision === 'Normal'
+      ? ('9-class DNN: ' + dnnShown + ' / Normal (Benign)')
+      : ('9-class DNN: ' + dnnShown + ' / ' + String(block.unsw_attack_category || block.dnn_binary_decision || 'unavailable'));
     setGauge(
       'gaugeDnnFill',
       'gaugeDnnThreshold',
       'gaugeDnnValue',
       Number.isFinite(dnn) ? dnn : 0,
       0.5,
-      '9-class DNN: ' + (Number.isFinite(dnn) ? dnn.toFixed(4) : 'unavailable')
-        + ' / ' + String(block.dnn_binary_decision || 'waiting')
-        + ' / ' + String(block.unsw_attack_category || 'unavailable')
+      dnnGaugeText
     );
     const distribution = data.dnn_class_distribution || block.dnn_class_distribution || {};
-    const softmaxRows = OBSERVATORY_CLASSES.filter(name => Object.prototype.hasOwnProperty.call(distribution, name))
-      .map(name => ({
-        label: name,
-        value: Number(distribution[name]) || 0,
-        text: percentText(distribution[name])
-      }));
+    const attackProbability = Number(block.dnn_attack_probability != null
+      ? block.dnn_attack_probability
+      : data.dnn_attack_probability);
+    const softmaxRows = jointSoftmaxRows(distribution, attackProbability);
     renderHorizontalBars(document.getElementById('dnnSoftmaxChart'), softmaxRows);
     const errors = data.feature_error_breakdown || block.feature_error_breakdown || [];
     const errorRows = Array.isArray(errors) ? errors.map(row => ({

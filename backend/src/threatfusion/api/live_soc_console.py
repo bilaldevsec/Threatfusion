@@ -315,7 +315,7 @@ _AE_PREPROCESSOR_RELATIVE = (
 )
 _DNN_MODEL_RELATIVE = "artifacts/models/fyp2_dnn_same_split_v1/dnn_model.pt"
 _DNN_REPORT_RELATIVE = "artifacts/models/fyp2_dnn_same_split_v1/evaluation_report.json"
-_DNN_MODEL_SHA256 = "2a954a921ef9d7372d964cc643ffb9b35d087aa8965b6c320a99a9a9b1f2d921"
+_DNN_MODEL_SHA256 = "b090e53396ed1f1e72d8df19bf0d2b82ed4101f7fc844395d51634e986b1eeb1"
 _AE_INPUT_NAMES: tuple[str, ...] = (
     "duration_ms__zscore",
     "fwd_packets__zscore",
@@ -528,13 +528,14 @@ def _score_same_split_dnn(raw_features: Mapping[str, float], repo_root: Path) ->
             category_logits = model.category_head(hidden)
             category_index = int(torch.argmax(category_logits, dim=1)[0].item())
             class_probabilities = torch.softmax(category_logits, dim=1)[0]
+        normal_probability = max(0.0, min(1.0, 1.0 - probability))
         distribution: dict[str, float] = {}
         for index, name in enumerate(_DNN_CATEGORIES):
-            value = float(class_probabilities[index].item())
-            distribution[name] = value
+            joint = probability * float(class_probabilities[index].item())
+            distribution[name] = joint
             if name == "Backdoor":
-                distribution["Backdoors"] = value
-        distribution["Normal"] = max(0.0, min(1.0, 1.0 - probability))
+                distribution["Backdoors"] = joint
+        distribution["Normal"] = normal_probability
         return {
             "dnn_attack_probability": probability,
             "dnn_binary_decision": "Attack" if probability >= 0.5 else "Normal",
@@ -2916,6 +2917,7 @@ def _corpus_technique_hit(technique_id: str) -> dict[str, Any] | None:
                 "tactic": doc.tactic,
                 "playbook_id": doc.playbook_id,
                 "cosine_similarity": 1.0,
+                "cve_ids": _cves_for_technique(doc.technique_id),
             }
     return None
 
@@ -3466,6 +3468,16 @@ def _benign_study_profile() -> dict[str, float]:
 
 
 def _attack_study_profile(technique_id: str) -> dict[str, float]:
+    report = _read_dnn_evaluation_report(_console_repo_root())
+    vectors = report.get("scenario_vectors") if isinstance(report, dict) else None
+    item = vectors.get(technique_id) if isinstance(vectors, dict) else None
+    canonical = item.get("canonical_features") if isinstance(item, dict) else None
+    raw = item.get("raw_features") if isinstance(item, dict) else None
+    if isinstance(canonical, Mapping) and isinstance(raw, Mapping):
+        if all(name in canonical for name in CANONICAL_14_FEATURES) and all(
+            name in raw for name in _DNN_FEATURES
+        ):
+            return _stored_profile(canonical, raw)
     return _stored_profile(
         _ATTACK_PROFILE_CANONICAL[technique_id],
         _ATTACK_PROFILE_RAW[technique_id],
@@ -4109,19 +4121,30 @@ def operator_stamp(
     from threatfusion.operations.human_credentials import verify_operator_identity
 
     presented = presented_fingerprint.strip() if isinstance(presented_fingerprint, str) else ""
+    author = actor_id.strip()
     if not presented:
+        enrolled = False
+        if policy_dir is not None and author:
+            from threatfusion.operations.human_credentials import active_fingerprint
+
+            enrolled = active_fingerprint(policy_dir, author) is not None
         return {
             "operator_id": "",
             "cert_sha256_prefix": "",
             "identity_verified": False,
             "identity_label": "unverified_local_label",
+            "enrollment_state": "enrolled" if enrolled else "absent",
+            "certificate_subject": f"/CN={author}" if enrolled else "",
         }
     stamp = verify_operator_identity(policy_dir, actor_id, presented)
+    verified = bool(stamp["identity_verified"])
     return {
         "operator_id": stamp["operator_id"],
         "cert_sha256_prefix": stamp["cert_sha256_prefix"],
-        "identity_verified": bool(stamp["identity_verified"]),
+        "identity_verified": verified,
         "identity_label": stamp["identity_label"],
+        "enrollment_state": "enrolled" if verified else "absent",
+        "certificate_subject": f"/CN={stamp['operator_id']}" if verified else "",
     }
 
 
@@ -7780,6 +7803,9 @@ def launch_range_vector(
     title = next(
         item["title"] for item in _RANGE_ATTACK_CATALOG if item["vector_id"] == vector
     )
+    scenario_label = vector if vector != "BENIGN_WEB" else None
+    if scenario_label:
+        title = f"{title} (scenario label {scenario_label})"
     stored = ingest_live_flow(
         db_path,
         features,
@@ -7792,4 +7818,5 @@ def launch_range_vector(
     )
     stored["range_probe"] = probe
     stored["attack_catalog_title"] = title
+    stored["scenario_label"] = scenario_label
     return stored

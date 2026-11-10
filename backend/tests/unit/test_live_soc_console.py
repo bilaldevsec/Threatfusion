@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import sqlite3
@@ -1483,6 +1484,8 @@ def test_range_launch_scores_raw_three_models_and_observatory(tmp_path: Path) ->
     )
     assert launched["http_status"] == 200
     assert launched["source_label"] == "suricata_eve_bridge"
+    assert launched["scenario_label"] == "T1046"
+    assert "scenario label T1046" in launched["case_title"]
     assert launched["src_ip"] == "172.29.0.10"
     assert launched["dst_ip"] == "172.29.0.20"
     assert isinstance(launched["flow_id"], int) and launched["flow_id"] > 0
@@ -1496,7 +1499,7 @@ def test_range_launch_scores_raw_three_models_and_observatory(tmp_path: Path) ->
         assert isinstance(distribution[name], float)
     assert "Normal" in distribution
     nine_mass = sum(distribution[name] for name in _DNN_CLASS_NAMES)
-    assert abs(nine_mass - 1.0) < 1e-4
+    assert abs(nine_mass + distribution["Normal"] - 1.0) < 1e-4
     breakdown = launched["feature_error_breakdown"]
     assert [row["feature"] for row in breakdown] != []
     assert len(breakdown) == 14
@@ -1506,6 +1509,16 @@ def test_range_launch_scores_raw_three_models_and_observatory(tmp_path: Path) ->
     assert abs(sum(errors) / 14.0 - launched["ae_loss"]) < 1e-5
     queued = list_live_flows(live_db, limit=5)
     assert queued[0]["flow_id"] == launched["flow_id"]
+    listed = list_live_campaigns(live_db)
+    launched_row = next(
+        flow
+        for campaign in listed["campaigns"]
+        for flow in campaign["flows"]
+        if flow["flow_id"] == launched["flow_id"]
+    )
+    assert launched_row["chroma_rag_hits"][0]["technique_id"] == "T1046"
+    assert launched_row["chroma_rag_hits"][0]["technique_name"]
+    assert "CVE-2017-0144" in launched_row["chroma_rag_hits"][0]["cve_ids"]
 
     proof = run_live_model_proof(live_db, flow_id=launched["flow_id"], repo_root=REPO_ROOT)
     assert proof["http_status"] == 200
@@ -1659,9 +1672,10 @@ def test_workspaces_rbac_sensors_and_compliance_dossier(tmp_path: Path) -> None:
     assert "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23" in dossier[
         "dossier_markdown"
     ]
-    assert "2a954a921ef9d7372d964cc643ffb9b35d087aa8965b6c320a99a9a9b1f2d921" in dossier[
-        "dossier_markdown"
-    ]
+    dnn_digest = hashlib.sha256(
+        (REPO_ROOT / "artifacts/models/fyp2_dnn_same_split_v1/dnn_model.pt").read_bytes()
+    ).hexdigest()
+    assert dnn_digest in dossier["dossier_markdown"]
     assert "HMAC-SHA256" in dossier["dossier_markdown"]
     assert "TF-008" in dossier["dossier_markdown"]
     assert dossier["funnel"]["stage1_ingested_flows"] >= 1

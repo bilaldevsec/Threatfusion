@@ -386,111 +386,150 @@ def _calibrate_on_canonical_profiles(
     print(f"canonical_profile_calibration_loss {float(loss.detach()):.6f}", flush=True)
 
 
-# Official scenario anchors. The forward pass must emit these raw outputs.
-# Categories: DoS=2, Exploits=3, Generic=5, Reconnaissance=6.
-_SCENARIO_ANCHORS: tuple[dict[str, object], ...] = (
-    {
-        "name": "benign_row1",
-        "features": (0.012, 2.0, 0.0, 148.0, 0.0, 166.67, 31.0, 29.0, 12333.33, 0.0, 0.006, 0.0, 0.0, 0.0),
-        "label": 0.0,
-        "category": None,
-        "max_probability": 0.05,
-    },
-    {
-        "name": "T1190_exploits",
-        "features": (0.85, 40.0, 6.0, 24000.0, 900.0, 54.1, 254.0, 0.0, 2_000_000.0, 100.0, 0.02, 0.15, 100.0, 1.0),
-        "label": 1.0,
-        "category": 3,
-        "min_probability": 0.85,
-    },
-    {
-        "name": "T1110_generic",
-        "features": (4.0, 300.0, 8.0, 24000.0, 640.0, 76.0, 64.0, 64.0, 500_000.0, 200.0, 0.008, 0.3, 40.0, 5.0),
-        "label": 1.0,
-        "category": 5,
-        "min_probability": 0.85,
-    },
-    {
-        "name": "T1046_reconnaissance",
-        "features": (0.08, 120.0, 0.0, 7200.0, 0.0, 1500.0, 128.0, 0.0, 800_000.0, 0.0, 0.0005, 0.0, 10.0, 0.0),
-        "label": 1.0,
-        "category": 6,
-        "min_probability": 0.85,
-    },
-    {
-        "name": "T1498_dos",
-        "features": (3.2, 240.0, 4.0, 19200.0, 320.0, 76.25, 254.0, 0.0, 16_000_000.0, 200.0, 0.0002, 0.01, 0.1, 0.1),
-        "label": 1.0,
-        "category": 2,
-        "min_probability": 0.85,
-    },
+# Real train-stratum rows replace the old synthetic anchor fit. Categories:
+# DoS=2, Exploits=3, Generic=5, Reconnaissance=6.
+_SCENARIO_TARGETS: tuple[tuple[str, str, int], ...] = (
+    ("T1190", "Exploits", 3),
+    ("T1046", "Reconnaissance", 6),
+    ("T1110", "Generic", 5),
+    ("T1498", "DoS", 2),
 )
+_CANONICAL_NAMES: tuple[str, ...] = (
+    "duration_ms",
+    "fwd_packets",
+    "bwd_packets",
+    "fwd_bytes",
+    "bwd_bytes",
+    "packets_per_second",
+    "bytes_per_second",
+    "fwd_packet_length_mean",
+    "bwd_packet_length_mean",
+    "dst_port",
+    "protocol_tcp",
+    "protocol_udp",
+    "protocol_icmp",
+    "protocol_other",
+)
+_AE_ANOMALY_THRESHOLD = 0.1181361214680695
+_AE_SHA256 = "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23"
 
 
-def _anchor_batch(mean: np.ndarray, std: np.ndarray) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    raw = np.array([anchor["features"] for anchor in _SCENARIO_ANCHORS], dtype=np.float64)
-    scaled = torch.from_numpy(_scale(raw, mean, std))
-    labels = torch.tensor([float(anchor["label"]) for anchor in _SCENARIO_ANCHORS], dtype=torch.float32)
-    categories = torch.tensor(
-        [0 if anchor["category"] is None else int(anchor["category"]) for anchor in _SCENARIO_ANCHORS],
-        dtype=torch.int64,
-    )
-    return scaled, labels, categories
+def _per_class_metrics(matrix: list[list[int]], classes: tuple[str, ...]) -> list[dict[str, object]]:
+    metrics: list[dict[str, object]] = []
+    for index, name in enumerate(classes):
+        row = matrix[index]
+        support = int(sum(row))
+        true_positive = int(row[index])
+        predicted = int(sum(matrix[row_index][index] for row_index in range(len(matrix))))
+        metrics.append(
+            {
+                "class_name": name,
+                "precision": (true_positive / predicted) if predicted else 0.0,
+                "recall": (true_positive / support) if support else 0.0,
+                "support": support,
+            }
+        )
+    return metrics
 
 
-def _anchors_match(model: ThreatFusionSameSplitDNN, features: torch.Tensor) -> bool:
-    model.eval()
-    with torch.inference_mode():
-        binary_logit, category_logit = model(features)
-        probability = torch.sigmoid(binary_logit)
-        predicted = torch.argmax(category_logit, dim=1)
-    for index, anchor in enumerate(_SCENARIO_ANCHORS):
-        score = float(probability[index])
-        ceiling = anchor.get("max_probability")
-        floor = anchor.get("min_probability")
-        if ceiling is not None and score >= float(ceiling):
-            return False
-        if floor is not None and score < float(floor):
-            return False
-        category = anchor["category"]
-        if category is not None and int(predicted[index]) != int(category):
-            return False
-    return True
-
-
-def _fit_official_scenario_anchors(
+def _select_in_distribution_vectors(
     model: ThreatFusionSameSplitDNN,
     mean: np.ndarray,
     std: np.ndarray,
-) -> None:
-    """Teach the raw forward pass the five official scenario profiles."""
-    features, labels, categories = _anchor_batch(mean, std)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
-    binary_loss = nn.BCEWithLogitsLoss()
-    category_loss = nn.CrossEntropyLoss()
-    # Eval mode keeps BatchNorm on its running statistics so five rows can be memorized.
+    train: pd.DataFrame,
+    repo_root: Path,
+) -> dict[str, dict[str, object]]:
+    """Pick real train-stratum attacks. This function does not change weights."""
+    import sys
+
+    import joblib
+
+    source_root = repo_root / "backend" / "src"
+    if str(source_root) not in sys.path:
+        sys.path.insert(0, str(source_root))
+    from threatfusion.api.live_soc_console import _score_autoencoder
+    from threatfusion.models.drift_and_supply_chain import FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY
+
+    forest_path = repo_root / RF_RELATIVE
+    if hashlib.sha256(forest_path.read_bytes()).hexdigest() != RF_SHA256:
+        raise SystemExit("frozen random forest hash mismatch during scenario selection")
+    forest = joblib.load(forest_path)
+    ae_path = repo_root / FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY["autoencoder_v2"]["rel_path"]
+    ae_digest = hashlib.sha256(ae_path.read_bytes()).hexdigest()
+    if ae_digest != _AE_SHA256:
+        raise SystemExit("frozen autoencoder hash mismatch during scenario selection")
+
+    labels = train["y"].to_numpy(dtype=np.int64)
+    categories = train["category_id"].to_numpy(dtype=np.int64)
     model.eval()
-    for step in range(1, 401):
-        if _anchors_match(model, features):
-            print(f"scenario_anchors_matched step {step - 1}", flush=True)
-            return
-        optimizer.zero_grad(set_to_none=True)
-        binary_logit, category_logit = model(features)
-        loss = binary_loss(binary_logit, labels)
-        attack_rows = labels > 0.5
-        loss = loss + 4.0 * category_loss(category_logit[attack_rows], categories[attack_rows])
-        loss.backward()
-        optimizer.step()
-    model.eval()
-    if not _anchors_match(model, features):
+    selected: dict[str, dict[str, object]] = {}
+    for vector_id, category_name, category_id in _SCENARIO_TARGETS:
+        indexes = np.flatnonzero((categories == category_id) & (labels == 1))
+        if indexes.size == 0:
+            raise SystemExit(f"train stratum has no {category_name} rows")
+        frame = train.iloc[indexes]
+        raw = _matrix(frame)
+        canonical = _canonical_matrix(frame)
+        scaled = torch.from_numpy(_scale(raw, mean, std))
         with torch.inference_mode():
-            binary_logit, category_logit = model(features)
-            probability = torch.sigmoid(binary_logit).tolist()
-            predicted = torch.argmax(category_logit, dim=1).tolist()
-        raise SystemExit(
-            "scenario anchors missed raw targets: "
-            + json.dumps({"probability": probability, "category": predicted})
+            _binary_logit, category_logit = model(scaled)
+            class_probability = torch.softmax(category_logit, dim=1).cpu().numpy()
+        target_probability = class_probability[:, category_id]
+        predicted = np.argmax(class_probability, axis=1)
+        forest_probability = forest.predict_proba(
+            np.ascontiguousarray(canonical, dtype=np.float64)
+        )[:, 1]
+        print(
+            f"{vector_id} true rows {int(indexes.size)} "
+            f"rf>=0.50 {int(np.count_nonzero(forest_probability >= 0.50))} "
+            f"max class|rf {float(target_probability[forest_probability >= 0.50].max()) if np.any(forest_probability >= 0.50) else 0.0:.4f}",
+            flush=True,
         )
+        chosen: dict[str, object] | None = None
+        best_key: tuple[int, float] | None = None
+        for row_index in np.flatnonzero(forest_probability >= 0.50):
+            canonical_row = [float(value) for value in canonical[row_index]]
+            autoencoder = _score_autoencoder(canonical_row, repo_root)
+            loss = autoencoder.get("ae_loss")
+            if loss is None or float(loss) < _AE_ANOMALY_THRESHOLD:
+                continue
+            class_score = float(target_probability[row_index])
+            argmax_match = int(predicted[row_index]) == category_id
+            rank = (1 if argmax_match else 0, class_score)
+            if best_key is not None and rank <= best_key:
+                continue
+            raw_row = [float(value) for value in raw[row_index]]
+            best_key = rank
+            chosen = {
+                "vector_id": vector_id,
+                "attack_category": category_name,
+                "source": "unsw_nb15_train_stratum",
+                "raw_features": {
+                    name: value for name, value in zip(FEATURE_NAMES, raw_row, strict=True)
+                },
+                "canonical_features": {
+                    name: value
+                    for name, value in zip(_CANONICAL_NAMES, canonical_row, strict=True)
+                },
+                "rf_attack_probability": float(forest_probability[row_index]),
+                "ae_loss": float(loss),
+                "dnn_class_probability": class_score,
+                "dnn_argmax_matches_category": argmax_match,
+                "weight_update": False,
+            }
+        if chosen is None:
+            raise SystemExit(
+                f"no {category_name} train row met frozen RF >= 0.50 and v2 AE >= 0.118136"
+            )
+        selected[vector_id] = chosen
+        print(
+            f"selected {vector_id} {category_name} "
+            f"rf {chosen['rf_attack_probability']:.4f} "
+            f"ae {chosen['ae_loss']:.6f} "
+            f"class {chosen['dnn_class_probability']:.4f}",
+            flush=True,
+        )
+    return selected
 
 
 def _rf_accuracy(repo_root: Path, features: np.ndarray, labels: np.ndarray) -> dict[str, object]:
@@ -548,8 +587,6 @@ def main() -> int:
     canonical_std = np.where(canonical_std < 1e-6, 1.0, canonical_std)
     print("calibrating on canonical 14-feature profiles", flush=True)
     _calibrate_on_canonical_profiles(model, scaled_train, canonical_train, repo_root)
-    print("fitting official scenario anchors", flush=True)
-    _fit_official_scenario_anchors(model, mean, std)
     probabilities, predicted_categories = _predict(model, _scale(test_matrix, mean, std))
     labels = test["y"].to_numpy(dtype=np.int64)
     truth_categories = test["category_id"].to_numpy(dtype=np.int64)
@@ -565,10 +602,41 @@ def main() -> int:
     attack_truth = truth_categories[attack_rows]
     attack_predicted = predicted_categories[attack_rows]
     nine_class_matrix = _nine_class_confusion(attack_truth, attack_predicted)
+    per_class = _per_class_metrics(nine_class_matrix, CATEGORIES)
     overlap_count = _exact_row_overlap_count(train_matrix, test_matrix)
+    if (
+        float(binary["accuracy"]) < 0.97
+        or float(binary["recall"]) < 0.99
+        or nine_class_accuracy < 0.84
+    ):
+        raise SystemExit(
+            "held-out metrics below the clean-model floor: "
+            + json.dumps(
+                {
+                    "accuracy": binary["accuracy"],
+                    "recall": binary["recall"],
+                    "nine_class_accuracy": nine_class_accuracy,
+                }
+            )
+        )
+    for name in ("DoS", "Exploits", "Fuzzers", "Generic", "Reconnaissance"):
+        row = next(item for item in per_class if item["class_name"] == name)
+        if float(row["precision"]) <= 0.0 or float(row["recall"]) <= 0.0:
+            raise SystemExit(f"major class {name} has zero precision or recall")
+    print(
+        json.dumps(
+            {
+                "accuracy": binary["accuracy"],
+                "recall": binary["recall"],
+                "nine_class_accuracy": nine_class_accuracy,
+            }
+        ),
+        flush=True,
+    )
     output_dir = repo_root / "artifacts" / "models" / "fyp2_dnn_same_split_v1"
     output_dir.mkdir(parents=True, exist_ok=True)
     model_path = output_dir / "dnn_model.pt"
+    staged_path = output_dir / "dnn_model.pt.staged"
     torch.save(
         {
             "state_dict": {name: tensor.detach().cpu() for name, tensor in model.state_dict().items()},
@@ -577,8 +645,11 @@ def main() -> int:
             "canonical_mean": torch.tensor(canonical_mean, dtype=torch.float32),
             "canonical_std": torch.tensor(canonical_std, dtype=torch.float32),
         },
-        model_path,
+        staged_path,
     )
+    print("selecting in-distribution scenario vectors", flush=True)
+    scenario_vectors = _select_in_distribution_vectors(model, mean, std, train, repo_root)
+    staged_path.replace(model_path)
     digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
     medians = np.median(train_matrix, axis=0)
     report = {
@@ -606,7 +677,11 @@ def main() -> int:
         "fpr": binary["fpr"],
         "confusion_matrix": binary["confusion_matrix"],
         "nine_class_accuracy": nine_class_accuracy,
+        "nine_class_attack_accuracy": nine_class_accuracy,
         "nine_class_confusion_matrix": nine_class_matrix,
+        "per_class_metrics": per_class,
+        "scenario_vectors": scenario_vectors,
+        "post_hoc_anchor_fit": False,
         "train_test_exact_row_overlap_count": overlap_count,
         "canonical_feature_names": [
             "duration_ms",
