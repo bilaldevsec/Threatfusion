@@ -675,7 +675,11 @@ def verify_journal_archive(archive_dir: Path | str) -> dict[str, object]:
 def init_policy_directory(policy_dir: Path | str) -> Path:
     """Initialize a mode-0700 policy directory for operator credential enrollment."""
     p = Path(policy_dir) if not isinstance(policy_dir, Path) else policy_dir
+    if p.is_symlink():
+        raise CredentialPolicyError()
     p.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if p.is_symlink():
+        raise CredentialPolicyError()
     os.chmod(p, 0o700)
     return p
 

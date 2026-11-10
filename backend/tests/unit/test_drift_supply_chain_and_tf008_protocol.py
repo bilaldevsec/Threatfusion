@@ -473,6 +473,9 @@ def test_run_full_soc_demo_incorporates_soar_chain_queue_ranker_and_drift(
     tmp_path: Path,
 ) -> None:
     """run_full_soc_demo incorporates M30 SOAR chain, AE queue ranker, and M31 drift monitor."""
+    official = Path(__file__).resolve().parents[3] / "data" / "raw" / "unsw_nb15" / "official"
+    if any(not (official / f"UNSW-NB15_{number}.csv").is_file() for number in range(1, 5)):
+        pytest.skip("raw UNSW-NB15 CSV files not present in this checkout")
     report = run_full_soc_demo(tmp_path)
     tb = report["track_b_azure_live_spine"]
 

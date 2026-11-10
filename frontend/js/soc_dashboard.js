@@ -2563,6 +2563,9 @@
     const callback = inc.callbackRecorded === true
       || (typeof inc.callbackSignature === 'string' && SHA256_HEX_REGEX.test(inc.callbackSignature));
     if (callback) {
+      if (inc.executionPath === 'local_contract_fallback') {
+        return 'LOCAL CONTRACT FALLBACK RECORDED (Simulated — Not Live n8n)';
+      }
       return 'DISPATCHED VIA N8N — Signed HMAC-SHA256 callback receipt verified. Click Isolate Attacker to enforce firewall block.';
     }
     if (playbookApproved(inc) && hashChainVerified(inc)) {
@@ -3502,9 +3505,9 @@
       sjit: 0.1, djit: 0.1
     },
     normal: {
-      dur: 0.35, spkts: 12, dpkts: 10, sbytes: 900, dbytes: 14000, rate: 60,
-      sttl: 64, dttl: 64, sload: 2400, dload: 32000, sinpkt: 0.02, dinpkt: 0.018,
-      sjit: 0.4, djit: 0.5
+      dur: 1.164695, spkts: 14, dpkts: 18, sbytes: 1684, dbytes: 10168,
+      rate: 27.47500418564517, sttl: 31, dttl: 29, sload: 10176.054675258329,
+      dload: 0, sinpkt: 0.494, dinpkt: 0.441822, sjit: 20.272061, djit: 10.76193
     }
   };
   let modelProofFlowId = null;
@@ -3765,9 +3768,12 @@
         const caseId = typeof data.thehive_case_id === 'string' ? data.thehive_case_id : 'not recorded';
         const path = typeof data.execution_path === 'string' ? data.execution_path : 'not dispatched';
         const disclosure = typeof data.transport_disclosure === 'string' ? data.transport_disclosure : '';
+        const headline = path === 'local_contract_fallback'
+          ? 'LOCAL CONTRACT FALLBACK RECORDED (Simulated — Not Live n8n)'
+          : 'DISPATCHED VIA N8N — execution_path: ' + path + (disclosure ? '. ' + disclosure + ' ' : '. ') + 'HMAC ' + sig + '. mttr_seconds ' + mttrText + '. Case ' + caseId + '. Host containment was not executed.';
         showActionBanner(
-          'DISPATCHED VIA N8N — execution_path: ' + path + (disclosure ? '. ' + disclosure + ' ' : '. ') + 'HMAC ' + sig + '. mttr_seconds ' + mttrText + '. Case ' + caseId + '. Host containment was not executed.',
-          data.fallback_label ? 'unavailable' : 'verified'
+          headline,
+          path === 'local_contract_fallback' || data.fallback_label ? 'unavailable' : 'verified'
         );
         return data;
       }

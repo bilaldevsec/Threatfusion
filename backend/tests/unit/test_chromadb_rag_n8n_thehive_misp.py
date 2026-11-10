@@ -1053,6 +1053,9 @@ class TestEndToEndSocDemoAndDashboardIntegration:
 
     def test_full_soc_demo_incorporates_chromadb_misp_thehive_n8n(self, tmp_path: Path) -> None:
         """Verify run_full_soc_demo incorporates all Milestone #32 components."""
+        official = Path(__file__).resolve().parents[3] / "data" / "raw" / "unsw_nb15" / "official"
+        if any(not (official / f"UNSW-NB15_{number}.csv").is_file() for number in range(1, 5)):
+            pytest.skip("raw UNSW-NB15 CSV files not present in this checkout")
         report = run_full_soc_demo(tmp_path)
 
         track_b = report["track_b_azure_live_spine"]
@@ -2115,13 +2118,16 @@ class TestMegaMilestone38FailClosedEvidence:
         assert reference.total_time_to_conclusion_seconds == 1.281
         assert reference.analyst_toil_saved_pct == 99.8577
         reference_dict = reference.to_dict()
-        assert reference_dict["telemetry_source"] == "reference_benchmark"
+        assert reference_dict["telemetry_source"] == "reference_benchmark_not_measured"
         assert reference_dict["evidence_state"] == "reference_benchmark"
-        assert reference_dict["velocity_decomposition"]["telemetry_source"] == "reference_benchmark"
+        assert (
+            reference_dict["velocity_decomposition"]["telemetry_source"]
+            == "reference_benchmark_not_measured"
+        )
 
         strict = build_operational_velocity_report(strict_measured_only=True)
         strict_dict = strict.to_dict()
-        assert strict_dict["telemetry_source"] == "reference_benchmark"
+        assert strict_dict["telemetry_source"] == "reference_benchmark_not_measured"
         assert strict_dict["evidence_state"] == "unavailable"
         assert strict_dict["velocity_decomposition"]["evidence_state"] == "unavailable"
         assert strict.ttd_mean_ms == 18.4
@@ -2135,6 +2141,8 @@ class TestMegaMilestone38FailClosedEvidence:
         both = build_operational_velocity_report(
             incident_timings=[{"incident_id": "inc_live", "t_investigation": 2.0}],
             response_timings=[{"candidate_id": "inc_live", "t_response": 4.5}],
+            ttd_mean_ms=21.5,
+            tta_mean_ms=14.2,
         )
         both_dict = both.to_dict()
         assert both_dict["telemetry_source"] == "live_measured"

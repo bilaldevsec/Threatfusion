@@ -215,6 +215,12 @@ def build_operational_velocity_report(
     # Velocity Decomposition Calculations
     ttd_val = DEFAULT_TTD_MEAN_MS if ttd_mean_ms is None else float(ttd_mean_ms)
     tta_val = DEFAULT_TTA_MEAN_MS if tta_mean_ms is None else float(tta_mean_ms)
+    uses_reference_velocity = (
+        ttd_mean_ms is None
+        or tta_mean_ms is None
+        or ttd_val == DEFAULT_TTD_MEAN_MS
+        or tta_val == DEFAULT_TTA_MEAN_MS
+    )
     tti_val = mtti_mean
     total_time_to_conclusion = round((ttd_val / 1000.0) + (tta_val / 1000.0) + tti_val, 6)
     toil_saved_sec = round(
@@ -229,17 +235,25 @@ def build_operational_velocity_report(
         4,
     )
 
-    if mtti_vals and positive_mttr_vals:
+    if uses_reference_velocity:
+        telemetry_source = "reference_benchmark_not_measured"
+        if mtti_vals or mttr_vals:
+            evidence_state = "reference_benchmark"
+        elif strict_measured_only:
+            evidence_state = "unavailable"
+        else:
+            evidence_state = "reference_benchmark"
+    elif mtti_vals and positive_mttr_vals:
         telemetry_source = "live_measured"
         evidence_state = "verified"
     elif mtti_vals or mttr_vals:
         telemetry_source = "reference_benchmark_not_measured"
         evidence_state = "reference_benchmark"
     elif strict_measured_only:
-        telemetry_source = "reference_benchmark"
+        telemetry_source = "reference_benchmark_not_measured"
         evidence_state = "unavailable"
     else:
-        telemetry_source = "reference_benchmark"
+        telemetry_source = "reference_benchmark_not_measured"
         evidence_state = "reference_benchmark"
 
     velocity_decomp = {

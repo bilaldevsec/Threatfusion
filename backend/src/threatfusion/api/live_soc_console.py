@@ -311,6 +311,7 @@ _AE_PREPROCESSOR_RELATIVE = (
 )
 _DNN_MODEL_RELATIVE = "artifacts/models/fyp2_dnn_same_split_v1/dnn_model.pt"
 _DNN_REPORT_RELATIVE = "artifacts/models/fyp2_dnn_same_split_v1/evaluation_report.json"
+_DNN_MODEL_SHA256 = "b090e53396ed1f1e72d8df19bf0d2b82ed4101f7fc844395d51634e986b1eeb1"
 _AE_INPUT_NAMES: tuple[str, ...] = (
     "duration_ms__zscore",
     "fwd_packets__zscore",
@@ -376,7 +377,15 @@ def _dnn_bundle(repo_root: Path) -> dict[str, Any] | None:
         import torch
 
         path = repo_root / _DNN_MODEL_RELATIVE
-        payload = torch.load(path, map_location="cpu", weights_only=False)
+        if path.is_symlink() or not path.is_file():
+            raise OSError("dnn artifact is missing or a symlink")
+        raw_bytes = path.read_bytes()
+        digest = hashlib.sha256(raw_bytes).hexdigest()
+        if not hmac.compare_digest(digest, _DNN_MODEL_SHA256):
+            raise ValueError("dnn artifact hash mismatch")
+        payload = torch.load(io.BytesIO(raw_bytes), map_location="cpu", weights_only=True)
+        if not isinstance(payload, dict):
+            raise TypeError("dnn artifact is not a tensor dictionary")
         model = _dnn_module_type()()
         model.load_state_dict(payload["state_dict"])
         model.eval()
@@ -476,8 +485,6 @@ def _score_autoencoder(canonical: Sequence[float], repo_root: Path) -> dict[str,
             for name, value in zip(_AE_INPUT_NAMES, squared, strict=True)
         ]
         ranked.sort(key=lambda item: item["squared_error"], reverse=True)
-        if ranked and ranked[0]["squared_error"] == 0.0:
-            ranked[0]["squared_error"] = loss
         return {
             "ae_loss": loss,
             "ae_anomaly_flag": bool(loss >= _AE_THRESHOLD),
@@ -606,32 +613,6 @@ def canonical_from_dnn_features(
     return canonical
 
 
-# Published advisory bands. The frozen forest stays the alert authority.
-_BENIGN_AE_LOW = 0.0280
-_BENIGN_AE_HIGH = 0.0490
-_BENIGN_DNN_LOW = 0.012
-_BENIGN_DNN_HIGH = 0.045
-_ATTACK_AE_LOW = 0.5994
-_ATTACK_AE_HIGH = 0.6500
-_DNN_TECHNIQUE_SCORES: dict[str, tuple[float, str]] = {
-    "T1046": (0.968, "Reconnaissance"),
-    "T1110": (0.954, "Brute Force (Generic)"),
-    "T1190": (0.979, "Exploits"),
-    "T1498": (0.992, "DoS"),
-}
-
-
-def _unit_interval(seed: float) -> float:
-    unit = abs(math.sin(seed))
-    if unit == 0.0:
-        unit = 0.42
-    return min(unit, 0.999)
-
-
-def _window_value(seed: float, low: float, high: float) -> float:
-    return low + (high - low) * _unit_interval(seed)
-
-
 def _finite_number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -683,73 +664,6 @@ def _align_model_proof_canonical(
     return aligned
 
 
-def _technique_for_attack_profile(
-    canonical: Mapping[str, Any],
-    raw_features: Mapping[str, Any] | None,
-) -> str:
-    port_value = _finite_number(canonical.get("dst_port"))
-    if port_value is None:
-        port_value = _finite_number(canonical.get("service_or_port"))
-    port = int(port_value) if port_value is not None else 0
-    rate_source: Mapping[str, Any] = raw_features if raw_features is not None else canonical
-    rate = _finite_number(rate_source.get("rate"))
-    if rate is None:
-        rate = _finite_number(rate_source.get("packets_per_second")) or 0.0
-    if port == 53 or rate >= 10000:
-        return "T1498"
-    if port == 445:
-        return "T1046"
-    if port == 22:
-        return "T1110"
-    return "T1190"
-
-
-def _calibrate_published_ae(raw_loss: Any, *, attack: bool) -> tuple[float, bool] | None:
-    loss = _finite_number(raw_loss)
-    if loss is None:
-        return None
-    if not attack:
-        if _BENIGN_AE_LOW <= loss <= _BENIGN_AE_HIGH:
-            published = loss
-        else:
-            published = _window_value(loss * 12.9898, _BENIGN_AE_LOW, _BENIGN_AE_HIGH)
-        return published, False
-    if loss >= _AE_THRESHOLD:
-        return loss, True
-    return _window_value(loss * 12.9898, _ATTACK_AE_LOW, _ATTACK_AE_HIGH), True
-
-
-def _calibrate_published_dnn(
-    raw_probability: Any,
-    *,
-    attack: bool,
-    canonical: Mapping[str, Any],
-    raw_features: Mapping[str, Any] | None,
-) -> dict[str, Any] | None:
-    probability = _finite_number(raw_probability)
-    if probability is None:
-        return None
-    if not attack:
-        port = _finite_number(canonical.get("dst_port")) or 0.0
-        published = _window_value(
-            (probability + port * 0.001) * 9.17 + 0.4,
-            _BENIGN_DNN_LOW,
-            _BENIGN_DNN_HIGH,
-        )
-        return {
-            "dnn_attack_probability": published,
-            "dnn_binary_decision": "Normal",
-            "unsw_attack_category": "Normal",
-        }
-    technique = _technique_for_attack_profile(canonical, raw_features)
-    published, category = _DNN_TECHNIQUE_SCORES[technique]
-    return {
-        "dnn_attack_probability": published,
-        "dnn_binary_decision": "Attack",
-        "unsw_attack_category": category,
-    }
-
-
 def _advisory_model_fields(
     features: Mapping[str, Any],
     repo_root: Path,
@@ -776,23 +690,14 @@ def _advisory_model_fields(
         "dnn_binary_decision": None,
         "unsw_attack_category": None,
     }
-    attack = rf_probability is not None and rf_probability >= 0.5
-    calibrated_ae = _calibrate_published_ae(ae.get("ae_loss"), attack=attack)
-    if calibrated_ae is not None:
-        ae["ae_loss"], ae["ae_anomaly_flag"] = calibrated_ae
-    calibrated_dnn = _calibrate_published_dnn(
-        dnn.get("dnn_attack_probability"),
-        attack=attack,
-        canonical=features,
-        raw_features=raw,
-    )
-    if calibrated_dnn is not None:
-        dnn.update(calibrated_dnn)
     consensus = _consensus_score(
         rf_probability,
         dnn.get("dnn_attack_probability"),
         ae.get("ae_loss"),
     )
+    scored_raw = _finite_number(ae.get("ae_loss")) is not None or _finite_number(
+        dnn.get("dnn_attack_probability")
+    ) is not None
     return {
         "ae_loss": ae.get("ae_loss"),
         "ae_anomaly_flag": ae.get("ae_anomaly_flag"),
@@ -804,6 +709,8 @@ def _advisory_model_fields(
         "unsw_attack_category": dnn.get("unsw_attack_category"),
         "threatfusion_consensus_score": consensus,
         "consensus_label": "advisory_consensus",
+        "measurement_source": "raw_model_inference" if scored_raw else "unavailable",
+        "authority": "advisory_non_governing",
         "ae_changes_alert_decision": False,
         "production_fusion_enabled": False,
     }
@@ -2526,6 +2433,13 @@ def _flow_rows(db_path: Path, *, limit: int) -> list[dict[str, Any]]:
             item["sensor_observation"] = None
         if not item.get("review_status"):
             item["review_status"] = "unassigned"
+        containment = str(item.get("containment_state") or "")
+        if containment in {"simulated_applied", "simulated_rolled_back"}:
+            item["containment_evidence_state"] = "simulated"
+        elif containment in {"applied", "rolled_back"}:
+            item["containment_evidence_state"] = "verified"
+        else:
+            item["containment_evidence_state"] = "unavailable"
         published.append(item)
     return published
 
@@ -2545,11 +2459,29 @@ def _read_stored_incidents(incidents_db_path: Path | None, *, limit: int) -> lis
         }
         if "incidents" not in tables:
             return []
+        available = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(incidents)").fetchall()
+        }
+        selected = [
+            name
+            for name in (
+                "incident_id",
+                "window_type",
+                "constituent_alert_count",
+                "max_probability_score",
+                "escalated_decision",
+                "earliest_observed_at",
+                "provenance_status",
+                "campaign_key",
+                "campaign_id",
+            )
+            if name in available
+        ]
+        if "incident_id" not in selected:
+            return []
         rows = conn.execute(
-            """
-            SELECT incident_id, window_type, constituent_alert_count,
-                   max_probability_score, escalated_decision, earliest_observed_at,
-                   provenance_status
+            f"""
+            SELECT {", ".join(selected)}
             FROM incidents
             ORDER BY earliest_observed_at DESC
             LIMIT ?
@@ -3173,18 +3105,35 @@ def _bind_incidents_to_attack_flows(
         candidate_id = _flow_alert_candidate_id(flow)
         if candidate_id:
             by_candidate[candidate_id] = flow
+    by_flow_id = {str(flow.get("flow_id")): flow for flow in attack_flows}
+    by_campaign: dict[str, Mapping[str, Any]] = {}
+    for flow in attack_flows:
+        campaign_key = str(flow.get("campaign_id") or "")
+        if campaign_key and campaign_key not in by_campaign:
+            by_campaign[campaign_key] = flow
     members = _constituent_alert_ids(incidents_db_path)
     for incident in incidents:
         chosen: Mapping[str, Any] | None = None
-        for alert_id in members.get(str(incident.get("incident_id") or ""), []):
-            match = by_candidate.get(alert_id)
+        constituent_ids = list(members.get(str(incident.get("incident_id") or ""), []))
+        embedded = incident.get("constituent_alert_ids")
+        if isinstance(embedded, str) and embedded.strip():
+            constituent_ids.append(embedded.strip())
+        elif isinstance(embedded, (list, tuple)):
+            constituent_ids.extend(str(item) for item in embedded)
+        for alert_id in constituent_ids:
+            text = str(alert_id)
+            match = by_candidate.get(text) or by_flow_id.get(text)
             if match is not None:
                 chosen = match
                 break
-        if chosen is None and attack_flows:
-            chosen = attack_flows[0]
         if chosen is None:
+            campaign_key = str(incident.get("campaign_key") or incident.get("campaign_id") or "")
+            if campaign_key:
+                chosen = by_campaign.get(campaign_key)
+        if chosen is None:
+            incident["flow_id"] = None
             continue
+        incident["flow_id"] = chosen.get("flow_id")
         context = _attack_context_fields(chosen)
         for key in _INCIDENT_FLOW_FIELDS:
             if key in context and context[key] not in ("", None, []):
@@ -3326,6 +3275,26 @@ def replay_benchmark_attack_burst(
         "member_count": len(stored),
         "flows": stored,
     }
+
+
+# Recorded UNSW-NB15 TCP/80 row. Raw frozen RF bd2853a6 scores below 0.50 and
+# raw frozen v2 AE c8675d13 reconstruction MSE stays below 0.118136.
+_IN_DISTRIBUTION_BENIGN_CANONICAL: dict[str, float] = {
+    "duration_ms": 1164.695,
+    "fwd_packets": 14.0,
+    "bwd_packets": 18.0,
+    "fwd_bytes": 1684.0,
+    "bwd_bytes": 10168.0,
+    "packets_per_second": 27.47500418564517,
+    "bytes_per_second": 10176.054675258329,
+    "fwd_packet_length_mean": 120.28571428571429,
+    "bwd_packet_length_mean": 564.8888888888889,
+    "dst_port": 80.0,
+    "protocol_tcp": 1.0,
+    "protocol_udp": 0.0,
+    "protocol_icmp": 0.0,
+    "protocol_other": 0.0,
+}
 
 
 _ATTACK_SHAPED_UDP: dict[str, float] = {
@@ -3547,10 +3516,13 @@ def replay_live_scenarios(
             provenance = {}
         existing = _reuse_scenario_row(db_path, title, provenance)
         if existing is None:
-            features = dict(_ATTACK_SHAPED_UDP)
-            features["dst_port"] = spec["dst_port"]
-            features["protocol_tcp"] = spec["protocol_tcp"]
-            features["protocol_udp"] = spec["protocol_udp"]
+            if spec["scenario_id"] == "benign_false_alarm":
+                features = dict(_IN_DISTRIBUTION_BENIGN_CANONICAL)
+            else:
+                features = dict(_ATTACK_SHAPED_UDP)
+                features["dst_port"] = spec["dst_port"]
+                features["protocol_tcp"] = spec["protocol_tcp"]
+                features["protocol_udp"] = spec["protocol_udp"]
             score = score_canonical_flow(
                 features,
                 repo_root=repo_root,
@@ -3643,6 +3615,9 @@ def replay_live_scenarios(
         "member_count": len(stored),
         "flows": stored,
     }
+
+
+seed_default_scenarios = replay_live_scenarios
 
 
 _NOTABLE_BRIDGE_EVENT_ID = (
@@ -3978,40 +3953,27 @@ def _store_flow_receipt(db_path: Path, flow_id: int, receipt: Mapping[str, Any])
 def operator_stamp(
     actor_id: str, policy_dir: Path | None, presented_fingerprint: str | None = None
 ) -> dict[str, Any]:
-    """Stamp a verified operator only when an enrolled credential matches this actor.
+    """Stamp a verified operator only when this request presents a matching certificate.
 
-    A presented fingerprint is checked with ``verify_operator_identity``. Callers
-    that omit it keep the enrolled-actor stamp used by the in-process lab path.
+    An empty fingerprint is plain HTTP without a TLS peer certificate. Enrollment
+    on disk is not a substitute for that presentation.
     """
-    if presented_fingerprint is not None:
-        from threatfusion.operations.human_credentials import verify_operator_identity
+    from threatfusion.operations.human_credentials import verify_operator_identity
 
-        stamp = verify_operator_identity(policy_dir, actor_id, presented_fingerprint)
+    presented = presented_fingerprint.strip() if isinstance(presented_fingerprint, str) else ""
+    if not presented:
         return {
-            "operator_id": stamp["operator_id"],
-            "cert_sha256_prefix": stamp["cert_sha256_prefix"],
-            "identity_verified": bool(stamp["identity_verified"]),
-            "identity_label": stamp["identity_label"],
+            "operator_id": "",
+            "cert_sha256_prefix": "",
+            "identity_verified": False,
+            "identity_label": "unverified_local_label",
         }
-    unverified = {
-        "operator_id": "",
-        "cert_sha256_prefix": "",
-        "identity_verified": False,
-        "identity_label": "unverified_local_label",
-    }
-    author = actor_id.strip()
-    if author == "analyst_a" or policy_dir is None or _LOCAL_ACTOR.fullmatch(author) is None:
-        return unverified
-    from threatfusion.operations.human_credentials import active_fingerprint
-
-    fingerprint = active_fingerprint(policy_dir, author)
-    if not fingerprint:
-        return unverified
+    stamp = verify_operator_identity(policy_dir, actor_id, presented)
     return {
-        "operator_id": author,
-        "cert_sha256_prefix": fingerprint[:16],
-        "identity_verified": True,
-        "identity_label": "verified_operator",
+        "operator_id": stamp["operator_id"],
+        "cert_sha256_prefix": stamp["cert_sha256_prefix"],
+        "identity_verified": bool(stamp["identity_verified"]),
+        "identity_label": stamp["identity_label"],
     }
 
 
@@ -4061,7 +4023,7 @@ def enroll_lab_operator(directory: Path, actor_id: str) -> dict[str, Any]:
         return refused
     existing = policy.active_fingerprint(directory, actor)
     if existing:
-        stamp = operator_stamp(actor, directory)
+        stamp = operator_stamp(actor, directory, existing)
         stamp["evidence_state"] = "verified"
         stamp["reason"] = "already_enrolled"
         return stamp
@@ -4145,7 +4107,8 @@ def enroll_lab_operator(directory: Path, actor_id: str) -> dict[str, Any]:
     except (policy.CredentialPolicyError, OSError, subprocess.TimeoutExpired):
         refused["reason"] = "enrollment_rejected"
         return refused
-    stamp = operator_stamp(actor, directory)
+    fingerprint = policy.active_fingerprint(directory, actor)
+    stamp = operator_stamp(actor, directory, fingerprint)
     if not stamp["identity_verified"]:
         refused["reason"] = "enrollment_rejected"
         return refused
@@ -4525,11 +4488,32 @@ def _dispatch_through_live_n8n(
     )
 
 
+def _callback_mttr_seconds(result: Mapping[str, Any]) -> float:
+    raw = result.get("mttr_seconds")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return 0.0
+    value = float(raw)
+    if not math.isfinite(value):
+        return 0.0
+    return value
+
+
 def _promote_recorded_callback(result: dict[str, Any]) -> dict[str, Any]:
-    """A stored HMAC receipt is verified evidence even when n8n omits mttr."""
-    signature = str(result.get("signature_sha256") or "")
-    if result.get("callback_recorded") is True and _SHA256_HEX.fullmatch(signature):
+    """Verified only when the server secret signs the receipt and MTTR is positive.
+
+    A bare 64-hex string is not a signature. A zero or missing MTTR stays unverified.
+    """
+    from threatfusion.api.analyst_dashboard import _is_verified_receipt_dict
+
+    receipt_ok = _is_verified_receipt_dict(result.get("callback_receipt"))
+    if (
+        result.get("callback_recorded") is True
+        and _callback_mttr_seconds(result) > 0.0
+        and receipt_ok
+    ):
         result["evidence_state"] = "verified"
+    elif result.get("evidence_state") == "verified":
+        result["evidence_state"] = "unavailable"
     return result
 
 
@@ -4698,30 +4682,32 @@ def dispatch_approved_callback(
         return refused
     stored_sig = str(flow["callback_signature"] or "")
     if flow["callback_recorded"] and _SHA256_HEX.fullmatch(stored_sig):
-        return disclose_offline_fallback(
-            {
-                "schema_version": "live_soar_callback_v1",
-                "evidence_state": "verified",
-                "reason": "already_recorded",
-                "execution_authorized": False,
-                "containment_executed": False,
-                "production_fusion_enabled": False,
-                "callback_recorded": True,
-                "signature_sha256": stored_sig,
-                "thehive_case_id": flow["thehive_case_id"],
-                "mttr_seconds": flow["mttr_seconds"],
-                "flow_id": flow_id,
-                "playbook_id": flow["playbook_id"],
-                "execution_path": flow["execution_path"] or LOCAL_CONTRACT_FALLBACK,
-                "callback_receipt": _signed_callback_receipt(
-                    playbook_id=str(flow["playbook_id"] or ""),
-                    candidate_id=f"live_flow:{flow_id}",
-                    state="executed_simulated",
-                    actor="",
-                    reason="already_recorded",
-                    secret=secret,
-                ),
-            }
+        return _promote_recorded_callback(
+            disclose_offline_fallback(
+                {
+                    "schema_version": "live_soar_callback_v1",
+                    "evidence_state": "unavailable",
+                    "reason": "already_recorded",
+                    "execution_authorized": False,
+                    "containment_executed": False,
+                    "production_fusion_enabled": False,
+                    "callback_recorded": True,
+                    "signature_sha256": stored_sig,
+                    "thehive_case_id": flow["thehive_case_id"],
+                    "mttr_seconds": flow["mttr_seconds"],
+                    "flow_id": flow_id,
+                    "playbook_id": flow["playbook_id"],
+                    "execution_path": flow["execution_path"] or LOCAL_CONTRACT_FALLBACK,
+                    "callback_receipt": _signed_callback_receipt(
+                        playbook_id=str(flow["playbook_id"] or ""),
+                        candidate_id=f"live_flow:{flow_id}",
+                        state="executed_simulated",
+                        actor="",
+                        reason="already_recorded",
+                        secret=secret,
+                    ),
+                }
+            )
         )
     webhook = (n8n_webhook_url or "").strip()
     configured_webhook = webhook or os.environ.get("THREATFUSION_N8N_WEBHOOK_URL", "").strip()
@@ -4748,8 +4734,31 @@ def dispatch_approved_callback(
     if approved is None:
         refused["reason"] = "playbook_not_approved"
         return refused
-    if not chain_ok and not webhook:
+    if not chain_ok:
+        if webhook:
+            try:
+                _dispatch_through_live_n8n(
+                    live_db_path,
+                    flow,
+                    approved,
+                    repository,
+                    dict(refused),
+                    flow_id=flow_id,
+                    candidate_id=candidate_id,
+                    secret=secret,
+                    thehive_url=thehive_url,
+                    outbox_db_path=outbox_db_path,
+                    webhook_url=webhook,
+                    contract_base_url=_n8n_contract_base(base, n8n_contract_base_url),
+                )
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError):
+                pass
         refused["reason"] = "audit_chain_invalid"
+        refused["callback_recorded"] = False
+        refused["evidence_state"] = "unavailable"
+        refused["execution_path"] = (
+            N8N_LIVE_CONTAINER if webhook else LOCAL_CONTRACT_FALLBACK
+        )
         return refused
     local_kwargs = {
         "flow_id": flow_id,
@@ -5309,6 +5318,7 @@ def record_triage_action(
     action: str,
     actor_id: str,
     policy_dir: Path | None = None,
+    presented_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """Persist one analyst triage action. Unknown actions are refused."""
     state = _TRIAGE_ACTIONS.get(action.strip().lower())
@@ -5341,7 +5351,7 @@ def record_triage_action(
             (flow_id, action.strip().lower(), state, author, created),
         )
         event_id = int(cursor.lastrowid)
-    stamp = operator_stamp(author, policy_dir)
+    stamp = operator_stamp(author, policy_dir, presented_fingerprint)
     _store_operator_stamp(db_path, flow_id, stamp)
     return {
         "evidence_state": "verified",
@@ -5495,6 +5505,7 @@ def record_case_assignment(
     assignee_id: str,
     review_status: str,
     policy_dir: Path | None = None,
+    presented_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """Store a local assignee and review status. This does not dispatch containment."""
     status = review_status.strip().lower()
@@ -5526,7 +5537,7 @@ def record_case_assignment(
             """,
             (assignee or None, status, flow_id),
         )
-    stamp = operator_stamp(assignee, policy_dir)
+    stamp = operator_stamp(assignee, policy_dir, presented_fingerprint)
     _store_operator_stamp(db_path, flow_id, stamp)
     return {
         "evidence_state": "verified",
@@ -5893,6 +5904,8 @@ def _authorized_range_flow(
         flow = conn.execute("SELECT * FROM live_flows WHERE flow_id = ?", (flow_id,)).fetchone()
     if flow is None:
         return None, _containment_refusal("flow_not_stored", 403)
+    if str(flow["decision"] or "") != "Attack":
+        return None, _containment_refusal("benign_flow_containment_blocked", 403)
     src_entity_id = _flow_field(flow, "src_entity_id")
     scenario_source = src_entity_id == SCENARIO_CONTAINMENT_SOURCE and _scenario_replay_flow(flow)
     if src_entity_id not in {RANGE_CONTAINMENT_SOURCE, SCENARIO_CONTAINMENT_SOURCE}:
@@ -6052,8 +6065,15 @@ def contain_range_source(
         return _containment_refusal("range_not_running", 409)
     if not act("drop").get("applied"):
         return _containment_refusal("range_command_failed", 409)
-    if act("probe").get("reachable"):
-        act("rollback")
+    probe = act("probe")
+    if not isinstance(probe, Mapping):
+        probe = {}
+    probe_status = str(probe.get("status") or "")
+    if probe.get("error") or probe_status in {"error", "failed"}:
+        return _containment_refusal("range_command_failed", 409)
+    if probe.get("reachable") is not False:
+        if probe.get("reachable") is True:
+            act("rollback")
         return _containment_refusal("containment_not_observed", 502)
     recorded_at = datetime.now(UTC).isoformat()
     _store_containment_state(live_db_path, flow_id, "applied", when=recorded_at)

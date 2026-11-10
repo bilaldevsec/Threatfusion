@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from threatfusion.operations.full_soc_demo import (
     DEMO_SCHEMA_VERSION,
     REGISTERED_UNSW_MEMBER_SHA256,
@@ -14,6 +16,9 @@ from threatfusion.operations.full_soc_demo import (
 
 def test_full_soc_demo_runner_end_to_end(tmp_path: Path) -> None:
     """Execute run_full_soc_demo(tmp_path) end-to-end and assert all invariants."""
+    official = Path(__file__).resolve().parents[3] / "data" / "raw" / "unsw_nb15" / "official"
+    if any(not (official / f"UNSW-NB15_{number}.csv").is_file() for number in range(1, 5)):
+        pytest.skip("raw UNSW-NB15 CSV files not present in this checkout")
     report = run_full_soc_demo(tmp_path)
 
     # 1. Top-Level Metadata Invariants

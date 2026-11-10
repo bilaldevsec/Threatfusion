@@ -7,6 +7,7 @@ from pathlib import Path
 from threatfusion.api.live_soc_console import (
     approve_live_soar,
     enroll_lab_operator,
+    operator_stamp,
     persist_scored_flow,
     record_analyst_verdict,
     record_case_assignment,
@@ -70,6 +71,12 @@ def test_analyst_a_stays_unverified_until_a_different_actor_is_enrolled(tmp_path
     fingerprint = active_fingerprint(directory, "lab_operator")
     assert fingerprint is not None
     assert enrolled["cert_sha256_prefix"] == fingerprint[:16]
+    unpresented = operator_stamp("lab_operator", directory)
+    assert unpresented["identity_verified"] is False
+    assert unpresented["identity_label"] == "unverified_local_label"
+    blank = operator_stamp("lab_operator", directory, "")
+    assert blank["identity_verified"] is False
+    assert blank["identity_label"] == "unverified_local_label"
 
     saved = record_analyst_verdict(
         db_path,
@@ -78,6 +85,7 @@ def test_analyst_a_stays_unverified_until_a_different_actor_is_enrolled(tmp_path
         rationale="The stored score stands. No new address is named.",
         actor_id="lab_operator",
         policy_dir=directory,
+        presented_fingerprint=fingerprint,
     )
     assert saved["identity_verified"] is True
     assert saved["operator_id"] == "lab_operator"
@@ -89,6 +97,7 @@ def test_analyst_a_stays_unverified_until_a_different_actor_is_enrolled(tmp_path
         assignee_id="lab_operator",
         review_status="in_review",
         policy_dir=directory,
+        presented_fingerprint=fingerprint,
     )
     assert assigned["identity_verified"] is True
     triaged = record_triage_action(
@@ -97,8 +106,19 @@ def test_analyst_a_stays_unverified_until_a_different_actor_is_enrolled(tmp_path
         action="acknowledge",
         actor_id="lab_operator",
         policy_dir=directory,
+        presented_fingerprint=fingerprint,
     )
     assert triaged["identity_verified"] is True
+    unpresented_approval = approve_live_soar(
+        db_path,
+        tmp_path / "soar-unpresented.sqlite3",
+        flow_id=flow_id,
+        actor_id="lab_operator",
+        reason="Analyst recorded local approval. Containment is not executed.",
+        policy_dir=directory,
+    )
+    assert unpresented_approval["identity_verified"] is False
+    assert unpresented_approval["identity_label"] == "unverified_local_label"
     approved = approve_live_soar(
         db_path,
         tmp_path / "soar.sqlite3",
@@ -106,6 +126,7 @@ def test_analyst_a_stays_unverified_until_a_different_actor_is_enrolled(tmp_path
         actor_id="lab_operator",
         reason="Analyst recorded local approval. Containment is not executed.",
         policy_dir=directory,
+        presented_fingerprint=fingerprint,
     )
     assert approved["identity_verified"] is True
     assert approved["containment_executed"] is False

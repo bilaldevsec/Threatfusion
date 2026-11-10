@@ -6,6 +6,8 @@ import json
 from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
+
 import scripts.run_fyp_progress_demo as replay_demo
 import scripts.run_registered_browser_path as browser_path
 from threatfusion.models.network_inference import (
@@ -25,6 +27,9 @@ from threatfusion.features.network_behavior import UNSW_NB15_ARGUS_RAW_REPRESENT
 def test_one_registered_attack_reaches_authenticated_browser_and_degrades_cleanly(
     monkeypatch, capsys
 ) -> None:
+    official = Path(__file__).resolve().parents[3] / "data" / "raw" / "unsw_nb15" / "official"
+    if any(not (official / f"UNSW-NB15_{number}.csv").is_file() for number in range(1, 5)):
+        pytest.skip("raw UNSW-NB15 CSV files not present in this checkout")
     runtimes: list[Path] = []
     original_runtime = replay_demo._temporary_runtime
 

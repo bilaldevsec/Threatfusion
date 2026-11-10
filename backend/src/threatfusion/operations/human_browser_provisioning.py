@@ -383,7 +383,11 @@ def _run_nss_command(
 def init_policy_directory(policy_dir: Path | str) -> Path:
     """Initialize a mode-0700 policy directory for operator credential enrollment."""
     p = Path(policy_dir) if not isinstance(policy_dir, Path) else policy_dir
+    if p.is_symlink():
+        raise HumanBrowserProvisioningError("symlink_rejected")
     p.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if p.is_symlink():
+        raise HumanBrowserProvisioningError("symlink_rejected")
     os.chmod(p, 0o700)
     return p
 

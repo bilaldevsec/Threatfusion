@@ -344,7 +344,10 @@ def run_red_team_suite() -> dict[str, Any]:
 
             initial_lab = operator_stamp("lab_operator", policy_dir)
             enroll_lab = enroll_lab_operator(policy_dir, "lab_operator")
-            post_lab = operator_stamp("lab_operator", policy_dir)
+            from threatfusion.operations.human_credentials import active_fingerprint
+
+            enrolled_fingerprint = active_fingerprint(policy_dir, "lab_operator")
+            post_lab = operator_stamp("lab_operator", policy_dir, enrolled_fingerprint or "")
 
             p8_passed = (
                 initial_analyst["identity_verified"] is False

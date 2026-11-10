@@ -37,9 +37,6 @@ load_gemini_dotenv() {
       export "$key"
     done < "$env_file"
   fi
-  if [[ -n "${GEMINI_API_KEY:-}" ]]; then
-    export GEMINI_ENABLED="${GEMINI_ENABLED:-true}"
-  fi
 }
 
 if [[ "${1:-}" == "--up" ]]; then
@@ -103,8 +100,10 @@ stop_pidfile() {
     local pid
     pid="$(cat "$pidfile")"
     if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
+      if ps -p "$pid" -o args= 2>/dev/null | grep -Eq "threatfusion|run_misp_and_callback_contract_server"; then
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+      fi
     fi
     rm -f "$pidfile"
   fi
@@ -117,6 +116,9 @@ prepare_operator_policy_dir() {
   local policy_dir="$1"
   local parent mode uid
   mkdir -p "$policy_dir"
+  if [[ -L "$policy_dir" ]]; then
+    die "refusing to chmod a symlink: ${policy_dir}"
+  fi
   chmod 0700 "$policy_dir"
   parent="$(dirname "$policy_dir")"
   if [[ "$parent" == "/" || "$parent" == "." ]]; then
@@ -129,6 +131,9 @@ prepare_operator_policy_dir() {
   fi
   case "$parent" in
     /tmp/*|/var/tmp/*)
+      if [[ -L "$parent" ]]; then
+        die "refusing to chmod a symlink: ${parent}"
+      fi
       chmod 0700 "$parent"
       ;;
   esac

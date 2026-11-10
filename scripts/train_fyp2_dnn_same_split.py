@@ -333,6 +333,59 @@ def _canonical_matrix(frame: pd.DataFrame) -> np.ndarray:
     )
 
 
+def _exact_row_overlap_count(train_rows: np.ndarray, test_rows: np.ndarray) -> int:
+    """Count test rows whose 14 feature values are byte-identical to a train row."""
+    train_keys = {row.tobytes() for row in np.ascontiguousarray(train_rows, dtype=np.float64)}
+    return sum(
+        1 for row in np.ascontiguousarray(test_rows, dtype=np.float64) if row.tobytes() in train_keys
+    )
+
+
+def _nine_class_confusion(truth: np.ndarray, predicted: np.ndarray) -> list[list[int]]:
+    """9x9 counts for the attack-category head. Rows are truth, columns are predicted."""
+    matrix = np.zeros((9, 9), dtype=np.int64)
+    valid = (truth >= 0) & (truth < 9) & (predicted >= 0) & (predicted < 9)
+    if int(np.count_nonzero(valid)):
+        np.add.at(matrix, (truth[valid], predicted[valid]), 1)
+    return [[int(value) for value in row] for row in matrix]
+
+
+def _calibrate_on_canonical_profiles(
+    model: ThreatFusionSameSplitDNN,
+    scaled_raw: np.ndarray,
+    canonical: np.ndarray,
+    repo_root: Path,
+) -> None:
+    """Fit one step toward frozen-RF probabilities of the canonical 14-feature profiles.
+
+    The forest artifact is read-only. Inference still emits the raw network output.
+    """
+    path = repo_root / RF_RELATIVE
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest != RF_SHA256:
+        raise SystemExit("frozen random forest hash mismatch during canonical calibration")
+    import joblib
+
+    forest = joblib.load(path)
+    count = min(8192, int(scaled_raw.shape[0]), int(canonical.shape[0]))
+    if count <= 0:
+        return
+    targets = forest.predict_proba(np.ascontiguousarray(canonical[:count], dtype=np.float64))
+    attack = np.asarray(targets[:, 1], dtype=np.float32)
+    features = torch.from_numpy(np.ascontiguousarray(scaled_raw[:count], dtype=np.float32))
+    labels = torch.from_numpy(attack)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    loss_fn = nn.BCEWithLogitsLoss()
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
+    binary_logit, _category_logit = model(features)
+    loss = loss_fn(binary_logit, labels)
+    loss.backward()
+    optimizer.step()
+    model.eval()
+    print(f"canonical_profile_calibration_loss {float(loss.detach()):.6f}", flush=True)
+
+
 def _rf_accuracy(repo_root: Path, features: np.ndarray, labels: np.ndarray) -> dict[str, object]:
     path = repo_root / RF_RELATIVE
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -374,12 +427,20 @@ def main() -> int:
     test_matrix = _matrix(test)
     mean, std = _fit_scaler(train_matrix)
     model = ThreatFusionSameSplitDNN()
+    scaled_train = _scale(train_matrix, mean, std)
     _train(
         model,
-        _scale(train_matrix, mean, std),
+        scaled_train,
         train["y"].to_numpy(dtype=np.int64),
         train["category_id"].to_numpy(dtype=np.int64),
     )
+    canonical_train = _canonical_matrix(train)
+    canonical_test = _canonical_matrix(test)
+    canonical_mean = canonical_train.mean(axis=0)
+    canonical_std = canonical_train.std(axis=0)
+    canonical_std = np.where(canonical_std < 1e-6, 1.0, canonical_std)
+    print("calibrating on canonical 14-feature profiles", flush=True)
+    _calibrate_on_canonical_profiles(model, scaled_train, canonical_train, repo_root)
     probabilities, predicted_categories = _predict(model, _scale(test_matrix, mean, std))
     labels = test["y"].to_numpy(dtype=np.int64)
     truth_categories = test["category_id"].to_numpy(dtype=np.int64)
@@ -391,15 +452,21 @@ def main() -> int:
         nine_class_accuracy = float(
             np.mean(predicted_categories[attack_rows] == truth_categories[attack_rows])
         )
-    rf_report = _rf_accuracy(repo_root, _canonical_matrix(test), labels)
+    rf_report = _rf_accuracy(repo_root, canonical_test, labels)
+    attack_truth = truth_categories[attack_rows]
+    attack_predicted = predicted_categories[attack_rows]
+    nine_class_matrix = _nine_class_confusion(attack_truth, attack_predicted)
+    overlap_count = _exact_row_overlap_count(train_matrix, test_matrix)
     output_dir = repo_root / "artifacts" / "models" / "fyp2_dnn_same_split_v1"
     output_dir.mkdir(parents=True, exist_ok=True)
     model_path = output_dir / "dnn_model.pt"
     torch.save(
         {
-            "state_dict": model.state_dict(),
+            "state_dict": {name: tensor.detach().cpu() for name, tensor in model.state_dict().items()},
             "scaler_mean": torch.tensor(mean, dtype=torch.float32),
             "scaler_std": torch.tensor(std, dtype=torch.float32),
+            "canonical_mean": torch.tensor(canonical_mean, dtype=torch.float32),
+            "canonical_std": torch.tensor(canonical_std, dtype=torch.float32),
         },
         model_path,
     )
@@ -430,6 +497,24 @@ def main() -> int:
         "fpr": binary["fpr"],
         "confusion_matrix": binary["confusion_matrix"],
         "nine_class_accuracy": nine_class_accuracy,
+        "nine_class_confusion_matrix": nine_class_matrix,
+        "train_test_exact_row_overlap_count": overlap_count,
+        "canonical_feature_names": [
+            "duration_ms",
+            "fwd_packets",
+            "bwd_packets",
+            "fwd_bytes",
+            "bwd_bytes",
+            "packets_per_second",
+            "bytes_per_second",
+            "fwd_packet_length_mean",
+            "bwd_packet_length_mean",
+            "dst_port",
+            "protocol_tcp",
+            "protocol_udp",
+            "protocol_icmp",
+            "protocol_other",
+        ],
         "train_feature_medians": {
             name: float(value) for name, value in zip(FEATURE_NAMES, medians, strict=True)
         },

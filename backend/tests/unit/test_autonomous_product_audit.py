@@ -346,8 +346,13 @@ def test_probe_8_x509_operator_identity_guard(tmp_path: Path) -> None:
     assert enrolled["operator_id"] == "lab_operator"
     assert len(enrolled["cert_sha256_prefix"]) == 16
 
-    # Verify lab_operator returns identity_verified: True only after enrollment
-    verified_stamp = operator_stamp("lab_operator", policy_dir)
+    # A stored enrollment is not a presented certificate.
+    assert operator_stamp("lab_operator", policy_dir)["identity_verified"] is False
+    from threatfusion.operations.human_credentials import active_fingerprint
+
+    fingerprint = active_fingerprint(policy_dir, "lab_operator")
+    assert fingerprint is not None
+    verified_stamp = operator_stamp("lab_operator", policy_dir, fingerprint)
     assert verified_stamp["identity_verified"] is True
     assert verified_stamp["identity_label"] == "verified_operator"
     assert verified_stamp["operator_id"] == "lab_operator"

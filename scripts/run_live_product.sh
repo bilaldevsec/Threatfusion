@@ -115,9 +115,6 @@ load_gemini_dotenv() {
       export "$key"
     done < "$env_file"
   fi
-  if [[ -n "${GEMINI_API_KEY:-}" ]]; then
-    export GEMINI_ENABLED="${GEMINI_ENABLED:-true}"
-  fi
 }
 
 if [[ "$MODE" != "dry-run" && "$MODE" != "smoke" ]]; then
@@ -235,6 +232,9 @@ prepare_operator_policy_dir() {
   local policy_dir="$1"
   local parent mode uid
   mkdir -p "$policy_dir"
+  if [[ -L "$policy_dir" ]]; then
+    die "refusing to chmod a symlink: ${policy_dir}"
+  fi
   chmod 0700 "$policy_dir"
   parent="$(dirname "$policy_dir")"
   if [[ "$parent" == "/" || "$parent" == "." ]]; then
@@ -247,6 +247,9 @@ prepare_operator_policy_dir() {
   fi
   case "$parent" in
     /tmp/*|/var/tmp/*)
+      if [[ -L "$parent" ]]; then
+        die "refusing to chmod a symlink: ${parent}"
+      fi
       chmod 0700 "$parent"
       ;;
   esac
@@ -258,23 +261,41 @@ if [[ -z "${THREATFUSION_OPERATOR_POLICY_DIR:-}" ]]; then
 fi
 prepare_operator_policy_dir "$THREATFUSION_OPERATOR_POLICY_DIR"
 
+stop_pidfile() {
+  local pidfile="$1"
+  local pid
+  [[ -n "$pidfile" && -f "$pidfile" ]] || return 0
+  pid="$(cat "$pidfile")"
+  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    if ps -p "$pid" -o args= 2>/dev/null | grep -Eq "threatfusion|run_misp_and_callback_contract_server"; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$pidfile"
+}
+
 shutdown_child() {
   trap - EXIT INT TERM
   if [[ -n "${CHILD_PID}" ]] && kill -0 "$CHILD_PID" 2>/dev/null; then
-    echo "Shutting down the SOC console and the contract server (pid ${CHILD_PID})." >&2
-    # Background jobs ignore SIGINT. SIGTERM hits the server's shutdown handler.
-    kill -TERM "$CHILD_PID" 2>/dev/null || true
-    local _i
-    for _i in $(seq 1 30); do
-      if ! kill -0 "$CHILD_PID" 2>/dev/null; then
-        break
+    if ps -p "$CHILD_PID" -o args= 2>/dev/null | grep -Eq "threatfusion|run_misp_and_callback_contract_server"; then
+      echo "Shutting down the SOC console and the contract server (pid ${CHILD_PID})." >&2
+      # Background jobs ignore SIGINT. SIGTERM hits the server's shutdown handler.
+      kill -TERM "$CHILD_PID" 2>/dev/null || true
+      local _i
+      for _i in $(seq 1 30); do
+        if ! kill -0 "$CHILD_PID" 2>/dev/null; then
+          break
+        fi
+        sleep 0.1
+      done
+      if kill -0 "$CHILD_PID" 2>/dev/null; then
+        if ps -p "$CHILD_PID" -o args= 2>/dev/null | grep -Eq "threatfusion|run_misp_and_callback_contract_server"; then
+          kill -KILL "$CHILD_PID" 2>/dev/null || true
+        fi
       fi
-      sleep 0.1
-    done
-    if kill -0 "$CHILD_PID" 2>/dev/null; then
-      kill -KILL "$CHILD_PID" 2>/dev/null || true
+      wait "$CHILD_PID" 2>/dev/null || true
     fi
-    wait "$CHILD_PID" 2>/dev/null || true
   fi
   CHILD_PID=""
   if [[ -n "$PIDFILE" && -f "$PIDFILE" ]]; then
@@ -351,11 +372,21 @@ policy_dir = os.environ.get("THREATFUSION_OPERATOR_POLICY_DIR", "").strip()
 if not policy_dir:
     sys.stderr.write("error: seed-demo did not enroll lab_operator\n")
     sys.exit(1)
-directory = Path(policy_dir).expanduser().resolve()
+directory = Path(policy_dir).expanduser()
+if directory.is_symlink():
+    sys.stderr.write("error: refusing to chmod a symlink\n")
+    sys.exit(1)
+directory = directory.resolve()
 directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+if directory.is_symlink():
+    sys.stderr.write("error: refusing to chmod a symlink\n")
+    sys.exit(1)
 os.chmod(directory, 0o700)
 parent = directory.parent
 if parent != parent.parent:
+    if parent.is_symlink():
+        sys.stderr.write("error: refusing to chmod a symlink\n")
+        sys.exit(1)
     info = parent.stat()
     sticky_root = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
     parent_text = str(parent)

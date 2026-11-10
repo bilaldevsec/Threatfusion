@@ -725,35 +725,44 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             ports.add(header_port)
         return ports
 
-    def _same_origin_browser(self) -> bool:
-        """True for a same-origin browser fetch or a matching Origin/Referer."""
-        fetch_site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
-        if fetch_site == "same-origin":
-            return True
+    def _origin_value_allowed(self, raw: str) -> bool:
+        parsed = urllib.parse.urlparse(raw.strip())
+        if parsed.scheme != "http" or parsed.hostname is None:
+            return False
+        if not self._origin_host_allowed(parsed.hostname):
+            return False
         listening = int(self.server.server_address[1])
         header_port = _port_from_host_header(self.headers.get("Host"))
-        for header_name in ("Origin", "Referer"):
-            raw = (self.headers.get(header_name) or "").strip()
-            if not raw:
-                continue
-            parsed = urllib.parse.urlparse(raw)
-            if parsed.scheme != "http" or parsed.hostname is None:
-                continue
-            if not self._origin_host_allowed(parsed.hostname):
-                continue
-            if parsed.port is None:
-                if listening == 80 or header_port == 80:
-                    return True
-                continue
-            if parsed.port == listening or parsed.port == header_port:
-                return True
+        if parsed.port is None:
+            return listening == 80 or header_port == 80
+        return parsed.port == listening or parsed.port == header_port
+
+    def _explicit_browser_origin_allowed(self) -> bool:
+        """True only when Origin, or Referer when Origin is absent, matches this listener."""
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin:
+            return self._origin_value_allowed(origin)
+        referer = (self.headers.get("Referer") or "").strip()
+        if referer:
+            return self._origin_value_allowed(referer)
         return False
 
-    def _health_csrf_visible(self) -> bool:
-        """Disclose the console CSRF token only to an already-authorized caller."""
-        if self._live_write_authorized():
+    def _same_origin_browser(self) -> bool:
+        """True for a matching Origin/Referer. A hostile Origin fails before Sec-Fetch-Site."""
+        origin = (self.headers.get("Origin") or "").strip()
+        referer = (self.headers.get("Referer") or "").strip()
+        if origin or referer:
+            if origin and not self._origin_value_allowed(origin):
+                return False
+            if referer and not self._origin_value_allowed(referer):
+                return False
             return True
-        return self._same_origin_browser()
+        fetch_site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        return fetch_site == "same-origin"
+
+    def _health_csrf_visible(self) -> bool:
+        """Disclose the console CSRF token only when Origin or Referer matches."""
+        return self._explicit_browser_origin_allowed()
 
     def _send_console_index(self) -> None:
         """Serve the console page with the process CSRF token embedded for this browser."""
@@ -1215,6 +1224,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 assignee_id=assignee,
                 review_status=review_status,
                 policy_dir=_operator_policy_dir(),
+                presented_fingerprint=self._presented_operator_fingerprint(),
             )
             if isinstance(result, dict):
                 result["assignee_id"] = result.get("assignee_id") or assignee or None
@@ -1241,6 +1251,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 action=str(req_data.get("action") or ""),
                 actor_id=str(req_data.get("actor_id") or ""),
                 policy_dir=_operator_policy_dir(),
+                presented_fingerprint=self._presented_operator_fingerprint(),
             )
             status = 200 if result.get("evidence_state") == "verified" else 400
             self._send_json(status, result)
