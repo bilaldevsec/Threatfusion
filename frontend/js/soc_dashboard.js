@@ -648,6 +648,8 @@
     refreshAgyAudit();
     refreshLiveCampaigns();
     refreshOperatorStamp();
+    loadModelObservatory(0);
+    loadEnterpriseControls();
     renderEntityTopology();
     renderMitreCoverageMatrix();
     renderScoringTimeProvenance(null);
@@ -2468,6 +2470,47 @@
     if (exportButton) {
       exportButton.addEventListener('click', () => { exportGroundedHandoff(); });
     }
+    const enterpriseToggle = document.getElementById('enterpriseWorkspaceToggleBtn');
+    if (enterpriseToggle) {
+      enterpriseToggle.addEventListener('click', () => openEnterpriseDrawer(true));
+    }
+    const enterpriseClose = document.getElementById('btnCloseEnterpriseDrawer');
+    if (enterpriseClose) {
+      enterpriseClose.addEventListener('click', () => openEnterpriseDrawer(false));
+    }
+    const selectWorkspaceButton = document.getElementById('btnSelectWorkspace');
+    if (selectWorkspaceButton) {
+      selectWorkspaceButton.addEventListener('click', () => { selectEnterpriseWorkspace(); });
+    }
+    const createWorkspaceButton = document.getElementById('btnCreateWorkspace');
+    if (createWorkspaceButton) {
+      createWorkspaceButton.addEventListener('click', () => { createEnterpriseWorkspace(); });
+    }
+    const switchOperatorButton = document.getElementById('btnSwitchOperator');
+    if (switchOperatorButton) {
+      switchOperatorButton.addEventListener('click', () => { switchEnterpriseOperator(); });
+    }
+    const enrollWorkspaceOperator = document.getElementById('btnEnrollWorkspaceOperator');
+    if (enrollWorkspaceOperator) {
+      enrollWorkspaceOperator.addEventListener('click', () => { enrollSelectedOperator(); });
+    }
+    const registerOperatorButton = document.getElementById('btnRegisterOperator');
+    if (registerOperatorButton) {
+      registerOperatorButton.addEventListener('click', () => { registerEnterpriseOperator(); });
+    }
+    document.querySelectorAll('#launchAttackVectorBar button').forEach(button => {
+      button.addEventListener('click', () => {
+        launchRangeVector(button.getAttribute('data-vector-id') || '');
+      });
+    });
+    const registerSensorButton = document.getElementById('btnRegisterSensor');
+    if (registerSensorButton) {
+      registerSensorButton.addEventListener('click', () => { registerEnterpriseSensor(); });
+    }
+    const dossierButton = document.getElementById('exportComplianceDossierBtn');
+    if (dossierButton) {
+      dossierButton.addEventListener('click', () => { exportComplianceDossier(); });
+    }
   }
 
   function setLiveText(id, text, state) {
@@ -3079,7 +3122,7 @@
     const node = document.getElementById('operatorIdentityBadge');
     if (!node || !stamp) return;
     const profile = document.getElementById('operatorProfileName');
-    if (profile) profile.textContent = 'Muhammad Bilal (Triage Lead)';
+    if (profile) profile.textContent = activeOperatorLabel || 'Muhammad Bilal (Triage Lead)';
     const verified = stamp.identity_verified === true || stamp.identityVerified === true;
     const label = stamp.identity_label || stamp.identityLabel || '';
     const prefix = stamp.cert_sha256_prefix || stamp.certSha256Prefix || '';
@@ -3520,6 +3563,7 @@
   };
   let modelProofFlowId = null;
   let modelProofHasFeatures = false;
+  let activeOperatorLabel = '';
 
   function finiteOrNull(value) {
     const number = Number(value);
@@ -3608,6 +3652,7 @@
         renderModelProofSandbox(inc);
         fillModelProofInputs(features);
       }
+      renderVisualObservatory(data);
       if (results && data && data.original) {
         const latency = Number(data.inference_latency_ms);
         results.textContent = [
@@ -3706,6 +3751,7 @@
     try {
       const resp = await fetch('/api/v1/live/model-proof?flow_id=' + encodeURIComponent(String(inc.flowId)));
       const data = await readActionPayload(resp);
+      renderVisualObservatory(data);
       if (results && data && data.original) {
         const latency = Number(data.inference_latency_ms);
         results.textContent = [
@@ -3751,6 +3797,7 @@
         results.textContent = resp.ok ? text : actionFailureText(data, resp);
         results.setAttribute('data-evidence-state', data.evidence_state || 'advisory_simulation');
       }
+      if (resp.ok) renderVisualObservatory(data);
     } catch (err) {
       if (results) results.textContent = 'Live inference unavailable.';
     }
@@ -3765,7 +3812,7 @@
       const resp = await fetch('/api/v1/live/soar/dispatch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ flow_id: inc.flowId })
+        body: JSON.stringify({ flow_id: inc.flowId, actor_id: operatorActorId() })
       });
       const data = await readActionPayload(resp);
       await refreshLiveCampaigns();
@@ -3836,7 +3883,7 @@
       const resp = await fetch(path, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ flow_id: inc.flowId })
+        body: JSON.stringify({ flow_id: inc.flowId, actor_id: operatorActorId() })
       });
       const data = await readActionPayload(resp);
       await refreshLiveCampaigns();
@@ -4075,6 +4122,416 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
+  }
+
+  const OBSERVATORY_CLASSES = [
+    'Normal', 'Analysis', 'Backdoors', 'DoS', 'Exploits', 'Fuzzers',
+    'Generic', 'Reconnaissance', 'Shellcode', 'Worms'
+  ];
+  const OPERATOR_LABELS = {
+    lab_operator: 'Muhammad Bilal (21K-3551)',
+    tier1_analyst: 'Muhammad Suhaib (22K-4302)',
+    compliance_auditor: 'Muhammad Hasnain (22K-4718)'
+  };
+
+  function openEnterpriseDrawer(open) {
+    const drawer = document.getElementById('enterpriseWorkspaceDrawer');
+    if (drawer) drawer.classList.toggle('is-open', Boolean(open));
+    if (open) loadEnterpriseControls();
+  }
+
+  function percentText(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return 'unavailable';
+    return (number * 100).toFixed(2) + '%';
+  }
+
+  function setGauge(fillId, markerId, valueId, value, threshold, label) {
+    const fill = document.getElementById(fillId);
+    const marker = document.getElementById(markerId);
+    const text = document.getElementById(valueId);
+    const numeric = Number(value);
+    const limit = Number(threshold);
+    const width = Number.isFinite(numeric) ? Math.max(0, Math.min(100, numeric * 100)) : 0;
+    if (fill) fill.style.width = width.toFixed(2) + '%';
+    if (marker && Number.isFinite(limit)) {
+      marker.style.left = Math.max(0, Math.min(100, limit * 100)).toFixed(2) + '%';
+    }
+    if (text) text.textContent = label;
+  }
+
+  function renderHorizontalBars(container, rows) {
+    if (!container) return;
+    if (!rows.length) {
+      container.textContent = 'Waiting for a scored flow.';
+      return;
+    }
+    const max = Math.max.apply(null, rows.map(row => Number(row.value) || 0).concat([1e-9]));
+    container.innerHTML = rows.map(row => {
+      const value = Number(row.value) || 0;
+      const width = Math.max(0, Math.min(100, (value / max) * 100));
+      return '<div class="hbar-row"><span class="hbar-label">' + escapeHtml(row.label)
+        + '</span><span class="hbar-track"><span class="hbar-fill" style="width:' + width.toFixed(2)
+        + '%"></span></span><span class="hbar-value">' + escapeHtml(row.text) + '</span></div>';
+    }).join('');
+  }
+
+  function renderVisualObservatory(data) {
+    if (!data || typeof data !== 'object') return;
+    const block = data.perturbed || data.original || data;
+    const rf = Number(block.rf_attack_probability);
+    const ae = Number(block.ae_loss);
+    const aeThreshold = Number(block.ae_threshold || EVAL_PACK_REV2.aeThreshold);
+    const dnn = Number(block.dnn_attack_probability);
+    setGauge(
+      'gaugeRfFill',
+      'gaugeRfThreshold',
+      'gaugeRfValue',
+      Number.isFinite(rf) ? rf : 0,
+      0.5,
+      'Frozen RF: ' + (Number.isFinite(rf) ? rf.toFixed(4) : 'unavailable')
+        + ' / threshold 0.5000 / ' + String(block.rf_decision || data.decision || 'waiting')
+    );
+    const aeRatio = Number.isFinite(ae) && aeThreshold > 0 ? Math.min(1, ae / (aeThreshold * 2)) : 0;
+    setGauge(
+      'gaugeAeFill',
+      'gaugeAeThreshold',
+      'gaugeAeValue',
+      aeRatio,
+      0.5,
+      'v2 AE MSE: ' + (Number.isFinite(ae) ? formatMse(ae) : 'unavailable')
+        + ' / threshold ' + (Number.isFinite(aeThreshold) ? aeThreshold.toFixed(6) : 'unavailable')
+        + (block.ae_anomaly_flag ? ' / anomaly' : ' / within threshold')
+    );
+    setGauge(
+      'gaugeDnnFill',
+      'gaugeDnnThreshold',
+      'gaugeDnnValue',
+      Number.isFinite(dnn) ? dnn : 0,
+      0.5,
+      '9-class DNN: ' + (Number.isFinite(dnn) ? dnn.toFixed(4) : 'unavailable')
+        + ' / ' + String(block.dnn_binary_decision || 'waiting')
+        + ' / ' + String(block.unsw_attack_category || 'unavailable')
+    );
+    const distribution = data.dnn_class_distribution || block.dnn_class_distribution || {};
+    const softmaxRows = OBSERVATORY_CLASSES.filter(name => Object.prototype.hasOwnProperty.call(distribution, name))
+      .map(name => ({
+        label: name,
+        value: Number(distribution[name]) || 0,
+        text: percentText(distribution[name])
+      }));
+    renderHorizontalBars(document.getElementById('dnnSoftmaxChart'), softmaxRows);
+    const errors = data.feature_error_breakdown || block.feature_error_breakdown || [];
+    const errorRows = Array.isArray(errors) ? errors.map(row => ({
+      label: String(row.feature || row.ae_input || 'feature'),
+      value: Number(row.squared_error) || 0,
+      text: formatMse(row.squared_error)
+    })) : [];
+    renderHorizontalBars(document.getElementById('aeFeatureErrorChart'), errorRows);
+    const scorecard = data.benchmark_scorecard || data.dnn_evaluation_summary;
+    renderBenchmarkScorecard(scorecard);
+  }
+
+  function renderBenchmarkScorecard(scorecard) {
+    const node = document.getElementById('modelBenchmarkScorecard');
+    if (!node || !scorecard || typeof scorecard !== 'object') return;
+    const binary = scorecard.binary_metrics || {};
+    const forest = scorecard.frozen_random_forest || {};
+    const autoencoder = scorecard.frozen_autoencoder_v2 || {};
+    const classes = Array.isArray(scorecard.per_class_metrics) ? scorecard.per_class_metrics : [];
+    const classRows = classes.map(row => {
+      return '<tr><td>' + escapeHtml(row.class_name || row.model_class || '')
+        + '</td><td>' + escapeHtml((Number(row.precision) * 100).toFixed(2) + '%')
+        + '</td><td>' + escapeHtml((Number(row.recall) * 100).toFixed(2) + '%')
+        + '</td><td>' + escapeHtml(String(row.support == null ? '' : row.support))
+        + '</td></tr>';
+    }).join('');
+    node.innerHTML = ''
+      + '<p>Held-out split: ' + escapeHtml(String(scorecard.train_rows == null ? 'unavailable' : scorecard.train_rows))
+      + ' train / ' + escapeHtml(String(scorecard.test_rows == null ? 'unavailable' : scorecard.test_rows))
+      + ' test. Nine-class attack accuracy '
+      + escapeHtml(percentText(scorecard.nine_class_attack_accuracy)) + '.</p>'
+      + '<p>Frozen RF January benchmark: ' + escapeHtml(String(forest.january_unsw_flows || 216568))
+      + ' flows, ' + escapeHtml(String(forest.volume_reduction_percent || 98))
+      + '% volume reduction, precision ' + escapeHtml(String(forest.precision_percent || 95.266))
+      + '%, recall ' + escapeHtml(String(forest.recall_percent || 92.818))
+      + '%, FPR ' + escapeHtml(String(forest.fpr_percent || 0.095)) + '%.</p>'
+      + '<p>Frozen v2 AE threshold ' + escapeHtml(String(autoencoder.threshold || EVAL_PACK_REV2.aeThreshold))
+      + ', +' + escapeHtml(String(autoencoder.recall_gain_percentage_points || 2.203))
+      + ' pp recall gain. production_fusion_enabled = False. The three models stay separate.</p>'
+      + '<p>Binary held-out precision ' + escapeHtml(percentText(binary.precision))
+      + ', recall ' + escapeHtml(percentText(binary.recall))
+      + ', FPR ' + escapeHtml(percentText(binary.fpr)) + '.</p>'
+      + '<table class="scorecard-table"><thead><tr><th>Class</th><th>Precision</th><th>Recall</th><th>Support</th></tr></thead><tbody>'
+      + classRows + '</tbody></table>';
+  }
+
+  async function loadModelObservatory(flowId) {
+    const query = flowId ? ('?flow_id=' + encodeURIComponent(String(flowId))) : '';
+    try {
+      const resp = await fetch('/api/v1/live/model-observatory' + query);
+      const data = await readActionPayload(resp);
+      renderVisualObservatory(data);
+    } catch (err) {
+      const node = document.getElementById('modelBenchmarkScorecard');
+      if (node && !node.querySelector('table')) {
+        node.textContent = 'Held-out scorecard unavailable.';
+      }
+    }
+  }
+
+  function renderRangeFirewall(telemetry) {
+    const node = document.getElementById('rangeFirewallStatus');
+    if (!node || !telemetry) return;
+    const probe = telemetry.reachability_probe || {};
+    const blocked = Array.isArray(telemetry.blocked_sources) ? telemetry.blocked_sources.join(', ') : '';
+    node.textContent = 'Victim firewall ' + String(telemetry.containment_state || 'clear')
+      + '. Blocked sources: ' + (blocked || 'none')
+      + '. Reachability: ' + String(probe.status || 'not_probed')
+      + '. SOAR receipts: ' + String(telemetry.soar_receipts == null ? 0 : telemetry.soar_receipts)
+      + '. Path 172.29.0.10 -> 172.29.0.20.';
+    node.setAttribute('data-evidence-state', 'verified');
+  }
+
+  function renderSensorRegistry(sensors) {
+    const node = document.getElementById('sensorRegistryList');
+    if (!node) return;
+    const rows = sensors && Array.isArray(sensors.sensors) ? sensors.sensors : [];
+    if (!rows.length) {
+      node.textContent = 'No sensors registered.';
+      node.setAttribute('data-evidence-state', 'unavailable');
+      return;
+    }
+    node.innerHTML = rows.map(row => {
+      return '<div class="sensor-row"><b>' + escapeHtml(row.sensor_id) + '</b> '
+        + escapeHtml(row.monitored_cidr) + ' (' + escapeHtml(row.status) + ')</div>';
+    }).join('');
+    node.setAttribute('data-evidence-state', 'verified');
+  }
+
+  async function loadEnterpriseControls() {
+    try {
+      const responses = await Promise.all([
+        fetch('/api/v1/live/workspaces'),
+        fetch('/api/v1/live/operators'),
+        fetch('/api/v1/live/sensors'),
+        fetch('/api/v1/live/range/telemetry')
+      ]);
+      const payloads = await Promise.all(responses.map(resp => readActionPayload(resp)));
+      const workspaces = payloads[0];
+      const operators = payloads[1];
+      const sensors = payloads[2];
+      const telemetry = payloads[3];
+      const workspaceSelect = document.getElementById('workspaceSelect');
+      if (workspaceSelect && workspaces && Array.isArray(workspaces.workspaces) && workspaces.workspaces.length) {
+        workspaceSelect.innerHTML = workspaces.workspaces.map(item => {
+          return '<option value="' + escapeHtml(item.workspace_id) + '">'
+            + escapeHtml(item.display_name) + '</option>';
+        }).join('');
+        if (workspaces.active_workspace_id) workspaceSelect.value = workspaces.active_workspace_id;
+      }
+      const operatorSelect = document.getElementById('operatorRoleSelect');
+      if (operatorSelect && operators && Array.isArray(operators.operators) && operators.operators.length) {
+        operatorSelect.innerHTML = operators.operators.map(item => {
+          return '<option value="' + escapeHtml(item.actor_id) + '">'
+            + escapeHtml(item.display_name) + ' · ' + escapeHtml(item.role) + '</option>';
+        }).join('');
+        if (operators.active_actor_id) operatorSelect.value = operators.active_actor_id;
+      }
+      renderSensorRegistry(sensors);
+      renderRangeFirewall(telemetry);
+    } catch (err) {
+      setLiveText('workspaceStatus', 'Enterprise controls unavailable.', 'unavailable');
+    }
+  }
+
+  async function selectEnterpriseWorkspace() {
+    const select = document.getElementById('workspaceSelect');
+    const workspaceId = select ? select.value : '';
+    try {
+      const resp = await fetch('/api/v1/live/workspaces/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspace_id: workspaceId, operator_id: operatorActorId() })
+      });
+      const data = await readActionPayload(resp);
+      setLiveText(
+        'workspaceStatus',
+        resp.ok ? ('Workspace ' + workspaceId + ' selected.') : actionFailureText(data, resp),
+        resp.ok ? 'verified' : 'unavailable'
+      );
+    } catch (err) {
+      setLiveText('workspaceStatus', 'Workspace select unavailable.', 'unavailable');
+    }
+  }
+
+  async function createEnterpriseWorkspace() {
+    const body = {
+      workspace_id: queueControlValue('workspaceIdInput', ''),
+      display_name: queueControlValue('workspaceNameInput', ''),
+      monitored_cidr: queueControlValue('workspaceCidrInput', ''),
+      default_service: queueControlValue('workspaceServiceInput', ''),
+      operator_id: operatorActorId()
+    };
+    try {
+      const resp = await fetch('/api/v1/live/workspaces/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await readActionPayload(resp);
+      setLiveText(
+        'workspaceStatus',
+        resp.ok ? ('Workspace ' + body.workspace_id + ' created.') : actionFailureText(data, resp),
+        resp.ok ? 'verified' : 'unavailable'
+      );
+      if (resp.ok) await loadEnterpriseControls();
+    } catch (err) {
+      setLiveText('workspaceStatus', 'Workspace create unavailable.', 'unavailable');
+    }
+  }
+
+  function applyOperatorSelection(actorId, displayName) {
+    const input = document.getElementById('operatorActor');
+    if (input && actorId) input.value = actorId;
+    activeOperatorLabel = displayName || OPERATOR_LABELS[actorId] || '';
+    const profile = document.getElementById('operatorProfileName');
+    if (profile && activeOperatorLabel) profile.textContent = activeOperatorLabel;
+  }
+
+  async function switchEnterpriseOperator() {
+    const select = document.getElementById('operatorRoleSelect');
+    const actorId = select ? select.value : '';
+    try {
+      const resp = await fetch('/api/v1/live/operators/switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actor_id: actorId })
+      });
+      const data = await readActionPayload(resp);
+      if (resp.ok) applyOperatorSelection(data.actor_id || actorId, data.display_name || '');
+      setLiveText(
+        'operatorSwitchStatus',
+        resp.ok ? ('Operator ' + actorId + ' role ' + String(data.role || '') + '.') : actionFailureText(data, resp),
+        resp.ok ? 'verified' : 'unavailable'
+      );
+    } catch (err) {
+      setLiveText('operatorSwitchStatus', 'Operator switch unavailable.', 'unavailable');
+    }
+  }
+
+  async function enrollSelectedOperator() {
+    const select = document.getElementById('operatorRoleSelect');
+    const actorId = select ? select.value : '';
+    applyOperatorSelection(actorId, OPERATOR_LABELS[actorId] || '');
+    await enrollLabOperator();
+  }
+
+  async function registerEnterpriseOperator() {
+    const body = {
+      actor_id: queueControlValue('operatorActorRegister', ''),
+      display_name: queueControlValue('operatorNameRegister', ''),
+      role: queueControlValue('operatorRoleRegister', 'soc_approver')
+    };
+    try {
+      const resp = await fetch('/api/v1/live/operators/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await readActionPayload(resp);
+      setLiveText(
+        'operatorSwitchStatus',
+        resp.ok ? ('Operator ' + body.actor_id + ' registered as ' + String(data.role || '') + '.') : actionFailureText(data, resp),
+        resp.ok ? 'verified' : 'unavailable'
+      );
+      if (resp.ok) await loadEnterpriseControls();
+    } catch (err) {
+      setLiveText('operatorSwitchStatus', 'Operator registration unavailable.', 'unavailable');
+    }
+  }
+
+  async function launchRangeVector(vectorId) {
+    setLiveText('rangeFirewallStatus', 'Launching ' + vectorId + ' from 172.29.0.10 to 172.29.0.20.', 'pending');
+    try {
+      const resp = await fetch('/api/v1/live/range/launch-vector', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          vector_id: vectorId,
+          src_ip: '172.29.0.10',
+          dst_ip: '172.29.0.20'
+        })
+      });
+      const data = await readActionPayload(resp);
+      if (data && data.flow_id) {
+        selectedIncidentId = 'live_flow:' + data.flow_id;
+        modelProofLoadedFlowId = null;
+      }
+      await refreshLiveCampaigns();
+      renderVisualObservatory(data);
+      const inc = selectedIncident();
+      if (inc) {
+        showSocView('detail');
+        loadModelProofForSelection(inc);
+      }
+      const score = Number(data.rf_attack_probability);
+      setLiveText(
+        'rangeFirewallStatus',
+        resp.ok
+          ? ('Launched ' + vectorId + ' flow ' + data.flow_id + ' RF '
+            + (Number.isFinite(score) ? score.toFixed(4) : 'unavailable') + '.')
+          : actionFailureText(data, resp),
+        resp.ok ? 'verified' : 'unavailable'
+      );
+      const telemetry = await fetch('/api/v1/live/range/telemetry');
+      renderRangeFirewall(await readActionPayload(telemetry));
+    } catch (err) {
+      setLiveText('rangeFirewallStatus', 'Range launch unavailable.', 'unavailable');
+    }
+  }
+
+  async function registerEnterpriseSensor() {
+    const body = {
+      sensor_id: queueControlValue('sensorIdInput', ''),
+      monitored_cidr: queueControlValue('sensorCidrInput', '')
+    };
+    try {
+      const resp = await fetch('/api/v1/live/sensors/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await readActionPayload(resp);
+      if (resp.ok) renderSensorRegistry(data);
+      else setLiveText('sensorRegistryList', actionFailureText(data, resp), 'unavailable');
+    } catch (err) {
+      setLiveText('sensorRegistryList', 'Sensor registration unavailable.', 'unavailable');
+    }
+  }
+
+  async function exportComplianceDossier() {
+    try {
+      const resp = await fetch('/api/v1/live/compliance-dossier');
+      const data = await readActionPayload(resp);
+      const markdown = data && typeof data.dossier_markdown === 'string' ? data.dossier_markdown : '';
+      if (!resp.ok || !markdown) {
+        setLiveText('workspaceStatus', actionFailureText(data, resp), 'unavailable');
+        return;
+      }
+      const blob = new Blob([markdown], { type: 'text/markdown' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'threatfusion-executive-compliance-dossier.md';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setLiveText('workspaceStatus', 'Executive compliance dossier exported.', 'verified');
+    } catch (err) {
+      setLiveText('workspaceStatus', 'Compliance dossier unavailable.', 'unavailable');
+    }
   }
 
   // Export functions to window for programmatic test validation

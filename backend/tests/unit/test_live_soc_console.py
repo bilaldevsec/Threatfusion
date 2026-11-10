@@ -37,6 +37,17 @@ from threatfusion.api.live_soc_console import (
     record_case_assignment,
     record_suricata_bridge_flow,
     save_context_memory,
+    launch_range_vector,
+    range_telemetry,
+    run_live_model_proof,
+    run_model_observatory,
+    select_workspace,
+    register_sensor,
+    list_sensors,
+    build_compliance_dossier,
+    contain_range_source,
+    dispatch_approved_callback,
+    register_operator,
 )
 from threatfusion.models.drift_and_supply_chain import (
     CANONICAL_14_FEATURES,
@@ -1410,3 +1421,273 @@ def test_presentation_polish_contracts() -> None:
         "advisoryProgress",
     ):
         assert f'id="{element_id}"' in html
+
+
+_DNN_CLASS_NAMES = (
+    "Analysis",
+    "Backdoors",
+    "DoS",
+    "Exploits",
+    "Fuzzers",
+    "Generic",
+    "Reconnaissance",
+    "Shellcode",
+    "Worms",
+)
+_AE_BREAKDOWN_NAMES = (
+    "dur",
+    "spkts",
+    "dpkts",
+    "sbytes",
+    "dbytes",
+    "sload",
+    "dload",
+    "sinpkt",
+    "dinpkt",
+    "sjit",
+    "djit",
+    "tcprtt",
+    "synack",
+    "ackdat",
+)
+
+
+def test_range_launch_scores_raw_three_models_and_observatory(tmp_path: Path) -> None:
+    live_db = tmp_path / "live.sqlite3"
+    telemetry = range_telemetry(live_db)
+    assert telemetry["attacker_node"] == {
+        "ip": "172.29.0.10",
+        "container": "threatfusion_range_attacker",
+        "role": "Red-Team Attacker VM / Container",
+    }
+    assert telemetry["victim_node"]["ip"] == "172.29.0.20"
+    assert telemetry["victim_node"]["container"] == "threatfusion_range_victim"
+    assert telemetry["sensor_node"]["container"] == "threatfusion_range_suricata"
+    assert telemetry["sensor_node"]["eve_log"] == "var/log/suricata/eve.json"
+    assert telemetry["soar_node"]["container"] == "threatfusion_n8n_live"
+    assert telemetry["soar_node"]["port"] == 5678
+    assert {item["vector_id"] for item in telemetry["attack_catalog"]} == {
+        "T1046",
+        "T1110",
+        "T1190",
+        "T1498",
+        "BENIGN_WEB",
+    }
+
+    launched = launch_range_vector(
+        live_db,
+        vector_id="T1046",
+        src_ip="172.29.0.10",
+        dst_ip="172.29.0.20",
+        repo_root=REPO_ROOT,
+    )
+    assert launched["http_status"] == 200
+    assert launched["source_label"] == "suricata_eve_bridge"
+    assert launched["src_ip"] == "172.29.0.10"
+    assert launched["dst_ip"] == "172.29.0.20"
+    assert isinstance(launched["flow_id"], int) and launched["flow_id"] > 0
+    assert launched["production_fusion_enabled"] is False
+    assert isinstance(launched["rf_attack_probability"], float)
+    assert isinstance(launched["ae_loss"], float)
+    assert isinstance(launched["dnn_attack_probability"], float)
+    distribution = launched["dnn_class_distribution"]
+    for name in _DNN_CLASS_NAMES:
+        assert name in distribution
+        assert isinstance(distribution[name], float)
+    assert "Normal" in distribution
+    nine_mass = sum(distribution[name] for name in _DNN_CLASS_NAMES)
+    assert abs(nine_mass - 1.0) < 1e-4
+    breakdown = launched["feature_error_breakdown"]
+    assert [row["feature"] for row in breakdown] != []
+    assert len(breakdown) == 14
+    assert {row["feature"] for row in breakdown} == set(_AE_BREAKDOWN_NAMES)
+    errors = [row["squared_error"] for row in breakdown]
+    assert errors == sorted(errors, reverse=True)
+    assert abs(sum(errors) / 14.0 - launched["ae_loss"]) < 1e-5
+    queued = list_live_flows(live_db, limit=5)
+    assert queued[0]["flow_id"] == launched["flow_id"]
+
+    proof = run_live_model_proof(live_db, flow_id=launched["flow_id"], repo_root=REPO_ROOT)
+    assert proof["http_status"] == 200
+    assert proof["production_fusion_enabled"] is False
+    for name in _DNN_CLASS_NAMES:
+        assert name in proof["dnn_class_distribution"]
+    assert len(proof["feature_error_breakdown"]) == 14
+    summary = proof["dnn_evaluation_summary"]
+    assert summary["train_rows"] == 2031363
+    assert summary["test_rows"] == 507846
+    assert summary["nine_class_attack_accuracy"] is not None
+    assert summary["nine_class_confusion_matrix"]
+    assert summary["per_class_metrics"]
+    assert "Exploits" in summary["attack_cat_classes"] or "Exploits" in [
+        row["class_name"] for row in summary["per_class_metrics"]
+    ]
+    assert summary["frozen_random_forest"]["precision_percent"] == 95.266
+    assert summary["frozen_random_forest"]["recall_percent"] == 92.818
+    assert summary["frozen_autoencoder_v2"]["threshold"] == 0.1181361214680695
+    assert summary["frozen_autoencoder_v2"]["recall_gain_percentage_points"] == 2.203
+    assert summary["production_fusion_enabled"] is False
+
+    observatory = run_model_observatory(
+        live_db, flow_id=launched["flow_id"], repo_root=REPO_ROOT
+    )
+    assert observatory["schema_version"] == "live_model_observatory_v1"
+    assert len(observatory["dnn_class_distribution"]) >= 10
+    assert len(observatory["feature_error_breakdown"]) == 14
+    assert observatory["benchmark_scorecard"]["train_rows"] == 2031363
+
+
+def test_workspaces_rbac_sensors_and_compliance_dossier(tmp_path: Path) -> None:
+    live_db = tmp_path / "live.sqlite3"
+    soar_db = tmp_path / "soar.sqlite3"
+    selected = select_workspace(live_db, workspace_id="finbank-pci-core")
+    assert selected["http_status"] == 200
+    assert selected["active_workspace_id"] == "finbank-pci-core"
+    with sqlite3.connect(live_db) as conn:
+        memory = conn.execute(
+            """
+            SELECT service_or_port, expected_behavior_rule
+            FROM context_memory
+            WHERE entity_ip_or_subnet = ?
+            """,
+            ("10.20.0.0/16",),
+        ).fetchone()
+    assert memory is not None
+    assert memory[0] == "443"
+    assert "finbank-pci-core" in memory[1]
+
+    scored = score_canonical_flow(
+        _features(),
+        repo_root=REPO_ROOT,
+        model=_Width14Model(),
+        supply_verified=True,
+    )
+    stored = persist_scored_flow(
+        live_db,
+        _features(),
+        scored,
+        provenance=_provenance("172.29.0.10", "172.29.0.20"),
+    )
+    limited = approve_live_soar(
+        live_db,
+        soar_db,
+        flow_id=stored["flow_id"],
+        actor_id="tier1_analyst",
+        reason="Tier 1 asked for containment.",
+    )
+    assert limited["http_status"] == 403
+    assert limited["evidence_state"] == "refused"
+    assert limited["reason"] == "role_insufficient_for_soar"
+    assert limited["actor_id"] == "tier1_analyst"
+    assert limited["role"] == "tier1_triage"
+    dispatched = dispatch_approved_callback(
+        live_db,
+        soar_db,
+        flow_id=stored["flow_id"],
+        contract_base_url="http://127.0.0.1:9",
+        hmac_secret="lab-hmac-secret-01",
+        actor_id="tier1_analyst",
+    )
+    assert dispatched["reason"] == "role_insufficient_for_soar"
+    assert dispatched["http_status"] == 403
+    contained = contain_range_source(
+        live_db,
+        soar_db,
+        flow_id=stored["flow_id"],
+        actor_id="compliance_auditor",
+    )
+    assert contained["reason"] == "role_insufficient_for_soar"
+    assert contained["role"] == "auditor_readonly"
+    note = add_analyst_note(
+        live_db,
+        flow_id=stored["flow_id"],
+        author_id="compliance_auditor",
+        note_text="Auditor tried to write a note.",
+    )
+    assert note["http_status"] == 403
+    assert note["evidence_state"] == "refused"
+    assert note["reason"] == "role_readonly_auditor"
+    assert note["actor_id"] == "compliance_auditor"
+    verdict = record_analyst_verdict(
+        live_db,
+        flow_id=stored["flow_id"],
+        verdict="true_positive",
+        rationale="172.29.0.10 reached 172.29.0.20.",
+        actor_id="compliance_auditor",
+    )
+    assert verdict["reason"] == "role_readonly_auditor"
+    assert verdict["http_status"] == 403
+    allowed = approve_live_soar(
+        live_db,
+        soar_db,
+        flow_id=stored["flow_id"],
+        actor_id="lab_operator",
+        reason="Approver recorded local approval.",
+    )
+    assert allowed["reason"] != "role_insufficient_for_soar"
+    created = register_operator(
+        live_db,
+        actor_id="range_lead",
+        display_name="Range Lead",
+        role="soc_approver",
+    )
+    assert created["reason"] == "operator_registered"
+    created_gate = approve_live_soar(
+        live_db,
+        soar_db,
+        flow_id=stored["flow_id"],
+        actor_id="range_lead",
+        reason="A registered approver is not blocked by the role gate.",
+    )
+    assert created_gate["reason"] != "role_insufficient_for_soar"
+
+    registered = register_sensor(
+        live_db, sensor_id="branch-sensor-02", monitored_cidr="10.8.0.0/24"
+    )
+    assert registered["http_status"] == 200
+    sensor_ids = {item["sensor_id"] for item in list_sensors(live_db)["sensors"]}
+    assert {"range-suricata-eth0", "azure-vnet-suricata-01", "branch-sensor-02"} <= sensor_ids
+    assert registered["sensors"]
+
+    dossier = build_compliance_dossier(live_db, repo_root=REPO_ROOT, soar_db_path=soar_db)
+    assert dossier["http_status"] == 200
+    assert dossier["production_fusion_enabled"] is False
+    assert dossier["active_workspace_id"] == "finbank-pci-core"
+    assert "bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9" in dossier[
+        "dossier_markdown"
+    ]
+    assert "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23" in dossier[
+        "dossier_markdown"
+    ]
+    assert "2a954a921ef9d7372d964cc643ffb9b35d087aa8965b6c320a99a9a9b1f2d921" in dossier[
+        "dossier_markdown"
+    ]
+    assert "HMAC-SHA256" in dossier["dossier_markdown"]
+    assert "TF-008" in dossier["dossier_markdown"]
+    assert dossier["funnel"]["stage1_ingested_flows"] >= 1
+    assert dossier["playbook_ledger"]["algorithm"] == "HMAC-SHA256"
+
+    html = (REPO_ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    script = (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")
+    for element_id in (
+        "visualModelObservatory",
+        "dnnSoftmaxChart",
+        "aeFeatureErrorChart",
+        "modelBenchmarkScorecard",
+        "modelProofFeatureGrid",
+        "btnRunModelProof",
+        "enterpriseWorkspaceToggleBtn",
+        "enterpriseWorkspaceDrawer",
+        "workspaceSelect",
+        "operatorRoleSelect",
+        "launchAttackVectorBar",
+        "sensorRegistryList",
+        "exportComplianceDossierBtn",
+    ):
+        assert f'id="{element_id}"' in html
+    assert "Advanced: Manual 14-Feature Perturbation" in html
+    assert "http://" not in html
+    assert "https://" not in html
+    assert "renderVisualObservatory" in script
+    assert "/api/v1/live/range/launch-vector" in script
+    assert "production_fusion_enabled = True" not in script

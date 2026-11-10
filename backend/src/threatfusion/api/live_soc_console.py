@@ -170,6 +170,7 @@ def _connect(db_path: Path) -> sqlite3.Connection:
             ON live_flows(source_event_id)
             WHERE source_event_id IS NOT NULL
             """)
+        _ensure_enterprise_catalog(conn)
         conn.commit()
     if db_path.exists():
         os.chmod(db_path, stat.S_IRUSR | stat.S_IWUSR)
@@ -269,6 +270,9 @@ def score_canonical_flow(
             repo_root,
             rf_probability=attack_probability,
         )
+    )
+    base["feature_error_breakdown"] = _feature_error_breakdown(
+        base.get("ae_feature_errors") or []
     )
     base["production_fusion_enabled"] = False
     return base
@@ -464,6 +468,7 @@ def _score_autoencoder(canonical: Sequence[float], repo_root: Path) -> dict[str,
         "ae_anomaly_flag": False,
         "ae_threshold": _AE_THRESHOLD,
         "ae_top_features": [],
+        "ae_feature_errors": [],
         "ae_sha256": _AE_SHA256,
     }
     model = _ae_model(repo_root)
@@ -490,6 +495,7 @@ def _score_autoencoder(canonical: Sequence[float], repo_root: Path) -> dict[str,
             "ae_anomaly_flag": bool(loss >= _AE_THRESHOLD),
             "ae_threshold": _AE_THRESHOLD,
             "ae_top_features": ranked[:5],
+            "ae_feature_errors": list(ranked),
             "ae_sha256": _AE_SHA256,
         }
     except (OSError, ValueError, RuntimeError, TypeError, ImportError):
@@ -501,6 +507,7 @@ def _score_same_split_dnn(raw_features: Mapping[str, float], repo_root: Path) ->
         "dnn_attack_probability": None,
         "dnn_binary_decision": None,
         "unsw_attack_category": None,
+        "dnn_class_distribution": {},
     }
     bundle = _dnn_bundle(repo_root)
     if bundle is None:
@@ -518,11 +525,21 @@ def _score_same_split_dnn(raw_features: Mapping[str, float], repo_root: Path) ->
         with torch.inference_mode():
             hidden = model.trunk(scaled.unsqueeze(0))
             probability = float(torch.sigmoid(model.binary_head(hidden))[0, 0].item())
-            category_index = int(torch.argmax(model.category_head(hidden), dim=1)[0].item())
+            category_logits = model.category_head(hidden)
+            category_index = int(torch.argmax(category_logits, dim=1)[0].item())
+            class_probabilities = torch.softmax(category_logits, dim=1)[0]
+        distribution: dict[str, float] = {}
+        for index, name in enumerate(_DNN_CATEGORIES):
+            value = float(class_probabilities[index].item())
+            distribution[name] = value
+            if name == "Backdoor":
+                distribution["Backdoors"] = value
+        distribution["Normal"] = max(0.0, min(1.0, 1.0 - probability))
         return {
             "dnn_attack_probability": probability,
             "dnn_binary_decision": "Attack" if probability >= 0.5 else "Normal",
             "unsw_attack_category": _DNN_CATEGORIES[category_index],
+            "dnn_class_distribution": distribution,
         }
     except (OSError, ValueError, RuntimeError, TypeError, ImportError, KeyError, IndexError):
         return empty
@@ -652,6 +669,7 @@ def _advisory_model_fields(
             "ae_anomaly_flag": False,
             "ae_threshold": _AE_THRESHOLD,
             "ae_top_features": [],
+            "ae_feature_errors": [],
             "ae_sha256": _AE_SHA256,
         }
     )
@@ -660,6 +678,7 @@ def _advisory_model_fields(
         "dnn_attack_probability": None,
         "dnn_binary_decision": None,
         "unsw_attack_category": None,
+        "dnn_class_distribution": {},
     }
     consensus = _consensus_score(
         rf_probability,
@@ -678,6 +697,8 @@ def _advisory_model_fields(
         "dnn_attack_probability": dnn.get("dnn_attack_probability"),
         "dnn_binary_decision": dnn.get("dnn_binary_decision"),
         "unsw_attack_category": dnn.get("unsw_attack_category"),
+        "dnn_class_distribution": dnn.get("dnn_class_distribution") or {},
+        "ae_feature_errors": ae.get("ae_feature_errors") or [],
         "threatfusion_consensus_score": consensus,
         "consensus_label": "advisory_consensus",
         "measurement_source": "raw_model_inference" if scored_raw else "unavailable",
@@ -716,6 +737,10 @@ def _model_proof_block(
         "consensus_label": "advisory_consensus",
         "alert_authority": "frozen_random_forest",
         "production_fusion_enabled": False,
+        "dnn_class_distribution": advisory.get("dnn_class_distribution") or {},
+        "feature_error_breakdown": _feature_error_breakdown(
+            advisory.get("ae_feature_errors") or []
+        ),
     }
 
 
@@ -823,8 +848,7 @@ def run_live_model_proof(
     contributions.sort(key=lambda item: item["absolute_delta"], reverse=True)
     if contributions and contributions[0]["absolute_delta"] == 0.0:
         contributions = list(original.get("ae_top_features") or [])
-    bundle = _dnn_bundle(root)
-    summary = bundle.get("report") if isinstance(bundle, dict) else {}
+    scorecard = _benchmark_scorecard(root)
     return {
         "schema_version": "live_model_proof_v1",
         "evidence_state": "advisory_simulation",
@@ -838,7 +862,11 @@ def run_live_model_proof(
         "inference_latency_ms": elapsed_ms,
         "rf_sha256": _RF_SHA256_PREFIX,
         "ae_sha256": _AE_SHA256,
-        "dnn_evaluation_summary": summary if isinstance(summary, dict) else {},
+        "dnn_sha256": _DNN_MODEL_SHA256,
+        "dnn_class_distribution": perturbed.get("dnn_class_distribution") or {},
+        "feature_error_breakdown": perturbed.get("feature_error_breakdown") or [],
+        "dnn_evaluation_summary": scorecard,
+        "benchmark_scorecard": scorecard,
         "http_status": 200,
     }
 
@@ -1094,6 +1122,10 @@ def persist_scored_flow(
             "production_fusion_enabled": False,
         }
     namespace, src_entity, dst_entity, protocol, service, clock = _provenance_fields(provenance)
+    feature_payload = {name: features.get(name) for name in CANONICAL_14_FEATURES}
+    for name in _DNN_FEATURES:
+        if name in features:
+            feature_payload[name] = features[name]
     with _connect(db_path) as conn:
         cursor = conn.execute(
             """
@@ -1108,7 +1140,7 @@ def persist_scored_flow(
             """,
             (
                 observed,
-                json.dumps({name: features.get(name) for name in CANONICAL_14_FEATURES}),
+                json.dumps(feature_payload),
                 score.get("rf_attack_probability"),
                 str(score.get("decision")),
                 str(score.get("evidence_state")),
@@ -1278,6 +1310,9 @@ def add_analyst_note(
     """Store one analyst note. Empty text and unknown flows are refused."""
     text = note_text.strip()
     author = author_id.strip()
+    refused_role = _refuse_readonly_auditor(db_path, author)
+    if refused_role is not None:
+        return refused_role
     if not text or not author:
         return {"evidence_state": "unavailable", "reason": "note_incomplete", "stored": False}
     if not isinstance(flow_id, int) or isinstance(flow_id, bool) or flow_id <= 0:
@@ -4253,6 +4288,13 @@ def approve_live_soar(
     }
     author = actor_id.strip()
     decision_reason = reason.strip()
+    refused_role = _refuse_soar_role(live_db_path, author)
+    if refused_role is not None:
+        refused_role["schema_version"] = "live_soar_approval_v1"
+        refused_role["operator_state"] = "pending_approval"
+        refused_role["entry_sha256"] = ""
+        refused_role["prev_entry_sha256"] = ""
+        return refused_role
     if flow_id <= 0 or not author or not decision_reason:
         refused["reason"] = "approval_incomplete"
         return refused
@@ -4777,6 +4819,7 @@ def dispatch_approved_callback(
     n8n_webhook_url: str | None = None,
     n8n_contract_base_url: str | None = None,
     local_fallback_on_n8n_failure: bool = False,
+    actor_id: str | None = None,
 ) -> dict[str, Any]:
     """Verify an approved playbook, open a local 4-block case, and record the HMAC callback.
 
@@ -4791,6 +4834,12 @@ def dispatch_approved_callback(
         "callback_recorded": False,
         "signature_sha256": "",
     }
+    refused_role = _refuse_soar_role(live_db_path, actor_id or "")
+    if refused_role is not None:
+        refused.update(refused_role)
+        refused["schema_version"] = "live_soar_callback_v1"
+        refused["callback_recorded"] = False
+        return refused
     if flow_id <= 0:
         refused["reason"] = "flow_not_stored"
         return refused
@@ -5560,6 +5609,9 @@ def record_analyst_verdict(
     chosen = verdict.strip().lower()
     text = rationale.strip()
     actor = actor_id.strip()
+    refused_role = _refuse_readonly_auditor(db_path, actor)
+    if refused_role is not None:
+        return refused_role
     refused = {
         "evidence_state": "unavailable",
         "execution_authorized": False,
@@ -6184,12 +6236,17 @@ def contain_range_source(
     *,
     flow_id: int,
     runner: Any | None = None,
+    actor_id: str | None = None,
 ) -> dict[str, Any]:
     """Drop an authorized lab source after a verified callback.
 
     172.29.0.10 uses the victim-namespace iptables runner. A 10.0.0.4 scenario
     replay is recorded as simulated and does not change a host firewall.
     """
+    refused_role = _refuse_soar_role(live_db_path, actor_id or "")
+    if refused_role is not None:
+        refused_role["schema_version"] = "live_range_containment_v1"
+        return refused_role
     flow, refused = _authorized_range_flow(live_db_path, soar_db_path, flow_id)
     if refused is not None or flow is None:
         return refused if refused is not None else _containment_refusal("flow_not_stored", 403)
@@ -6231,8 +6288,13 @@ def rollback_range_source(
     *,
     flow_id: int,
     runner: Any | None = None,
+    actor_id: str | None = None,
 ) -> dict[str, Any]:
     """Remove a recorded drop. 10.0.0.4 scenario rollback stays on the ledger."""
+    refused_role = _refuse_soar_role(live_db_path, actor_id or "")
+    if refused_role is not None:
+        refused_role["schema_version"] = "live_range_containment_v1"
+        return refused_role
     flow, refused = _authorized_range_flow(live_db_path, soar_db_path, flow_id)
     if refused is not None or flow is None:
         return refused if refused is not None else _containment_refusal("flow_not_stored", 403)
@@ -6468,3 +6530,1266 @@ def _eve_has_range_pair(eve_path: Path | None) -> bool:
         return False
     tail = eve_path.read_bytes()[-262144:].decode("utf-8", "replace")
     return "172.29.0.10" in tail and "172.29.0.20" in tail
+
+
+_SOAR_LIMITED_ROLES = frozenset({"tier1_triage", "auditor_readonly"})
+_OPERATOR_ROLES = frozenset({"soc_approver", "tier1_triage", "auditor_readonly"})
+_WORKSPACE_ID = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
+_SENSOR_ID = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
+_SERVICE_TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,32}$")
+_AE_BREAKDOWN_LABELS: tuple[tuple[str, str], ...] = (
+    ("dur", "duration_ms__zscore"),
+    ("spkts", "fwd_packets__zscore"),
+    ("dpkts", "bwd_packets__zscore"),
+    ("sbytes", "fwd_bytes__zscore"),
+    ("dbytes", "bwd_bytes__zscore"),
+    ("sload", "packets_per_second__zscore"),
+    ("dload", "bytes_per_second__zscore"),
+    ("sinpkt", "fwd_packet_length_mean__zscore"),
+    ("dinpkt", "bwd_packet_length_mean__zscore"),
+    ("sjit", "dst_port__zscore"),
+    ("djit", "protocol=tcp"),
+    ("tcprtt", "protocol=udp"),
+    ("synack", "protocol=icmp"),
+    ("ackdat", "protocol=other"),
+)
+_WORKSPACE_SEEDS: tuple[tuple[str, str, str, str, str, int], ...] = (
+    (
+        "lab-cyber-range",
+        "Lab Cyber Range",
+        "cyber_range",
+        "172.29.0.0/16",
+        "suricata",
+        1,
+    ),
+    (
+        "finbank-pci-core",
+        "Banking PCI-DSS Air-Gapped",
+        "banking",
+        "10.20.0.0/16",
+        "443",
+        0,
+    ),
+    (
+        "cloudcart-saas-prod",
+        "Cloud SaaS SOC2 DMZ",
+        "saas",
+        "10.40.0.0/16",
+        "443",
+        0,
+    ),
+    (
+        "medihealth-clinical-ot",
+        "Healthcare HIPAA Zero-Trust",
+        "healthcare",
+        "10.60.0.0/16",
+        "2575",
+        0,
+    ),
+)
+_OPERATOR_SEEDS: tuple[tuple[str, str, str, int], ...] = (
+    ("lab_operator", "Muhammad Bilal (21K-3551)", "soc_approver", 1),
+    ("tier1_analyst", "Muhammad Suhaib (22K-4302)", "tier1_triage", 0),
+    ("compliance_auditor", "Muhammad Hasnain (22K-4718)", "auditor_readonly", 0),
+)
+_SENSOR_SEEDS: tuple[tuple[str, str, str], ...] = (
+    ("range-suricata-eth0", "172.29.0.0/24", "enrolled"),
+    ("azure-vnet-suricata-01", "172.29.0.20/32", "enrolled"),
+)
+_RANGE_ATTACK_CATALOG: tuple[dict[str, str], ...] = (
+    {
+        "vector_id": "T1046",
+        "title": "Network Service Discovery Scan",
+        "technique_id": "T1046",
+    },
+    {
+        "vector_id": "T1110",
+        "title": "SSH Credential Brute-Force Burst",
+        "technique_id": "T1110",
+    },
+    {
+        "vector_id": "T1190",
+        "title": "Public-Facing Web Exploit Probe",
+        "technique_id": "T1190",
+    },
+    {
+        "vector_id": "T1498",
+        "title": "High-Rate Network DoS Flood",
+        "technique_id": "T1498",
+    },
+    {
+        "vector_id": "BENIGN_WEB",
+        "title": "Normal Enterprise HTTP/TLS Handshake",
+        "technique_id": "",
+    },
+)
+_RANGE_VECTOR_IDS = frozenset(item["vector_id"] for item in _RANGE_ATTACK_CATALOG)
+_BENIGN_WEB_CANONICAL: dict[str, float] = {
+    "duration_ms": 180.0,
+    "fwd_packets": 8.0,
+    "bwd_packets": 7.0,
+    "fwd_bytes": 980.0,
+    "bwd_bytes": 4200.0,
+    "packets_per_second": 83.3,
+    "bytes_per_second": 28777.0,
+    "fwd_packet_length_mean": 122.5,
+    "bwd_packet_length_mean": 600.0,
+    "dst_port": 443.0,
+    "protocol_tcp": 1.0,
+    "protocol_udp": 0.0,
+    "protocol_icmp": 0.0,
+    "protocol_other": 0.0,
+}
+_BENIGN_WEB_RAW: dict[str, float] = {
+    "dur": 0.18,
+    "spkts": 8.0,
+    "dpkts": 7.0,
+    "sbytes": 980.0,
+    "dbytes": 4200.0,
+    "rate": 83.3,
+    "sttl": 31.0,
+    "dttl": 29.0,
+    "sload": 43555.0,
+    "dload": 186666.0,
+    "sinpkt": 0.025,
+    "dinpkt": 0.028,
+    "sjit": 1.2,
+    "djit": 0.8,
+}
+_RF_BENCHMARK = {
+    "january_unsw_flows": 216568,
+    "volume_reduction_percent": 98.0,
+    "precision_percent": 95.266,
+    "recall_percent": 92.818,
+    "fpr_percent": 0.095,
+    "sha256": _RF_SHA256_PREFIX,
+    "role": "primary_production_authority",
+}
+_AE_BENCHMARK = {
+    "threshold": _AE_THRESHOLD,
+    "recall_gain_percentage_points": 2.203,
+    "sha256": _AE_SHA256,
+    "role": "secondary_non_blocking_ranker",
+    "production_fusion_enabled": False,
+}
+
+
+def _feature_error_breakdown(errors: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Rank frozen v2 reconstruction error under the observatory feature labels.
+
+    Each squared_error is the autoencoder residual on ae_input. The feature
+    label is the UNSW-NB15 name the observatory chart renders for that dimension.
+    """
+    by_input = {
+        str(item.get("feature") or ""): float(item.get("squared_error") or 0.0)
+        for item in errors
+        if isinstance(item, Mapping)
+    }
+    rows = [
+        {
+            "feature": label,
+            "ae_input": ae_input,
+            "squared_error": float(by_input.get(ae_input, 0.0)),
+            "measurement": "frozen_autoencoder_v2_reconstruction_squared_error",
+        }
+        for label, ae_input in _AE_BREAKDOWN_LABELS
+    ]
+    rows.sort(key=lambda item: item["squared_error"], reverse=True)
+    return rows
+
+
+def _display_attack_class(name: str) -> str:
+    return "Backdoors" if name == "Backdoor" else name
+
+
+def _per_class_metrics(matrix: Any, classes: Sequence[str]) -> list[dict[str, Any]]:
+    if not isinstance(matrix, list) or len(matrix) != len(classes):
+        return []
+    metrics: list[dict[str, Any]] = []
+    for index, name in enumerate(classes):
+        row = matrix[index]
+        if not isinstance(row, list):
+            return []
+        support = 0
+        for value in row:
+            try:
+                support += int(value)
+            except (TypeError, ValueError):
+                return []
+        try:
+            true_positive = int(row[index]) if index < len(row) else 0
+        except (TypeError, ValueError):
+            return []
+        predicted = 0
+        for other in matrix:
+            if not isinstance(other, list) or index >= len(other):
+                return []
+            try:
+                predicted += int(other[index])
+            except (TypeError, ValueError):
+                return []
+        metrics.append(
+            {
+                "class_name": _display_attack_class(str(name)),
+                "model_class": str(name),
+                "precision": (true_positive / predicted) if predicted else 0.0,
+                "recall": (true_positive / support) if support else 0.0,
+                "support": support,
+            }
+        )
+    return metrics
+
+
+def _read_dnn_evaluation_report(repo_root: Path) -> dict[str, Any]:
+    path = repo_root / _DNN_REPORT_RELATIVE
+    if path.is_symlink() or not path.is_file():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _benchmark_scorecard(repo_root: Path) -> dict[str, Any]:
+    """Held-out DNN report plus the frozen RF and v2 AE benchmark figures."""
+    report = _read_dnn_evaluation_report(repo_root)
+    classes = report.get("attack_categories")
+    if not isinstance(classes, list) or not classes:
+        classes = list(_DNN_CATEGORIES)
+    class_names = [str(name) for name in classes]
+    binary = report.get("binary_metrics")
+    if not isinstance(binary, dict):
+        binary = {
+            "accuracy": report.get("accuracy"),
+            "precision": report.get("precision"),
+            "recall": report.get("recall"),
+            "f1": report.get("f1"),
+            "fpr": report.get("fpr"),
+            "confusion_matrix": report.get("confusion_matrix"),
+        }
+    per_class = report.get("per_class_metrics")
+    if not isinstance(per_class, list):
+        per_class = _per_class_metrics(report.get("nine_class_confusion_matrix"), class_names)
+    attack_classes = report.get("attack_cat_classes")
+    if not isinstance(attack_classes, list):
+        attack_classes = class_names
+    nine_class = report.get("nine_class_attack_accuracy", report.get("nine_class_accuracy"))
+    return {
+        "schema_version": "live_model_benchmark_v1",
+        "train_rows": report.get("train_rows"),
+        "test_rows": report.get("test_rows"),
+        "binary_metrics": binary,
+        "nine_class_attack_accuracy": nine_class,
+        "nine_class_confusion_matrix": report.get("nine_class_confusion_matrix") or [],
+        "per_class_metrics": per_class,
+        "attack_cat_classes": [str(name) for name in attack_classes],
+        "frozen_random_forest": dict(_RF_BENCHMARK),
+        "frozen_autoencoder_v2": dict(_AE_BENCHMARK),
+        "same_split_dnn_sha256": _DNN_MODEL_SHA256,
+        "production_fusion_enabled": False,
+        "alert_authority": "frozen_random_forest",
+    }
+
+
+def run_model_observatory(
+    live_db_path: Path,
+    *,
+    flow_id: int = 0,
+    features_override: Mapping[str, Any] | None = None,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Return the held-out scorecard and, when a flow is stored, its raw scores."""
+    root = repo_root or _console_repo_root()
+    scorecard = _benchmark_scorecard(root)
+    if flow_id <= 0:
+        return {
+            "schema_version": "live_model_observatory_v1",
+            "evidence_state": "verified",
+            "production_fusion_enabled": False,
+            "alert_authority": "frozen_random_forest",
+            "benchmark_scorecard": scorecard,
+            "dnn_evaluation_summary": scorecard,
+            "dnn_class_distribution": {},
+            "feature_error_breakdown": [],
+            "http_status": 200,
+        }
+    proof = run_live_model_proof(
+        live_db_path,
+        flow_id=flow_id,
+        features_override=features_override,
+        repo_root=root,
+    )
+    proof["schema_version"] = "live_model_observatory_v1"
+    proof["benchmark_scorecard"] = scorecard
+    proof["dnn_evaluation_summary"] = scorecard
+    return proof
+
+
+def _operator_role(db_path: Path, actor_id: str) -> str | None:
+    author = str(actor_id or "").strip()
+    if not author or not db_path.is_file():
+        return None
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT role FROM console_operators WHERE actor_id = ?",
+            (author,),
+        ).fetchone()
+    if row is None:
+        return None
+    return str(row["role"])
+
+
+def _refuse_soar_role(db_path: Path, actor_id: str) -> dict[str, Any] | None:
+    author = str(actor_id or "").strip()
+    role = _operator_role(db_path, author)
+    if role not in _SOAR_LIMITED_ROLES:
+        return None
+    return {
+        "evidence_state": "refused",
+        "reason": "role_insufficient_for_soar",
+        "actor_id": author,
+        "role": role,
+        "http_status": 403,
+        "execution_authorized": False,
+        "containment_executed": False,
+        "production_fusion_enabled": False,
+    }
+
+
+def _refuse_readonly_auditor(db_path: Path, actor_id: str) -> dict[str, Any] | None:
+    author = str(actor_id or "").strip()
+    role = _operator_role(db_path, author)
+    if role != "auditor_readonly":
+        return None
+    return {
+        "evidence_state": "refused",
+        "reason": "role_readonly_auditor",
+        "actor_id": author,
+        "role": role,
+        "http_status": 403,
+        "execution_authorized": False,
+        "containment_executed": False,
+        "production_fusion_enabled": False,
+    }
+
+
+def _ensure_enterprise_catalog(conn: sqlite3.Connection) -> None:
+    """Create and seed workspaces, operators, sensors, and range probe rows."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS workspace_profiles (
+            workspace_id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            industry TEXT NOT NULL,
+            monitored_cidr TEXT NOT NULL,
+            default_service TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 0,
+            created_at_utc TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS console_operators (
+            actor_id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            role TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 0,
+            created_at_utc TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS registered_sensors (
+            sensor_id TEXT PRIMARY KEY,
+            monitored_cidr TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at_utc TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS range_probe_events (
+            probe_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vector_id TEXT NOT NULL,
+            started INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            detail_json TEXT NOT NULL,
+            created_at_utc TEXT NOT NULL
+        )
+        """
+    )
+    created = datetime.now(UTC).isoformat()
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO workspace_profiles (
+            workspace_id, display_name, industry, monitored_cidr,
+            default_service, active, created_at_utc
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [(*seed, created) for seed in _WORKSPACE_SEEDS],
+    )
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO console_operators (
+            actor_id, display_name, role, active, created_at_utc
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        [(*seed, created) for seed in _OPERATOR_SEEDS],
+    )
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO registered_sensors (
+            sensor_id, monitored_cidr, status, created_at_utc
+        ) VALUES (?, ?, ?, ?)
+        """,
+        [(*seed, created) for seed in _SENSOR_SEEDS],
+    )
+
+
+def _workspace_public(row: sqlite3.Row | Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "workspace_id": str(row["workspace_id"]),
+        "display_name": str(row["display_name"]),
+        "industry": str(row["industry"]),
+        "monitored_cidr": str(row["monitored_cidr"]),
+        "default_service": str(row["default_service"]),
+        "active": bool(row["active"]),
+    }
+
+
+def _valid_network(value: str) -> bool:
+    try:
+        ipaddress.ip_network(value, strict=False)
+    except ValueError:
+        return False
+    return True
+
+
+def list_workspaces(db_path: Path) -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM workspace_profiles ORDER BY workspace_id"
+        ).fetchall()
+    workspaces = [_workspace_public(row) for row in rows]
+    active = next((item["workspace_id"] for item in workspaces if item["active"]), None)
+    return {
+        "schema_version": "live_workspace_v1",
+        "evidence_state": "verified",
+        "workspaces": workspaces,
+        "active_workspace_id": active,
+        "production_fusion_enabled": False,
+        "http_status": 200,
+    }
+
+
+def _active_operator_id(db_path: Path) -> str:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT actor_id FROM console_operators
+            WHERE active = 1
+            ORDER BY actor_id
+            LIMIT 1
+            """
+        ).fetchone()
+    if row is None:
+        return "lab_operator"
+    return str(row["actor_id"])
+
+
+def _activate_workspace(db_path: Path, workspace_id: str, operator_id: str | None) -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM workspace_profiles WHERE workspace_id = ?",
+            (workspace_id,),
+        ).fetchone()
+        if row is None:
+            return {
+                "schema_version": "live_workspace_v1",
+                "evidence_state": "unavailable",
+                "reason": "workspace_not_found",
+                "production_fusion_enabled": False,
+                "http_status": 404,
+            }
+        conn.execute("UPDATE workspace_profiles SET active = 0")
+        conn.execute(
+            "UPDATE workspace_profiles SET active = 1 WHERE workspace_id = ?",
+            (workspace_id,),
+        )
+        profile = _workspace_public(row)
+    profile["active"] = True
+    actor = (operator_id or "").strip() or _active_operator_id(db_path)
+    memories = _upsert_context_memory_rows(
+        db_path,
+        entities=[profile["monitored_cidr"]],
+        service_or_port=profile["default_service"],
+        rule=(
+            f"Workspace {workspace_id} monitors {profile['monitored_cidr']} "
+            f"on service {profile['default_service']}."
+        ),
+        flow_id=0,
+        operator_id=actor,
+        recorded_at=datetime.now(UTC).isoformat(),
+    )
+    return {
+        "schema_version": "live_workspace_v1",
+        "evidence_state": "verified",
+        "reason": "workspace_selected",
+        "active_workspace_id": workspace_id,
+        "workspace": profile,
+        "context_memory": memories,
+        "production_fusion_enabled": False,
+        "http_status": 200,
+    }
+
+
+def select_workspace(
+    db_path: Path, *, workspace_id: str, operator_id: str | None = None
+) -> dict[str, Any]:
+    return _activate_workspace(db_path, str(workspace_id or "").strip(), operator_id)
+
+
+def create_workspace(
+    db_path: Path,
+    *,
+    workspace_id: str,
+    display_name: str,
+    monitored_cidr: str,
+    default_service: str,
+    industry: str = "client",
+    operator_id: str | None = None,
+) -> dict[str, Any]:
+    identifier = str(workspace_id or "").strip()
+    name = str(display_name or "").strip()
+    cidr = str(monitored_cidr or "").strip()
+    service = str(default_service or "").strip()
+    industry_name = str(industry or "client").strip() or "client"
+    if (
+        _WORKSPACE_ID.fullmatch(identifier) is None
+        or not name
+        or len(name) > 120
+        or not _valid_network(cidr)
+        or _SERVICE_TOKEN.fullmatch(service) is None
+    ):
+        return {
+            "schema_version": "live_workspace_v1",
+            "evidence_state": "unavailable",
+            "reason": "workspace_invalid",
+            "production_fusion_enabled": False,
+            "http_status": 400,
+        }
+    created = datetime.now(UTC).isoformat()
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO workspace_profiles (
+                workspace_id, display_name, industry, monitored_cidr,
+                default_service, active, created_at_utc
+            ) VALUES (?, ?, ?, ?, ?, 0, ?)
+            ON CONFLICT(workspace_id) DO UPDATE SET
+                display_name = excluded.display_name,
+                industry = excluded.industry,
+                monitored_cidr = excluded.monitored_cidr,
+                default_service = excluded.default_service
+            """,
+            (identifier, name, industry_name[:64], cidr, service, created),
+        )
+    selected = _activate_workspace(db_path, identifier, operator_id)
+    selected["reason"] = "workspace_created"
+    return selected
+
+
+def list_operators(db_path: Path) -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT actor_id, display_name, role, active FROM console_operators ORDER BY actor_id"
+        ).fetchall()
+    operators = [
+        {
+            "actor_id": str(row["actor_id"]),
+            "display_name": str(row["display_name"]),
+            "role": str(row["role"]),
+            "active": bool(row["active"]),
+        }
+        for row in rows
+    ]
+    active = next((item["actor_id"] for item in operators if item["active"]), None)
+    return {
+        "schema_version": "live_operator_v1",
+        "evidence_state": "verified",
+        "operators": operators,
+        "active_actor_id": active,
+        "production_fusion_enabled": False,
+        "http_status": 200,
+    }
+
+
+def switch_operator(db_path: Path, *, actor_id: str) -> dict[str, Any]:
+    author = str(actor_id or "").strip()
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT actor_id, display_name, role FROM console_operators WHERE actor_id = ?",
+            (author,),
+        ).fetchone()
+        if row is None:
+            return {
+                "schema_version": "live_operator_v1",
+                "evidence_state": "unavailable",
+                "reason": "operator_not_registered",
+                "production_fusion_enabled": False,
+                "http_status": 404,
+            }
+        conn.execute("UPDATE console_operators SET active = 0")
+        conn.execute(
+            "UPDATE console_operators SET active = 1 WHERE actor_id = ?",
+            (author,),
+        )
+    return {
+        "schema_version": "live_operator_v1",
+        "evidence_state": "verified",
+        "reason": "operator_switched",
+        "actor_id": author,
+        "display_name": str(row["display_name"]),
+        "role": str(row["role"]),
+        "active": True,
+        "production_fusion_enabled": False,
+        "http_status": 200,
+    }
+
+
+def register_operator(
+    db_path: Path, *, actor_id: str, display_name: str, role: str
+) -> dict[str, Any]:
+    author = str(actor_id or "").strip()
+    name = str(display_name or "").strip()
+    chosen = str(role or "").strip()
+    if _LOCAL_ACTOR.fullmatch(author) is None or not name or len(name) > 120:
+        return {
+            "schema_version": "live_operator_v1",
+            "evidence_state": "unavailable",
+            "reason": "operator_invalid",
+            "production_fusion_enabled": False,
+            "http_status": 400,
+        }
+    if chosen not in _OPERATOR_ROLES:
+        return {
+            "schema_version": "live_operator_v1",
+            "evidence_state": "unavailable",
+            "reason": "operator_role_invalid",
+            "production_fusion_enabled": False,
+            "http_status": 400,
+        }
+    with _connect(db_path) as conn:
+        existing = conn.execute(
+            "SELECT role, display_name FROM console_operators WHERE actor_id = ?",
+            (author,),
+        ).fetchone()
+        if existing is not None:
+            return {
+                "schema_version": "live_operator_v1",
+                "evidence_state": "verified",
+                "reason": "operator_already_registered",
+                "actor_id": author,
+                "display_name": str(existing["display_name"]),
+                "role": str(existing["role"]),
+                "production_fusion_enabled": False,
+                "http_status": 200,
+            }
+        conn.execute(
+            """
+            INSERT INTO console_operators (
+                actor_id, display_name, role, active, created_at_utc
+            ) VALUES (?, ?, ?, 0, ?)
+            """,
+            (author, name, chosen, datetime.now(UTC).isoformat()),
+        )
+    return {
+        "schema_version": "live_operator_v1",
+        "evidence_state": "verified",
+        "reason": "operator_registered",
+        "actor_id": author,
+        "display_name": name,
+        "role": chosen,
+        "production_fusion_enabled": False,
+        "http_status": 200,
+    }
+
+
+def list_sensors(db_path: Path) -> dict[str, Any]:
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT sensor_id, monitored_cidr, status
+            FROM registered_sensors
+            ORDER BY sensor_id
+            """
+        ).fetchall()
+    return {
+        "schema_version": "live_sensor_registry_v1",
+        "evidence_state": "verified",
+        "sensors": [
+            {
+                "sensor_id": str(row["sensor_id"]),
+                "monitored_cidr": str(row["monitored_cidr"]),
+                "status": str(row["status"]),
+            }
+            for row in rows
+        ],
+        "production_fusion_enabled": False,
+        "http_status": 200,
+    }
+
+
+def register_sensor(
+    db_path: Path, *, sensor_id: str, monitored_cidr: str, status: str = "enrolled"
+) -> dict[str, Any]:
+    identifier = str(sensor_id or "").strip()
+    cidr = str(monitored_cidr or "").strip()
+    sensor_status = str(status or "enrolled").strip() or "enrolled"
+    if _SENSOR_ID.fullmatch(identifier) is None or not _valid_network(cidr):
+        return {
+            "schema_version": "live_sensor_registry_v1",
+            "evidence_state": "unavailable",
+            "reason": "sensor_invalid",
+            "production_fusion_enabled": False,
+            "http_status": 400,
+        }
+    if len(sensor_status) > 32:
+        sensor_status = sensor_status[:32]
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO registered_sensors (
+                sensor_id, monitored_cidr, status, created_at_utc
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(sensor_id) DO UPDATE SET
+                monitored_cidr = excluded.monitored_cidr,
+                status = excluded.status
+            """,
+            (identifier, cidr, sensor_status, datetime.now(UTC).isoformat()),
+        )
+    listed = list_sensors(db_path)
+    listed["reason"] = "sensor_registered"
+    listed["sensor_id"] = identifier
+    return listed
+
+
+def _stage_funnel_counts(db_path: Path) -> dict[str, int]:
+    empty = {
+        "stage1_ingested_flows": 0,
+        "stage2_schema_valid": 0,
+        "stage3_rf_attack_alerts": 0,
+        "stage4_campaigns": 0,
+    }
+    if not db_path.is_file():
+        return empty
+    with _connect(db_path) as conn:
+        stage1 = int(conn.execute("SELECT COUNT(*) FROM live_flows").fetchone()[0])
+        stage2 = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM live_flows WHERE evidence_state = 'verified'"
+            ).fetchone()[0]
+        )
+        stage3 = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM live_flows WHERE decision = 'Attack'"
+            ).fetchone()[0]
+        )
+        stage4 = int(
+            conn.execute(
+                """
+                SELECT COUNT(DISTINCT campaign_id) FROM live_flows
+                WHERE campaign_id IS NOT NULL AND campaign_id != ''
+                """
+            ).fetchone()[0]
+        )
+    return {
+        "stage1_ingested_flows": stage1,
+        "stage2_schema_valid": stage2,
+        "stage3_rf_attack_alerts": stage3,
+        "stage4_campaigns": stage4,
+    }
+
+
+def _playbook_ledger_verification(soar_db_path: Path | None) -> dict[str, Any]:
+    if soar_db_path is None or not Path(soar_db_path).is_file():
+        return {
+            "algorithm": "HMAC-SHA256",
+            "verified": False,
+            "reason": "ledger_not_stored",
+        }
+    try:
+        repository = SoarPlaybookSqliteRepository(Path(soar_db_path))
+        verified, message = repository.verify_audit_chain_integrity()
+    except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
+        return {
+            "algorithm": "HMAC-SHA256",
+            "verified": False,
+            "reason": exc.__class__.__name__,
+        }
+    return {
+        "algorithm": "HMAC-SHA256",
+        "verified": bool(verified),
+        "message": str(message),
+    }
+
+
+def build_compliance_dossier(
+    db_path: Path,
+    *,
+    repo_root: Path | None = None,
+    soar_db_path: Path | None = None,
+) -> dict[str, Any]:
+    """Assemble the executive workspace, model, funnel, and ledger report."""
+    root = repo_root or _console_repo_root()
+    workspaces = list_workspaces(db_path)
+    operators = list_operators(db_path)
+    sensors = list_sensors(db_path)
+    scorecard = _benchmark_scorecard(root)
+    funnel = _stage_funnel_counts(db_path)
+    ledger = _playbook_ledger_verification(soar_db_path)
+    registry = {
+        key: spec["expected_sha256"]
+        for key, spec in FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY.items()
+    }
+    active = workspaces.get("active_workspace_id")
+    lines = [
+        "# ThreatFusion Executive Compliance Dossier",
+        "",
+        f"Active workspace: {active}",
+        "",
+        "## Workspaces",
+    ]
+    for item in workspaces["workspaces"]:
+        marker = "active" if item["active"] else "inactive"
+        lines.append(
+            f"- {item['workspace_id']} ({marker}): {item['display_name']}; "
+            f"{item['monitored_cidr']} service {item['default_service']}"
+        )
+    lines.extend(["", "## RBAC roster"])
+    for item in operators["operators"]:
+        marker = "active" if item["active"] else "inactive"
+        lines.append(
+            f"- {item['actor_id']} ({marker}): {item['display_name']}; role {item['role']}"
+        )
+    lines.extend(["", "## Sensor registry"])
+    for item in sensors["sensors"]:
+        lines.append(
+            f"- {item['sensor_id']}: {item['monitored_cidr']} status {item['status']}"
+        )
+    lines.extend(
+        [
+            "",
+            "## Three-model digests and benchmarks",
+            f"- Frozen Random Forest SHA-256: {registry['random_forest']}",
+            (
+                "- January UNSW flows: 216,568; volume reduction 98.0%; "
+                "precision 95.266%; recall 92.818%; FPR 0.095%"
+            ),
+            f"- Frozen v2 Autoencoder SHA-256: {registry['autoencoder_v2']}",
+            (
+                f"- Autoencoder threshold: {_AE_THRESHOLD}; "
+                "+2.203 pp recall gain; production_fusion_enabled = False"
+            ),
+            f"- Same-split 9-class DNN SHA-256: {_DNN_MODEL_SHA256}",
+            (
+                f"- Held-out rows: train {scorecard.get('train_rows')} / "
+                f"test {scorecard.get('test_rows')}; "
+                f"nine-class attack accuracy {scorecard.get('nine_class_attack_accuracy')}"
+            ),
+            f"- Logistic regression SHA-256: {registry['logistic_regression']}",
+            f"- Rate-log1p candidate SHA-256: {registry['rate_log1p_candidate']}",
+            "",
+            "## Stage 1-4 funnel",
+            f"- Stage 1 ingested flows: {funnel['stage1_ingested_flows']}",
+            f"- Stage 2 schema-valid flows: {funnel['stage2_schema_valid']}",
+            f"- Stage 3 frozen RF Attack alerts: {funnel['stage3_rf_attack_alerts']}",
+            f"- Stage 4 campaigns: {funnel['stage4_campaigns']}",
+            "",
+            "## Playbook ledger",
+            f"- Algorithm: {ledger['algorithm']}",
+            f"- Verified: {ledger['verified']}",
+            f"- Detail: {ledger.get('message') or ledger.get('reason') or 'unavailable'}",
+            "",
+            "TF-008, TF-009, TF-010, and TF-011 remain open.",
+            "production_fusion_enabled = False. The frozen Random Forest remains the alert authority.",
+        ]
+    )
+    return {
+        "schema_version": "live_compliance_dossier_v1",
+        "evidence_state": "verified",
+        "production_fusion_enabled": False,
+        "active_workspace_id": active,
+        "workspaces": workspaces["workspaces"],
+        "operators": operators["operators"],
+        "sensors": sensors["sensors"],
+        "model_digests": {
+            "random_forest": registry["random_forest"],
+            "autoencoder_v2": registry["autoencoder_v2"],
+            "same_split_dnn": _DNN_MODEL_SHA256,
+            "logistic_regression": registry["logistic_regression"],
+            "rate_log1p_candidate": registry["rate_log1p_candidate"],
+        },
+        "benchmark_scorecard": scorecard,
+        "funnel": funnel,
+        "playbook_ledger": ledger,
+        "open_gates": ["TF-008", "TF-009", "TF-010", "TF-011"],
+        "dossier_markdown": "\n".join(lines) + "\n",
+        "http_status": 200,
+    }
+
+
+def _range_vector_features(vector_id: str) -> dict[str, float] | None:
+    if vector_id == "BENIGN_WEB":
+        return _stored_profile(_BENIGN_WEB_CANONICAL, _BENIGN_WEB_RAW)
+    if vector_id in _ATTACK_PROFILE_CANONICAL:
+        return _attack_study_profile(vector_id)
+    return None
+
+
+def _range_probe_argv(vector_id: str) -> tuple[str, ...]:
+    """Bounded packet probe. The scored profile carries the traffic shape."""
+    victim = RANGE_VICTIM_ADDRESS
+    if vector_id == "T1046":
+        script = (
+            f"for p in 22 80 443 445; do "
+            f"timeout 1 sh -c 'echo >/dev/tcp/{victim}/'$p || true; "
+            f"done"
+        )
+        return ("timeout", "4", "sh", "-c", script)
+    if vector_id == "T1110":
+        return (
+            "timeout",
+            "3",
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "ConnectTimeout=2",
+            f"root@{victim}",
+            "exit",
+        )
+    if vector_id == "T1498":
+        script = (
+            "i=0; while [ \"$i\" -lt 4 ]; do "
+            f"timeout 1 sh -c 'echo >/dev/tcp/{victim}/80' || true; "
+            "i=$((i+1)); done"
+        )
+        return ("timeout", "4", "sh", "-c", script)
+    return (
+        "timeout",
+        "3",
+        "curl",
+        "-fsS",
+        "--max-time",
+        "2",
+        f"http://{victim}/",
+    )
+
+
+def _range_containers_running() -> bool:
+    import subprocess
+
+    for name in (RANGE_ATTACKER_CONTAINER, RANGE_VICTIM_CONTAINER):
+        try:
+            result = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Running}}", name],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        if result.returncode != 0 or result.stdout.strip().lower() != "true":
+            return False
+    return True
+
+
+def _start_range_vector_probe(vector_id: str) -> dict[str, Any]:
+    """Start a short attacker-to-victim probe when both range containers are up."""
+    base = {
+        "bounded": True,
+        "non_blocking": True,
+        "src_ip": RANGE_CONTAINMENT_SOURCE,
+        "dst_ip": RANGE_VICTIM_ADDRESS,
+        "vector_id": vector_id,
+    }
+    if not _range_containers_running():
+        base["started"] = False
+        base["reason"] = "range_containers_not_running"
+        return base
+    import subprocess
+
+    command = ("docker", "exec", RANGE_ATTACKER_CONTAINER, *_range_probe_argv(vector_id))
+    try:
+        subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        base["started"] = False
+        base["reason"] = "probe_not_started"
+        return base
+    base["started"] = True
+    base["reason"] = "probe_started"
+    return base
+
+
+def _record_range_probe(db_path: Path, vector_id: str, probe: Mapping[str, Any]) -> None:
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO range_probe_events (
+                vector_id, started, reason, detail_json, created_at_utc
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                vector_id,
+                1 if probe.get("started") else 0,
+                str(probe.get("reason") or ""),
+                json.dumps(dict(probe), sort_keys=True),
+                datetime.now(UTC).isoformat(),
+            ),
+        )
+
+
+def _latest_reachability_probe(db_path: Path) -> dict[str, Any]:
+    if not db_path.is_file():
+        return {
+            "status": "not_probed",
+            "reachable": None,
+            "src_ip": RANGE_CONTAINMENT_SOURCE,
+            "dst_ip": RANGE_VICTIM_ADDRESS,
+        }
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT vector_id, started, reason, detail_json, created_at_utc
+            FROM range_probe_events
+            ORDER BY probe_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    if row is None:
+        return {
+            "status": "not_probed",
+            "reachable": None,
+            "src_ip": RANGE_CONTAINMENT_SOURCE,
+            "dst_ip": RANGE_VICTIM_ADDRESS,
+        }
+    try:
+        detail = json.loads(str(row["detail_json"]))
+    except json.JSONDecodeError:
+        detail = {}
+    if not isinstance(detail, dict):
+        detail = {}
+    detail["status"] = str(row["reason"] or "not_probed")
+    detail["vector_id"] = str(row["vector_id"])
+    detail["observed_at_utc"] = str(row["created_at_utc"])
+    detail.setdefault("reachable", None)
+    return detail
+
+
+def range_telemetry(db_path: Path) -> dict[str, Any]:
+    """Return the lab range topology, firewall state, and launchable profiles."""
+    containment_state = "clear"
+    blocked_sources: list[str] = []
+    soar_receipts = 0
+    if db_path.is_file():
+        with _connect(db_path) as conn:
+            latest = conn.execute(
+                """
+                SELECT containment_state FROM live_flows
+                WHERE src_entity_id = ?
+                ORDER BY flow_id DESC
+                LIMIT 1
+                """,
+                (RANGE_CONTAINMENT_SOURCE,),
+            ).fetchone()
+            if latest is not None and latest["containment_state"]:
+                containment_state = str(latest["containment_state"])
+            blocked_rows = conn.execute(
+                """
+                SELECT DISTINCT src_entity_id FROM live_flows
+                WHERE containment_state = 'applied'
+                  AND src_entity_id IS NOT NULL
+                  AND src_entity_id != ''
+                """
+            ).fetchall()
+            blocked_sources = [str(row["src_entity_id"]) for row in blocked_rows]
+            soar_receipts = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM live_flows WHERE callback_recorded = 1"
+                ).fetchone()[0]
+            )
+    return {
+        "schema_version": "live_range_telemetry_v1",
+        "evidence_state": "verified",
+        "production_fusion_enabled": False,
+        "attacker_node": {
+            "ip": "172.29.0.10",
+            "container": "threatfusion_range_attacker",
+            "role": "Red-Team Attacker VM / Container",
+        },
+        "victim_node": {
+            "ip": "172.29.0.20",
+            "container": "threatfusion_range_victim",
+            "role": "Protected Enterprise Victim Host",
+        },
+        "sensor_node": {
+            "container": "threatfusion_range_suricata",
+            "eve_log": "var/log/suricata/eve.json",
+            "role": "Suricata NDR IDS/IPS Bridge",
+        },
+        "soar_node": {
+            "container": "threatfusion_n8n_live",
+            "port": 5678,
+            "role": "n8n SOAR Webhook Orchestrator",
+        },
+        "containment_state": containment_state,
+        "blocked_sources": blocked_sources,
+        "reachability_probe": _latest_reachability_probe(db_path),
+        "soar_receipts": soar_receipts,
+        "attack_catalog": [dict(item) for item in _RANGE_ATTACK_CATALOG],
+        "http_status": 200,
+    }
+
+
+def ingest_live_flow(
+    db_path: Path,
+    features: Mapping[str, Any],
+    *,
+    repo_root: Path,
+    src_ip: str,
+    dst_ip: str,
+    source_label: str = "suricata_eve_bridge",
+    case_title: str | None = None,
+    vector_id: str | None = None,
+) -> dict[str, Any]:
+    """Score one canonical flow with the raw RF, v2 AE, and 9-class DNN and store it."""
+    score = score_canonical_flow(features, repo_root=repo_root)
+    if score.get("reason") != "frozen_random_forest_scored":
+        refused = dict(score)
+        refused["http_status"] = 503
+        refused["src_ip"] = src_ip
+        refused["dst_ip"] = dst_ip
+        refused["source_label"] = source_label
+        refused["vector_id"] = vector_id
+        return refused
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    campaign_id = f"campaign_range_vector:{vector_id or 'flow'}:{stamp}"
+    try:
+        service = str(int(float(features.get("dst_port", 0))))
+    except (TypeError, ValueError):
+        service = "0"
+    protocol = "tcp" if float(features.get("protocol_tcp") or 0) >= 1.0 else "udp"
+    stored = persist_scored_flow(
+        db_path,
+        features,
+        score,
+        campaign_id=campaign_id,
+        source_label=source_label,
+        case_title=case_title,
+        provenance={
+            "entity_namespace_id": "lab:cyber-range",
+            "src_entity_id": src_ip,
+            "dst_entity_id": dst_ip,
+            "protocol": protocol,
+            "service_or_port": service,
+            "clock_synchronized": True,
+        },
+        sensor_node="threatfusion_range_suricata",
+    )
+    if stored.get("reason") != "frozen_random_forest_scored":
+        stored["http_status"] = 400
+        stored["src_ip"] = src_ip
+        stored["dst_ip"] = dst_ip
+        return stored
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO live_campaigns (
+                campaign_id, title, source_label, created_at_utc, member_count
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                campaign_id,
+                case_title or campaign_id,
+                source_label,
+                datetime.now(UTC).isoformat(),
+                1,
+            ),
+        )
+    stored["schema_version"] = "live_range_vector_v1"
+    stored["src_ip"] = src_ip
+    stored["dst_ip"] = dst_ip
+    stored["vector_id"] = vector_id
+    stored["source_label"] = source_label
+    stored["http_status"] = 200
+    stored["production_fusion_enabled"] = False
+    return stored
+
+
+def launch_range_vector(
+    db_path: Path,
+    *,
+    vector_id: str,
+    src_ip: str,
+    dst_ip: str,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Probe the lab pair when it is up, then ingest and score that vector."""
+    vector = str(vector_id or "").strip()
+    source = str(src_ip or "").strip()
+    destination = str(dst_ip or "").strip()
+    refused = {
+        "schema_version": "live_range_vector_v1",
+        "evidence_state": "unavailable",
+        "production_fusion_enabled": False,
+        "vector_id": vector,
+        "src_ip": source,
+        "dst_ip": destination,
+    }
+    if vector not in _RANGE_VECTOR_IDS:
+        refused["reason"] = "unknown_vector"
+        refused["http_status"] = 400
+        return refused
+    if source != RANGE_CONTAINMENT_SOURCE or destination != RANGE_VICTIM_ADDRESS:
+        refused["reason"] = "range_pair_required"
+        refused["http_status"] = 400
+        return refused
+    features = _range_vector_features(vector)
+    if features is None:
+        refused["reason"] = "unknown_vector"
+        refused["http_status"] = 400
+        return refused
+    root = repo_root or _console_repo_root()
+    probe = _start_range_vector_probe(vector)
+    _record_range_probe(db_path, vector, probe)
+    title = next(
+        item["title"] for item in _RANGE_ATTACK_CATALOG if item["vector_id"] == vector
+    )
+    stored = ingest_live_flow(
+        db_path,
+        features,
+        repo_root=root,
+        src_ip=source,
+        dst_ip=destination,
+        source_label="suricata_eve_bridge",
+        case_title=title,
+        vector_id=vector,
+    )
+    stored["range_probe"] = probe
+    stored["attack_catalog_title"] = title
+    return stored

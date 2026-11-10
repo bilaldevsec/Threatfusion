@@ -6,6 +6,7 @@
   <meta name="description" content="ThreatFusion SOC console for recorded network-flow triage">
   <title>ThreatFusion &mdash; SOC Unicorn Web Console (AI-FYP-2006)</title>
   <link rel="stylesheet" href="css/soc_unicorn.css">
+  <link rel="stylesheet" href="css/soc_dashboard.css">
   <style>
     :root {
       --bg-obsidian: #090D16;
@@ -44,6 +45,7 @@
           <span class="badge" id="copilotProviderBadge" data-evidence-state="unavailable">AI Copilot: Local Air-Gapped Engine</span>
           <span id="liveClock">UTC</span>
           <button id="btnOpenLabDrawer" class="btn" type="button">Lab Range &amp; Simulation Controls</button>
+          <button id="enterpriseWorkspaceToggleBtn" class="btn" type="button">Enterprise Workspaces, RBAC &amp; Live Range</button>
         </div>
       </header>
 
@@ -309,11 +311,43 @@
                 <div id="modelProofSandbox" data-evidence-state="advisory_simulation">
                   <h3>Live 14-Feature ML + DL Model Execution Proof &amp; What-If Sandbox</h3>
                   <div>Edit any of the 14 features, or apply a preset, then run live inference. Stored rows are not modified. The advisory consensus does not promote an alert.</div>
-                  <div id="modelProofFeatureGrid">Select a stored flow to edit its 14 features.</div>
-                  <button id="btnProofDos" type="button">Simulate High-Rate DoS Burst</button>
-                  <button id="btnProofNormal" type="button">Simulate Normal Web Handshake</button>
-                  <button id="btnProofReset" type="button">Reset to Stored Flow</button>
-                  <button id="btnRunModelProof" type="button">Run Live ML+DL Inference</button>
+                  <section id="visualModelObservatory" aria-label="Visual ML and DL Model Observatory">
+                    <h3>Visual ML + DL Model Observatory</h3>
+                    <div class="observatory-gauges" id="modelConsensusCards">
+                      <article class="observatory-gauge" id="gaugeFrozenRf">
+                        <h4>Stage 3 Frozen Random Forest (Alert Gatekeeper)</h4>
+                        <div class="gauge-track"><div class="gauge-fill" id="gaugeRfFill"></div><span class="gauge-threshold" id="gaugeRfThreshold"></span></div>
+                        <div id="gaugeRfValue">Frozen RF: waiting</div>
+                        <button type="button" class="digest-badge" id="gaugeRfDigest" data-copy-hash="bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9">bd2853a6</button>
+                      </article>
+                      <article class="observatory-gauge" id="gaugeFrozenAe">
+                        <h4>Stage 4 Frozen PyTorch v2 Autoencoder (Anomaly Ranker)</h4>
+                        <div class="gauge-track"><div class="gauge-fill" id="gaugeAeFill"></div><span class="gauge-threshold" id="gaugeAeThreshold"></span></div>
+                        <div id="gaugeAeValue">v2 AE: waiting</div>
+                        <button type="button" class="digest-badge" id="gaugeAeDigest" data-copy-hash="c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23">c8675d13</button>
+                      </article>
+                      <article class="observatory-gauge" id="gaugeFrozenDnn">
+                        <h4>Stage 4 PyTorch 9-Class Supervised DNN (Attack Categorizer)</h4>
+                        <div class="gauge-track"><div class="gauge-fill" id="gaugeDnnFill"></div><span class="gauge-threshold" id="gaugeDnnThreshold"></span></div>
+                        <div id="gaugeDnnValue">9-class DNN: waiting</div>
+                        <button type="button" class="digest-badge" id="gaugeDnnDigest" data-copy-hash="2a954a921ef9d7372d964cc643ffb9b35d087aa8965b6c320a99a9a9b1f2d921">2a954a92</button>
+                      </article>
+                    </div>
+                    <h4>9-Class Deep Learning Softmax Distribution</h4>
+                    <div id="dnnSoftmaxChart">9-class softmax waits for a stored flow.</div>
+                    <h4>Autoencoder Per-Feature Anomaly Attribution</h4>
+                    <div id="aeFeatureErrorChart">Per-feature anomaly attribution waits for a stored flow.</div>
+                    <h4>Held-Out UNSW-NB15 Model Evaluation and Confusion Matrix Scorecard</h4>
+                    <div id="modelBenchmarkScorecard">Held-out scorecard waits for the evaluation report. production_fusion_enabled = False.</div>
+                  </section>
+                  <details id="manualWhatIfDetails">
+                    <summary>Advanced: Manual 14-Feature Perturbation &amp; What-If Simulator</summary>
+                    <div id="modelProofFeatureGrid">Select a stored flow to edit its 14 features.</div>
+                    <button id="btnProofDos" type="button">Simulate High-Rate DoS Burst</button>
+                    <button id="btnProofNormal" type="button">Simulate Normal Web Handshake</button>
+                    <button id="btnProofReset" type="button">Reset to Stored Flow</button>
+                    <button id="btnRunModelProof" type="button">Run Live ML+DL Inference</button>
+                  </details>
                   <div id="modelProofResults" data-evidence-state="advisory_simulation">Before and after scores appear here.</div>
                 </div>
               </div>
@@ -643,6 +677,80 @@
             <div class="topo-ip"><code>172.29.0.20</code></div>
           </div>
         </div>
+      </section>
+    </aside>
+    <aside class="enterprise-drawer" id="enterpriseWorkspaceDrawer" aria-label="Enterprise Workspaces, RBAC and Live Range">
+      <div class="lab-drawer-head">
+        <h2>Enterprise Workspaces, RBAC &amp; Live Range</h2>
+        <button id="btnCloseEnterpriseDrawer" type="button">Close</button>
+      </div>
+      <section>
+        <h3>Industry Workspace Switcher</h3>
+        <label for="workspaceSelect">Active workspace</label>
+        <select id="workspaceSelect">
+          <option value="lab-cyber-range">Lab Cyber Range</option>
+          <option value="finbank-pci-core">Banking PCI-DSS Air-Gapped</option>
+          <option value="cloudcart-saas-prod">Cloud SaaS SOC2 DMZ</option>
+          <option value="medihealth-clinical-ot">Healthcare HIPAA Zero-Trust</option>
+        </select>
+        <button id="btnSelectWorkspace" type="button">Select workspace</button>
+        <h4>New Client Workspace</h4>
+        <label for="workspaceIdInput">Workspace id</label>
+        <input id="workspaceIdInput" type="text" value="" maxlength="64" autocomplete="off">
+        <label for="workspaceNameInput">Display name</label>
+        <input id="workspaceNameInput" type="text" value="" maxlength="120" autocomplete="off">
+        <label for="workspaceCidrInput">Monitored CIDR</label>
+        <input id="workspaceCidrInput" type="text" value="" maxlength="64" autocomplete="off">
+        <label for="workspaceServiceInput">Default service</label>
+        <input id="workspaceServiceInput" type="text" value="" maxlength="32" autocomplete="off">
+        <button id="btnCreateWorkspace" type="button">Create workspace</button>
+        <div id="workspaceStatus" data-evidence-state="unavailable">No workspace change yet.</div>
+      </section>
+      <section>
+        <h3>Operator Login &amp; RBAC Role Switcher</h3>
+        <label for="operatorRoleSelect">Operator</label>
+        <select id="operatorRoleSelect">
+          <option value="lab_operator">Muhammad Bilal (21K-3551) · soc_approver</option>
+          <option value="tier1_analyst">Muhammad Suhaib (22K-4302) · tier1_triage</option>
+          <option value="compliance_auditor">Muhammad Hasnain (22K-4718) · auditor_readonly</option>
+        </select>
+        <button id="btnSwitchOperator" type="button">Switch operator</button>
+        <button id="btnEnrollWorkspaceOperator" type="button">Enroll X.509 certificate</button>
+        <h4>New Operator</h4>
+        <label for="operatorActorRegister">Actor id</label>
+        <input id="operatorActorRegister" type="text" value="" maxlength="64" autocomplete="off">
+        <label for="operatorNameRegister">Display name</label>
+        <input id="operatorNameRegister" type="text" value="" maxlength="120" autocomplete="off">
+        <label for="operatorRoleRegister">Role</label>
+        <select id="operatorRoleRegister">
+          <option value="soc_approver">soc_approver</option>
+          <option value="tier1_triage">tier1_triage</option>
+          <option value="auditor_readonly">auditor_readonly</option>
+        </select>
+        <button id="btnRegisterOperator" type="button">Register operator</button>
+        <div id="operatorSwitchStatus" data-evidence-state="unavailable">No operator change yet.</div>
+      </section>
+      <section>
+        <h3>1-Click Live Cyber Range Attack Vector Launcher</h3>
+        <div id="launchAttackVectorBar">
+          <button id="btnLaunchT1046" type="button" data-vector-id="T1046">Launch T1046 Recon</button>
+          <button id="btnLaunchT1110" type="button" data-vector-id="T1110">Launch T1110 Brute-Force</button>
+          <button id="btnLaunchT1190" type="button" data-vector-id="T1190">Launch T1190 Web Exploit</button>
+          <button id="btnLaunchT1498" type="button" data-vector-id="T1498">Launch T1498 DoS Burst</button>
+          <button id="btnLaunchBenignWeb" type="button" data-vector-id="BENIGN_WEB">Launch Benign Web Flow</button>
+        </div>
+        <div>Launch path 172.29.0.10 -&gt; 172.29.0.20</div>
+        <div id="rangeFirewallStatus" data-evidence-state="unavailable">Victim firewall and reachability have not been loaded.</div>
+      </section>
+      <section>
+        <h3>Suricata Forwarder &amp; Azure Sensor Registry</h3>
+        <div id="sensorRegistryList" data-evidence-state="unavailable">Sensor registry has not been loaded.</div>
+        <label for="sensorIdInput">Sensor id</label>
+        <input id="sensorIdInput" type="text" value="" maxlength="64" autocomplete="off">
+        <label for="sensorCidrInput">Monitored CIDR</label>
+        <input id="sensorCidrInput" type="text" value="" maxlength="64" autocomplete="off">
+        <button id="btnRegisterSensor" type="button">Register sensor</button>
+        <button id="exportComplianceDossierBtn" type="button">Export Executive Compliance Dossier (.md)</button>
       </section>
     </aside>
   </div>

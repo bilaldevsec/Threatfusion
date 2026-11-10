@@ -454,6 +454,10 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             css_path = REPO_ROOT / "frontend" / "css" / "soc_unicorn.css"
             self._send_file(css_path, "text/css; charset=utf-8")
             return
+        if path == "/css/soc_dashboard.css":
+            css_path = REPO_ROOT / "frontend" / "css" / "soc_dashboard.css"
+            self._send_file(css_path, "text/css; charset=utf-8")
+            return
         if path == "/js/soc_dashboard.js":
             js_path = REPO_ROOT / "frontend" / "js" / "soc_dashboard.js"
             self._send_file(js_path, "application/javascript; charset=utf-8")
@@ -600,6 +604,52 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 flow_id = 0
             result = run_live_model_proof(self._live_db_path(), flow_id=flow_id, repo_root=REPO_ROOT)
             self._send_json(int(result.get("http_status") or 404), result)
+            return
+        if path == "/api/v1/live/model-observatory":
+            from threatfusion.api.live_soc_console import run_model_observatory
+
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            raw_flow = (query.get("flow_id") or ["0"])[0]
+            try:
+                flow_id = int(raw_flow)
+            except (TypeError, ValueError):
+                flow_id = 0
+            result = run_model_observatory(
+                self._live_db_path(), flow_id=flow_id, repo_root=REPO_ROOT
+            )
+            self._send_json(int(result.get("http_status") or 200), result)
+            return
+        if path == "/api/v1/live/range/telemetry":
+            from threatfusion.api.live_soc_console import range_telemetry
+
+            self._send_json(200, range_telemetry(self._live_db_path()))
+            return
+        if path == "/api/v1/live/workspaces":
+            from threatfusion.api.live_soc_console import list_workspaces
+
+            self._send_json(200, list_workspaces(self._live_db_path()))
+            return
+        if path == "/api/v1/live/operators":
+            from threatfusion.api.live_soc_console import list_operators
+
+            self._send_json(200, list_operators(self._live_db_path()))
+            return
+        if path == "/api/v1/live/sensors":
+            from threatfusion.api.live_soc_console import list_sensors
+
+            self._send_json(200, list_sensors(self._live_db_path()))
+            return
+        if path == "/api/v1/live/compliance-dossier":
+            from threatfusion.api.live_soc_console import build_compliance_dossier
+
+            self._send_json(
+                200,
+                build_compliance_dossier(
+                    self._live_db_path(),
+                    repo_root=REPO_ROOT,
+                    soar_db_path=self._live_soar_path(),
+                ),
+            )
             return
 
         self._send_json(404, {"error": "Not Found", "path": path})
@@ -1032,6 +1082,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 author_id=str(req_data.get("author_id") or ""),
                 note_text=str(req_data.get("note_text") or ""),
             )
+            if result.get("http_status") == 403 or result.get("reason") == "role_readonly_auditor":
+                self._send_json(403, result)
+                return
             if result.get("reason") == "flow_not_found":
                 self._send_json(422, result)
                 return
@@ -1147,7 +1200,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 presented_fingerprint=self._presented_operator_fingerprint(),
             )
             reason = str(result.get("reason") or "")
-            if reason in {"explanation_not_grounded", "entity_not_on_flow"}:
+            if result.get("http_status") == 403 or reason == "role_readonly_auditor":
+                status = 403
+            elif reason in {"explanation_not_grounded", "entity_not_on_flow"}:
                 status = 422
             elif reason == "analyst_verdict_stored" or result.get("evidence_state") == "verified":
                 status = 200
@@ -1404,6 +1459,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             host, port = self.server.server_address[:2]
             if host in {"0.0.0.0", "::", ""}:
                 host = "127.0.0.1"
+            actor_id = str(req_data.get("actor_id") or "")
             result = dispatch_approved_callback(
                 self._live_db_path(),
                 self._live_soar_path(),
@@ -1413,8 +1469,12 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 outbox_db_path=self._live_db_path().with_name("threatfusion-live-thehive.sqlite3"),
                 n8n_webhook_url=os.environ.get("THREATFUSION_N8N_WEBHOOK_URL", ""),
                 local_fallback_on_n8n_failure=True,
+                actor_id=actor_id,
             )
-            if result.get("reason") == "playbook_not_approved":
+            if result.get("http_status") == 403 or result.get("reason") in {
+                "playbook_not_approved",
+                "role_insufficient_for_soar",
+            }:
                 status = 403
             elif (
                 result.get("evidence_state") == "verified"
@@ -1442,11 +1502,13 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 return
             raw_flow = req_data.get("flow_id")
             flow_id = raw_flow if isinstance(raw_flow, int) else 0
+            actor_id = str(req_data.get("actor_id") or "")
             action = contain_range_source if path.endswith("/contain") else rollback_range_source
             result = action(
                 self._live_db_path(),
                 self._live_soar_path(),
                 flow_id=flow_id,
+                actor_id=actor_id or None,
             )
             self._send_json(int(result.get("http_status") or 403), result)
             return
@@ -1475,6 +1537,127 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 repo_root=REPO_ROOT,
             )
             self._send_json(int(result.get("http_status") or 404), result)
+            return
+
+        if path == "/api/v1/live/range/launch-vector":
+            from threatfusion.api.live_soc_console import launch_range_vector
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            result = launch_range_vector(
+                self._live_db_path(),
+                vector_id=str(req_data.get("vector_id") or ""),
+                src_ip=str(req_data.get("src_ip") or ""),
+                dst_ip=str(req_data.get("dst_ip") or ""),
+                repo_root=REPO_ROOT,
+            )
+            self._send_json(int(result.get("http_status") or 400), result)
+            return
+
+        if path == "/api/v1/live/workspaces/select":
+            from threatfusion.api.live_soc_console import select_workspace
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            result = select_workspace(
+                self._live_db_path(),
+                workspace_id=str(req_data.get("workspace_id") or ""),
+                operator_id=str(req_data.get("operator_id") or req_data.get("actor_id") or ""),
+            )
+            self._send_json(int(result.get("http_status") or 400), result)
+            return
+
+        if path == "/api/v1/live/workspaces/create":
+            from threatfusion.api.live_soc_console import create_workspace
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            result = create_workspace(
+                self._live_db_path(),
+                workspace_id=str(req_data.get("workspace_id") or ""),
+                display_name=str(req_data.get("display_name") or ""),
+                monitored_cidr=str(req_data.get("monitored_cidr") or ""),
+                default_service=str(req_data.get("default_service") or ""),
+                industry=str(req_data.get("industry") or "client"),
+                operator_id=str(req_data.get("operator_id") or req_data.get("actor_id") or ""),
+            )
+            self._send_json(int(result.get("http_status") or 400), result)
+            return
+
+        if path == "/api/v1/live/operators/switch":
+            from threatfusion.api.live_soc_console import switch_operator
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            result = switch_operator(
+                self._live_db_path(),
+                actor_id=str(req_data.get("actor_id") or ""),
+            )
+            self._send_json(int(result.get("http_status") or 400), result)
+            return
+
+        if path == "/api/v1/live/operators/register":
+            from threatfusion.api.live_soc_console import register_operator
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            result = register_operator(
+                self._live_db_path(),
+                actor_id=str(req_data.get("actor_id") or ""),
+                display_name=str(req_data.get("display_name") or ""),
+                role=str(req_data.get("role") or ""),
+            )
+            self._send_json(int(result.get("http_status") or 400), result)
+            return
+
+        if path == "/api/v1/live/sensors/register":
+            from threatfusion.api.live_soc_console import register_sensor
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            result = register_sensor(
+                self._live_db_path(),
+                sensor_id=str(req_data.get("sensor_id") or ""),
+                monitored_cidr=str(req_data.get("monitored_cidr") or ""),
+                status=str(req_data.get("status") or "enrolled"),
+            )
+            self._send_json(int(result.get("http_status") or 400), result)
             return
 
         # 1. MISP Rest Search Endpoint
