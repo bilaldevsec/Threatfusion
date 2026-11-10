@@ -207,7 +207,7 @@
               </div>
               <div class="action-group" data-action-group="response">
                 <span class="action-group-label">Response</span>
-                <button class="btn btn-approve" id="topBtnApproveSoar" type="button" disabled>Approve Playbook</button>
+                <button class="btn btn-approve" id="approvePlaybookBtn" type="button" disabled>Approve Playbook</button>
                 <button class="btn" id="btnIsolateAttacker" type="button" disabled>Isolate Attacker</button>
                 <button id="btnRollbackRange" type="button" disabled>Rollback</button>
               </div>
@@ -267,7 +267,7 @@
                     <div id="containmentLiveStatus" data-evidence-state="unavailable">Containment stays unauthorized until an analyst approves a stored playbook.</div>
                     <ol class="soar-actions">
                       <li>
-                        <button id="btnGuidedApprove" type="button" disabled>1. Approve Playbook (SHA-256 Chain)</button>
+                        <button id="soarApproveBtn" type="button" disabled>1. Approve Playbook (SHA-256 Chain)</button>
                       </li>
                       <li>
                         <button id="btnDispatchCallback" type="button" disabled>2. Dispatch via Live n8n Container</button>
@@ -330,7 +330,7 @@
                         <h4>Stage 4 PyTorch 9-Class Supervised DNN (Attack Categorizer)</h4>
                         <div class="gauge-track"><div class="gauge-fill" id="gaugeDnnFill"></div><span class="gauge-threshold" id="gaugeDnnThreshold"></span></div>
                         <div id="gaugeDnnValue">9-class DNN: waiting</div>
-                        <button type="button" class="digest-badge" id="gaugeDnnDigest" data-copy-hash="b090e53396ed1f1e72d8df19bf0d2b82ed4101f7fc844395d51634e986b1eeb1">b090e533</button>
+                        <button type="button" class="digest-badge" id="gaugeDnnDigest" data-copy-hash="4f11062d2259afdc1cb68012dbc1680ec372e4750c85fe411d3a4517cd3c0791">4f11062d</button>
                       </article>
                     </div>
                     <h4>9-Class Deep Learning Softmax Distribution</h4>
@@ -355,8 +355,9 @@
             <div class="inspector-tab-pane" data-inspector-tab="4">
               <div class="card" style="background: #111827;">
                 <h3>Remediations &amp; SOAR</h3>
-                <div><b>Technique:</b> <span id="inspectorTechnique">unavailable</span></div>
-                <div><b>Tactic:</b> <span id="inspectorTactic">unavailable</span></div>
+                <div><b>Technique:</b> <span id="remediationTechnique">unavailable</span></div>
+                <div><b>Tactic:</b> <span id="remediationTactic">unavailable</span></div>
+                <div id="remediationPlaybook">none</div>
                 <div id="inspectorPlaybookNote">No local technique is shown until a retrieval names one. Containment stays unauthorized.</div>
                 <div><b>Playbook:</b> <span id="inspectorPlaybook">none</span></div>
               </div>
@@ -707,6 +708,15 @@
         <div id="workspaceStatus" data-evidence-state="unavailable">No workspace change yet.</div>
       </section>
       <section>
+        <h3>Microsoft Entra ID (Azure AD) OIDC &amp; Zero-Trust RBAC</h3>
+        <div class="entra-card" id="entraIdentityCard">
+          <div><b>UPN:</b> <span id="entraUpn">waiting</span></div>
+          <div><b>Object ID:</b> <code id="entraObjectId">waiting</code></div>
+          <div><b>App role:</b> <span class="entra-role-badge" id="entraAppRole">waiting</span></div>
+          <div><b>X.509 mTLS:</b> <span id="entraMtlsStatus">waiting</span></div>
+          <div><b>Tenant:</b> <code id="entraTenantId">waiting</code></div>
+          <div id="entraSubscriptionTier">Azure for Students · $60 Credit Active · Free Entra ID P1/OIDC</div>
+        </div>
         <h3>Operator Login &amp; RBAC Role Switcher</h3>
         <label for="operatorRoleSelect">Operator</label>
         <select id="operatorRoleSelect">

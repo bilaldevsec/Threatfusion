@@ -634,6 +634,12 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
             self._send_json(200, list_operators(self._live_db_path()))
             return
+        if path == "/api/v1/live/entra/status":
+            from threatfusion.api.live_soc_console import entra_identity_status
+
+            result = entra_identity_status(self._live_db_path())
+            self._send_json(int(result.get("http_status") or 200), result)
+            return
         if path == "/api/v1/live/sensors":
             from threatfusion.api.live_soc_console import list_sensors
 
@@ -1600,6 +1606,22 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 operator_id=str(req_data.get("operator_id") or req_data.get("actor_id") or ""),
             )
             self._send_json(int(result.get("http_status") or 400), result)
+            return
+
+        if path == "/api/v1/live/entra/verify-token":
+            from threatfusion.api.live_soc_console import verify_entra_token
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            token = str(req_data.get("id_token") or req_data.get("token") or "")
+            result = verify_entra_token(self._live_db_path(), token)
+            self._send_json(int(result.get("http_status") or 401), result)
             return
 
         if path == "/api/v1/live/operators/switch":

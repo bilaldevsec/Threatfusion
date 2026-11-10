@@ -38,7 +38,11 @@ from threatfusion.api.live_soc_console import (
     record_case_assignment,
     record_suricata_bridge_flow,
     save_context_memory,
+    entra_identity_status,
+    get_live_snapshot,
     launch_range_vector,
+    rollback_range_source,
+    verify_entra_token,
     range_telemetry,
     run_live_model_proof,
     run_model_observatory,
@@ -378,7 +382,9 @@ def test_soar_approval_writes_linked_hash_and_does_not_execute(tmp_path: Path) -
     assert approved["evidence_state"] == "verified"
     assert approved["operator_state"] == "approved_local"
     assert approved["ledger_state"] == "approved"
-    assert approved["execution_authorized"] is False
+    assert approved["playbook_state"] == "approved"
+    assert approved["soar_state"] == "approved"
+    assert approved["execution_authorized"] is True
     assert approved["containment_executed"] is False
     assert approved["production_fusion_enabled"] is False
     assert len(approved["entry_sha256"]) == 64
@@ -394,6 +400,10 @@ def test_soar_approval_writes_linked_hash_and_does_not_execute(tmp_path: Path) -
         policy_dir=policy,
     )
     assert again["reason"] == "already_approved"
+    assert again["http_status"] == 200
+    assert again["soar_state"] == "approved"
+    assert again["playbook_state"] == "approved"
+    assert again["execution_authorized"] is True
     assert again["entry_sha256"] == approved["entry_sha256"]
     listed = list_live_campaigns(live_db)
     stored_flow = listed["campaigns"][0]["flows"][0]
@@ -1046,7 +1056,8 @@ def test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr(
         )
         assert approved_status == 200
         assert approved["ledger_state"] == "approved"
-        assert approved["execution_authorized"] is False
+        assert approved["soar_state"] == "approved"
+        assert approved["execution_authorized"] is True
 
         unapproved_status, unapproved = _post_json(
             f"{base}/api/v1/live/soar/dispatch", {"flow_id": other["flow_id"]}
@@ -1705,3 +1716,216 @@ def test_workspaces_rbac_sensors_and_compliance_dossier(tmp_path: Path) -> None:
     assert "renderVisualObservatory" in script
     assert "/api/v1/live/range/launch-vector" in script
     assert "production_fusion_enabled = True" not in script
+    assert 'id="approvePlaybookBtn"' in html
+    assert 'id="soarApproveBtn"' in html
+    assert 'id="remediationTechnique"' in html
+    assert 'id="entraIdentityCard"' in html
+    assert "Microsoft Entra ID (Azure AD) OIDC" in html
+
+
+_RANGE_CLASS = {
+    "T1190": "Exploits",
+    "T1046": "Reconnaissance",
+    "T1110": "Generic",
+    "T1498": "DoS",
+}
+
+
+def test_launched_attack_vectors_match_nine_class_and_frozen_scores(tmp_path: Path) -> None:
+    live_db = tmp_path / "live.sqlite3"
+    for vector_id, expected in _RANGE_CLASS.items():
+        launched = launch_range_vector(
+            live_db,
+            vector_id=vector_id,
+            src_ip="172.29.0.10",
+            dst_ip="172.29.0.20",
+            repo_root=REPO_ROOT,
+        )
+        assert launched["http_status"] == 200, launched
+        assert launched["decision"] == "Attack"
+        assert float(launched["rf_attack_probability"]) >= 0.50
+        assert float(launched["ae_loss"]) >= 0.118136
+        assert launched["unsw_attack_category"] == expected
+        assert launched["scenario_label"] == vector_id
+
+
+def test_approve_unlocks_snapshot_and_repeat_click_stays_authorized(tmp_path: Path, monkeypatch) -> None:
+    import json
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from scripts.run_misp_and_callback_contract_server import MispAndCallbackContractHandler
+
+    live_db = tmp_path / "live.sqlite3"
+    monkeypatch.setenv("THREATFUSION_LIVE_CONSOLE_DB", str(live_db))
+    monkeypatch.setenv("THREATFUSION_SOAR_HMAC_SECRET", "lab-hmac-secret-01")
+    monkeypatch.delenv("THREATFUSION_SOAR_LEDGER_DB_PATH", raising=False)
+    launched = launch_range_vector(
+        live_db,
+        vector_id="T1498",
+        src_ip="172.29.0.10",
+        dst_ip="172.29.0.20",
+        repo_root=REPO_ROOT,
+    )
+    assert launched["decision"] == "Attack"
+    assert launched["unsw_attack_category"] == "DoS"
+    policy = tmp_path / "operator-policy"
+    assert enroll_lab_operator(policy, "lab_operator")["identity_verified"] is True
+    monkeypatch.setenv("THREATFUSION_OPERATOR_POLICY_DIR", str(policy))
+    previous = MispAndCallbackContractHandler.soar_db_path
+    MispAndCallbackContractHandler.soar_db_path = None
+    MispAndCallbackContractHandler.seen_verify_idempotency_keys.clear()
+    MispAndCallbackContractHandler.seen_callback_idempotency_keys.clear()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), MispAndCallbackContractHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status, approved = _post_json(
+            f"{base}/api/v1/live/soar/approve",
+            {
+                "flow_id": launched["flow_id"],
+                "actor_id": "lab_operator",
+                "reason": "Analyst recorded local approval. Containment is not executed.",
+            },
+        )
+        assert status == 200
+        assert approved["soar_state"] == "approved"
+        assert approved["playbook_state"] == "approved"
+        assert approved["execution_authorized"] is True
+        again_status, again = _post_json(
+            f"{base}/api/v1/live/soar/approve",
+            {
+                "flow_id": launched["flow_id"],
+                "actor_id": "lab_operator",
+                "reason": "Analyst recorded local approval. Containment is not executed.",
+            },
+        )
+        assert again_status == 200
+        assert again["reason"] == "already_approved"
+        assert again["soar_state"] == "approved"
+        assert again["execution_authorized"] is True
+        snapshot = get_live_snapshot(live_db)
+        stored = next(
+            flow
+            for campaign in snapshot["campaigns"]
+            for flow in campaign["flows"]
+            if flow["flow_id"] == launched["flow_id"]
+        )
+        assert stored["soar_state"] == "approved"
+        assert stored["playbook_state"] == "approved"
+        for incident in snapshot["incidents"]:
+            if incident.get("flow_id") == launched["flow_id"]:
+                assert incident["soar_state"] == "approved"
+        status_code, entra = _get_json(f"{base}/api/v1/live/entra/status")
+        assert status_code == 200
+        assert entra["provider"] == "microsoft_entra_id"
+        assert entra["oidc"] is True
+        assert entra["entra_tenant_id"]
+        active = entra["active_operator"]
+        assert active["entra_upn"].endswith("@nu.edu.pk")
+        assert active["entra_object_id"]
+        assert active["entra_app_roles"]
+        assert entra["azure_subscription_tier"].startswith("Azure for Students")
+        soar_db = live_db.with_name("threatfusion-live-soar.sqlite3")
+        dispatched = dispatch_approved_callback(
+            live_db,
+            soar_db,
+            flow_id=launched["flow_id"],
+            contract_base_url=base,
+            hmac_secret="lab-hmac-secret-01",
+            outbox_db_path=tmp_path / "thehive.sqlite3",
+            actor_id="lab_operator",
+        )
+        assert dispatched["callback_recorded"] is True
+        assert dispatched["reason"] != "playbook_not_approved"
+    finally:
+        server.shutdown()
+        server.server_close()
+        MispAndCallbackContractHandler.soar_db_path = previous
+
+    soar_db = live_db.with_name("threatfusion-live-soar.sqlite3")
+
+    def runner(action: str) -> dict[str, object]:
+        if action == "status":
+            return {"running": True}
+        if action == "drop":
+            return {"applied": True}
+        if action == "rollback":
+            return {"removed": True}
+        if action == "probe":
+            return {"reachable": action != "drop", "status": "ok"}
+        return {}
+
+    probes = {"phase": "contained"}
+
+    def runner_with_probe(action: str) -> dict[str, object]:
+        if action == "probe":
+            reachable = probes["phase"] != "contained"
+            return {"reachable": reachable, "status": "ok"}
+        return runner(action)
+
+    contained = contain_range_source(
+        live_db,
+        soar_db,
+        flow_id=launched["flow_id"],
+        actor_id="lab_operator",
+        runner=runner_with_probe,
+    )
+    assert contained["http_status"] == 200
+    assert contained["reason"] == "containment_applied"
+    probes["phase"] = "open"
+    rolled = rollback_range_source(
+        live_db,
+        soar_db,
+        flow_id=launched["flow_id"],
+        actor_id="lab_operator",
+        runner=runner_with_probe,
+    )
+    assert rolled["http_status"] == 200
+    assert rolled["reason"] == "containment_rolled_back"
+
+
+def test_entra_token_syncs_app_role(tmp_path: Path) -> None:
+    import base64
+    import json
+
+    live_db = tmp_path / "live.sqlite3"
+
+    def segment(payload: dict[str, object]) -> str:
+        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    token = ".".join(
+        (
+            segment({"alg": "RS256", "typ": "JWT"}),
+            segment(
+                {
+                    "tid": "72f988bf-86f1-41af-91ab-2d7cd011db47",
+                    "oid": "4c2e9b11-1a77-4e08-8d55-22b6c0e8f202",
+                    "upn": "suhaib.shaikh@nu.edu.pk",
+                    "roles": ["SOC.Analyst.Tier1"],
+                }
+            ),
+            segment({"sig": "structure"}),
+        )
+    )
+    status = entra_identity_status(live_db)
+    assert status["http_status"] == 200
+    assert any(item["entra_app_roles"] == ["SOC.Commander.Approver"] for item in status["operators"])
+    verified = verify_entra_token(live_db, token)
+    assert verified["http_status"] == 200
+    assert verified["token_structure_valid"] is True
+    assert verified["actor_id"] == "tier1_analyst"
+    assert verified["roles"] == ["SOC.Analyst.Tier1"]
+    assert verified["upn"] == "suhaib.shaikh@nu.edu.pk"
+
+
+def _get_json(url: str) -> tuple[int, dict]:
+    import json
+    import urllib.request
+
+    request = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(request, timeout=5.0) as response:
+        parsed = json.loads(response.read().decode("utf-8"))
+        return response.status, parsed if isinstance(parsed, dict) else {}

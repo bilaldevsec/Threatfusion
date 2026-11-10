@@ -25,10 +25,68 @@
   border-top: 1px solid #30363d;
 }
 
+.enterprise-drawer,
+#enterpriseWorkspaceDrawer {
+  color-scheme: dark;
+}
+
+.enterprise-drawer section {
+  background: rgba(15, 23, 42, 0.86);
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 0.85rem;
+}
+
 .enterprise-drawer input,
 .enterprise-drawer select,
-.enterprise-drawer button {
-  margin: 0.25rem 0.35rem 0.25rem 0;
+.enterprise-drawer button,
+#enterpriseWorkspaceDrawer input,
+#enterpriseWorkspaceDrawer select,
+#enterpriseWorkspaceDrawer button {
+  margin: 0.35rem 0.35rem 0.35rem 0;
+  background: #0f172a;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 0.45rem 0.7rem;
+  font: inherit;
+  box-shadow: none;
+}
+
+.enterprise-drawer button,
+#enterpriseWorkspaceDrawer button {
+  border-color: #6366f1;
+  cursor: pointer;
+}
+
+.enterprise-drawer button:hover,
+#enterpriseWorkspaceDrawer button:hover,
+.enterprise-drawer select:hover,
+#enterpriseWorkspaceDrawer select:hover,
+.enterprise-drawer input:focus,
+#enterpriseWorkspaceDrawer input:focus,
+.enterprise-drawer select:focus,
+#enterpriseWorkspaceDrawer select:focus {
+  border-color: #6366f1;
+  background: #1e1b4b;
+  outline: none;
+}
+
+.entra-card {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 0.75rem;
+  margin: 0.4rem 0 0.8rem;
+}
+
+.entra-role-badge {
+  display: inline-block;
+  background: #0f172a;
+  color: #a5b4fc;
+  border: 1px solid #6366f1;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
 }
 
 #launchAttackVectorBar {

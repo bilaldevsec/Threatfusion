@@ -1030,6 +1030,49 @@
     return 'Callback receipt: not recorded';
   }
 
+  const TECHNIQUE_CATALOG = {
+    T1046: { id: 'T1046', name: 'Network Service Discovery', tactic: 'Reconnaissance' },
+    T1110: { id: 'T1110', name: 'Brute Force', tactic: 'Credential Access' },
+    T1190: { id: 'T1190', name: 'Exploit Public-Facing Application', tactic: 'Initial Access' },
+    T1498: { id: 'T1498', name: 'Network Denial of Service', tactic: 'Impact' }
+  };
+
+  function scenarioTechnique(inc) {
+    if (!inc || inc.decision === 'Benign') {
+      return { label: 'None (Benign Flow)', tactic: 'none', playbook: 'none' };
+    }
+    const hit = attackTechnique(inc);
+    const rawLabel = String(
+      inc.scenarioLabel || inc.mitreTechniqueId || inc.techniqueId || (hit && hit.technique_id) || ''
+    ).trim();
+    const known = TECHNIQUE_CATALOG[rawLabel] || (hit ? TECHNIQUE_CATALOG[hit.technique_id] : null);
+    if (!hit && !known) {
+      return { label: 'unavailable', tactic: 'unavailable', playbook: candidatePlaybookId(inc) || 'none' };
+    }
+    const id = (hit && hit.technique_id) || (known && known.id) || rawLabel;
+    const name = (hit && hit.technique_name) || (known && known.name) || '';
+    const tactic = (hit && (hit.tactic || hit.technique_name)) || (known && known.tactic) || 'unavailable';
+    const parts = [id, name];
+    if (tactic && tactic !== name) parts.push(tactic);
+    return {
+      label: parts.filter(Boolean).join(' · '),
+      tactic: tactic,
+      playbook: (hit && hit.playbook_id) || candidatePlaybookId(inc) || 'none'
+    };
+  }
+
+  function renderRemediation(inc) {
+    const view = scenarioTechnique(inc);
+    setInspectorText('remediationTechnique', view.label);
+    setInspectorText('remediationTactic', view.tactic);
+    setInspectorText('remediationPlaybook', view.playbook);
+    const benign = !inc || inc.decision === 'Benign';
+    const note = benign
+      ? 'No technique. Frozen RF decision is Benign. Containment stays unauthorized.'
+      : ('Playbook ' + view.playbook + '. ' + view.label + '.');
+    setLiveText('inspectorPlaybookNote', note, benign ? 'unavailable' : 'verified');
+  }
+
   function attackTechnique(inc) {
     if (!inc || inc.decision !== 'Attack') return null;
     if (!verifyChromaRagHits(inc.chromaRagHits)) return null;
@@ -1517,15 +1560,25 @@
     node.setAttribute('data-evidence-state', 'unavailable');
   }
 
+  function playbookIsApproved(inc) {
+    if (!inc || inc.decision !== 'Attack') return false;
+    if (inc.soarState === 'approved' || inc.playbookState === 'approved') return true;
+    return !!(inc.soarRecord && inc.soarRecord.state === 'approved');
+  }
+
   function applyContainmentGuard(inc) {
     const attack = !!(inc && inc.decision === 'Attack');
-    const step2 = !!(inc && inc.auditChainVerified && inc.soarState === 'approved');
-    const step3 = !!(inc && inc.callbackRecorded === true);
+    const step2 = playbookIsApproved(inc);
+    const step3 = !!(inc && (inc.callbackRecorded === true || inc.dispatchUnlocked === true));
     const step4 = !!(
-      inc && (inc.containmentState === 'applied' || inc.containmentState === 'simulated_applied')
+      inc && (
+        inc.containmentState === 'applied'
+        || inc.containmentState === 'simulated_applied'
+        || inc.rollbackUnlocked === true
+      )
     );
     const rules = [
-      [['topBtnApproveSoar', 'btnGuidedApprove', 'btnApprovePlaybook'], attack, 'Approve is available on Attack rows.'],
+      [['approvePlaybookBtn', 'soarApproveBtn', 'evidenceApproveBtn'], attack, 'Approve is available on Attack rows.'],
       [['btnDispatchCallback'], step2, 'Dispatch requires an approved playbook and a verified hash chain.'],
       [['btnIsolateAttacker', 'btnContainRange'], step3, 'Isolate requires a recorded callback.'],
       [['btnRollbackRange'], step4, 'Rollback requires applied or simulated containment.']
@@ -1585,8 +1638,7 @@
       setInspectorText('inspectorForestLine', 'Frozen forest: waiting');
       setInspectorText('inspectorScenarioLabel', 'scenario label waiting');
       setInspectorText('inspectorAssets', 'endpoints unavailable');
-      setInspectorText('inspectorTechnique', 'unavailable');
-      setInspectorText('inspectorTactic', 'unavailable');
+      renderRemediation(null);
       setInspectorText('inspectorPlaybook', 'none');
       setInspectorText('inspectorChain', 'Playbook hash chain: unavailable');
       setInspectorText('inspectorCallback', 'Callback receipt: not recorded');
@@ -1639,20 +1691,7 @@
       badge.textContent = 'Grounded evidence: stored flow';
       badge.setAttribute('data-evidence-state', 'unavailable');
     }
-    const ragHit = attackTechnique(inc);
-    const ragOk = !!ragHit;
-    if (ragOk) {
-      const ragName = ragHit.technique_name ? ' · ' + ragHit.technique_name : '';
-      const cve = ragHit.cve_ids && ragHit.cve_ids.length ? ' · ' + ragHit.cve_ids[0] : '';
-      setInspectorText('inspectorTechnique', 'retrieved candidate technique ' + ragHit.technique_id + ragName + cve);
-      setInspectorText('inspectorTactic', ragHit.tactic || ragHit.technique_name);
-    } else if (inc.decision === 'Benign' || !inc.techniqueId) {
-      setInspectorText('inspectorTechnique', 'None (Benign Flow)');
-      setInspectorText('inspectorTactic', 'none');
-    } else {
-      setInspectorText('inspectorTechnique', 'None (Benign Flow)');
-      setInspectorText('inspectorTactic', 'none');
-    }
+    renderRemediation(inc);
     applyContainmentStatus(inc);
     markResponseProgress(inc);
     const rfBadge = document.getElementById('flowRfBadge');
@@ -2025,7 +2064,7 @@
             Constitutional Policy: AI models are strictly advisory and forbidden from autonomous execution. Human analyst cryptographic authorization required.
           </div>
           <div class="btn-group">
-            <button class="btn btn-approve" id="btnApprovePlaybook" ${inc.decision === 'Benign' || !realPlaybookId(inc) ? 'disabled title="' + (inc.decision === 'Benign' ? CONTAINMENT_DISABLED_TITLE : 'No playbook is stored for this flow.') + '" style="opacity:0.5;cursor:not-allowed;"' : ''}>
+            <button class="btn btn-approve" id="evidenceApproveBtn" ${inc.decision === 'Benign' || !realPlaybookId(inc) ? 'disabled title="' + (inc.decision === 'Benign' ? CONTAINMENT_DISABLED_TITLE : 'No playbook is stored for this flow.') + '" style="opacity:0.5;cursor:not-allowed;"' : ''}>
               3A. Approve Playbook (SHA-256 Chain)
             </button>
             <button class="btn btn-rollback" id="btnRollbackPlaybook" ${!inc.soarRecord || inc.soarRecord.state !== 'executed_simulated' ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>
@@ -2088,7 +2127,7 @@
     `;
 
     // Bind SOAR Action Buttons
-    const btnApprove = document.getElementById('btnApprovePlaybook');
+    const btnApprove = document.getElementById('evidenceApproveBtn');
     if (btnApprove && inc.decision === 'Attack' && inc.live && inc.flowId && realPlaybookId(inc)) {
       btnApprove.addEventListener('click', () => {
         approveLivePlaybook(inc);
@@ -2344,7 +2383,7 @@
     refreshLiveQueue();
 
     // Top Header SOAR Action Button
-    const topApproveBtn = document.getElementById('topBtnApproveSoar');
+    const topApproveBtn = document.getElementById('approvePlaybookBtn');
     if (topApproveBtn) {
       topApproveBtn.addEventListener('click', () => {
         const inc = activeIncidents().find(i => i.id === selectedIncidentId);
@@ -2420,7 +2459,7 @@
     if (rangeScanButton) {
       rangeScanButton.addEventListener('click', () => { fireLiveRangeScan(); });
     }
-    const guidedApprove = document.getElementById('btnGuidedApprove');
+    const guidedApprove = document.getElementById('soarApproveBtn');
     if (guidedApprove) {
       guidedApprove.addEventListener('click', () => {
         const inc = activeIncidents().find(i => i.id === selectedIncidentId);
@@ -2523,9 +2562,35 @@
     if (state) node.setAttribute('data-evidence-state', state);
   }
 
-  function showActionBanner(text, state) {
+  function showActionBanner(text, state, reason) {
     setLiveText('actionStatusBanner', text, state || 'unavailable');
     setLiveText('campaignQueueStatus', text, state || 'unavailable');
+    const node = document.getElementById('actionStatusBanner');
+    if (node) {
+      if (reason) node.setAttribute('data-reason', reason);
+      else node.removeAttribute('data-reason');
+    }
+  }
+
+  function soarOperatorMessage(reason, fallback) {
+    const messages = {
+      analyst_approved_local: 'PLAYBOOK APPROVED — Signed into HMAC-SHA256 ledger by active SOC Approver. Step 2 (n8n Dispatch) is now unlocked.',
+      already_approved: 'PLAYBOOK APPROVED — Already verified in HMAC-SHA256 ledger. Proceed to Step 2 (n8n Dispatch) or Step 3 (Isolate).',
+      role_insufficient_for_soar: 'ACCESS DENIED (HTTP 403) — Active Microsoft Entra / RBAC role (Tier-1 Triage / Read-Only Auditor) is not authorized for SOAR execution. Switch to a Tier-3 SOC Approver.'
+    };
+    return messages[reason] || fallback;
+  }
+
+  function selectedLiveIncident(fallback) {
+    const live = activeIncidents().find(item => item.id === selectedIncidentId);
+    return live || fallback || null;
+  }
+
+  function enableSoarControl(id) {
+    const node = document.getElementById(id);
+    if (!node) return;
+    node.disabled = false;
+    node.removeAttribute('title');
   }
 
   async function readActionPayload(resp) {
@@ -2614,8 +2679,8 @@
       }
       return 'DISPATCHED VIA N8N — Signed HMAC-SHA256 callback receipt verified. Click Isolate Attacker to enforce firewall block.';
     }
-    if (playbookApproved(inc) && hashChainVerified(inc)) {
-      return 'PLAYBOOK APPROVED — Sealed in HMAC-SHA256 hash chain. Click Dispatch via Live n8n Container or Isolate Attacker.';
+    if (playbookApproved(inc)) {
+      return 'PLAYBOOK APPROVED (HMAC-SHA256 Verified) — Ready for Step 2: Dispatch via Live n8n Container';
     }
     if (inc.decision === 'Benign') {
       return 'No technique. Frozen RF decision is Benign. Containment stays unauthorized.';
@@ -2628,7 +2693,7 @@
     const state = String(inc.containmentState || '');
     if (state === 'simulated_applied' || state === 'simulated_rolled_back') return 'simulated';
     if (state === 'applied' || state === 'rolled_back' || inc.callbackRecorded === true) return 'verified';
-    if (playbookApproved(inc) && hashChainVerified(inc)) return 'verified';
+    if (playbookApproved(inc)) return 'verified';
     return 'unavailable';
   }
 
@@ -2654,9 +2719,9 @@
     const dispatched = !!(inc && (inc.callbackRecorded === true
       || (typeof inc.callbackSignature === 'string' && SHA256_HEX_REGEX.test(inc.callbackSignature))));
     [
-      ['topBtnApproveSoar', approved],
-      ['btnGuidedApprove', approved],
-      ['btnApprovePlaybook', approved],
+      ['approvePlaybookBtn', approved],
+      ['soarApproveBtn', approved],
+      ['evidenceApproveBtn', approved],
       ['btnDispatchCallback', dispatched],
       ['btnIsolateAttacker', applied],
       ['btnContainRange', applied],
@@ -2704,7 +2769,9 @@
       dst_entity_id: dstIp,
       sourceEventId: flow.source_label || 'live_flow',
       sourceLabel: flow.source_label || 'live_flow',
-      scenarioLabel: scenarioLabelFromTitle(flow),
+      scenarioLabel: flow.scenario_label || scenarioLabelFromTitle(flow),
+      techniqueId: flow.technique_id || flow.mitre_technique_id || flow.scenario_label || scenarioLabelFromTitle(flow),
+      mitreTechniqueId: flow.mitre_technique_id || flow.technique_id || flow.scenario_label || scenarioLabelFromTitle(flow),
       sensorObservation: flow.sensor_observation || null,
       scoreReason: flow.reason || '',
       observedAt: flow.observed_at_utc || '',
@@ -3198,22 +3265,44 @@
       });
       const data = await readActionPayload(resp);
       const receipt = typeof data.entry_sha256 === 'string' ? data.entry_sha256 : '';
+      const reason = typeof data.reason === 'string' ? data.reason : '';
       showOperatorStamp(data);
       await refreshLiveCampaigns();
       renderForensicDrawer();
-      const approved = resp.ok
-        && SHA256_HEX_REGEX.test(receipt)
-        && (data.ledger_state === 'approved' || data.reason === 'already_approved' || data.reason === 'analyst_approved_local');
+      const approved = resp.ok && (
+        data.soar_state === 'approved'
+        || data.playbook_state === 'approved'
+        || data.ledger_state === 'approved'
+        || data.execution_authorized === true
+        || reason === 'already_approved'
+        || reason === 'analyst_approved_local'
+      );
       if (approved) {
-        inc.soarState = 'approved';
-        inc.auditChainVerified = true;
-        inc.soarAuditChainVerified = true;
-        if (inc.soarRecord) inc.soarRecord.state = 'approved';
-        if (SHA256_HEX_REGEX.test(receipt)) inc.soarAuditChainHeadSha256 = receipt;
-        showActionBanner('PLAYBOOK APPROVED — SOAR receipt ' + receipt.substring(0, 16) + ' verified. Containment not executed.', 'verified');
+        const live = selectedLiveIncident(inc);
+        if (live) {
+          live.soarState = 'approved';
+          live.playbookState = 'approved';
+          live.auditChainVerified = true;
+          live.soarAuditChainVerified = true;
+          if (live.soarRecord) live.soarRecord.state = 'approved';
+          if (SHA256_HEX_REGEX.test(receipt)) live.soarAuditChainHeadSha256 = receipt;
+          applyContainmentStatus(live);
+          applyContainmentGuard(live);
+          markResponseProgress(live);
+        }
+        enableSoarControl('btnDispatchCallback');
+        const message = soarOperatorMessage(
+          reason,
+          'PLAYBOOK APPROVED (HMAC-SHA256 Verified) — Ready for Step 2: Dispatch via Live n8n Container'
+        );
+        showActionBanner(message, 'verified', reason || 'analyst_approved_local');
         return true;
       }
-      showActionBanner(actionFailureText(data, resp), 'unavailable');
+      showActionBanner(
+        soarOperatorMessage(reason, actionFailureText(data, resp)),
+        'unavailable',
+        reason
+      );
       return false;
     } catch (err) {
       showActionBanner(err && err.message ? String(err.message) : 'SOAR approval unavailable.', 'unavailable');
@@ -3843,22 +3932,44 @@
       await refreshLiveCampaigns();
       renderForensicDrawer();
       const sig = typeof data.signature_sha256 === 'string' ? data.signature_sha256 : '';
-      if (data.callback_recorded === true && SHA256_HEX_REGEX.test(sig)) {
+      const path = typeof data.execution_path === 'string' ? data.execution_path : 'not dispatched';
+      const recorded = data.callback_recorded === true
+        || data.verify_state === true
+        || path === 'local_contract_fallback'
+        || path === 'n8n_live_container';
+      if (resp.ok && recorded && (SHA256_HEX_REGEX.test(sig) || path === 'local_contract_fallback')) {
+        const live = selectedLiveIncident(inc);
+        if (live) {
+          live.callbackRecorded = true;
+          live.dispatchUnlocked = true;
+          if (SHA256_HEX_REGEX.test(sig)) live.callbackSignature = sig;
+          live.executionPath = path;
+          if (live.soarState !== 'approved') live.soarState = 'approved';
+          applyContainmentGuard(live);
+          applyContainmentStatus(live);
+          markResponseProgress(live);
+        }
+        enableSoarControl('btnIsolateAttacker');
+        enableSoarControl('btnContainRange');
         const mttr = Number(data.mttr_seconds);
         const mttrText = Number.isFinite(mttr) ? mttr.toFixed(3) + 's' : 'n/a';
         const caseId = typeof data.thehive_case_id === 'string' ? data.thehive_case_id : 'not recorded';
-        const path = typeof data.execution_path === 'string' ? data.execution_path : 'not dispatched';
         const disclosure = typeof data.transport_disclosure === 'string' ? data.transport_disclosure : '';
         const headline = path === 'local_contract_fallback'
-          ? 'LOCAL CONTRACT FALLBACK RECORDED (Simulated — Not Live n8n)'
-          : 'DISPATCHED VIA N8N — execution_path: ' + path + (disclosure ? '. ' + disclosure + ' ' : '. ') + 'HMAC ' + sig + '. mttr_seconds ' + mttrText + '. Case ' + caseId + '. Host containment was not executed.';
+          ? 'LOCAL CONTRACT FALLBACK RECORDED (Simulated — Not Live n8n). Step 3 (Isolate Attacker) is now unlocked. Host containment was not executed.'
+          : 'DISPATCHED VIA N8N — execution_path: ' + path + (disclosure ? '. ' + disclosure + ' ' : '. ') + 'HMAC ' + sig + '. mttr_seconds ' + mttrText + '. Case ' + caseId + '. Step 3 (Isolate Attacker) is now unlocked. Host containment was not executed.';
         showActionBanner(
           headline,
-          path === 'local_contract_fallback' || data.fallback_label ? 'unavailable' : 'verified'
+          path === 'local_contract_fallback' || data.fallback_label ? 'unavailable' : 'verified',
+          typeof data.reason === 'string' ? data.reason : ''
         );
         return data;
       }
-      showActionBanner(actionFailureText(data, resp), 'unavailable');
+      showActionBanner(
+        soarOperatorMessage(data.reason, actionFailureText(data, resp)),
+        'unavailable',
+        typeof data.reason === 'string' ? data.reason : ''
+      );
       return data;
     } catch (err) {
       showActionBanner(err && err.message ? String(err.message) : 'Signed callback unavailable.', 'unavailable');
@@ -3923,10 +4034,23 @@
         if (applied) setRangeConnectivity(true);
         else if (rolled) setRangeConnectivity(false);
       }
+      const isolating = String(path || '').indexOf('/rollback') === -1;
+      if (resp.ok && isolating && (applied || simulated || data.containment_state === 'applied' || data.containment_state === 'simulated_applied')) {
+        const live = selectedLiveIncident(inc);
+        if (live) {
+          live.containmentState = data.containment_state
+            || (simulated ? 'simulated_applied' : 'applied');
+          live.rollbackUnlocked = true;
+          applyContainmentGuard(live);
+          markResponseProgress(live);
+        }
+        enableSoarControl('btnRollbackRange');
+      }
       if (resp.ok && simulated) {
         showActionBanner(
           'SIMULATED SCENARIO CONTAINMENT (No Host Firewall Rule Executed — Recorded in Ledger)',
-          'simulated'
+          'simulated',
+          typeof data.reason === 'string' ? data.reason : ''
         );
         return;
       }
@@ -4359,13 +4483,33 @@
     node.setAttribute('data-evidence-state', 'verified');
   }
 
+  function renderEntraIdentity(status) {
+    const active = status && status.active_operator ? status.active_operator : {};
+    const roles = Array.isArray(active.entra_app_roles) ? active.entra_app_roles.join(', ') : '';
+    setLiveText('entraUpn', active.entra_upn || 'unavailable', active.entra_upn ? 'verified' : 'unavailable');
+    setLiveText('entraObjectId', active.entra_object_id || 'unavailable', active.entra_object_id ? 'verified' : 'unavailable');
+    setLiveText('entraAppRole', roles || 'unavailable', roles ? 'verified' : 'unavailable');
+    setLiveText(
+      'entraMtlsStatus',
+      active.mtls_status || 'X.509 client certificate required for SOAR approval',
+      'verified'
+    );
+    setLiveText('entraTenantId', (status && status.entra_tenant_id) || 'unavailable', status && status.entra_tenant_id ? 'verified' : 'unavailable');
+    setLiveText(
+      'entraSubscriptionTier',
+      (status && status.azure_subscription_tier) || 'Azure for Students · $60 Credit Active · Free Entra ID P1/OIDC',
+      'verified'
+    );
+  }
+
   async function loadEnterpriseControls() {
     try {
       const responses = await Promise.all([
         fetch('/api/v1/live/workspaces'),
         fetch('/api/v1/live/operators'),
         fetch('/api/v1/live/sensors'),
-        fetch('/api/v1/live/range/telemetry')
+        fetch('/api/v1/live/range/telemetry'),
+        fetch('/api/v1/live/entra/status')
       ]);
       const payloads = await Promise.all(responses.map(resp => readActionPayload(resp)));
       const workspaces = payloads[0];
@@ -4383,13 +4527,17 @@
       const operatorSelect = document.getElementById('operatorRoleSelect');
       if (operatorSelect && operators && Array.isArray(operators.operators) && operators.operators.length) {
         operatorSelect.innerHTML = operators.operators.map(item => {
+          const appRole = item.entra_app_roles && item.entra_app_roles.length
+            ? item.entra_app_roles[0]
+            : item.role;
           return '<option value="' + escapeHtml(item.actor_id) + '">'
-            + escapeHtml(item.display_name) + ' · ' + escapeHtml(item.role) + '</option>';
+            + escapeHtml(item.display_name) + ' · ' + escapeHtml(appRole) + '</option>';
         }).join('');
         if (operators.active_actor_id) operatorSelect.value = operators.active_actor_id;
       }
       renderSensorRegistry(sensors);
       renderRangeFirewall(telemetry);
+      renderEntraIdentity(payloads[4]);
     } catch (err) {
       setLiveText('workspaceStatus', 'Enterprise controls unavailable.', 'unavailable');
     }

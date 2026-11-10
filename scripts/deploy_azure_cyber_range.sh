@@ -31,7 +31,12 @@ VICTIM_IP="172.29.0.20"
 ATTACKER_NAME="tf-attacker-redteam-vm"
 ATTACKER_IP="172.29.0.10"
 VM_SIZE="${AZURE_VM_SIZE:-Standard_B2s}"
+VICTIM_SIZE="$VM_SIZE"
+ATTACKER_SIZE="$VM_SIZE"
 IMAGE="${AZURE_VM_IMAGE:-Ubuntu2404}"
+OS_DISK_GB=""
+STORAGE_SKU=""
+STUDENT_FREE_TIER=0
 ADMIN_USER="${AZURE_ADMIN_USER:-threatfusion}"
 FORWARDER_SRC="scripts/follow_suricata_eve.py"
 FORWARDER_DST="/opt/threatfusion/suricata_eve_follower.py"
@@ -42,16 +47,23 @@ ACTION=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy_azure_cyber_range.sh [--dry-run] (--help|--provision|--pair-forwarder|--status)
+Usage: scripts/deploy_azure_cyber_range.sh [--dry-run] [--student-free-tier] (--help|--provision|--pair-forwarder|--status|--deallocate|--setup-entra-app)
 
   --help             Show this text and exit 0.
   --dry-run          Print the az and remote steps without calling them.
+  --student-free-tier
+                     Azure for Students budget mode. Uses free-tier eligible
+                     Standard_B1s and Standard_B2pts_v2, Ubuntu 22.04, a 64 GB
+                     Standard SSD, and an auto-shutdown at 23:59 Pakistan time
+                     so the $60 credit is not left running overnight.
   --provision        Create the resource group, VNet, NSG, and both VMs.
   --pair-forwarder   Install Suricata and suricata_eve_follower.py on the victim
                      and pair it with the ThreatFusion console over the sensor
                      route. HMAC and optional mTLS material stay in a root-only
                      env file on that VM.
   --status           Show the two VM power states and private addresses.
+  --deallocate       Stop both VMs and release compute so billing stops after a demo.
+  --setup-entra-app  Register the ThreatFusion Microsoft Entra ID app roles.
 
 The address plan is fixed: tf-soc-victim-vm 172.29.0.20 and
 tf-attacker-redteam-vm 172.29.0.10 inside tf-cyber-range-vnet 172.29.0.0/16.
@@ -131,30 +143,65 @@ provision_range() {
     --vnet-name "$VNET" \
     --name "$SUBNET" \
     --network-security-group "$NSG"
+  local -a disk_args=()
+  if [[ -n "$OS_DISK_GB" ]]; then
+    disk_args+=(--os-disk-size-gb "$OS_DISK_GB" --storage-sku "$STORAGE_SKU")
+  fi
   run az vm create \
     --resource-group "$RG" \
     --name "$VICTIM_NAME" \
     --image "$IMAGE" \
-    --size "$VM_SIZE" \
+    --size "$VICTIM_SIZE" \
     --admin-username "$ADMIN_USER" \
     --generate-ssh-keys \
     --vnet-name "$VNET" \
     --subnet "$SUBNET" \
     --nsg "$NSG" \
     --private-ip-address "$VICTIM_IP" \
-    --public-ip-address ""
+    --public-ip-address "" \
+    "${disk_args[@]}"
   run az vm create \
     --resource-group "$RG" \
     --name "$ATTACKER_NAME" \
     --image "$IMAGE" \
-    --size "$VM_SIZE" \
+    --size "$ATTACKER_SIZE" \
     --admin-username "$ADMIN_USER" \
     --generate-ssh-keys \
     --vnet-name "$VNET" \
     --subnet "$SUBNET" \
     --nsg "$NSG" \
     --private-ip-address "$ATTACKER_IP" \
-    --public-ip-address ""
+    --public-ip-address "" \
+    "${disk_args[@]}"
+  if [[ "$STUDENT_FREE_TIER" -eq 1 ]]; then
+    schedule_student_shutdown "$VICTIM_NAME"
+    schedule_student_shutdown "$ATTACKER_NAME"
+  fi
+}
+
+schedule_student_shutdown() {
+  local name="$1"
+  run az vm auto-shutdown \
+    --resource-group "$RG" \
+    --name "$name" \
+    --time 2359 \
+    --timezone "Pakistan Standard Time"
+}
+
+deallocate_range() {
+  require_az
+  run az vm deallocate --resource-group "$RG" --name "$VICTIM_NAME"
+  run az vm deallocate --resource-group "$RG" --name "$ATTACKER_NAME"
+}
+
+setup_entra_app() {
+  require_az
+  local roles
+  roles='[{"allowedMemberTypes":["User"],"description":"Tier-3 SOC approver who may sign SOAR playbooks","displayName":"SOC Commander Approver","id":"c1a0b001-1111-4111-8111-000000000001","isEnabled":true,"value":"SOC.Commander.Approver"},{"allowedMemberTypes":["User"],"description":"Tier-1 analyst limited to triage","displayName":"SOC Analyst Tier 1","id":"c1a0b002-2222-4222-8222-000000000002","isEnabled":true,"value":"SOC.Analyst.Tier1"},{"allowedMemberTypes":["User"],"description":"Read-only compliance auditor","displayName":"SOC Compliance Auditor","id":"c1a0b003-3333-4333-8333-000000000003","isEnabled":true,"value":"SOC.Compliance.Auditor"}]'
+  run az ad app create \
+    --display-name "ThreatFusion SOC Console" \
+    --sign-in-audience AzureADMyOrg \
+    --app-roles "$roles"
 }
 
 pair_forwarder() {
@@ -265,6 +312,23 @@ while [[ $# -gt 0 ]]; do
       ACTION="provision"
       shift
       ;;
+    --student-free-tier)
+      STUDENT_FREE_TIER=1
+      VICTIM_SIZE="Standard_B1s"
+      ATTACKER_SIZE="Standard_B2pts_v2"
+      IMAGE="Ubuntu2204"
+      OS_DISK_GB="64"
+      STORAGE_SKU="StandardSSD_LRS"
+      shift
+      ;;
+    --deallocate)
+      ACTION="deallocate"
+      shift
+      ;;
+    --setup-entra-app)
+      ACTION="entra"
+      shift
+      ;;
     --pair-forwarder)
       ACTION="pair"
       shift
@@ -294,6 +358,8 @@ case "$ACTION" in
   provision) provision_range ;;
   pair) pair_forwarder ;;
   status) show_status ;;
+  deallocate) deallocate_range ;;
+  entra) setup_entra_app ;;
   *)
     usage >&2
     exit 2

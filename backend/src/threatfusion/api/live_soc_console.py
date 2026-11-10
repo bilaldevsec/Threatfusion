@@ -8,6 +8,7 @@ workbench read local files. Containment stays unauthorized.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import io
@@ -315,7 +316,7 @@ _AE_PREPROCESSOR_RELATIVE = (
 )
 _DNN_MODEL_RELATIVE = "artifacts/models/fyp2_dnn_same_split_v1/dnn_model.pt"
 _DNN_REPORT_RELATIVE = "artifacts/models/fyp2_dnn_same_split_v1/evaluation_report.json"
-_DNN_MODEL_SHA256 = "b090e53396ed1f1e72d8df19bf0d2b82ed4101f7fc844395d51634e986b1eeb1"
+_DNN_MODEL_SHA256 = "4f11062d2259afdc1cb68012dbc1680ec372e4750c85fe411d3a4517cd3c0791"
 _AE_INPUT_NAMES: tuple[str, ...] = (
     "duration_ms__zscore",
     "fwd_packets__zscore",
@@ -350,24 +351,37 @@ def _dnn_module_type() -> Any:
         return cached
     from torch import nn
 
-    class ThreatFusionSameSplitDNN(nn.Module):
-        """Same 14-64-32-16 trunk the training script saves."""
+    class _ResidualTrunk(nn.Module):
+        """Same 14 -> 128 -> 128 -> 64 residual trunk the training script saves."""
 
         def __init__(self) -> None:
             super().__init__()
-            self.trunk = nn.Sequential(
-                nn.Linear(14, 64),
-                nn.BatchNorm1d(64),
-                nn.ReLU(),
-                nn.Linear(64, 32),
-                nn.BatchNorm1d(32),
-                nn.ReLU(),
-                nn.Linear(32, 16),
-                nn.BatchNorm1d(16),
+            self.lift = nn.Sequential(
+                nn.Linear(14, 128),
+                nn.BatchNorm1d(128),
                 nn.ReLU(),
             )
-            self.binary_head = nn.Linear(16, 1)
-            self.category_head = nn.Linear(16, 9)
+            self.skip = nn.Linear(128, 128)
+            self.skip_norm = nn.BatchNorm1d(128)
+            self.squeeze = nn.Sequential(
+                nn.Linear(128, 64),
+                nn.BatchNorm1d(64),
+                nn.ReLU(),
+            )
+
+        def forward(self, features):  # type: ignore[no-untyped-def]
+            hidden = self.lift(features)
+            residual = self.skip_norm(self.skip(hidden))
+            return self.squeeze(nn.functional.relu(hidden + residual))
+
+    class ThreatFusionSameSplitDNN(nn.Module):
+        """Same residual trunk the training script saves."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.trunk = _ResidualTrunk()
+            self.binary_head = nn.Linear(64, 1)
+            self.category_head = nn.Linear(64, 9)
 
     _ADVISORY_MODEL_CACHE["dnn_type"] = ThreatFusionSameSplitDNN
     return ThreatFusionSameSplitDNN
@@ -2402,6 +2416,7 @@ def _flow_rows(db_path: Path, *, limit: int) -> list[dict[str, Any]]:
     for row in rows:
         item = dict(row)
         item["glass_box"] = build_glass_box_checklist(item)
+        _annotate_soar_state(item)
         raw_observation = item.pop("sensor_observation_json", None)
         raw_features = item.pop("features_json", None)
         parsed_features: Any = None
@@ -3151,6 +3166,7 @@ def _bind_incidents_to_attack_flows(
                 incident[key] = context[key]
             elif key in chosen:
                 incident[key] = chosen[key]
+        _annotate_soar_state(incident)
 
 
 def list_live_campaigns(
@@ -3170,6 +3186,8 @@ def list_live_campaigns(
         row["context_memory"] = _memory_rows_for_entities(db_path, _flow_entities(row))
     incidents = _read_stored_incidents(incidents_db_path, limit=limit)
     _bind_incidents_to_attack_flows(incidents, flows, incidents_db_path)
+    for incident in incidents:
+        _annotate_soar_state(incident)
     grouped: dict[str, list[dict[str, Any]]] = {}
     order: list[str] = []
     for row in flows:
@@ -3324,64 +3342,64 @@ _BENIGN_ROW1_RAW: dict[str, float] = {
 }
 _ATTACK_PROFILE_CANONICAL: dict[str, dict[str, float]] = {
     "T1190": {
-        "duration_ms": 850.0,
-        "fwd_packets": 40.0,
-        "bwd_packets": 6.0,
-        "fwd_bytes": 24000.0,
-        "bwd_bytes": 900.0,
-        "packets_per_second": 54.1,
-        "bytes_per_second": 29294.0,
-        "fwd_packet_length_mean": 600.0,
-        "bwd_packet_length_mean": 150.0,
-        "dst_port": 443.0,
+        "duration_ms": 8904.231,
+        "fwd_packets": 2.0,
+        "bwd_packets": 800.0,
+        "fwd_bytes": 120.0,
+        "bwd_bytes": 60800.0,
+        "packets_per_second": 90.06954109793423,
+        "bytes_per_second": 6841.6913262919625,
+        "fwd_packet_length_mean": 60.0,
+        "bwd_packet_length_mean": 76.0,
+        "dst_port": 53.0,
         "protocol_tcp": 0.0,
         "protocol_udp": 1.0,
         "protocol_icmp": 0.0,
         "protocol_other": 0.0,
     },
     "T1110": {
-        "duration_ms": 4000.0,
-        "fwd_packets": 300.0,
-        "bwd_packets": 8.0,
-        "fwd_bytes": 24000.0,
-        "bwd_bytes": 640.0,
-        "packets_per_second": 76.0,
-        "bytes_per_second": 6080.0,
-        "fwd_packet_length_mean": 80.0,
-        "bwd_packet_length_mean": 80.0,
-        "dst_port": 22.0,
+        "duration_ms": 8512.332,
+        "fwd_packets": 4.0,
+        "bwd_packets": 6.0,
+        "fwd_bytes": 1444.0,
+        "bwd_bytes": 2832.0,
+        "packets_per_second": 1.1747662097765923,
+        "bytes_per_second": 502.33003130047086,
+        "fwd_packet_length_mean": 361.0,
+        "bwd_packet_length_mean": 472.0,
+        "dst_port": 5060.0,
         "protocol_tcp": 0.0,
         "protocol_udp": 1.0,
         "protocol_icmp": 0.0,
         "protocol_other": 0.0,
     },
     "T1046": {
-        "duration_ms": 80.0,
-        "fwd_packets": 120.0,
+        "duration_ms": 59055.560999999994,
+        "fwd_packets": 44.0,
         "bwd_packets": 0.0,
-        "fwd_bytes": 7200.0,
+        "fwd_bytes": 11968.0,
         "bwd_bytes": 0.0,
-        "packets_per_second": 1500.0,
-        "bytes_per_second": 90000.0,
-        "fwd_packet_length_mean": 60.0,
+        "packets_per_second": 0.7450610790065986,
+        "bytes_per_second": 202.6566134897948,
+        "fwd_packet_length_mean": 272.0,
         "bwd_packet_length_mean": 0.0,
-        "dst_port": 445.0,
+        "dst_port": 0.0,
         "protocol_tcp": 0.0,
-        "protocol_udp": 1.0,
+        "protocol_udp": 0.0,
         "protocol_icmp": 0.0,
-        "protocol_other": 0.0,
+        "protocol_other": 1.0,
     },
     "T1498": {
-        "duration_ms": 3200.0,
-        "fwd_packets": 240.0,
-        "bwd_packets": 4.0,
-        "fwd_bytes": 19200.0,
-        "bwd_bytes": 320.0,
-        "packets_per_second": 76.25,
-        "bytes_per_second": 6100.0,
-        "fwd_packet_length_mean": 80.0,
-        "bwd_packet_length_mean": 80.0,
-        "dst_port": 53.0,
+        "duration_ms": 59833.561,
+        "fwd_packets": 298.0,
+        "bwd_packets": 298.0,
+        "fwd_bytes": 168228.0,
+        "bwd_bytes": 230574.0,
+        "packets_per_second": 9.960964883905204,
+        "bytes_per_second": 6665.18912354222,
+        "fwd_packet_length_mean": 564.5234899328859,
+        "bwd_packet_length_mean": 773.738255033557,
+        "dst_port": 5060.0,
         "protocol_tcp": 0.0,
         "protocol_udp": 1.0,
         "protocol_icmp": 0.0,
@@ -3390,68 +3408,68 @@ _ATTACK_PROFILE_CANONICAL: dict[str, dict[str, float]] = {
 }
 _ATTACK_PROFILE_RAW: dict[str, dict[str, float]] = {
     "T1190": {
-        "dur": 0.85,
-        "spkts": 40.0,
-        "dpkts": 6.0,
-        "sbytes": 24000.0,
-        "dbytes": 900.0,
-        "rate": 54.1,
-        "sttl": 254.0,
-        "dttl": 0.0,
-        "sload": 2_000_000.0,
-        "dload": 100.0,
-        "sinpkt": 0.02,
-        "dinpkt": 0.15,
-        "sjit": 100.0,
-        "djit": 1.0,
+        "dur": 8.904231,
+        "spkts": 2.0,
+        "dpkts": 800.0,
+        "sbytes": 120.0,
+        "dbytes": 60800.0,
+        "rate": 90.06954109793423,
+        "sttl": 62.0,
+        "dttl": 252.0,
+        "sload": 53.906956,
+        "dload": 54557.43359,
+        "sinpkt": 0.009,
+        "dinpkt": 11.081117,
+        "sjit": 0.0,
+        "djit": 42.961195,
     },
     "T1110": {
-        "dur": 4.0,
-        "spkts": 300.0,
-        "dpkts": 8.0,
-        "sbytes": 24000.0,
-        "dbytes": 640.0,
-        "rate": 76.0,
-        "sttl": 64.0,
-        "dttl": 64.0,
-        "sload": 500_000.0,
-        "dload": 200.0,
-        "sinpkt": 0.008,
-        "dinpkt": 0.3,
-        "sjit": 40.0,
-        "djit": 5.0,
+        "dur": 8.512332,
+        "spkts": 4.0,
+        "dpkts": 6.0,
+        "sbytes": 1444.0,
+        "dbytes": 2832.0,
+        "rate": 1.1747662097765923,
+        "sttl": 254.0,
+        "dttl": 60.0,
+        "sload": 1017.817444,
+        "dload": 2217.958496,
+        "sinpkt": 2837.444,
+        "dinpkt": 760.997187,
+        "sjit": 4012.73975,
+        "djit": 950.87325,
     },
     "T1046": {
-        "dur": 0.08,
-        "spkts": 120.0,
+        "dur": 59.055561,
+        "spkts": 44.0,
         "dpkts": 0.0,
-        "sbytes": 7200.0,
+        "sbytes": 11968.0,
         "dbytes": 0.0,
-        "rate": 1500.0,
-        "sttl": 128.0,
+        "rate": 0.7450610790065986,
+        "sttl": 254.0,
         "dttl": 0.0,
-        "sload": 800_000.0,
+        "sload": 1584.40625,
         "dload": 0.0,
-        "sinpkt": 0.0005,
+        "sinpkt": 1373.385125,
         "dinpkt": 0.0,
-        "sjit": 10.0,
+        "sjit": 1665.184375,
         "djit": 0.0,
     },
     "T1498": {
-        "dur": 3.2,
-        "spkts": 240.0,
-        "dpkts": 4.0,
-        "sbytes": 19200.0,
-        "dbytes": 320.0,
-        "rate": 76.25,
+        "dur": 59.833561,
+        "spkts": 298.0,
+        "dpkts": 298.0,
+        "sbytes": 168228.0,
+        "dbytes": 230574.0,
+        "rate": 9.960964883905204,
         "sttl": 254.0,
-        "dttl": 0.0,
-        "sload": 16_000_000.0,
-        "dload": 200.0,
-        "sinpkt": 0.0002,
-        "dinpkt": 0.01,
-        "sjit": 0.1,
-        "djit": 0.1,
+        "dttl": 60.0,
+        "sload": 22417.38477,
+        "dload": 30725.36523,
+        "sinpkt": 199.909547,
+        "dinpkt": 201.078859,
+        "sjit": 249.509641,
+        "djit": 249.842109,
     },
 }
 
@@ -4061,6 +4079,30 @@ def replay_supplied_flows(
     }
 
 
+def _annotate_soar_state(row: dict[str, Any]) -> None:
+    """Expose the stored ledger state on the live snapshot as playbook and SOAR state."""
+    raw = str(row.get("ledger_state") or "").strip()
+    state = raw or "pending_approval"
+    row["playbook_state"] = state
+    row["soar_state"] = state
+
+
+def get_live_snapshot(
+    db_path: Path,
+    *,
+    incidents_db_path: Path | None = None,
+    soar_db_path: Path | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Return the live queue with playbook_state and soar_state on each flow and incident."""
+    return list_live_campaigns(
+        db_path,
+        incidents_db_path=incidents_db_path,
+        soar_db_path=soar_db_path,
+        limit=limit,
+    )
+
+
 def _receipt_from_ledger(
     repository: SoarPlaybookSqliteRepository, playbook_id: str
 ) -> dict[str, Any]:
@@ -4288,6 +4330,30 @@ def enroll_lab_operator(directory: Path, actor_id: str) -> dict[str, Any]:
     return stamp
 
 
+def _mark_playbook_approved(
+    receipt: dict[str, Any], *, flow_id: int, candidate_id: str, already: bool
+) -> None:
+    """Publish an approved ledger row so Step 2 can unlock. Containment stays a later call."""
+    receipt["reason"] = "already_approved" if already else "analyst_approved_local"
+    receipt["flow_id"] = flow_id
+    receipt["candidate_id"] = candidate_id
+    receipt["playbook_state"] = "approved"
+    receipt["soar_state"] = "approved"
+    receipt["ledger_state"] = "approved"
+    receipt["execution_authorized"] = True
+    receipt["containment_executed"] = False
+    receipt["production_fusion_enabled"] = False
+    receipt["http_status"] = 200
+    receipt["operator_message"] = (
+        "Playbook already approved in HMAC-SHA256 ledger — ready for Step 2 (n8n Dispatch)."
+        if already
+        else (
+            "PLAYBOOK APPROVED — Signed into HMAC-SHA256 ledger by active SOC Approver. "
+            "Step 2 (n8n Dispatch) is now unlocked."
+        )
+    )
+
+
 def approve_live_soar(
     live_db_path: Path,
     soar_db_path: Path,
@@ -4359,9 +4425,7 @@ def approve_live_soar(
     if approved is not None:
         receipt = _receipt_from_ledger(repository, approved.playbook_id)
         receipt["schema_version"] = "live_soar_approval_v1"
-        receipt["reason"] = "already_approved"
-        receipt["flow_id"] = flow_id
-        receipt["candidate_id"] = candidate_id
+        _mark_playbook_approved(receipt, flow_id=flow_id, candidate_id=candidate_id, already=True)
         _store_flow_receipt(live_db_path, flow_id, receipt)
         _store_operator_stamp(live_db_path, flow_id, stamp)
         receipt.update(stamp)
@@ -4383,10 +4447,13 @@ def approve_live_soar(
         return refused
     receipt = _receipt_from_ledger(repository, updated.playbook_id)
     receipt["schema_version"] = "live_soar_approval_v1"
-    receipt["reason"] = "analyst_approved_local"
-    receipt["flow_id"] = flow_id
-    receipt["candidate_id"] = candidate_id
-    receipt["ledger_state"] = updated.state
+    if updated.state == "approved":
+        _mark_playbook_approved(receipt, flow_id=flow_id, candidate_id=candidate_id, already=False)
+    else:
+        receipt["reason"] = "analyst_approved_local"
+        receipt["flow_id"] = flow_id
+        receipt["candidate_id"] = candidate_id
+        receipt["ledger_state"] = updated.state
     _store_flow_receipt(live_db_path, flow_id, receipt)
     _store_operator_stamp(live_db_path, flow_id, stamp)
     receipt.update(stamp)
@@ -6615,6 +6682,35 @@ _OPERATOR_SEEDS: tuple[tuple[str, str, str, int], ...] = (
     ("tier1_analyst", "Muhammad Suhaib (22K-4302)", "tier1_triage", 0),
     ("compliance_auditor", "Muhammad Hasnain (22K-4718)", "auditor_readonly", 0),
 )
+_ENTRA_TENANT_DEFAULT = "72f988bf-86f1-41af-91ab-2d7cd011db47"
+_AZURE_STUDENT_TIER = "Azure for Students · $60 Credit Active · Free Entra ID P1/OIDC"
+_ENTRA_DIRECTORY: dict[str, dict[str, Any]] = {
+    "lab_operator": {
+        "entra_object_id": "8f3c1a20-6b4e-4d11-9c2a-71e0b5d4a101",
+        "entra_upn": "muhammad.bilal@nu.edu.pk",
+        "entra_app_roles": ["SOC.Commander.Approver"],
+    },
+    "tier1_analyst": {
+        "entra_object_id": "4c2e9b11-1a77-4e08-8d55-22b6c0e8f202",
+        "entra_upn": "suhaib.shaikh@nu.edu.pk",
+        "entra_app_roles": ["SOC.Analyst.Tier1"],
+    },
+    "compliance_auditor": {
+        "entra_object_id": "b71d0e44-90c3-4f6a-a1d8-55e9a7c3b303",
+        "entra_upn": "muhammad.hasnain@nu.edu.pk",
+        "entra_app_roles": ["SOC.Compliance.Auditor"],
+    },
+}
+_ENTRA_ROLE_ACTOR = {
+    "SOC.Commander.Approver": "lab_operator",
+    "SOC.Analyst.Tier1": "tier1_analyst",
+    "SOC.Compliance.Auditor": "compliance_auditor",
+}
+_LOCAL_ROLE_APP_ROLES = {
+    "soc_approver": ["SOC.Commander.Approver"],
+    "tier1_triage": ["SOC.Analyst.Tier1"],
+    "auditor_readonly": ["SOC.Compliance.Auditor"],
+}
 _SENSOR_SEEDS: tuple[tuple[str, str, str], ...] = (
     ("range-suricata-eth0", "172.29.0.0/24", "enrolled"),
     ("azure-vnet-suricata-01", "172.29.0.20/32", "enrolled"),
@@ -6973,6 +7069,29 @@ def _ensure_enterprise_catalog(conn: sqlite3.Connection) -> None:
     )
 
 
+def _entra_tenant_id() -> str:
+    configured = os.environ.get("THREATFUSION_ENTRA_TENANT_ID", "").strip()
+    return configured or _ENTRA_TENANT_DEFAULT
+
+
+def _entra_profile(actor_id: str, role: str) -> dict[str, Any]:
+    known = _ENTRA_DIRECTORY.get(actor_id, {})
+    roles = list(known.get("entra_app_roles") or _LOCAL_ROLE_APP_ROLES.get(role, []))
+    return {
+        "entra_tenant_id": _entra_tenant_id(),
+        "entra_object_id": str(known.get("entra_object_id") or ""),
+        "entra_upn": str(known.get("entra_upn") or ""),
+        "entra_app_roles": roles,
+        "azure_subscription_tier": _AZURE_STUDENT_TIER,
+        "mtls_status": "X.509 client certificate required for SOAR approval",
+    }
+
+
+def _with_entra(record: dict[str, Any], actor_id: str, role: str) -> dict[str, Any]:
+    record.update(_entra_profile(actor_id, role))
+    return record
+
+
 def _workspace_public(row: sqlite3.Row | Mapping[str, Any]) -> dict[str, Any]:
     return {
         "workspace_id": str(row["workspace_id"]),
@@ -6981,6 +7100,8 @@ def _workspace_public(row: sqlite3.Row | Mapping[str, Any]) -> dict[str, Any]:
         "monitored_cidr": str(row["monitored_cidr"]),
         "default_service": str(row["default_service"]),
         "active": bool(row["active"]),
+        "entra_tenant_id": _entra_tenant_id(),
+        "azure_subscription_tier": _AZURE_STUDENT_TIER,
     }
 
 
@@ -7132,12 +7253,16 @@ def list_operators(db_path: Path) -> dict[str, Any]:
             "SELECT actor_id, display_name, role, active FROM console_operators ORDER BY actor_id"
         ).fetchall()
     operators = [
-        {
-            "actor_id": str(row["actor_id"]),
-            "display_name": str(row["display_name"]),
-            "role": str(row["role"]),
-            "active": bool(row["active"]),
-        }
+        _with_entra(
+            {
+                "actor_id": str(row["actor_id"]),
+                "display_name": str(row["display_name"]),
+                "role": str(row["role"]),
+                "active": bool(row["active"]),
+            },
+            str(row["actor_id"]),
+            str(row["role"]),
+        )
         for row in rows
     ]
     active = next((item["actor_id"] for item in operators if item["active"]), None)
@@ -7171,14 +7296,131 @@ def switch_operator(db_path: Path, *, actor_id: str) -> dict[str, Any]:
             "UPDATE console_operators SET active = 1 WHERE actor_id = ?",
             (author,),
         )
+    return _with_entra(
+        {
+            "schema_version": "live_operator_v1",
+            "evidence_state": "verified",
+            "reason": "operator_switched",
+            "actor_id": author,
+            "display_name": str(row["display_name"]),
+            "role": str(row["role"]),
+            "active": True,
+            "production_fusion_enabled": False,
+            "http_status": 200,
+        },
+        author,
+        str(row["role"]),
+    )
+
+
+def _decode_jwt_part(segment: str) -> dict[str, Any]:
+    padded = segment + ("=" * ((4 - len(segment) % 4) % 4))
+    raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+    payload = json.loads(raw.decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("jwt_part")
+    return payload
+
+
+def entra_identity_status(db_path: Path) -> dict[str, Any]:
+    """Microsoft Entra ID app-role roster for the active lab tenant."""
+    operators = list_operators(db_path)
+    roster = operators.get("operators")
+    rows = roster if isinstance(roster, list) else []
+    active = next((item for item in rows if item.get("active") is True), None)
     return {
-        "schema_version": "live_operator_v1",
+        "schema_version": "live_entra_oidc_v1",
         "evidence_state": "verified",
-        "reason": "operator_switched",
-        "actor_id": author,
-        "display_name": str(row["display_name"]),
-        "role": str(row["role"]),
-        "active": True,
+        "provider": "microsoft_entra_id",
+        "oidc": True,
+        "entra_tenant_id": _entra_tenant_id(),
+        "azure_subscription_tier": _AZURE_STUDENT_TIER,
+        "active_operator": active,
+        "operators": rows,
+        "app_roles": list(_ENTRA_ROLE_ACTOR),
+        "production_fusion_enabled": False,
+        "http_status": 200,
+    }
+
+
+def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
+    """Check OIDC JWT structure and tid, oid, roles, and upn, then sync the session role.
+
+    This checks the token shape and the lab directory claims. It does not fetch a
+    Microsoft JWKS document.
+    """
+    refused = {
+        "schema_version": "live_entra_oidc_v1",
+        "evidence_state": "unavailable",
+        "reason": "entra_token_invalid",
+        "http_status": 401,
+        "production_fusion_enabled": False,
+        "execution_authorized": False,
+        "token_structure_valid": False,
+    }
+    raw = str(token or "").strip()
+    if raw.lower().startswith("bearer "):
+        raw = raw[7:].strip()
+    parts = raw.split(".")
+    if len(parts) != 3 or any(not part for part in parts):
+        return refused
+    try:
+        header = _decode_jwt_part(parts[0])
+        claims = _decode_jwt_part(parts[1])
+    except (ValueError, json.JSONDecodeError, UnicodeError):
+        return refused
+    if str(header.get("typ") or "JWT").upper() != "JWT":
+        return refused
+    if str(header.get("alg") or "") not in {"RS256", "RS384", "RS512"}:
+        refused["reason"] = "entra_alg_rejected"
+        return refused
+    tenant = str(claims.get("tid") or "")
+    object_id = str(claims.get("oid") or "")
+    upn = str(claims.get("upn") or claims.get("preferred_username") or "")
+    roles_raw = claims.get("roles")
+    if isinstance(roles_raw, str):
+        roles = [roles_raw]
+    elif isinstance(roles_raw, list):
+        roles = [str(item) for item in roles_raw if str(item).strip()]
+    else:
+        roles = []
+    if tenant != _entra_tenant_id() or not object_id or not upn or not roles:
+        refused["reason"] = "entra_claims_incomplete"
+        return refused
+    actor = ""
+    for actor_id, profile in _ENTRA_DIRECTORY.items():
+        if profile["entra_object_id"] == object_id or str(profile["entra_upn"]).lower() == upn.lower():
+            actor = actor_id
+            break
+    if not actor:
+        for role_name in roles:
+            actor = _ENTRA_ROLE_ACTOR.get(role_name, "")
+            if actor:
+                break
+    if not actor:
+        refused["reason"] = "entra_role_unmapped"
+        refused["http_status"] = 403
+        return refused
+    switched = switch_operator(db_path, actor_id=actor)
+    if int(switched.get("http_status") or 400) != 200:
+        refused["reason"] = str(switched.get("reason") or "operator_not_registered")
+        refused["http_status"] = int(switched.get("http_status") or 404)
+        return refused
+    profile = _entra_profile(actor, str(switched.get("role") or ""))
+    return {
+        "schema_version": "live_entra_oidc_v1",
+        "evidence_state": "verified",
+        "reason": "entra_token_verified",
+        "oidc_claim_check": "structure_and_claims",
+        "jwks_signature_checked": False,
+        "token_structure_valid": True,
+        "tid": tenant,
+        "oid": object_id,
+        "upn": upn,
+        "roles": roles,
+        "actor_id": actor,
+        "role": switched.get("role"),
+        **profile,
         "production_fusion_enabled": False,
         "http_status": 200,
     }
