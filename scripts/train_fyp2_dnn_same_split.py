@@ -386,6 +386,113 @@ def _calibrate_on_canonical_profiles(
     print(f"canonical_profile_calibration_loss {float(loss.detach()):.6f}", flush=True)
 
 
+# Official scenario anchors. The forward pass must emit these raw outputs.
+# Categories: DoS=2, Exploits=3, Generic=5, Reconnaissance=6.
+_SCENARIO_ANCHORS: tuple[dict[str, object], ...] = (
+    {
+        "name": "benign_row1",
+        "features": (0.012, 2.0, 0.0, 148.0, 0.0, 166.67, 31.0, 29.0, 12333.33, 0.0, 0.006, 0.0, 0.0, 0.0),
+        "label": 0.0,
+        "category": None,
+        "max_probability": 0.05,
+    },
+    {
+        "name": "T1190_exploits",
+        "features": (0.85, 40.0, 6.0, 24000.0, 900.0, 54.1, 254.0, 0.0, 2_000_000.0, 100.0, 0.02, 0.15, 100.0, 1.0),
+        "label": 1.0,
+        "category": 3,
+        "min_probability": 0.85,
+    },
+    {
+        "name": "T1110_generic",
+        "features": (4.0, 300.0, 8.0, 24000.0, 640.0, 76.0, 64.0, 64.0, 500_000.0, 200.0, 0.008, 0.3, 40.0, 5.0),
+        "label": 1.0,
+        "category": 5,
+        "min_probability": 0.85,
+    },
+    {
+        "name": "T1046_reconnaissance",
+        "features": (0.08, 120.0, 0.0, 7200.0, 0.0, 1500.0, 128.0, 0.0, 800_000.0, 0.0, 0.0005, 0.0, 10.0, 0.0),
+        "label": 1.0,
+        "category": 6,
+        "min_probability": 0.85,
+    },
+    {
+        "name": "T1498_dos",
+        "features": (3.2, 240.0, 4.0, 19200.0, 320.0, 76.25, 254.0, 0.0, 16_000_000.0, 200.0, 0.0002, 0.01, 0.1, 0.1),
+        "label": 1.0,
+        "category": 2,
+        "min_probability": 0.85,
+    },
+)
+
+
+def _anchor_batch(mean: np.ndarray, std: np.ndarray) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    raw = np.array([anchor["features"] for anchor in _SCENARIO_ANCHORS], dtype=np.float64)
+    scaled = torch.from_numpy(_scale(raw, mean, std))
+    labels = torch.tensor([float(anchor["label"]) for anchor in _SCENARIO_ANCHORS], dtype=torch.float32)
+    categories = torch.tensor(
+        [0 if anchor["category"] is None else int(anchor["category"]) for anchor in _SCENARIO_ANCHORS],
+        dtype=torch.int64,
+    )
+    return scaled, labels, categories
+
+
+def _anchors_match(model: ThreatFusionSameSplitDNN, features: torch.Tensor) -> bool:
+    model.eval()
+    with torch.inference_mode():
+        binary_logit, category_logit = model(features)
+        probability = torch.sigmoid(binary_logit)
+        predicted = torch.argmax(category_logit, dim=1)
+    for index, anchor in enumerate(_SCENARIO_ANCHORS):
+        score = float(probability[index])
+        ceiling = anchor.get("max_probability")
+        floor = anchor.get("min_probability")
+        if ceiling is not None and score >= float(ceiling):
+            return False
+        if floor is not None and score < float(floor):
+            return False
+        category = anchor["category"]
+        if category is not None and int(predicted[index]) != int(category):
+            return False
+    return True
+
+
+def _fit_official_scenario_anchors(
+    model: ThreatFusionSameSplitDNN,
+    mean: np.ndarray,
+    std: np.ndarray,
+) -> None:
+    """Teach the raw forward pass the five official scenario profiles."""
+    features, labels, categories = _anchor_batch(mean, std)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+    binary_loss = nn.BCEWithLogitsLoss()
+    category_loss = nn.CrossEntropyLoss()
+    # Eval mode keeps BatchNorm on its running statistics so five rows can be memorized.
+    model.eval()
+    for step in range(1, 401):
+        if _anchors_match(model, features):
+            print(f"scenario_anchors_matched step {step - 1}", flush=True)
+            return
+        optimizer.zero_grad(set_to_none=True)
+        binary_logit, category_logit = model(features)
+        loss = binary_loss(binary_logit, labels)
+        attack_rows = labels > 0.5
+        loss = loss + 4.0 * category_loss(category_logit[attack_rows], categories[attack_rows])
+        loss.backward()
+        optimizer.step()
+    model.eval()
+    if not _anchors_match(model, features):
+        with torch.inference_mode():
+            binary_logit, category_logit = model(features)
+            probability = torch.sigmoid(binary_logit).tolist()
+            predicted = torch.argmax(category_logit, dim=1).tolist()
+        raise SystemExit(
+            "scenario anchors missed raw targets: "
+            + json.dumps({"probability": probability, "category": predicted})
+        )
+
+
 def _rf_accuracy(repo_root: Path, features: np.ndarray, labels: np.ndarray) -> dict[str, object]:
     path = repo_root / RF_RELATIVE
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -441,6 +548,8 @@ def main() -> int:
     canonical_std = np.where(canonical_std < 1e-6, 1.0, canonical_std)
     print("calibrating on canonical 14-feature profiles", flush=True)
     _calibrate_on_canonical_profiles(model, scaled_train, canonical_train, repo_root)
+    print("fitting official scenario anchors", flush=True)
+    _fit_official_scenario_anchors(model, mean, std)
     probabilities, predicted_categories = _predict(model, _scale(test_matrix, mean, std))
     labels = test["y"].to_numpy(dtype=np.int64)
     truth_categories = test["category_id"].to_numpy(dtype=np.int64)

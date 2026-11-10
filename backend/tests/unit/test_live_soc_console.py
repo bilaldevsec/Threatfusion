@@ -13,6 +13,7 @@ from threatfusion.api.live_soc_console import (
     answer_mitre_copilot,
     approve_live_soar,
     correlate_stored_attacks,
+    enroll_lab_operator,
     drift_for_stored_flows,
     list_live_campaigns,
     list_live_flows,
@@ -341,13 +342,26 @@ def test_soar_approval_writes_linked_hash_and_does_not_execute(tmp_path: Path) -
     assert refused["evidence_state"] == "unavailable"
     assert refused["execution_authorized"] is False
     assert not soar_db.exists()
-
-    approved = approve_live_soar(
+    unenrolled = approve_live_soar(
         live_db,
         soar_db,
         flow_id=stored["flow_id"],
         actor_id="analyst_a",
         reason="Analyst recorded local approval. Containment is not executed.",
+    )
+    assert unenrolled["reason"] == "operator_not_enrolled"
+    assert unenrolled["http_status"] == 403
+    assert not soar_db.exists()
+    policy = tmp_path / "operator-policy"
+    assert enroll_lab_operator(policy, "lab_operator")["identity_verified"] is True
+
+    approved = approve_live_soar(
+        live_db,
+        soar_db,
+        flow_id=stored["flow_id"],
+        actor_id="lab_operator",
+        reason="Analyst recorded local approval. Containment is not executed.",
+        policy_dir=policy,
     )
     assert approved["evidence_state"] == "verified"
     assert approved["operator_state"] == "approved_local"
@@ -363,8 +377,9 @@ def test_soar_approval_writes_linked_hash_and_does_not_execute(tmp_path: Path) -
         live_db,
         soar_db,
         flow_id=stored["flow_id"],
-        actor_id="analyst_a",
+        actor_id="lab_operator",
         reason="Analyst recorded local approval. Containment is not executed.",
+        policy_dir=policy,
     )
     assert again["reason"] == "already_approved"
     assert again["entry_sha256"] == approved["entry_sha256"]
@@ -401,12 +416,15 @@ def test_dispatch_records_signed_callback_and_mttr(tmp_path: Path, monkeypatch) 
             _features(), repo_root=REPO_ROOT, model=_Width14Model(), supply_verified=True
         ),
     )
+    policy = tmp_path / "operator-policy"
+    assert enroll_lab_operator(policy, "lab_operator")["identity_verified"] is True
     approve_live_soar(
         live_db,
         soar_db,
         flow_id=stored["flow_id"],
-        actor_id="analyst_a",
+        actor_id="lab_operator",
         reason="Analyst recorded local approval. Containment is not executed.",
+        policy_dir=policy,
     )
     server = ThreadingHTTPServer(("127.0.0.1", 0), MispAndCallbackContractHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -552,7 +570,7 @@ def test_triage_actions_persist_and_handoff_stays_grounded(tmp_path: Path) -> No
     exported = export_grounded_handoff(live_db, flow_id=stored["flow_id"])
     assert exported["grounded"] is True
     assert exported["production_fusion_enabled"] is False
-    assert exported["report"]["block_3_technique"] == "unavailable"
+    assert exported["report"]["block_3_technique"] == "None (Benign Flow)"
     assert exported["report"]["block_2_triage_count"] == 3
     assert exported["report"]["block_2_latest_triage_state"] == "dismissed"
     assert exported["report"]["stored_addresses"] == ["198.51.100.27", "10.0.0.5"]
@@ -567,7 +585,7 @@ def test_triage_actions_persist_and_handoff_stays_grounded(tmp_path: Path) -> No
         "escalated",
         "dismissed",
     ]
-    assert "Technique: unavailable" in exported["markdown"]
+    assert "Technique: None (Benign Flow)" in exported["markdown"]
     assert "Containment was not executed." in exported["markdown"]
     blocked = export_grounded_handoff(
         live_db,
@@ -675,10 +693,10 @@ def test_triage_and_handoff_routes_round_trip(tmp_path: Path, monkeypatch) -> No
         assert exported["containment_executed"] is False
         report = exported["report"]
         assert isinstance(report, dict)
-        assert report["block_3_technique"] == "unavailable"
+        assert report["block_3_technique"] == "None (Benign Flow)"
         assert report["block_2_triage_count"] == 3
         assert report["block_2_latest_triage_state"] == "dismissed"
-        assert "Technique: unavailable" in str(exported["markdown"])
+        assert "Technique: None (Benign Flow)" in str(exported["markdown"])
         blocked_status, blocked = post(
             "/api/v1/live/handoff",
             {"flow_id": stored["flow_id"], "brief": "host 203.0.113.99 was isolated"},
@@ -1003,11 +1021,14 @@ def test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr(
         assert missing["containment_executed"] is False
         assert missing["production_fusion_enabled"] is False
 
+        policy = tmp_path / "operator-policy"
+        assert enroll_lab_operator(policy, "lab_operator")["identity_verified"] is True
+        monkeypatch.setenv("THREATFUSION_OPERATOR_POLICY_DIR", str(policy))
         approved_status, approved = _post_json(
             f"{base}/api/v1/live/soar/approve",
             {
                 "flow_id": stored["flow_id"],
-                "actor_id": "analyst_a",
+                "actor_id": "lab_operator",
                 "reason": "Analyst recorded local approval. Containment is not executed.",
             },
         )

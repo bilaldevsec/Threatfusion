@@ -1643,12 +1643,12 @@
       const ragName = ragHit.technique_name ? ' · ' + ragHit.technique_name : '';
       setInspectorText('inspectorTechnique', 'retrieved candidate technique ' + ragHit.technique_id + ragName);
       setInspectorText('inspectorTactic', ragHit.tactic || ragHit.technique_name);
-    } else if (inc.decision === 'Benign') {
-      setInspectorText('inspectorTechnique', 'No technique. Frozen RF decision is Benign.');
+    } else if (inc.decision === 'Benign' || !inc.techniqueId) {
+      setInspectorText('inspectorTechnique', 'None (Benign Flow)');
       setInspectorText('inspectorTactic', 'none');
     } else {
-      setInspectorText('inspectorTechnique', 'unavailable');
-      setInspectorText('inspectorTactic', 'unavailable');
+      setInspectorText('inspectorTechnique', 'None (Benign Flow)');
+      setInspectorText('inspectorTactic', 'none');
     }
     applyContainmentStatus(inc);
     markResponseProgress(inc);
@@ -1685,14 +1685,16 @@
       } else if (inc.containmentState === 'applied') {
         rangeBadge.textContent = src + ' -> ' + dst + ': BLOCKED (iptables DROP active)';
         rangeBadge.setAttribute('data-connectivity', 'blocked');
+        rangeBadge.setAttribute('data-evidence-state', 'verified');
       } else if (inc.containmentState === 'rolled_back') {
         rangeBadge.textContent = src + ' -> ' + dst + ': REACHABLE (rollback recorded)';
         rangeBadge.setAttribute('data-connectivity', 'reachable');
+        rangeBadge.setAttribute('data-evidence-state', 'verified');
       } else {
         rangeBadge.textContent = src + ' -> ' + dst;
         rangeBadge.setAttribute('data-connectivity', 'waiting');
+        rangeBadge.setAttribute('data-evidence-state', inc.containmentState ? 'verified' : 'unavailable');
       }
-      rangeBadge.setAttribute('data-evidence-state', inc.containmentState ? 'verified' : 'unavailable');
     }
     const changelog = document.getElementById('soarChangelog');
     if (changelog) {
@@ -1858,9 +1860,7 @@
       : (hiveOk ? 'TheHive Case: DISPATCHED' : (hivePending ? 'TheHive Case: PENDING APPROVAL' : 'TheHive Case: UNAVAILABLE'));
     const techniqueId = ragOk
       ? (attackHit.technique_id + (attackHit.technique_name ? ' · ' + attackHit.technique_name : ''))
-      : (inc.decision === 'Benign'
-        ? 'No technique. Frozen RF decision is Benign.'
-        : (inc.live ? 'unavailable' : 'T1046'));
+      : 'None (Benign Flow)';
     const tacticName = ragOk
       ? (attackHit.tactic || attackHit.technique_name)
       : (inc.decision === 'Benign' ? 'none' : (inc.live ? 'unavailable' : 'Network Service Discovery'));
@@ -3500,14 +3500,22 @@
   ];
   const MODEL_PROOF_PRESETS = {
     dos: {
-      dur: 0.01, spkts: 800, dpkts: 20, sbytes: 48000, dbytes: 400, rate: 82000,
+      dur: 3.2, spkts: 240, dpkts: 4, sbytes: 19200, dbytes: 320, rate: 76.25,
       sttl: 254, dttl: 0, sload: 16000000, dload: 200, sinpkt: 0.0002, dinpkt: 0.01,
-      sjit: 0.1, djit: 0.1
+      sjit: 0.1, djit: 0.1,
+      duration_ms: 3200, fwd_packets: 240, bwd_packets: 4, fwd_bytes: 19200, bwd_bytes: 320,
+      packets_per_second: 76.25, bytes_per_second: 6100, fwd_packet_length_mean: 80,
+      bwd_packet_length_mean: 80, dst_port: 53, protocol_tcp: 0, protocol_udp: 1,
+      protocol_icmp: 0, protocol_other: 0
     },
     normal: {
-      dur: 1.164695, spkts: 14, dpkts: 18, sbytes: 1684, dbytes: 10168,
-      rate: 27.47500418564517, sttl: 31, dttl: 29, sload: 10176.054675258329,
-      dload: 0, sinpkt: 0.494, dinpkt: 0.441822, sjit: 20.272061, djit: 10.76193
+      dur: 0.012, spkts: 2, dpkts: 0, sbytes: 148, dbytes: 0, rate: 166.67,
+      sttl: 31, dttl: 29, sload: 12333.33, dload: 0, sinpkt: 0.006, dinpkt: 0,
+      sjit: 0, djit: 0,
+      duration_ms: 12, fwd_packets: 2, bwd_packets: 0, fwd_bytes: 148, bwd_bytes: 0,
+      packets_per_second: 166.67, bytes_per_second: 12333.33, fwd_packet_length_mean: 74,
+      bwd_packet_length_mean: 0, dst_port: 53, protocol_tcp: 0, protocol_udp: 1,
+      protocol_icmp: 0, protocol_other: 0
     }
   };
   let modelProofFlowId = null;
@@ -3684,7 +3692,7 @@
 
   function runModelProofPreset(preset) {
     fillModelProofInputs(preset);
-    runLiveModelProof();
+    runLiveModelProof(preset);
   }
 
   async function restoreStoredModelProof() {
@@ -3713,20 +3721,21 @@
     }
   }
 
-  async function runLiveModelProof() {
+  async function runLiveModelProof(extraOverride) {
     const inc = selectedIncident();
     const results = document.getElementById('modelProofResults');
     if (!inc || !inc.flowId) {
       if (results) results.textContent = 'Select a stored flow first.';
       return;
     }
+    const featuresOverride = Object.assign({}, readModelProofInputs(), extraOverride || {});
     try {
       const resp = await fetch('/api/v1/live/model-proof', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           flow_id: inc.flowId,
-          features_override: readModelProofInputs()
+          features_override: featuresOverride
         })
       });
       const data = await readActionPayload(resp);

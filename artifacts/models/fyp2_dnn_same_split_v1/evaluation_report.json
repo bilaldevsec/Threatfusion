@@ -1,7 +1,7 @@
 {
   "schema_version": "fyp2_dnn_same_split_v1",
-  "model_sha256": "b090e53396ed1f1e72d8df19bf0d2b82ed4101f7fc844395d51634e986b1eeb1",
-  "dnn_model_pt_sha256": "b090e53396ed1f1e72d8df19bf0d2b82ed4101f7fc844395d51634e986b1eeb1",
+  "model_sha256": "2a954a921ef9d7372d964cc643ffb9b35d087aa8965b6c320a99a9a9b1f2d921",
+  "dnn_model_pt_sha256": "2a954a921ef9d7372d964cc643ffb9b35d087aa8965b6c320a99a9a9b1f2d921",
   "seed": 42,
   "feature_names": [
     "dur",
@@ -41,114 +41,114 @@
     "data/raw/unsw_nb15/official/UNSW-NB15_4.csv"
   ],
   "rate_definition": "(spkts + dpkts) / dur when dur > 0 else 0",
-  "accuracy": 0.974506051046971,
-  "precision": 0.8321377145303358,
-  "recall": 0.9998908875518284,
-  "f1": 0.9083339823422377,
-  "fpr": 0.029164375287361502,
+  "accuracy": 0.9229293919810336,
+  "precision": 0.6264713020264531,
+  "recall": 0.9656919287963338,
+  "f1": 0.7599450461832857,
+  "fpr": 0.0832536985115801,
   "confusion_matrix": {
-    "tp": 64147,
-    "fp": 12940,
-    "tn": 430752,
-    "fn": 7
+    "tp": 61953,
+    "fp": 36939,
+    "tn": 406753,
+    "fn": 2201
   },
-  "nine_class_accuracy": 0.8414596128066839,
+  "nine_class_accuracy": 0.1217227296817034,
   "nine_class_confusion_matrix": [
     [
       0,
       0,
-      0,
-      525,
-      5,
-      2,
-      4,
-      0,
-      0
-    ],
-    [
-      0,
-      0,
-      0,
-      307,
-      48,
-      0,
-      4,
-      0,
-      0
-    ],
-    [
-      0,
-      0,
-      17,
-      2797,
-      381,
-      41,
-      35,
-      0,
-      0
-    ],
-    [
-      0,
-      0,
-      0,
-      6987,
-      1818,
-      49,
-      51,
-      0,
-      0
-    ],
-    [
-      0,
-      0,
-      0,
-      731,
-      3879,
-      209,
-      31,
-      0,
-      0
-    ],
-    [
-      0,
-      0,
-      1,
-      573,
-      379,
-      42137,
-      7,
-      0,
-      0
-    ],
-    [
-      0,
-      0,
-      0,
-      427,
-      1382,
-      26,
-      963,
-      0,
-      0
-    ],
-    [
-      0,
-      0,
-      0,
-      80,
-      187,
-      22,
-      14,
-      0,
-      0
-    ],
-    [
-      0,
+      16,
+      517,
       0,
       0,
       3,
-      27,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      25,
+      329,
+      0,
+      0,
       5,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      209,
+      2937,
+      0,
+      80,
+      45,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      353,
+      7440,
+      4,
+      1017,
+      91,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      469,
+      3867,
+      59,
+      295,
+      160,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      93,
+      41107,
+      3,
+      90,
+      1804,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      38,
+      2749,
+      0,
+      0,
+      11,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      18,
+      279,
+      0,
+      6,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      3,
+      31,
+      0,
+      1,
       0,
       0,
       0
@@ -196,10 +196,10 @@
     "rows_scored": 507846
   },
   "nine_class_accuracy_comparison": {
-    "threatfusion_same_split_dnn": 0.8414596128066839,
+    "threatfusion_same_split_dnn": 0.1217227296817034,
     "fyp1_random_forest_binary_accuracy": 0.8614068044249634,
     "fyp1_random_forest_nine_class_accuracy": null,
-    "dnn_binary_accuracy": 0.974506051046971,
+    "dnn_binary_accuracy": 0.9229293919810336,
     "note": "FYP-I frozen Random Forest bd2853a6 is a binary alert authority and has no 9-class head. Both binary scores use this held-out split. The DNN 9-class accuracy counts true Attack rows only. production_fusion_enabled stays false."
   },
   "production_fusion_enabled": false,

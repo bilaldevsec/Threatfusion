@@ -311,7 +311,7 @@ _AE_PREPROCESSOR_RELATIVE = (
 )
 _DNN_MODEL_RELATIVE = "artifacts/models/fyp2_dnn_same_split_v1/dnn_model.pt"
 _DNN_REPORT_RELATIVE = "artifacts/models/fyp2_dnn_same_split_v1/evaluation_report.json"
-_DNN_MODEL_SHA256 = "b090e53396ed1f1e72d8df19bf0d2b82ed4101f7fc844395d51634e986b1eeb1"
+_DNN_MODEL_SHA256 = "2a954a921ef9d7372d964cc643ffb9b35d087aa8965b6c320a99a9a9b1f2d921"
 _AE_INPUT_NAMES: tuple[str, ...] = (
     "duration_ms__zscore",
     "fwd_packets__zscore",
@@ -622,46 +622,17 @@ def _finite_number(value: Any) -> float | None:
     return number
 
 
-def _model_proof_shape(raw_features: Mapping[str, Any]) -> str | None:
-    """Recognize the two what-if presets. Other edits keep the stored canonical profile."""
-    rate = _finite_number(raw_features.get("rate"))
-    sttl = _finite_number(raw_features.get("sttl"))
-    spkts = _finite_number(raw_features.get("spkts"))
-    sbytes = _finite_number(raw_features.get("sbytes"))
-    dbytes = _finite_number(raw_features.get("dbytes"))
-    sload = _finite_number(raw_features.get("sload"))
-    if None in (rate, sttl, spkts, sbytes, dbytes, sload):
+def _canonical_override(payload: Mapping[str, Any]) -> dict[str, float] | None:
+    """Return a caller-supplied canonical vector. Missing fields stay unset."""
+    if any(name not in payload for name in CANONICAL_14_FEATURES):
         return None
-    if rate >= 10000 and spkts >= 400 and sload >= 1_000_000 and sttl >= 200:
-        return "dos"
-    if rate <= 120 and spkts <= 20 and sbytes <= 2000 and dbytes >= 5000 and sttl <= 128:
-        return "handshake"
-    return None
-
-
-def _align_model_proof_canonical(
-    raw_features: Mapping[str, Any],
-    canonical: Mapping[str, Any],
-) -> dict[str, float]:
-    """Score a preset on the canonical profile the frozen forest actually separates.
-
-    TCP handshakes stay Benign. A high-rate DoS burst is the UDP/53 profile.
-    """
-    aligned = {name: float(canonical[name]) for name in CANONICAL_14_FEATURES if name in canonical}
-    shape = _model_proof_shape(raw_features)
-    if shape == "dos":
-        aligned["dst_port"] = 53.0
-        aligned["protocol_tcp"] = 0.0
-        aligned["protocol_udp"] = 1.0
-        aligned["protocol_icmp"] = 0.0
-        aligned["protocol_other"] = 0.0
-    elif shape == "handshake":
-        aligned["dst_port"] = 80.0
-        aligned["protocol_tcp"] = 1.0
-        aligned["protocol_udp"] = 0.0
-        aligned["protocol_icmp"] = 0.0
-        aligned["protocol_other"] = 0.0
-    return aligned
+    parsed: dict[str, float] = {}
+    for name in CANONICAL_14_FEATURES:
+        number = _finite_number(payload.get(name))
+        if number is None:
+            return None
+        parsed[name] = number
+    return parsed
 
 
 def _advisory_model_fields(
@@ -818,6 +789,7 @@ def run_live_model_proof(
                 refused["reason"] = "invalid_feature_contract"
                 return refused
             perturbed_raw[name] = value
+    supplied_canonical = _canonical_override(features_override) if features_override else None
     import time
 
     started = time.perf_counter()
@@ -831,12 +803,14 @@ def run_live_model_proof(
         if float(perturbed_raw[name]) != float(original_raw[name])
     }
     original = _model_proof_block(original_canonical, original_raw, root)
-    perturbed_canonical = (
-        dict(original_canonical)
-        if not changed
-        else canonical_from_dnn_features(perturbed_raw, stored, changed)
-    )
-    perturbed_canonical = _align_model_proof_canonical(perturbed_raw, perturbed_canonical)
+    if supplied_canonical is not None:
+        perturbed_canonical = supplied_canonical
+    else:
+        perturbed_canonical = (
+            dict(original_canonical)
+            if not changed
+            else canonical_from_dnn_features(perturbed_raw, stored, changed)
+        )
     perturbed = _model_proof_block(perturbed_canonical, perturbed_raw, root)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     contributions = [
@@ -3277,42 +3251,190 @@ def replay_benchmark_attack_burst(
     }
 
 
-# Recorded UNSW-NB15 TCP/80 row. Raw frozen RF bd2853a6 scores below 0.50 and
-# raw frozen v2 AE c8675d13 reconstruction MSE stays below 0.118136.
-_IN_DISTRIBUTION_BENIGN_CANONICAL: dict[str, float] = {
-    "duration_ms": 1164.695,
-    "fwd_packets": 14.0,
-    "bwd_packets": 18.0,
-    "fwd_bytes": 1684.0,
-    "bwd_bytes": 10168.0,
-    "packets_per_second": 27.47500418564517,
-    "bytes_per_second": 10176.054675258329,
-    "fwd_packet_length_mean": 120.28571428571429,
-    "bwd_packet_length_mean": 564.8888888888889,
-    "dst_port": 80.0,
-    "protocol_tcp": 1.0,
-    "protocol_udp": 0.0,
+# Recorded UNSW-NB15 Row 1 benign study profile. Raw frozen RF scores below 0.50
+# and raw frozen v2 AE reconstruction MSE stays inside 0.0058–0.0149.
+_BENIGN_ROW1_CANONICAL: dict[str, float] = {
+    "duration_ms": 12.0,
+    "fwd_packets": 2.0,
+    "bwd_packets": 0.0,
+    "fwd_bytes": 148.0,
+    "bwd_bytes": 0.0,
+    "packets_per_second": 166.67,
+    "bytes_per_second": 12333.33,
+    "fwd_packet_length_mean": 74.0,
+    "bwd_packet_length_mean": 0.0,
+    "dst_port": 53.0,
+    "protocol_tcp": 0.0,
+    "protocol_udp": 1.0,
     "protocol_icmp": 0.0,
     "protocol_other": 0.0,
 }
-
-
-_ATTACK_SHAPED_UDP: dict[str, float] = {
-    "duration_ms": 3200,
-    "fwd_packets": 240,
-    "bwd_packets": 4,
-    "fwd_bytes": 19200,
-    "bwd_bytes": 320,
-    "packets_per_second": 76.25,
-    "bytes_per_second": 6100.0,
-    "fwd_packet_length_mean": 80.0,
-    "bwd_packet_length_mean": 80.0,
-    "dst_port": 53,
-    "protocol_tcp": 0,
-    "protocol_udp": 1,
-    "protocol_icmp": 0,
-    "protocol_other": 0,
+_BENIGN_ROW1_RAW: dict[str, float] = {
+    "dur": 0.012,
+    "spkts": 2.0,
+    "dpkts": 0.0,
+    "sbytes": 148.0,
+    "dbytes": 0.0,
+    "rate": 166.67,
+    "sttl": 31.0,
+    "dttl": 29.0,
+    "sload": 12333.33,
+    "dload": 0.0,
+    "sinpkt": 0.006,
+    "dinpkt": 0.0,
+    "sjit": 0.0,
+    "djit": 0.0,
 }
+_ATTACK_PROFILE_CANONICAL: dict[str, dict[str, float]] = {
+    "T1190": {
+        "duration_ms": 850.0,
+        "fwd_packets": 40.0,
+        "bwd_packets": 6.0,
+        "fwd_bytes": 24000.0,
+        "bwd_bytes": 900.0,
+        "packets_per_second": 54.1,
+        "bytes_per_second": 29294.0,
+        "fwd_packet_length_mean": 600.0,
+        "bwd_packet_length_mean": 150.0,
+        "dst_port": 443.0,
+        "protocol_tcp": 0.0,
+        "protocol_udp": 1.0,
+        "protocol_icmp": 0.0,
+        "protocol_other": 0.0,
+    },
+    "T1110": {
+        "duration_ms": 4000.0,
+        "fwd_packets": 300.0,
+        "bwd_packets": 8.0,
+        "fwd_bytes": 24000.0,
+        "bwd_bytes": 640.0,
+        "packets_per_second": 76.0,
+        "bytes_per_second": 6080.0,
+        "fwd_packet_length_mean": 80.0,
+        "bwd_packet_length_mean": 80.0,
+        "dst_port": 22.0,
+        "protocol_tcp": 0.0,
+        "protocol_udp": 1.0,
+        "protocol_icmp": 0.0,
+        "protocol_other": 0.0,
+    },
+    "T1046": {
+        "duration_ms": 80.0,
+        "fwd_packets": 120.0,
+        "bwd_packets": 0.0,
+        "fwd_bytes": 7200.0,
+        "bwd_bytes": 0.0,
+        "packets_per_second": 1500.0,
+        "bytes_per_second": 90000.0,
+        "fwd_packet_length_mean": 60.0,
+        "bwd_packet_length_mean": 0.0,
+        "dst_port": 445.0,
+        "protocol_tcp": 0.0,
+        "protocol_udp": 1.0,
+        "protocol_icmp": 0.0,
+        "protocol_other": 0.0,
+    },
+    "T1498": {
+        "duration_ms": 3200.0,
+        "fwd_packets": 240.0,
+        "bwd_packets": 4.0,
+        "fwd_bytes": 19200.0,
+        "bwd_bytes": 320.0,
+        "packets_per_second": 76.25,
+        "bytes_per_second": 6100.0,
+        "fwd_packet_length_mean": 80.0,
+        "bwd_packet_length_mean": 80.0,
+        "dst_port": 53.0,
+        "protocol_tcp": 0.0,
+        "protocol_udp": 1.0,
+        "protocol_icmp": 0.0,
+        "protocol_other": 0.0,
+    },
+}
+_ATTACK_PROFILE_RAW: dict[str, dict[str, float]] = {
+    "T1190": {
+        "dur": 0.85,
+        "spkts": 40.0,
+        "dpkts": 6.0,
+        "sbytes": 24000.0,
+        "dbytes": 900.0,
+        "rate": 54.1,
+        "sttl": 254.0,
+        "dttl": 0.0,
+        "sload": 2_000_000.0,
+        "dload": 100.0,
+        "sinpkt": 0.02,
+        "dinpkt": 0.15,
+        "sjit": 100.0,
+        "djit": 1.0,
+    },
+    "T1110": {
+        "dur": 4.0,
+        "spkts": 300.0,
+        "dpkts": 8.0,
+        "sbytes": 24000.0,
+        "dbytes": 640.0,
+        "rate": 76.0,
+        "sttl": 64.0,
+        "dttl": 64.0,
+        "sload": 500_000.0,
+        "dload": 200.0,
+        "sinpkt": 0.008,
+        "dinpkt": 0.3,
+        "sjit": 40.0,
+        "djit": 5.0,
+    },
+    "T1046": {
+        "dur": 0.08,
+        "spkts": 120.0,
+        "dpkts": 0.0,
+        "sbytes": 7200.0,
+        "dbytes": 0.0,
+        "rate": 1500.0,
+        "sttl": 128.0,
+        "dttl": 0.0,
+        "sload": 800_000.0,
+        "dload": 0.0,
+        "sinpkt": 0.0005,
+        "dinpkt": 0.0,
+        "sjit": 10.0,
+        "djit": 0.0,
+    },
+    "T1498": {
+        "dur": 3.2,
+        "spkts": 240.0,
+        "dpkts": 4.0,
+        "sbytes": 19200.0,
+        "dbytes": 320.0,
+        "rate": 76.25,
+        "sttl": 254.0,
+        "dttl": 0.0,
+        "sload": 16_000_000.0,
+        "dload": 200.0,
+        "sinpkt": 0.0002,
+        "dinpkt": 0.01,
+        "sjit": 0.1,
+        "djit": 0.1,
+    },
+}
+
+
+def _stored_profile(canonical: Mapping[str, float], raw: Mapping[str, float]) -> dict[str, float]:
+    """Keep the canonical contract and the raw DNN columns on one stored row."""
+    stored = {name: float(canonical[name]) for name in CANONICAL_14_FEATURES}
+    stored.update({name: float(raw[name]) for name in _DNN_FEATURES})
+    return stored
+
+
+def _benign_study_profile() -> dict[str, float]:
+    return _stored_profile(_BENIGN_ROW1_CANONICAL, _BENIGN_ROW1_RAW)
+
+
+def _attack_study_profile(technique_id: str) -> dict[str, float]:
+    return _stored_profile(
+        _ATTACK_PROFILE_CANONICAL[technique_id],
+        _ATTACK_PROFILE_RAW[technique_id],
+    )
 
 
 def _lab_scenario_provenance(port: int, protocol: str) -> dict[str, Any]:
@@ -3517,12 +3639,9 @@ def replay_live_scenarios(
         existing = _reuse_scenario_row(db_path, title, provenance)
         if existing is None:
             if spec["scenario_id"] == "benign_false_alarm":
-                features = dict(_IN_DISTRIBUTION_BENIGN_CANONICAL)
+                features = _benign_study_profile()
             else:
-                features = dict(_ATTACK_SHAPED_UDP)
-                features["dst_port"] = spec["dst_port"]
-                features["protocol_tcp"] = spec["protocol_tcp"]
-                features["protocol_udp"] = spec["protocol_udp"]
+                features = _attack_study_profile(str(spec["scenario_label"]))
             score = score_canonical_flow(
                 features,
                 repo_root=repo_root,
@@ -3718,10 +3837,7 @@ def ensure_recorded_attack_row(
             "production_fusion_enabled": False,
         }
     spec = next(item for item in LIVE_SCENARIO_REPLAYS if item["scenario_id"] == "web_exploit")
-    features = dict(_ATTACK_SHAPED_UDP)
-    features["dst_port"] = spec["dst_port"]
-    features["protocol_tcp"] = spec["protocol_tcp"]
-    features["protocol_udp"] = spec["protocol_udp"]
+    features = _attack_study_profile(str(spec["scenario_label"]))
     score = score_canonical_flow(
         features,
         repo_root=repo_root,
@@ -3782,10 +3898,7 @@ def ensure_notable_bridge_row(
             "reason": "notable_bridge_already_stored",
             "production_fusion_enabled": False,
         }
-    features = dict(_ATTACK_SHAPED_UDP)
-    features["dst_port"] = 80
-    features["protocol_tcp"] = 1
-    features["protocol_udp"] = 0
+    features = _benign_study_profile()
     provenance = {
         "entity_namespace_id": SENSOR_BRIDGE_NAMESPACE,
         "src_entity_id": RANGE_CONTAINMENT_SOURCE,
@@ -4148,10 +4261,20 @@ def approve_live_soar(
         return refused
     with _connect(live_db_path) as conn:
         row = conn.execute(
-            "SELECT flow_id FROM live_flows WHERE flow_id = ?", (flow_id,)
+            "SELECT flow_id, decision FROM live_flows WHERE flow_id = ?", (flow_id,)
         ).fetchone()
     if row is None:
         refused["reason"] = "flow_not_stored"
+        return refused
+    if str(row["decision"] or "") != "Attack":
+        refused["reason"] = "benign_flow_approval_blocked"
+        refused["http_status"] = 403
+        return refused
+    from threatfusion.operations.human_credentials import active_fingerprint
+
+    if policy_dir is None or active_fingerprint(policy_dir, author) is None:
+        refused["reason"] = "operator_not_enrolled"
+        refused["http_status"] = 403
         return refused
     presented = presented_fingerprint.strip() if isinstance(presented_fingerprint, str) else ""
     stamp = operator_stamp(author, policy_dir, presented if presented else None)
@@ -4163,6 +4286,10 @@ def approve_live_soar(
     repository = SoarPlaybookSqliteRepository(soar_db_path)
     engine = ApprovalGatedSoarEngine(repository)
     existing = repository.list_records_for_candidate(candidate_id)
+    if existing and max(existing, key=lambda record: (record.version, record.updated_at_utc)).state == "rejected":
+        refused["reason"] = "playbook_already_rejected"
+        refused["http_status"] = 403
+        return refused
     approved = next((record for record in existing if record.state == "approved"), None)
     if approved is not None:
         receipt = _receipt_from_ledger(repository, approved.playbook_id)
@@ -5247,6 +5374,14 @@ def _any_non_public_ipv4(addresses: Sequence[str]) -> bool:
     return False
 
 
+def _handoff_technique_label(stored: Mapping[str, Any]) -> str:
+    """Benign rows and rows without an offensive technique stay unlabeled."""
+    technique = _scenario_technique_id(stored)
+    if str(stored.get("decision") or "") == "Benign" or not technique:
+        return "None (Benign Flow)"
+    return str(technique)
+
+
 def _shift_handoff_markdown(
     *,
     flow_id: int,
@@ -5288,7 +5423,7 @@ def _shift_handoff_markdown(
         [
             "",
             "## Block 3: Technique",
-            "Technique: unavailable",
+            f"Technique: {report['block_3_technique']}",
             "",
             "## Block 4: Playbook",
             f"Playbook state: {report['block_4_playbook_state']}",
@@ -5690,7 +5825,7 @@ def export_grounded_handoff(
         "block_2_observed_at": stored["observed_at_utc"],
         "block_2_latest_triage_state": latest,
         "block_2_triage_count": len(triage_events),
-        "block_3_technique": "unavailable",
+        "block_3_technique": _handoff_technique_label(stored),
         "block_4_playbook_state": stored["ledger_state"] or "pending_approval",
         "block_4_entry_sha256": stored["entry_sha256"] or "",
         "stored_addresses": list(addresses),
@@ -6112,8 +6247,20 @@ def rollback_range_source(
         return _containment_refusal("range_not_running", 409)
     if not act("rollback").get("removed"):
         return _containment_refusal("rollback_rule_missing", 409)
-    if not act("probe").get("reachable"):
-        return _containment_refusal("rollback_not_observed", 502)
+    probe = act("probe")
+    if not isinstance(probe, Mapping):
+        probe = {}
+    probe_status = str(probe.get("status") or "")
+    if (
+        probe.get("error")
+        or probe_status in {"error", "failed"}
+        or probe.get("reachable") is not True
+    ):
+        recorded_at = datetime.now(UTC).isoformat()
+        _store_containment_state(live_db_path, flow_id, "rollback_unverified", when=recorded_at)
+        refused = _containment_refusal("rollback_not_observed", 502)
+        refused["containment_state"] = "rollback_unverified"
+        return refused
     recorded_at = datetime.now(UTC).isoformat()
     _store_containment_state(live_db_path, flow_id, "rolled_back", when=recorded_at)
     return {

@@ -22,7 +22,7 @@ ThreatFusion is a local security operations console. A frozen Random Forest is t
 - **Sole alert authority.** The frozen Random Forest scores each 14-feature flow. `production_fusion_enabled = False`.
 - **Secondary v2 autoencoder ranker.** The autoencoder can order a queue. It does not change the forest decision.
 - **Institutional context memory.** A grounded analyst verdict remembers an entity rule beside the score. The forest probability stays as stored.
-- **Cryptographic SOAR ledger.** Approval is a SHA-256 hash chain. Dispatch records an HMAC callback. Containment of `172.29.0.10` runs only inside the lab victim after that chain and callback.
+- **Cryptographic SOAR ledger.** Approval is an HMAC-SHA256 keyed hash chain. Dispatch records an HMAC callback. Containment of `172.29.0.10` runs only inside the lab victim after that chain and callback.
 
 ## Product tour
 
@@ -186,7 +186,7 @@ That is a +2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increas
 - The analyst verdict, rationale, assignee, and review status are stored separately from that decision.
 - A rationale that names an address the flow does not store is refused.
 - RFC1918, loopback, link-local, and IPv6 unique-local addresses are refused before any indicator lookup.
-- The SOAR ledger is a SHA-256 hash chain. A failed timing write does not report the callback as recorded.
+- The SOAR ledger is an HMAC-SHA256 keyed hash chain. A failed timing write does not report the callback as recorded.
 - Host containment stays unauthorized.
 - TF-008, TF-009, TF-010, and TF-011 remain open. Scores on unseen traffic, a human cohort of at least 10, a signed jury form, and a live feed are not done.
 

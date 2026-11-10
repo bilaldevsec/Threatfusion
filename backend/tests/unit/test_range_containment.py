@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from threatfusion.api.live_soc_console import (
     RANGE_VICTIM_CONTAINER,
     approve_live_soar,
     contain_range_source,
+    enroll_lab_operator,
     persist_scored_flow,
     range_docker_argv,
     rollback_range_source,
@@ -74,12 +76,18 @@ def _ready(tmp_path: Path, source: str = "172.29.0.10") -> tuple[Path, Path, int
         service_or_port="80",
         clock_synchronized=True,
     )
+    policy = tmp_path / "operator-policy"
+    policy.parent.mkdir(parents=True, exist_ok=True)
+    if not policy.parent.is_symlink():
+        os.chmod(policy.parent, 0o700)
+    assert enroll_lab_operator(policy, "lab_operator")["identity_verified"] is True
     approved = approve_live_soar(
         live_db,
         soar_db,
         flow_id=flow_id,
-        actor_id="analyst_a",
+        actor_id="lab_operator",
         reason="Analyst recorded local approval. Containment is not executed.",
+        policy_dir=policy,
     )
     assert approved["containment_executed"] is False
     with sqlite3.connect(live_db) as conn:

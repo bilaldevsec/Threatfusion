@@ -14,6 +14,7 @@ from pathlib import Path
 from threatfusion.api.live_soc_console import (
     approve_live_soar,
     dispatch_approved_callback,
+    enroll_lab_operator,
     persist_scored_flow,
     score_canonical_flow,
     store_flow_provenance,
@@ -215,12 +216,15 @@ def test_n8n_dispatch_records_422_without_dropping_the_callback(
     webhook_url = f"http://127.0.0.1:{webhook_port}/webhook/threatfusion-live-console"
     try:
         _approved_other = _score(live_db)
+        policy = tmp_path / "operator-policy"
+        assert enroll_lab_operator(policy, "lab_operator")["identity_verified"] is True
         approve_live_soar(
             live_db,
             soar_db,
             flow_id=_approved_other,
-            actor_id="analyst_a",
+            actor_id="lab_operator",
             reason="Analyst recorded local approval. Containment is not executed.",
+            policy_dir=policy,
         )
         unapproved = _score(live_db)
         refused = dispatch_approved_callback(
@@ -252,8 +256,9 @@ def test_n8n_dispatch_records_422_without_dropping_the_callback(
             live_db,
             soar_db,
             flow_id=approved_id,
-            actor_id="analyst_a",
+            actor_id="lab_operator",
             reason="Analyst recorded local approval. Containment is not executed.",
+            policy_dir=policy,
         )
         dispatched = dispatch_approved_callback(
             live_db,
@@ -296,12 +301,15 @@ def test_tampered_chain_returns_no_callback(tmp_path: Path, monkeypatch) -> None
     webhook_url = f"http://127.0.0.1:{webhook_port}/hook"
     try:
         flow_id = _score(live_db)
+        policy = tmp_path / "operator-policy"
+        assert enroll_lab_operator(policy, "lab_operator")["identity_verified"] is True
         approve_live_soar(
             live_db,
             soar_db,
             flow_id=flow_id,
-            actor_id="analyst_a",
+            actor_id="lab_operator",
             reason="Analyst recorded local approval. Containment is not executed.",
+            policy_dir=policy,
         )
         with sqlite3.connect(soar_db) as conn:
             conn.execute("DROP TRIGGER IF EXISTS soar_audit_events_append_only_update")

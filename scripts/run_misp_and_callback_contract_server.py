@@ -55,7 +55,6 @@ _ALLOWED_HTTP_HOSTS = frozenset(
         "[::1]",
         "::1",
         "host.docker.internal",
-        "172.17.0.1",
         "172.28.0.10",
         "172.28.0.11",
         "172.29.0.1",
@@ -66,6 +65,13 @@ _ALLOWED_HTTP_HOSTS = frozenset(
 
 class DuplicateJsonKeyError(ValueError):
     """Raised when a JSON object repeats a key."""
+
+
+def _docker_bridge_host_allowed(bind_host: str) -> bool:
+    """172.17.0.1 is the docker0 bridge, not a general console origin."""
+    if os.environ.get("THREATFUSION_ALLOW_DOCKER_BRIDGE") == "1":
+        return True
+    return bind_host == "172.17.0.1"
 
 
 def _host_without_port(value: str) -> str:
@@ -376,6 +382,12 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
     def _rejected_host_header(self) -> bool:
         """Refuse a Host that is not this console, the lab bridge, or the test client."""
         host = _host_without_port(str(self.headers.get("Host") or ""))
+        bind_host = str(self.server.server_address[0])
+        if host == "172.17.0.1":
+            if _docker_bridge_host_allowed(bind_host):
+                return False
+            self._send_json(403, {"error": "invalid_host_header"})
+            return True
         if host in _ALLOWED_HTTP_HOSTS:
             return False
         self._send_json(403, {"error": "invalid_host_header"})
@@ -712,8 +724,10 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         return False
 
     def _origin_host_allowed(self, hostname: str) -> bool:
-        allowed = set(_ALLOWED_HTTP_HOSTS) | {"127.0.0.1", "localhost", "::1", "172.17.0.1"}
+        allowed = set(_ALLOWED_HTTP_HOSTS) | {"127.0.0.1", "localhost", "::1"}
         bind_host = str(self.server.server_address[0])
+        if _docker_bridge_host_allowed(bind_host):
+            allowed.add("172.17.0.1")
         if bind_host not in {"0.0.0.0", "::", ""}:
             allowed.add(bind_host.lower())
         return hostname.lower() in allowed
@@ -1370,7 +1384,8 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 result.get("evidence_state") == "verified"
                 or result.get("ledger_state") == "approved"
             )
-            self._send_json(200 if operational else 400, _with_three_proof_state(result))
+            status = int(result["http_status"]) if result.get("http_status") else (200 if operational else 400)
+            self._send_json(status, _with_three_proof_state(result))
             return
 
         if path == "/api/v1/live/soar/dispatch":

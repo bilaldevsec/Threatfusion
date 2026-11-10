@@ -213,6 +213,14 @@ class SoarPlaybookSqliteRepository:
         if path.is_symlink() or not path.is_file():
             return ""
         try:
+            info = path.lstat()
+        except OSError:
+            return ""
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            return ""
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+            return ""
+        try:
             stored = path.read_text(encoding="utf-8").strip()
         except OSError:
             return ""
@@ -917,6 +925,15 @@ class ApprovalGatedSoarEngine:
         record = self.repository.get_record(playbook_id)
         if record is None:
             raise KeyError(f"Playbook record {playbook_id} not found")
+
+        if decision == "approve":
+            siblings = self.repository.list_records_for_candidate(record.candidate_id)
+            latest = max(
+                siblings or (record,),
+                key=lambda item: (item.version, item.updated_at_utc or ""),
+            )
+            if record.state == "rejected" or latest.state == "rejected":
+                raise ValueError("playbook_already_rejected")
 
         if record.state != "pending_approval":
             raise SoarStateTransitionError(

@@ -76,14 +76,17 @@ def _wait_ready(base: str) -> None:
     raise RuntimeError("isolated console did not become ready")
 
 
-def _flow_ids(base: str) -> list[int]:
+def _flow_ids(base: str, *, decision: str | None = None) -> list[int]:
     _status, payload = _get(base, "/api/v1/live/campaigns")
     found: list[int] = []
     for campaign in payload.get("campaigns") or []:
         for flow in campaign.get("flows") or []:
             flow_id = flow.get("flow_id")
-            if isinstance(flow_id, int):
-                found.append(flow_id)
+            if not isinstance(flow_id, int):
+                continue
+            if decision is not None and str(flow.get("decision") or "") != decision:
+                continue
+            found.append(flow_id)
     return found
 
 
@@ -112,16 +115,16 @@ def run_probes(base: str) -> list[tuple[str, bool, str]]:
     scenario_status, _scenario = _post(base, "/api/v1/live/scenarios", {}, headers=live_headers)
     if scenario_status != 200:
         raise RuntimeError(f"could not seed an isolated scenario flow: {scenario_status}")
-    flow_ids = _flow_ids(base)
+    flow_ids = _flow_ids(base, decision="Attack")
     if len(flow_ids) < 2:
-        raise RuntimeError("isolated console did not store two flows")
+        raise RuntimeError("isolated console did not store two attack flows")
     approved_id, other_id = flow_ids[0], flow_ids[1]
     approve_status, _approved = _post(
         base,
         "/api/v1/live/soar/approve",
         {
             "flow_id": approved_id,
-            "actor_id": "analyst_a",
+            "actor_id": "lab_operator",
             "reason": "Isolated probe approval so the ledger file exists.",
         },
         headers=live_headers,
@@ -217,6 +220,15 @@ def run_isolated_audit(audit_path: Path | None = None) -> int:
         env["THREATFUSION_LIVE_RAG_DB"] = str(work / "rag.sqlite3")
         env["THREATFUSION_SOAR_HMAC_SECRET"] = HMAC_SECRET
         env["THREATFUSION_MISP_API_KEY"] = MISP_KEY
+        policy = work / "operator-policy"
+        env["THREATFUSION_OPERATOR_POLICY_DIR"] = str(policy)
+        src = str(ROOT / "backend" / "src")
+        if src not in sys.path:
+            sys.path.insert(0, src)
+        from threatfusion.api.live_soc_console import enroll_lab_operator
+
+        if enroll_lab_operator(policy, "lab_operator").get("identity_verified") is not True:
+            return 1
         env.pop("THREATFUSION_N8N_WEBHOOK_URL", None)
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         env.pop("PYTHONPATH", None)

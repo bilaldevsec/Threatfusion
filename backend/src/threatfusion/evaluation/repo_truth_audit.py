@@ -116,6 +116,7 @@ _GATE_G9_RUNTIME_MODULE_NEEDLES: tuple[str, ...] = (
     "gemini_client",
     "explanation_engine",
     "chromadb_mitre_rag",
+    "chromadb",
 )
 
 
@@ -819,6 +820,7 @@ needles = (
     "gemini_client",
     "explanation_engine",
     "chromadb_mitre_rag",
+    "chromadb",
 )
 leaked = sorted(
     name for name in sys.modules if any(needle in name for needle in needles)

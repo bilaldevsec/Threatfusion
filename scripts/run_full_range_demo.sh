@@ -157,6 +157,7 @@ cmd_up() {
     die "port ${PORT} is already in use"
   fi
   nohup env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 \
+    THREATFUSION_ALLOW_DOCKER_BRIDGE=1 \
     "$PYTHON" "$SERVER" --bind "$BIND_HOST" --port "$PORT" \
     >"${DEMO_DIR}/console.log" 2>&1 &
   echo $! >"$CONSOLE_PIDFILE"
