@@ -25,7 +25,7 @@ VNET_PREFIX="172.29.0.0/16"
 SUBNET="tf-range-subnet"
 SUBNET_PREFIX="172.29.0.0/24"
 NSG="tf-range-nsg"
-LOCATION="${AZURE_LOCATION:-eastus}"
+LOCATION="${AZURE_LOCATION:-southeastasia}"
 VICTIM_NAME="tf-soc-victim-vm"
 VICTIM_IP="172.29.0.20"
 ATTACKER_NAME="tf-attacker-redteam-vm"
@@ -301,12 +301,79 @@ show_status() {
   run az vm list -g "$RG" -d -o table
 }
 
+pick_southeastasia_vm_size() {
+  local preferred size available
+  preferred=(
+    Standard_D2s_v3
+    Standard_D2as_v5
+    Standard_D2s_v5
+    Standard_D2s_v4
+    Standard_D2as_v4
+    Standard_D2_v2
+    Standard_DS1_v2
+    Standard_B2s
+    Standard_B2ats_v2
+  )
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    printf '%s\n' "Standard_D2s_v3"
+    return 0
+  fi
+  available="$(az vm list-skus --location southeastasia --resource-type virtualMachines --query "[?restrictions==\`[]\`].name" -o tsv)"
+  for size in "${preferred[@]}"; do
+    if printf '%s\n' "$available" | grep -qx "$size"; then
+      printf '%s\n' "$size"
+      return 0
+    fi
+  done
+  size="$(printf '%s\n' "$available" | grep -E '^Standard_D[^[:space:]]*s' | head -n 1 || true)"
+  if [[ -z "$size" ]]; then
+    size="$(printf '%s\n' "$available" | grep -E '^Standard_B' | head -n 1 || true)"
+  fi
+  if [[ -z "$size" ]]; then
+    echo "No unrestricted D-series or B-series VM SKU is available in southeastasia." >&2
+    return 1
+  fi
+  printf '%s\n' "$size"
+}
+
+create_vm_with_zone_retry() {
+  if run az vm create "$@"; then
+    return 0
+  fi
+  local zone
+  for zone in 1 2 3; do
+    if run az vm create "$@" --zone "$zone"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+ensure_southeastasia_group() {
+  local existing vm_count
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "dry-run: az group show --name $RG"
+    run az group create --name "$RG" --location southeastasia
+    return 0
+  fi
+  existing="$(az group show --name "$RG" --query location -o tsv 2>/dev/null || true)"
+  if [[ -n "$existing" && "$existing" != "southeastasia" ]]; then
+    vm_count="$(az vm list --resource-group "$RG" --query "length(@)" -o tsv 2>/dev/null || echo 0)"
+    if [[ "$vm_count" != "0" ]]; then
+      echo "ThreatFusion-RG exists in ${existing} and still has VMs. Refusing to recreate it." >&2
+      return 1
+    fi
+    az group delete --name "$RG" --yes --no-wait
+    az group wait --name "$RG" --deleted || true
+  fi
+  run az group create --name "$RG" --location southeastasia
+}
+
 provision_live_azure() {
   require_az
-  local live_location="$LOCATION"
-  if [[ "$live_location" != "eastus" && "$live_location" != "southeastasia" ]]; then
-    live_location="eastus"
-  fi
+  local live_location="southeastasia"
+  local vm_size
+  vm_size="$(pick_southeastasia_vm_size)"
   local roles
   roles='[{"allowedMemberTypes":["User"],"description":"Tier-3 SOC approver who may sign SOAR playbooks","displayName":"SOC Approver","id":"c1a0b011-1111-4111-8111-000000000011","isEnabled":true,"value":"soc_approver"},{"allowedMemberTypes":["User"],"description":"Tier-1 analyst limited to triage","displayName":"Tier-1 Triage","id":"c1a0b012-2222-4222-8222-000000000012","isEnabled":true,"value":"tier1_triage"},{"allowedMemberTypes":["User"],"description":"Read-only compliance auditor","displayName":"Compliance Auditor","id":"c1a0b013-3333-4333-8333-000000000013","isEnabled":true,"value":"compliance_auditor"}]'
   local live_vnet="ThreatFusion-VNet"
@@ -335,7 +402,7 @@ provision_live_azure() {
         -o tsv)"
     fi
   fi
-  run az group create --name "$RG" --location "$live_location"
+  ensure_southeastasia_group
   run az network nsg create --resource-group "$RG" --name "$live_nsg"
   run az network nsg rule create \
     --resource-group "$RG" \
@@ -371,11 +438,11 @@ provision_live_azure() {
     --vnet-name "$live_vnet" \
     --name "$live_subnet" \
     --network-security-group "$live_nsg"
-  run az vm create \
+  create_vm_with_zone_retry \
     --resource-group "$RG" \
     --name "$VICTIM_NAME" \
     --image Ubuntu2204 \
-    --size Standard_B1s \
+    --size "$vm_size" \
     --admin-username "$ADMIN_USER" \
     --generate-ssh-keys \
     --vnet-name "$live_vnet" \
@@ -383,11 +450,11 @@ provision_live_azure() {
     --nsg "$live_nsg" \
     --private-ip-address "$VICTIM_IP" \
     --public-ip-address ""
-  run az vm create \
+  create_vm_with_zone_retry \
     --resource-group "$RG" \
     --name "$ATTACKER_NAME" \
     --image Ubuntu2204 \
-    --size Standard_B1s \
+    --size "$vm_size" \
     --admin-username "$ADMIN_USER" \
     --generate-ssh-keys \
     --vnet-name "$live_vnet" \
@@ -395,6 +462,7 @@ provision_live_azure() {
     --nsg "$live_nsg" \
     --private-ip-address "$ATTACKER_IP" \
     --public-ip-address ""
+  # 02:00 PKT is 21:00 UTC.
   run az vm auto-shutdown \
     --resource-group "$RG" \
     --name "$VICTIM_NAME" \

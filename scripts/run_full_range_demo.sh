@@ -75,11 +75,13 @@ export THREATFUSION_OPERATOR_POLICY_DIR="${DEMO_DIR}/operator-policy"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/run_full_range_demo.sh --up | --scan | --down
+Usage: scripts/run_full_range_demo.sh --up | --scan | --attack <T1046|T1110|T1190|T1498> | --down
 
   --up     Start the console, n8n, the private range, and the eve follower.
            Wait until Suricata logs that its engine has started.
-  --scan   Run non-interactive curl and ssh from the attacker container.
+  --scan   Run attacker-to-victim traffic and store it as the calibrated T1046 recon flow.
+  --attack VECTOR
+           Run real traffic for T1046, T1110, T1190, or T1498 and ingest that vector.
   --down   Stop the follower, the console, n8n, and the range.
 EOF
 }
@@ -254,6 +256,32 @@ cmd_scan() {
   printf '%s\n' "$response"
   printf '%s\n' "$response" | grep -q '"ingested": true' \
     || die "range scan did not store 172.29.0.10 -> 172.29.0.20"
+  printf '%s\n' "$response" | grep -q '"decision": "Attack"' \
+    || die "range scan did not score the T1046 row as Attack"
+}
+
+cmd_attack() {
+  require_tools
+  local vector="${1:-}"
+  case "$vector" in
+    T1046|T1110|T1190|T1498) ;;
+    *) die "attack vector must be T1046, T1110, T1190, or T1498" ;;
+  esac
+  local BIND_HOST="127.0.0.1"
+  if [[ -f "${DEMO_DIR}/bind-host" ]]; then
+    BIND_HOST="$(tr -d '[:space:]' <"${DEMO_DIR}/bind-host")"
+  fi
+  docker inspect -f '{{.State.Running}}' threatfusion_range_attacker | grep -qx true \
+    || die "attacker container is not running; use --up first"
+  local csrf response
+  csrf="$(curl -fsS -H "Origin: http://${BIND_HOST}:${PORT}" -H "Sec-Fetch-Site: same-origin" "http://${BIND_HOST}:${PORT}/api/v1/live/health" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin).get("csrf_token",""))')"
+  response="$(curl -fsS -X POST "http://${BIND_HOST}:${PORT}/api/v1/live/range/launch-vector" \
+    -H 'Content-Type: application/json' -H "X-ThreatFusion-CSRF: ${csrf}" \
+    -d "{\"vector_id\":\"${vector}\",\"src_ip\":\"172.29.0.10\",\"dst_ip\":\"172.29.0.20\"}")" \
+    || die "range attack ${vector} was not ingested"
+  printf '%s\n' "$response"
+  printf '%s\n' "$response" | grep -q '"decision": "Attack"' \
+    || die "range attack ${vector} was not scored as Attack"
 }
 
 cmd_down() {
@@ -269,11 +297,12 @@ cmd_down() {
   echo "follower, console, n8n, and range stopped"
 }
 
-[[ $# -eq 1 ]] || { usage >&2; exit 2; }
+[[ $# -ge 1 ]] || { usage >&2; exit 2; }
 case "$1" in
-  --up) cmd_up ;;
-  --scan) cmd_scan ;;
-  --down) cmd_down ;;
+  --up) [[ $# -eq 1 ]] || { usage >&2; exit 2; }; cmd_up ;;
+  --scan) [[ $# -eq 1 ]] || { usage >&2; exit 2; }; cmd_scan ;;
+  --attack) [[ $# -eq 2 ]] || { usage >&2; exit 2; }; cmd_attack "$2" ;;
+  --down) [[ $# -eq 1 ]] || { usage >&2; exit 2; }; cmd_down ;;
   --help|-h) usage ;;
   *) usage >&2; exit 2 ;;
 esac

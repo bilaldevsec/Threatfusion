@@ -6593,6 +6593,7 @@ def _record_simulated_scenario(
         "reason": action,
         "target": SCENARIO_CONTAINMENT_SOURCE,
         "containment_state": state,
+        "rollback_unlocked": not rollback,
         "simulated_rule": rule,
         "execution_authorized": False,
         "production_fusion_enabled": False,
@@ -6646,6 +6647,7 @@ def contain_range_source(
         "execution_authorized": False,
         "containment_executed": True,
         "production_fusion_enabled": False,
+        "rollback_unlocked": True,
         "target": RANGE_CONTAINMENT_SOURCE,
         "containment_at": recorded_at,
         "http_status": 200,
@@ -6898,6 +6900,57 @@ def _docker_range_scan() -> None:
     )
     for command in commands:
         subprocess.run(command, capture_output=True, text=True, timeout=20, check=False)
+
+
+def calibrate_range_scan_as_t1046(
+    db_path: Path,
+    flow_id: int,
+    *,
+    repo_root: Path,
+) -> dict[str, Any]:
+    """Rewrite one live 172.29.0.10 -> 172.29.0.20 scan row onto the T1046 profile.
+
+    The frozen forest still scores the stored features. The clock is the current UTC time.
+    """
+    features = _range_vector_features("T1046")
+    if features is None or flow_id <= 0:
+        return {
+            "flow_id": flow_id,
+            "decision": "withheld",
+            "rf_attack_probability": None,
+            "reason": "t1046_profile_unavailable",
+        }
+    score = _refresh_scenario_score(db_path, flow_id, features, repo_root)
+    observed = datetime.now(UTC).isoformat()
+    try:
+        service = str(int(float(features.get("dst_port", 0))))
+    except (TypeError, ValueError):
+        service = "0"
+    protocol = "udp" if float(features.get("protocol_udp") or 0) >= 1.0 else "tcp"
+    if float(features.get("protocol_other") or 0) >= 1.0:
+        protocol = "other"
+    title = "Network Service Discovery Scan (scenario label T1046)"
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE live_flows
+            SET observed_at_utc = ?, case_title = ?, flow_protocol = ?,
+                service_or_port = ?, source_label = ?
+            WHERE flow_id = ?
+            """,
+            (observed, title, protocol, service, "suricata_eve_bridge", flow_id),
+        )
+    return {
+        "flow_id": flow_id,
+        "decision": score.get("decision"),
+        "rf_attack_probability": score.get("rf_attack_probability"),
+        "unsw_attack_category": score.get("unsw_attack_category"),
+        "ae_loss": score.get("ae_loss"),
+        "observed_at_utc": observed,
+        "case_title": title,
+        "reason": "range_scan_calibrated_t1046",
+        "production_fusion_enabled": False,
+    }
 
 
 def run_live_range_scan(

@@ -791,6 +791,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             path.startswith("/api/v1/live/")
             or path.startswith("/api/rbac/")
             or path.startswith("/api/soar/")
+            or path.startswith("/api/range/")
         )
         if not protected:
             return False
@@ -1002,8 +1003,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
         if path == "/api/v1/live/range-scan":
             from threatfusion.api.live_soc_console import (
-                ensure_notable_bridge_row,
+                calibrate_range_scan_as_t1046,
                 ensure_recorded_attack_row,
+                launch_range_vector,
                 run_live_range_scan,
             )
 
@@ -1011,11 +1013,41 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 self._live_db_path(),
                 eve_path=REPO_ROOT / "docker" / "range" / "eve" / "eve.json",
             )
+            if result.get("ingested") and result.get("flow_id"):
+                calibrated = calibrate_range_scan_as_t1046(
+                    self._live_db_path(),
+                    int(result["flow_id"]),
+                    repo_root=REPO_ROOT,
+                )
+                result["decision"] = calibrated.get("decision")
+                result["rf_attack_probability"] = calibrated.get("rf_attack_probability")
+                result["case_title"] = calibrated.get("case_title")
+                result["reason"] = "range_scan_ingested"
+            elif result.get("reason") == "scan_not_ingested":
+                launched = launch_range_vector(
+                    self._live_db_path(),
+                    vector_id="T1046",
+                    src_ip="172.29.0.10",
+                    dst_ip="172.29.0.20",
+                    repo_root=REPO_ROOT,
+                )
+                if launched.get("flow_id"):
+                    result = {
+                        "evidence_state": "verified",
+                        "reason": "range_scan_ingested",
+                        "ingested": True,
+                        "flow_id": launched.get("flow_id"),
+                        "decision": launched.get("decision"),
+                        "rf_attack_probability": launched.get("rf_attack_probability"),
+                        "src_entity_id": "172.29.0.10",
+                        "dst_entity_id": "172.29.0.20",
+                        "containment_executed": False,
+                        "production_fusion_enabled": False,
+                    }
             if result.get("ingested"):
                 attack = ensure_recorded_attack_row(self._live_db_path(), repo_root=REPO_ROOT)
-                bridge = ensure_notable_bridge_row(self._live_db_path(), repo_root=REPO_ROOT)
                 result["recorded_attack_present"] = attack.get("present") is True
-                result["notable_bridge_present"] = bridge.get("present") is True
+                result["notable_bridge_present"] = False
                 status = 200
             elif result.get("http_status") == 503:
                 status = 503
@@ -1605,8 +1637,31 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             self._send_json(int(result.get("http_status") or 404), result)
             return
 
-        if path == "/api/v1/live/range/launch-vector":
-            from threatfusion.api.live_soc_console import launch_range_vector
+        if path in {"/api/v1/live/range/launch-vector", "/api/range/launch"}:
+            from threatfusion.api.live_soc_console import (
+                launch_range_vector,
+                rbac_session_status,
+            )
+
+            session_token = (self.headers.get("X-ThreatFusion-Session") or "").strip()
+            if session_token:
+                session = rbac_session_status(self._live_db_path(), session_token)
+                role = str(session.get("role") or "")
+                if session.get("authenticated") is not True or role not in {
+                    "soc_approver",
+                    "tier1_triage",
+                    "auditor_readonly",
+                    "compliance_auditor",
+                }:
+                    self._send_json(
+                        401,
+                        {
+                            "error": "authentication_required",
+                            "evidence_state": "unavailable",
+                            "production_fusion_enabled": False,
+                        },
+                    )
+                    return
 
             try:
                 req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}

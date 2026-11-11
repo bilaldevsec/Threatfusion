@@ -35,6 +35,7 @@
       target.indexOf('/api/v1/live/') !== -1
       || target.indexOf('/api/rbac/') !== -1
       || target.indexOf('/api/soar/') !== -1
+      || target.indexOf('/api/range/') !== -1
     );
     const headers = new Headers(opts.headers || {});
     if (needsCsrf) {
@@ -1604,15 +1605,19 @@
     return !!(inc.soarRecord && inc.soarRecord.state === 'approved');
   }
 
+  const rollbackReadyFlowIds = {};
+
   function applyContainmentGuard(inc) {
     const attack = !!(inc && inc.decision === 'Attack');
     const step2 = playbookIsApproved(inc);
     const step3 = !!(inc && (inc.callbackRecorded === true || inc.dispatchUnlocked === true));
+    const flowKey = inc && (inc.flowId || inc.flow_id) ? String(inc.flowId || inc.flow_id) : '';
     const step4 = !!(
       inc && (
         inc.containmentState === 'applied'
         || inc.containmentState === 'simulated_applied'
         || inc.rollbackUnlocked === true
+        || (flowKey && rollbackReadyFlowIds[flowKey] === true)
       )
     );
     const rules = [
@@ -4216,7 +4221,18 @@
         else if (rolled) setRangeConnectivity(false);
       }
       const isolating = String(path || '').indexOf('/rollback') === -1;
-      if (resp.ok && isolating && (applied || simulated || data.containment_state === 'applied' || data.containment_state === 'simulated_applied')) {
+      const isolateAccepted = resp.ok && isolating && (
+        applied
+        || simulated
+        || data.rollback_unlocked === true
+        || data.containment_state === 'applied'
+        || data.containment_state === 'simulated_applied'
+        || data.reason === 'simulated_containment_recorded'
+        || data.reason === 'containment_applied'
+      );
+      if (isolateAccepted) {
+        const flowKey = String(inc.flowId || inc.flow_id || '');
+        if (flowKey) rollbackReadyFlowIds[flowKey] = true;
         const live = selectedLiveIncident(inc);
         if (live) {
           live.containmentState = data.containment_state
@@ -5182,29 +5198,44 @@
   }
 
   async function launchRangeVector(vectorId) {
+    if (!isSessionAuthenticated()) {
+      setLiveText('rangeFirewallStatus', 'Sign in before launching a range vector.', 'unavailable');
+      enforceAuthGate();
+      return;
+    }
     setLiveText('rangeFirewallStatus', 'Launching ' + vectorId + ' from 172.29.0.10 to 172.29.0.20.', 'pending');
     try {
-      const resp = await fetch('/api/v1/live/range/launch-vector', {
+      const resp = await fetch('/api/range/launch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           vector_id: vectorId,
           src_ip: '172.29.0.10',
-          dst_ip: '172.29.0.20'
+          dst_ip: '172.29.0.20',
+          actor_id: operatorActorId(),
+          role: sessionIdentity && sessionIdentity.role ? sessionIdentity.role : ''
         })
       });
       const data = await readActionPayload(resp);
-      if (data && data.flow_id) {
-        selectedIncidentId = 'live_flow:' + data.flow_id;
-        selectedFlowId = Number(data.flow_id);
-        modelProofLoadedFlowId = null;
-        lastCopilotFlowId = 0;
+      if (!resp.ok || !data || !data.flow_id) {
+        setLiveText('rangeFirewallStatus', actionFailureText(data, resp), 'unavailable');
+        return;
       }
+      selectedIncidentId = 'live_flow:' + data.flow_id;
+      selectedFlowId = Number(data.flow_id);
+      modelProofLoadedFlowId = null;
+      lastCopilotFlowId = 0;
+      openEnterpriseDrawer(false);
       await refreshLiveCampaigns();
+      if (selectedFlowId) {
+        const match = activeIncidents().find(item => Number(item.flowId || item.flow_id) === selectedFlowId);
+        if (match) selectedIncidentId = match.id;
+      }
       renderVisualObservatory(data);
       const inc = selectedIncident();
-      if (inc) {
+      if (inc && Number(inc.flowId || inc.flow_id) === selectedFlowId) {
         selectInvestigation(inc);
+        loadSoarPlaybookPreview(inc);
       }
       const score = Number(data.rf_attack_probability);
       setLiveText(
