@@ -17,6 +17,8 @@ import json
 import math
 import os
 import re
+import secrets
+import shutil
 import sqlite3
 import stat
 import threading
@@ -25,7 +27,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -272,9 +274,7 @@ def score_canonical_flow(
             rf_probability=attack_probability,
         )
     )
-    base["feature_error_breakdown"] = _feature_error_breakdown(
-        base.get("ae_feature_errors") or []
-    )
+    base["feature_error_breakdown"] = _feature_error_breakdown(base.get("ae_feature_errors") or [])
     base["production_fusion_enabled"] = False
     return base
 
@@ -421,7 +421,15 @@ def _dnn_bundle(repo_root: Path) -> dict[str, Any] | None:
             "report": report,
             "medians": medians if isinstance(medians, dict) else {},
         }
-    except (OSError, ValueError, KeyError, RuntimeError, TypeError, ImportError, json.JSONDecodeError):
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        RuntimeError,
+        TypeError,
+        ImportError,
+        json.JSONDecodeError,
+    ):
         bundle = None
     _ADVISORY_MODEL_CACHE["dnn_bundle"] = bundle
     return bundle
@@ -573,9 +581,7 @@ def _consensus_score(
     return (0.5 * rf_probability) + (0.3 * dnn_probability) + (0.2 * ae_score)
 
 
-def dnn_features_from_flow(
-    features: Mapping[str, Any], repo_root: Path
-) -> dict[str, float] | None:
+def dnn_features_from_flow(features: Mapping[str, Any], repo_root: Path) -> dict[str, float] | None:
     """Project a stored flow onto the 14 UNSW columns the same-split DNN expects."""
     if all(name in features for name in _DNN_FEATURES):
         try:
@@ -636,10 +642,14 @@ def canonical_from_dnn_features(
         canonical["packets_per_second"] = float(raw_features["rate"])
     if _touched("spkts") or _touched("sbytes"):
         spkts = float(raw_features["spkts"])
-        canonical["fwd_packet_length_mean"] = float(raw_features["sbytes"]) / spkts if spkts else 0.0
+        canonical["fwd_packet_length_mean"] = (
+            float(raw_features["sbytes"]) / spkts if spkts else 0.0
+        )
     if _touched("dpkts") or _touched("dbytes"):
         dpkts = float(raw_features["dpkts"])
-        canonical["bwd_packet_length_mean"] = float(raw_features["dbytes"]) / dpkts if dpkts else 0.0
+        canonical["bwd_packet_length_mean"] = (
+            float(raw_features["dbytes"]) / dpkts if dpkts else 0.0
+        )
     if _touched("sload") or _touched("dload"):
         canonical["bytes_per_second"] = float(raw_features["sload"]) + float(raw_features["dload"])
     return canonical
@@ -689,20 +699,25 @@ def _advisory_model_fields(
         }
     )
     raw = raw_features if raw_features is not None else dnn_features_from_flow(features, repo_root)
-    dnn = _score_same_split_dnn(raw, repo_root) if raw is not None else {
-        "dnn_attack_probability": None,
-        "dnn_binary_decision": None,
-        "unsw_attack_category": None,
-        "dnn_class_distribution": {},
-    }
+    dnn = (
+        _score_same_split_dnn(raw, repo_root)
+        if raw is not None
+        else {
+            "dnn_attack_probability": None,
+            "dnn_binary_decision": None,
+            "unsw_attack_category": None,
+            "dnn_class_distribution": {},
+        }
+    )
     consensus = _consensus_score(
         rf_probability,
         dnn.get("dnn_attack_probability"),
         ae.get("ae_loss"),
     )
-    scored_raw = _finite_number(ae.get("ae_loss")) is not None or _finite_number(
-        dnn.get("dnn_attack_probability")
-    ) is not None
+    scored_raw = (
+        _finite_number(ae.get("ae_loss")) is not None
+        or _finite_number(dnn.get("dnn_attack_probability")) is not None
+    )
     return {
         "ae_loss": ae.get("ae_loss"),
         "ae_anomaly_flag": ae.get("ae_anomaly_flag"),
@@ -838,9 +853,7 @@ def run_live_model_proof(
     else:
         original_canonical = canonical_from_dnn_features(original_raw, stored)
     changed = {
-        name
-        for name in _DNN_FEATURES
-        if float(perturbed_raw[name]) != float(original_raw[name])
+        name for name in _DNN_FEATURES if float(perturbed_raw[name]) != float(original_raw[name])
     }
     original = _model_proof_block(original_canonical, original_raw, root)
     if supplied_canonical is not None:
@@ -1636,8 +1649,7 @@ def _copilot_cache_key(
 ) -> str:
     scenario, title, decision = identity
     return (
-        f"{flow_id}\n{scenario}\n{title}\n{decision}\n"
-        f"{question.strip().lower()}\n{model_name}"
+        f"{flow_id}\n{scenario}\n{title}\n{decision}\n" f"{question.strip().lower()}\n{model_name}"
     )
 
 
@@ -2529,9 +2541,7 @@ def _read_stored_incidents(incidents_db_path: Path | None, *, limit: int) -> lis
         }
         if "incidents" not in tables:
             return []
-        available = {
-            str(row[1]) for row in conn.execute("PRAGMA table_info(incidents)").fetchall()
-        }
+        available = {str(row[1]) for row in conn.execute("PRAGMA table_info(incidents)").fetchall()}
         selected = [
             name
             for name in (
@@ -3111,13 +3121,11 @@ def _constituent_alert_ids(incidents_db_path: Path | None) -> dict[str, list[str
         }
         if "incident_constituent_alerts" not in tables:
             return {}
-        rows = conn.execute(
-            """
+        rows = conn.execute("""
             SELECT incident_id, alert_candidate_id
             FROM incident_constituent_alerts
             ORDER BY rowid ASC
-            """
-        ).fetchall()
+            """).fetchall()
     except sqlite3.Error:
         return {}
     finally:
@@ -3214,7 +3222,10 @@ def _bind_incidents_to_attack_flows(
         incident["scenario_label"] = _scenario_technique_id(chosen)
         incident["case_title"] = chosen.get("case_title") or ""
         incident["mitre_technique_id"] = (
-            chosen.get("technique_id") or incident.get("technique_id") or incident["scenario_label"] or ""
+            chosen.get("technique_id")
+            or incident.get("technique_id")
+            or incident["scenario_label"]
+            or ""
         )
         incident["dnn_category"] = chosen.get("unsw_attack_category") or ""
         incident["canonical_features"] = chosen.get("canonical_features")
@@ -3826,7 +3837,9 @@ def replay_live_scenarios(
                 features = _range_vector_features("BENIGN_WEB") or _benign_study_profile()
             else:
                 features = _attack_study_profile(str(spec["scenario_label"]))
-            refreshed = _refresh_scenario_score(db_path, int(existing["flow_id"]), features, repo_root)
+            refreshed = _refresh_scenario_score(
+                db_path, int(existing["flow_id"]), features, repo_root
+            )
             decision = str(refreshed.get("decision") or existing["decision"] or "")
             flow_id = int(existing["flow_id"])
             src_entity = existing["src_entity_id"]
@@ -4555,7 +4568,11 @@ def approve_live_soar(
     _reseal_stale_soar_chain(repository)
     engine = ApprovalGatedSoarEngine(repository)
     existing = repository.list_records_for_candidate(candidate_id)
-    if existing and max(existing, key=lambda record: (record.version, record.updated_at_utc)).state == "rejected":
+    if (
+        existing
+        and max(existing, key=lambda record: (record.version, record.updated_at_utc)).state
+        == "rejected"
+    ):
         refused["reason"] = "playbook_already_rejected"
         refused["http_status"] = 403
         return refused
@@ -5231,9 +5248,7 @@ def dispatch_approved_callback(
         refused["reason"] = "audit_chain_invalid"
         refused["callback_recorded"] = False
         refused["evidence_state"] = "unavailable"
-        refused["execution_path"] = (
-            N8N_LIVE_CONTAINER if webhook else LOCAL_CONTRACT_FALLBACK
-        )
+        refused["execution_path"] = N8N_LIVE_CONTAINER if webhook else LOCAL_CONTRACT_FALLBACK
         return refused
     local_kwargs = {
         "flow_id": flow_id,
@@ -6443,9 +6458,7 @@ def _authorized_range_flow(
 def _store_containment_state(
     db_path: Path, flow_id: int, state: str, *, when: str, rule: str | None = None
 ) -> None:
-    column = (
-        "containment_at" if state in {"applied", "simulated_applied"} else "rollback_at"
-    )
+    column = "containment_at" if state in {"applied", "simulated_applied"} else "rollback_at"
     with _connect(db_path) as conn:
         if rule is None:
             conn.execute(
@@ -6510,10 +6523,9 @@ def _scenario_firewall_rule(src_entity_id: str, *, rollback: bool) -> str:
 
 def _simulated_scenario_flow(flow: sqlite3.Row) -> bool:
     """10.0.0.4 scenario replays have no host firewall to change."""
-    return (
-        _flow_field(flow, "src_entity_id") == SCENARIO_CONTAINMENT_SOURCE
-        and _scenario_replay_flow(flow)
-    )
+    return _flow_field(
+        flow, "src_entity_id"
+    ) == SCENARIO_CONTAINMENT_SOURCE and _scenario_replay_flow(flow)
 
 
 def _record_simulated_scenario(
@@ -6603,7 +6615,7 @@ def contain_range_source(
     }
 
 
-def rollback_range_source(
+def _rollback_range_source_work(
     live_db_path: Path,
     soar_db_path: Path,
     *,
@@ -6657,6 +6669,80 @@ def rollback_range_source(
         "rollback_at": recorded_at,
         "http_status": 200,
     }
+
+
+def _flow_identity_row(db_path: Path, flow_id: int) -> dict[str, Any] | None:
+    """Read the operator identity columns for one stored flow."""
+    if flow_id <= 0 or not db_path.is_file():
+        return None
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT operator_id, cert_sha256_prefix, identity_verified, identity_label
+            FROM live_flows
+            WHERE flow_id = ?
+            """,
+            (flow_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "operator_id": row["operator_id"],
+        "cert_sha256_prefix": row["cert_sha256_prefix"],
+        "identity_verified": int(row["identity_verified"] or 0),
+        "identity_label": row["identity_label"],
+    }
+
+
+def _restore_flow_identity(db_path: Path, flow_id: int, snapshot: Mapping[str, Any] | None) -> None:
+    """Put the flow identity columns back so rollback cannot downgrade them."""
+    if snapshot is None or flow_id <= 0 or not db_path.is_file():
+        return
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE live_flows
+            SET operator_id = ?, cert_sha256_prefix = ?,
+                identity_verified = ?, identity_label = ?
+            WHERE flow_id = ?
+            """,
+            (
+                snapshot.get("operator_id"),
+                snapshot.get("cert_sha256_prefix"),
+                int(snapshot.get("identity_verified") or 0),
+                snapshot.get("identity_label"),
+                flow_id,
+            ),
+        )
+
+
+def rollback_range_source(
+    live_db_path: Path,
+    soar_db_path: Path,
+    *,
+    flow_id: int,
+    runner: Any | None = None,
+    actor_id: str | None = None,
+    session_token: str | None = None,
+) -> dict[str, Any]:
+    """Remove a recorded drop without stripping the stored operator identity."""
+    identity_before = _flow_identity_row(live_db_path, flow_id)
+    try:
+        result = _rollback_range_source_work(
+            live_db_path,
+            soar_db_path,
+            flow_id=flow_id,
+            runner=runner,
+            actor_id=actor_id,
+        )
+    finally:
+        _restore_flow_identity(live_db_path, flow_id, identity_before)
+    return _attach_rollback_identity(
+        live_db_path,
+        result,
+        session_token=session_token,
+        preserved=identity_before,
+    )
 
 
 def purge_bridge_noise_rows(db_path: Path) -> int:
@@ -6853,8 +6939,11 @@ def _eve_has_range_pair(eve_path: Path | None) -> bool:
     return "172.29.0.10" in tail and "172.29.0.20" in tail
 
 
-_SOAR_LIMITED_ROLES = frozenset({"tier1_triage", "auditor_readonly"})
-_OPERATOR_ROLES = frozenset({"soc_approver", "tier1_triage", "auditor_readonly"})
+_READONLY_ROLES = frozenset({"auditor_readonly", "compliance_auditor"})
+_SOAR_LIMITED_ROLES = frozenset({"tier1_triage", "auditor_readonly", "compliance_auditor"})
+_OPERATOR_ROLES = frozenset(
+    {"soc_approver", "tier1_triage", "auditor_readonly", "compliance_auditor"}
+)
 _WORKSPACE_ID = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 _SENSOR_ID = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 _SERVICE_TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,32}$")
@@ -7210,7 +7299,7 @@ def _refuse_soar_role(db_path: Path, actor_id: str) -> dict[str, Any] | None:
 def _refuse_readonly_auditor(db_path: Path, actor_id: str) -> dict[str, Any] | None:
     author = str(actor_id or "").strip()
     role = _operator_role(db_path, author)
-    if role != "auditor_readonly":
+    if role not in _READONLY_ROLES:
         return None
     return {
         "evidence_state": "refused",
@@ -7226,8 +7315,7 @@ def _refuse_readonly_auditor(db_path: Path, actor_id: str) -> dict[str, Any] | N
 
 def _ensure_enterprise_catalog(conn: sqlite3.Connection) -> None:
     """Create and seed workspaces, operators, sensors, and range probe rows."""
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS workspace_profiles (
             workspace_id TEXT PRIMARY KEY,
             display_name TEXT NOT NULL,
@@ -7237,10 +7325,8 @@ def _ensure_enterprise_catalog(conn: sqlite3.Connection) -> None:
             active INTEGER NOT NULL DEFAULT 0,
             created_at_utc TEXT NOT NULL
         )
-        """
-    )
-    conn.execute(
-        """
+        """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS console_operators (
             actor_id TEXT PRIMARY KEY,
             display_name TEXT NOT NULL,
@@ -7248,20 +7334,16 @@ def _ensure_enterprise_catalog(conn: sqlite3.Connection) -> None:
             active INTEGER NOT NULL DEFAULT 0,
             created_at_utc TEXT NOT NULL
         )
-        """
-    )
-    conn.execute(
-        """
+        """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS registered_sensors (
             sensor_id TEXT PRIMARY KEY,
             monitored_cidr TEXT NOT NULL,
             status TEXT NOT NULL,
             created_at_utc TEXT NOT NULL
         )
-        """
-    )
-    conn.execute(
-        """
+        """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS range_probe_events (
             probe_id INTEGER PRIMARY KEY AUTOINCREMENT,
             vector_id TEXT NOT NULL,
@@ -7270,8 +7352,7 @@ def _ensure_enterprise_catalog(conn: sqlite3.Connection) -> None:
             detail_json TEXT NOT NULL,
             created_at_utc TEXT NOT NULL
         )
-        """
-    )
+        """)
     created = datetime.now(UTC).isoformat()
     conn.executemany(
         """
@@ -7298,6 +7379,7 @@ def _ensure_enterprise_catalog(conn: sqlite3.Connection) -> None:
         """,
         [(*seed, created) for seed in _SENSOR_SEEDS],
     )
+    _ensure_rbac_accounts(conn)
 
 
 def _entra_tenant_id() -> str:
@@ -7346,9 +7428,7 @@ def _valid_network(value: str) -> bool:
 
 def list_workspaces(db_path: Path) -> dict[str, Any]:
     with _connect(db_path) as conn:
-        rows = conn.execute(
-            "SELECT * FROM workspace_profiles ORDER BY workspace_id"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM workspace_profiles ORDER BY workspace_id").fetchall()
     workspaces = [_workspace_public(row) for row in rows]
     active = next((item["workspace_id"] for item in workspaces if item["active"]), None)
     return {
@@ -7363,20 +7443,20 @@ def list_workspaces(db_path: Path) -> dict[str, Any]:
 
 def _active_operator_id(db_path: Path) -> str:
     with _connect(db_path) as conn:
-        row = conn.execute(
-            """
+        row = conn.execute("""
             SELECT actor_id FROM console_operators
             WHERE active = 1
             ORDER BY actor_id
             LIMIT 1
-            """
-        ).fetchone()
+            """).fetchone()
     if row is None:
         return "lab_operator"
     return str(row["actor_id"])
 
 
-def _activate_workspace(db_path: Path, workspace_id: str, operator_id: str | None) -> dict[str, Any]:
+def _activate_workspace(
+    db_path: Path, workspace_id: str, operator_id: str | None
+) -> dict[str, Any]:
     with _connect(db_path) as conn:
         row = conn.execute(
             "SELECT * FROM workspace_profiles WHERE workspace_id = ?",
@@ -7620,7 +7700,10 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
         return refused
     actor = ""
     for actor_id, profile in _ENTRA_DIRECTORY.items():
-        if profile["entra_object_id"] == object_id or str(profile["entra_upn"]).lower() == upn.lower():
+        if (
+            profile["entra_object_id"] == object_id
+            or str(profile["entra_upn"]).lower() == upn.lower()
+        ):
             actor = actor_id
             break
     if not actor:
@@ -7715,15 +7798,676 @@ def register_operator(
     }
 
 
+_RBAC_ITERATIONS = 200_000
+_RBAC_EMAIL = re.compile(r"^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,120}$")
+_RESERVED_ACTORS = frozenset({"lab_operator", "tier1_analyst", "compliance_auditor"})
+_BILAL_HEADER = (
+    "Muhammad Bilal (21K-3551) · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)"
+)
+_SUHAIB_HEADER = "Muhammad Suhaib (22K-4302) · Tier-1 Triage | No SOAR Cert (Triage Only)"
+_HASNAIN_HEADER = "Muhammad Hasnain (22K-4718) · Auditor | Read-Only Compliance Token"
+_RBAC_SEEDS: tuple[dict[str, str], ...] = (
+    {
+        "username": "bilal.21k3551@nu.edu.pk",
+        "display_name": "Muhammad Bilal (21K-3551)",
+        "actor_id": "lab_operator",
+        "role": "soc_approver",
+        "password_hash": (
+            "pbkdf2_sha256$200000$d283503ed41d21060378e6b7ef6a2419$"
+            "d9f6ec94ab33018220a30e221f64b314c73a7180baeacc7bb6dc71a191702e3c"
+        ),
+        "certificate_subject": "/CN=lab_operator",
+    },
+    {
+        "username": "suhaib.22k4302@nu.edu.pk",
+        "display_name": "Muhammad Suhaib (22K-4302)",
+        "actor_id": "tier1_analyst",
+        "role": "tier1_triage",
+        "password_hash": (
+            "pbkdf2_sha256$200000$9171434638ae2e75de01dece752454f7$"
+            "9a22959b9157c4cd18d8b9128acb70b07109f83dcc7fe2d86b7cde12573f9ad2"
+        ),
+        "certificate_subject": "",
+    },
+    {
+        "username": "hasnain.22k4718@nu.edu.pk",
+        "display_name": "Muhammad Hasnain (22K-4718)",
+        "actor_id": "compliance_auditor",
+        "role": "compliance_auditor",
+        "password_hash": (
+            "pbkdf2_sha256$200000$cff7d4adbff740379d5de2ca263fb9f0$"
+            "ab4e39aed30043977308f150fffbc18433ba98b91b54c2384f2af1a3c20c7d78"
+        ),
+        "certificate_subject": "",
+    },
+)
+
+
+def _ensure_rbac_accounts(conn: sqlite3.Connection) -> None:
+    """Create the account and session tables and seed the three jury logins."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rbac_accounts (
+            username TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            actor_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            certificate_subject TEXT NOT NULL DEFAULT '',
+            created_at_utc TEXT NOT NULL
+        )
+        """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rbac_sessions (
+            token_hash TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            actor_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            expires_at_utc TEXT NOT NULL,
+            created_at_utc TEXT NOT NULL
+        )
+        """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rbac_runtime (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """)
+    created = datetime.now(UTC).isoformat()
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO rbac_accounts (
+            username, display_name, actor_id, role, password_hash,
+            certificate_subject, created_at_utc
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                seed["username"],
+                seed["display_name"],
+                seed["actor_id"],
+                seed["role"],
+                seed["password_hash"],
+                seed["certificate_subject"],
+                created,
+            )
+            for seed in _RBAC_SEEDS
+        ],
+    )
+
+
+def _lab_operator_certificate_enrolled() -> bool:
+    directory = os.environ.get("THREATFUSION_OPERATOR_POLICY_DIR", "").strip()
+    if not directory:
+        return False
+    from threatfusion.operations.human_credentials import active_fingerprint
+
+    try:
+        return active_fingerprint(Path(directory), "lab_operator") is not None
+    except (OSError, ValueError):
+        return False
+
+
+def operator_header_identity(
+    *,
+    actor_id: str,
+    display_name: str = "",
+    role: str = "",
+) -> dict[str, Any]:
+    """One header line per signed-in operator. Only Bilal can carry the lab cert."""
+    actor = str(actor_id or "").strip()
+    name = str(display_name or "").strip() or actor
+    chosen = str(role or "").strip()
+    enrolled = actor == "lab_operator" and _lab_operator_certificate_enrolled()
+    subject = ""
+    verified = False
+    label = "unverified_local_label"
+    auth_label = "unverified local label"
+    if actor == "lab_operator" and enrolled:
+        line = _BILAL_HEADER
+        subject = "/CN=lab_operator"
+        verified = True
+        label = "verified_mtls_lab_operator"
+        auth_label = "verified mTLS cert (/CN=lab_operator)"
+    elif actor == "lab_operator":
+        line = "Muhammad Bilal (21K-3551) · Tier-3 Approver | unverified local label"
+    elif actor == "tier1_analyst":
+        line = _SUHAIB_HEADER
+        label = "no_soar_cert_triage_only"
+        auth_label = "No SOAR Cert (Triage Only)"
+    elif actor == "compliance_auditor":
+        line = _HASNAIN_HEADER
+        label = "read_only_compliance_token"
+        auth_label = "Read-Only Compliance Token"
+    elif chosen == "tier1_triage":
+        line = f"{name} · Tier-1 Triage | No SOAR Cert (Triage Only)"
+        label = "no_soar_cert_triage_only"
+        auth_label = "No SOAR Cert (Triage Only)"
+    elif chosen in _READONLY_ROLES:
+        line = f"{name} · Auditor | Read-Only Compliance Token"
+        label = "read_only_compliance_token"
+        auth_label = "Read-Only Compliance Token"
+    elif chosen == "soc_approver":
+        line = f"{name} · Tier-3 Approver | unverified local label"
+    else:
+        line = "unverified local label"
+    if actor != "lab_operator":
+        subject = ""
+        verified = False
+        line = line.replace("verified mTLS cert (/CN=lab_operator)", auth_label)
+    return {
+        "actor_id": actor,
+        "display_name": name,
+        "role": chosen,
+        "header_identity": line,
+        "identity_verified": verified,
+        "identity_label": label,
+        "certificate_subject": subject,
+        "operator_auth_label": auth_label,
+        "enrollment_state": "enrolled" if enrolled and actor == "lab_operator" else "absent",
+    }
+
+
+def _verify_password(stored: str, password: str) -> bool:
+    parts = str(stored or "").split("$")
+    if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
+        return False
+    try:
+        iterations = int(parts[1])
+        salt = bytes.fromhex(parts[2])
+        expected = bytes.fromhex(parts[3])
+    except ValueError:
+        return False
+    if iterations < 100_000 or iterations > 1_000_000 or not salt or not expected:
+        return False
+    derived = hashlib.pbkdf2_hmac("sha256", str(password or "").encode("utf-8"), salt, iterations)
+    return hmac.compare_digest(derived, expected)
+
+
+def _hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _RBAC_ITERATIONS)
+    return f"pbkdf2_sha256${_RBAC_ITERATIONS}${salt.hex()}${derived.hex()}"
+
+
+def _rbac_secret(conn: sqlite3.Connection) -> bytes:
+    row = conn.execute("SELECT value FROM rbac_runtime WHERE key = 'session_secret'").fetchone()
+    if row is not None and row["value"]:
+        try:
+            return bytes.fromhex(str(row["value"]))
+        except ValueError:
+            pass
+    secret = secrets.token_bytes(32)
+    conn.execute(
+        """
+        INSERT INTO rbac_runtime (key, value) VALUES ('session_secret', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (secret.hex(),),
+    )
+    return secret
+
+
+def _sign_session(secret: bytes, payload: Mapping[str, Any]) -> str:
+    body = (
+        base64.urlsafe_b64encode(
+            json.dumps(dict(payload), separators=(",", ":"), sort_keys=True).encode("utf-8")
+        )
+        .decode("ascii")
+        .rstrip("=")
+    )
+    signature = hmac.new(secret, body.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"tfs1.{body}.{signature}"
+
+
+def _bare_token(token: str) -> str:
+    raw = str(token or "").strip()
+    if raw.lower().startswith("bearer "):
+        return raw[7:].strip()
+    return raw
+
+
+def _session_parts(token: str) -> tuple[str, str] | None:
+    pieces = _bare_token(token).split(".")
+    if len(pieces) != 3 or pieces[0] != "tfs1" or not pieces[1] or not pieces[2]:
+        return None
+    return pieces[1], pieces[2]
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def _account_public(row: sqlite3.Row, *, session_token: str = "") -> dict[str, Any]:
+    header = operator_header_identity(
+        actor_id=str(row["actor_id"]),
+        display_name=str(row["display_name"]),
+        role=str(row["role"]),
+    )
+    payload = {
+        "schema_version": "rbac_session_v1",
+        "authenticated": True,
+        "evidence_state": "verified" if header["identity_verified"] else "unavailable",
+        "username": str(row["username"]),
+        "session_token": session_token,
+        "production_fusion_enabled": False,
+        "http_status": 200,
+    }
+    payload.update(header)
+    return payload
+
+
+def _issue_session(conn: sqlite3.Connection, row: sqlite3.Row) -> str:
+    secret = _rbac_secret(conn)
+    expires = datetime.now(UTC) + timedelta(hours=12)
+    payload = {
+        "u": str(row["username"]),
+        "a": str(row["actor_id"]),
+        "r": str(row["role"]),
+        "exp": expires.isoformat(),
+        "n": secrets.token_hex(8),
+    }
+    token = _sign_session(secret, payload)
+    conn.execute(
+        """
+        INSERT INTO rbac_sessions (
+            token_hash, username, actor_id, role, expires_at_utc, created_at_utc
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            _token_hash(token),
+            str(row["username"]),
+            str(row["actor_id"]),
+            str(row["role"]),
+            expires.isoformat(),
+            datetime.now(UTC).isoformat(),
+        ),
+    )
+    return token
+
+
+def _session_row(db_path: Path, token: str) -> dict[str, str] | None:
+    parts = _session_parts(token)
+    if parts is None or not db_path.is_file():
+        return None
+    body, signature = parts
+    with _connect(db_path) as conn:
+        secret = _rbac_secret(conn)
+        expected = hmac.new(secret, body.encode("ascii"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, signature):
+            return None
+        row = conn.execute(
+            """
+            SELECT s.username, s.actor_id, s.role, s.expires_at_utc, a.display_name
+            FROM rbac_sessions AS s
+            JOIN rbac_accounts AS a ON a.username = s.username
+            WHERE s.token_hash = ?
+            """,
+            (_token_hash(_bare_token(token)),),
+        ).fetchone()
+        if row is None:
+            return None
+        copied = {key: str(row[key] or "") for key in row.keys()}
+    try:
+        expires = datetime.fromisoformat(copied["expires_at_utc"])
+    except ValueError:
+        return None
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=UTC)
+    if expires <= datetime.now(UTC):
+        return None
+    return copied
+
+
+def rbac_session_status(db_path: Path, token: str) -> dict[str, Any]:
+    """Return the signed-in operator, or an anonymous unverified label."""
+    row = _session_row(db_path, token)
+    if row is None:
+        return {
+            "schema_version": "rbac_session_v1",
+            "authenticated": False,
+            "evidence_state": "unavailable",
+            "header_identity": "unverified local label",
+            "identity_verified": False,
+            "identity_label": "unverified_local_label",
+            "certificate_subject": "",
+            "operator_auth_label": "unverified local label",
+            "actor_id": "",
+            "production_fusion_enabled": False,
+            "http_status": 200,
+        }
+    header = operator_header_identity(
+        actor_id=str(row["actor_id"]),
+        display_name=str(row["display_name"]),
+        role=str(row["role"]),
+    )
+    return {
+        "schema_version": "rbac_session_v1",
+        "authenticated": True,
+        "evidence_state": "verified" if header["identity_verified"] else "unavailable",
+        "username": str(row["username"]),
+        "production_fusion_enabled": False,
+        "http_status": 200,
+        **header,
+    }
+
+
+def _rbac_refused(reason: str, status: int) -> dict[str, Any]:
+    return {
+        "schema_version": "rbac_session_v1",
+        "authenticated": False,
+        "evidence_state": "unavailable",
+        "reason": reason,
+        "header_identity": "unverified local label",
+        "identity_verified": False,
+        "identity_label": "unverified_local_label",
+        "certificate_subject": "",
+        "production_fusion_enabled": False,
+        "http_status": status,
+    }
+
+
+def rbac_login(
+    db_path: Path,
+    *,
+    username: str = "",
+    access_code: str = "",
+    entra_token: str = "",
+) -> dict[str, Any]:
+    """Authenticate with an access code or a Microsoft Entra ID token, then open a session."""
+    presented = str(entra_token or "").strip()
+    if presented:
+        verified = verify_entra_token(db_path, presented)
+        if int(verified.get("http_status") or 401) != 200:
+            return _rbac_refused(str(verified.get("reason") or "entra_token_invalid"), 401)
+        actor = str(verified.get("actor_id") or "")
+        with _connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM rbac_accounts WHERE actor_id = ?",
+                (actor,),
+            ).fetchone()
+            if row is None:
+                return _rbac_refused("operator_not_registered", 403)
+            token = _issue_session(conn, row)
+            public = _account_public(row, session_token=token)
+        switch_operator(db_path, actor_id=str(public["actor_id"]))
+        public["reason"] = "entra_token_verified"
+        return public
+    user = str(username or "").strip().lower()
+    if _RBAC_EMAIL.fullmatch(user) is None or not str(access_code or ""):
+        return _rbac_refused("invalid_credentials", 401)
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM rbac_accounts WHERE username = ?",
+            (user,),
+        ).fetchone()
+        if row is None or not _verify_password(str(row["password_hash"]), access_code):
+            return _rbac_refused("invalid_credentials", 401)
+        token = _issue_session(conn, row)
+        public = _account_public(row, session_token=token)
+    switch_operator(db_path, actor_id=str(public["actor_id"]))
+    public["reason"] = "access_code_verified"
+    return public
+
+
+def rbac_logout(db_path: Path, token: str) -> dict[str, Any]:
+    digest = _token_hash(_bare_token(token))
+    if db_path.is_file() and _session_parts(token) is not None:
+        with _connect(db_path) as conn:
+            conn.execute("DELETE FROM rbac_sessions WHERE token_hash = ?", (digest,))
+    return {
+        "schema_version": "rbac_session_v1",
+        "authenticated": False,
+        "evidence_state": "unavailable",
+        "reason": "logged_out",
+        "header_identity": "unverified local label",
+        "identity_verified": False,
+        "identity_label": "unverified_local_label",
+        "certificate_subject": "",
+        "production_fusion_enabled": False,
+        "http_status": 200,
+    }
+
+
+def _actor_slug(username: str) -> str:
+    local = username.split("@", 1)[0]
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "", local)[:64]
+    if _LOCAL_ACTOR.fullmatch(cleaned) is None:
+        return ""
+    return cleaned
+
+
+def rbac_register(
+    db_path: Path,
+    *,
+    username: str,
+    access_code: str,
+    display_name: str,
+    role: str,
+) -> dict[str, Any]:
+    """Create a custom analyst account and sign that account in."""
+    user = str(username or "").strip().lower()
+    name = str(display_name or "").strip()
+    chosen = str(role or "").strip()
+    secret = str(access_code or "")
+    if (
+        _RBAC_EMAIL.fullmatch(user) is None
+        or len(secret) < 8
+        or len(secret) > 128
+        or not name
+        or len(name) > 120
+        or chosen not in _OPERATOR_ROLES
+    ):
+        return _rbac_refused("account_invalid", 400)
+    actor = _actor_slug(user)
+    if not actor or actor in _RESERVED_ACTORS:
+        return _rbac_refused("actor_reserved", 400)
+    with _connect(db_path) as conn:
+        existing = conn.execute(
+            "SELECT username FROM rbac_accounts WHERE username = ?",
+            (user,),
+        ).fetchone()
+        if existing is not None:
+            return _rbac_refused("account_exists", 409)
+        conn.execute(
+            """
+            INSERT INTO rbac_accounts (
+                username, display_name, actor_id, role, password_hash,
+                certificate_subject, created_at_utc
+            ) VALUES (?, ?, ?, ?, ?, '', ?)
+            """,
+            (
+                user,
+                name,
+                actor,
+                chosen,
+                _hash_password(secret),
+                datetime.now(UTC).isoformat(),
+            ),
+        )
+    registered = register_operator(db_path, actor_id=actor, display_name=name, role=chosen)
+    if int(registered.get("http_status") or 400) != 200:
+        return _rbac_refused(str(registered.get("reason") or "operator_invalid"), 400)
+    return rbac_login(db_path, username=user, access_code=secret)
+
+
+def _attach_rollback_identity(
+    db_path: Path,
+    result: dict[str, Any],
+    *,
+    session_token: str | None,
+    preserved: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Publish the signed-in header and keep a verified flow identity from being cleared."""
+    result["flow_identity_preserved"] = True
+    if preserved is not None:
+        result["flow_identity_verified"] = bool(preserved.get("identity_verified"))
+        result["flow_identity_label"] = preserved.get("identity_label") or ""
+    session = rbac_session_status(db_path, str(session_token or ""))
+    if session.get("authenticated") is True:
+        for key in (
+            "header_identity",
+            "identity_verified",
+            "identity_label",
+            "certificate_subject",
+            "operator_auth_label",
+            "actor_id",
+            "display_name",
+            "role",
+        ):
+            result[key] = session.get(key)
+        if session.get("actor_id") != "lab_operator":
+            result["certificate_subject"] = ""
+            result["identity_verified"] = False
+            header = str(result.get("header_identity") or "")
+            if "/CN=lab_operator" in header:
+                result["header_identity"] = operator_header_identity(
+                    actor_id=str(session.get("actor_id") or ""),
+                    display_name=str(session.get("display_name") or ""),
+                    role=str(session.get("role") or ""),
+                )["header_identity"]
+        return result
+    if preserved is not None and preserved.get("identity_verified"):
+        result["identity_verified"] = True
+        result["identity_label"] = preserved.get("identity_label") or "verified_mtls_lab_operator"
+        if preserved.get("operator_id") == "lab_operator":
+            result["certificate_subject"] = "/CN=lab_operator"
+            result["operator_auth_label"] = "verified mTLS cert (/CN=lab_operator)"
+            result["header_identity"] = _BILAL_HEADER
+    return result
+
+
+def preview_soar_playbook(db_path: Path, *, flow_id: int) -> dict[str, Any]:
+    """Render the technique responder and the four-step trace for one stored flow."""
+    from threatfusion.soar.soar_playbooks_catalog import preview_fields, technique_for_flow
+
+    if flow_id <= 0:
+        return {
+            "schema_version": "soar_playbook_preview_v1",
+            "evidence_state": "unavailable",
+            "reason": "flow_not_stored",
+            "production_fusion_enabled": False,
+            "http_status": 404,
+        }
+    match = next(
+        (
+            item
+            for item in _flow_rows(db_path, limit=100)
+            if int(item.get("flow_id") or 0) == flow_id
+        ),
+        None,
+    )
+    if match is None:
+        return {
+            "schema_version": "soar_playbook_preview_v1",
+            "evidence_state": "unavailable",
+            "reason": "flow_not_stored",
+            "production_fusion_enabled": False,
+            "http_status": 404,
+        }
+    observation = match.get("sensor_observation")
+    if not isinstance(observation, Mapping):
+        observation = {}
+    try:
+        sport = int(observation.get("src_port") or 0)
+    except (TypeError, ValueError):
+        sport = 0
+    try:
+        observed_dport = int(observation.get("dst_port") or match.get("service_or_port") or 0)
+    except (TypeError, ValueError):
+        observed_dport = 0
+    proto = str(observation.get("proto") or match.get("flow_protocol") or "tcp").lower()
+    technique = technique_for_flow(
+        decision=str(match.get("decision") or ""),
+        case_title=str(match.get("case_title") or ""),
+        playbook_id=str(match.get("playbook_id") or ""),
+    )
+    probability = match.get("rf_attack_probability")
+    try:
+        rf_probability = float(probability) if probability is not None else None
+    except (TypeError, ValueError):
+        rf_probability = None
+    ae_loss = match.get("ae_loss")
+    try:
+        ae_mse = float(ae_loss) if ae_loss is not None else None
+    except (TypeError, ValueError):
+        ae_mse = None
+    ledger_state = str(match.get("ledger_state") or match.get("soar_state") or "")
+    containment = str(match.get("containment_state") or "")
+    approved = ledger_state in {"approved", "executed_simulated"} or bool(
+        match.get("audit_chain_verified")
+    )
+    dispatched = bool(match.get("callback_recorded"))
+    contained = containment in {
+        "applied",
+        "simulated_applied",
+        "rolled_back",
+        "simulated_rolled_back",
+    }
+    rolled_back = containment in {"rolled_back", "simulated_rolled_back"}
+    preview = preview_fields(
+        technique=technique,
+        flow_id=flow_id,
+        src_ip=str(match.get("src_entity_id") or ""),
+        dst_ip=str(match.get("dst_entity_id") or ""),
+        sport=sport,
+        dport=observed_dport,
+        proto=proto,
+        rf_attack_probability=rf_probability,
+        ae_mse=ae_mse,
+        dnn_predicted_class=str(match.get("unsw_attack_category") or ""),
+        hmac_prev_sha256=str(match.get("prev_entry_sha256") or ""),
+        approved=approved,
+        dispatched=dispatched,
+        contained=contained,
+        rolled_back=rolled_back,
+    )
+    preview["schema_version"] = "soar_playbook_preview_v1"
+    preview["evidence_state"] = "verified"
+    preview["flow_id"] = flow_id
+    preview["http_status"] = 200
+    return preview
+
+
+def azure_portal_status(state_path: Path | None = None) -> dict[str, Any]:
+    """Report the recorded Azure subscription file. This route does not call az."""
+    path = state_path or Path("/tmp/threatfusion-range-demo/azure_portal_state.json")
+    state: dict[str, Any] = {}
+    if path.is_file() and not path.is_symlink():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            loaded = None
+        if isinstance(loaded, dict):
+            state = loaded
+    connected = bool(state.get("subscription_id") and state.get("tenant_id"))
+    return {
+        "schema_version": "azure_portal_status_v1",
+        "evidence_state": "verified" if connected else "unavailable",
+        "azure_cli_present": shutil.which("az") is not None,
+        "connected": connected,
+        "state_path": str(path),
+        "portal_state": state,
+        "resource_group": str(state.get("resource_group") or "ThreatFusion-RG"),
+        "tenant_id": str(state.get("tenant_id") or ""),
+        "subscription_id": str(state.get("subscription_id") or ""),
+        "app_id": str(state.get("app_id") or ""),
+        "victim_vm_ip": str(state.get("victim_vm_ip") or "172.29.0.20"),
+        "attacker_vm_ip": str(state.get("attacker_vm_ip") or "172.29.0.10"),
+        "terminal_snippet": "scripts/deploy_azure_cyber_range.sh --provision-live-azure",
+        "status_snippet": "scripts/deploy_azure_cyber_range.sh --status",
+        "deallocate_snippet": "scripts/deploy_azure_cyber_range.sh --deallocate-vms",
+        "production_fusion_enabled": False,
+        "http_status": 200,
+    }
+
+
 def list_sensors(db_path: Path) -> dict[str, Any]:
     with _connect(db_path) as conn:
-        rows = conn.execute(
-            """
+        rows = conn.execute("""
             SELECT sensor_id, monitored_cidr, status
             FROM registered_sensors
             ORDER BY sensor_id
-            """
-        ).fetchall()
+            """).fetchall()
     return {
         "schema_version": "live_sensor_registry_v1",
         "evidence_state": "verified",
@@ -7791,18 +8535,12 @@ def _stage_funnel_counts(db_path: Path) -> dict[str, int]:
             ).fetchone()[0]
         )
         stage3 = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM live_flows WHERE decision = 'Attack'"
-            ).fetchone()[0]
+            conn.execute("SELECT COUNT(*) FROM live_flows WHERE decision = 'Attack'").fetchone()[0]
         )
-        stage4 = int(
-            conn.execute(
-                """
+        stage4 = int(conn.execute("""
                 SELECT COUNT(DISTINCT campaign_id) FROM live_flows
                 WHERE campaign_id IS NOT NULL AND campaign_id != ''
-                """
-            ).fetchone()[0]
-        )
+                """).fetchone()[0])
     return {
         "stage1_ingested_flows": stage1,
         "stage2_schema_valid": stage2,
@@ -7849,8 +8587,7 @@ def build_compliance_dossier(
     funnel = _stage_funnel_counts(db_path)
     ledger = _playbook_ledger_verification(soar_db_path)
     registry = {
-        key: spec["expected_sha256"]
-        for key, spec in FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY.items()
+        key: spec["expected_sha256"] for key, spec in FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY.items()
     }
     active = workspaces.get("active_workspace_id")
     lines = [
@@ -7874,9 +8611,7 @@ def build_compliance_dossier(
         )
     lines.extend(["", "## Sensor registry"])
     for item in sensors["sensors"]:
-        lines.append(
-            f"- {item['sensor_id']}: {item['monitored_cidr']} status {item['status']}"
-        )
+        lines.append(f"- {item['sensor_id']}: {item['monitored_cidr']} status {item['status']}")
     lines.extend(
         [
             "",
@@ -7975,7 +8710,7 @@ def _range_probe_argv(vector_id: str) -> tuple[str, ...]:
         )
     if vector_id == "T1498":
         script = (
-            "i=0; while [ \"$i\" -lt 4 ]; do "
+            'i=0; while [ "$i" -lt 4 ]; do '
             f"timeout 1 sh -c 'echo >/dev/tcp/{victim}/80' || true; "
             "i=$((i+1)); done"
         )
@@ -8069,14 +8804,12 @@ def _latest_reachability_probe(db_path: Path) -> dict[str, Any]:
             "dst_ip": RANGE_VICTIM_ADDRESS,
         }
     with _connect(db_path) as conn:
-        row = conn.execute(
-            """
+        row = conn.execute("""
             SELECT vector_id, started, reason, detail_json, created_at_utc
             FROM range_probe_events
             ORDER BY probe_id DESC
             LIMIT 1
-            """
-        ).fetchone()
+            """).fetchone()
     if row is None:
         return {
             "status": "not_probed",
@@ -8115,14 +8848,12 @@ def range_telemetry(db_path: Path) -> dict[str, Any]:
             ).fetchone()
             if latest is not None and latest["containment_state"]:
                 containment_state = str(latest["containment_state"])
-            blocked_rows = conn.execute(
-                """
+            blocked_rows = conn.execute("""
                 SELECT DISTINCT src_entity_id FROM live_flows
                 WHERE containment_state = 'applied'
                   AND src_entity_id IS NOT NULL
                   AND src_entity_id != ''
-                """
-            ).fetchall()
+                """).fetchall()
             blocked_sources = [str(row["src_entity_id"]) for row in blocked_rows]
             soar_receipts = int(
                 conn.execute(
@@ -8273,9 +9004,7 @@ def launch_range_vector(
     root = repo_root or _console_repo_root()
     probe = _start_range_vector_probe(vector)
     _record_range_probe(db_path, vector, probe)
-    title = next(
-        item["title"] for item in _RANGE_ATTACK_CATALOG if item["vector_id"] == vector
-    )
+    title = next(item["title"] for item in _RANGE_ATTACK_CATALOG if item["vector_id"] == vector)
     scenario_label = vector if vector != "BENIGN_WEB" else None
     if scenario_label:
         title = f"{title} (scenario label {scenario_label})"

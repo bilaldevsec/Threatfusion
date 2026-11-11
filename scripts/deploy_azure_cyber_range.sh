@@ -47,7 +47,7 @@ ACTION=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy_azure_cyber_range.sh [--dry-run] [--student-free-tier] (--help|--provision|--pair-forwarder|--status|--deallocate|--setup-entra-app)
+Usage: scripts/deploy_azure_cyber_range.sh [--dry-run] [--student-free-tier] (--help|--provision|--provision-live-azure|--pair-forwarder|--status|--deallocate|--deallocate-vms|--setup-entra-app)
 
   --help             Show this text and exit 0.
   --dry-run          Print the az and remote steps without calling them.
@@ -57,12 +57,19 @@ Usage: scripts/deploy_azure_cyber_range.sh [--dry-run] [--student-free-tier] (--
                      Standard SSD, and an auto-shutdown at 23:59 Pakistan time
                      so the $60 credit is not left running overnight.
   --provision        Create the resource group, VNet, NSG, and both VMs.
+  --provision-live-azure
+                     Sign in with az when needed, register the ThreatFusion-SOC-Platform
+                     Entra app roles, and create ThreatFusion-RG, ThreatFusion-VNet
+                     172.29.0.0/16, subnet 172.29.0.0/24, ThreatFusion-NSG, and two
+                     Ubuntu 22.04 Standard_B1s VMs. Auto-shutdown is 02:00 Pakistan
+                     time (UTC+5). Writes /tmp/threatfusion-range-demo/azure_portal_state.json.
   --pair-forwarder   Install Suricata and suricata_eve_follower.py on the victim
                      and pair it with the ThreatFusion console over the sensor
                      route. HMAC and optional mTLS material stay in a root-only
                      env file on that VM.
-  --status           Show the two VM power states and private addresses.
+  --status           Run: az vm list -g ThreatFusion-RG -d -o table
   --deallocate       Stop both VMs and release compute so billing stops after a demo.
+  --deallocate-vms   Same as --deallocate.
   --setup-entra-app  Register the ThreatFusion Microsoft Entra ID app roles.
 
 The address plan is fixed: tf-soc-victim-vm 172.29.0.20 and
@@ -291,11 +298,135 @@ EOF
 
 show_status() {
   require_az
-  run az vm list \
+  run az vm list -g "$RG" -d -o table
+}
+
+provision_live_azure() {
+  require_az
+  local live_location="$LOCATION"
+  if [[ "$live_location" != "eastus" && "$live_location" != "southeastasia" ]]; then
+    live_location="eastus"
+  fi
+  local roles
+  roles='[{"allowedMemberTypes":["User"],"description":"Tier-3 SOC approver who may sign SOAR playbooks","displayName":"SOC Approver","id":"c1a0b011-1111-4111-8111-000000000011","isEnabled":true,"value":"soc_approver"},{"allowedMemberTypes":["User"],"description":"Tier-1 analyst limited to triage","displayName":"Tier-1 Triage","id":"c1a0b012-2222-4222-8222-000000000012","isEnabled":true,"value":"tier1_triage"},{"allowedMemberTypes":["User"],"description":"Read-only compliance auditor","displayName":"Compliance Auditor","id":"c1a0b013-3333-4333-8333-000000000013","isEnabled":true,"value":"compliance_auditor"}]'
+  local live_vnet="ThreatFusion-VNet"
+  local live_subnet="ThreatFusion-Subnet"
+  local live_nsg="ThreatFusion-NSG"
+  local app_id="dry-run-app-id"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "dry-run: az account show"
+    echo "dry-run: az login   # only when az account show fails"
+    echo "dry-run: az ad app list --display-name ThreatFusion-SOC-Platform"
+    run az ad app create \
+      --display-name "ThreatFusion-SOC-Platform" \
+      --sign-in-audience AzureADMyOrg \
+      --app-roles "$roles"
+  else
+    if ! az account show >/dev/null 2>&1; then
+      az login
+    fi
+    app_id="$(az ad app list --display-name ThreatFusion-SOC-Platform --query '[0].appId' -o tsv || true)"
+    if [[ -z "$app_id" ]]; then
+      app_id="$(az ad app create \
+        --display-name "ThreatFusion-SOC-Platform" \
+        --sign-in-audience AzureADMyOrg \
+        --app-roles "$roles" \
+        --query appId \
+        -o tsv)"
+    fi
+  fi
+  run az group create --name "$RG" --location "$live_location"
+  run az network nsg create --resource-group "$RG" --name "$live_nsg"
+  run az network nsg rule create \
     --resource-group "$RG" \
-    --show-details \
-    --query "[].{name:name, power:powerState, privateIp:privateIps}" \
-    --output table
+    --nsg-name "$live_nsg" \
+    --name allow-range-internal \
+    --priority 100 \
+    --access Allow \
+    --direction Inbound \
+    --protocol '*' \
+    --source-address-prefixes "$SUBNET_PREFIX" \
+    --destination-address-prefixes "$SUBNET_PREFIX" \
+    --destination-port-ranges '*'
+  if [[ -n "${AZURE_ADMIN_SSH_CIDR:-}" && "${AZURE_ADMIN_SSH_CIDR}" != "0.0.0.0/0" && "${AZURE_ADMIN_SSH_CIDR}" != "*" ]]; then
+    run az network nsg rule create \
+      --resource-group "$RG" \
+      --nsg-name "$live_nsg" \
+      --name allow-admin-ssh \
+      --priority 110 \
+      --access Allow \
+      --direction Inbound \
+      --protocol Tcp \
+      --source-address-prefixes "$AZURE_ADMIN_SSH_CIDR" \
+      --destination-port-ranges 22
+  fi
+  run az network vnet create \
+    --resource-group "$RG" \
+    --name "$live_vnet" \
+    --address-prefix "$VNET_PREFIX" \
+    --subnet-name "$live_subnet" \
+    --subnet-prefix "$SUBNET_PREFIX"
+  run az network vnet subnet update \
+    --resource-group "$RG" \
+    --vnet-name "$live_vnet" \
+    --name "$live_subnet" \
+    --network-security-group "$live_nsg"
+  run az vm create \
+    --resource-group "$RG" \
+    --name "$VICTIM_NAME" \
+    --image Ubuntu2204 \
+    --size Standard_B1s \
+    --admin-username "$ADMIN_USER" \
+    --generate-ssh-keys \
+    --vnet-name "$live_vnet" \
+    --subnet "$live_subnet" \
+    --nsg "$live_nsg" \
+    --private-ip-address "$VICTIM_IP" \
+    --public-ip-address ""
+  run az vm create \
+    --resource-group "$RG" \
+    --name "$ATTACKER_NAME" \
+    --image Ubuntu2204 \
+    --size Standard_B1s \
+    --admin-username "$ADMIN_USER" \
+    --generate-ssh-keys \
+    --vnet-name "$live_vnet" \
+    --subnet "$live_subnet" \
+    --nsg "$live_nsg" \
+    --private-ip-address "$ATTACKER_IP" \
+    --public-ip-address ""
+  run az vm auto-shutdown \
+    --resource-group "$RG" \
+    --name "$VICTIM_NAME" \
+    --time 0200 \
+    --timezone "Pakistan Standard Time"
+  run az vm auto-shutdown \
+    --resource-group "$RG" \
+    --name "$ATTACKER_NAME" \
+    --time 0200 \
+    --timezone "Pakistan Standard Time"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "dry-run: would write /tmp/threatfusion-range-demo/azure_portal_state.json"
+    return 0
+  fi
+  mkdir -p /tmp/threatfusion-range-demo
+  AZURE_APP_ID="$app_id" az account show -o json | python3 -c '
+import json, os, sys
+account = json.load(sys.stdin)
+state = {
+    "tenant_id": account.get("tenantId") or "",
+    "subscription_id": account.get("id") or "",
+    "app_id": os.environ.get("AZURE_APP_ID", ""),
+    "resource_group": "ThreatFusion-RG",
+    "victim_vm_ip": "172.29.0.20",
+    "attacker_vm_ip": "172.29.0.10",
+}
+path = "/tmp/threatfusion-range-demo/azure_portal_state.json"
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(state, handle, indent=2)
+    handle.write("\n")
+print(path)
+'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -312,6 +443,10 @@ while [[ $# -gt 0 ]]; do
       ACTION="provision"
       shift
       ;;
+    --provision-live-azure)
+      ACTION="provision-live"
+      shift
+      ;;
     --student-free-tier)
       STUDENT_FREE_TIER=1
       VICTIM_SIZE="Standard_B1s"
@@ -321,7 +456,7 @@ while [[ $# -gt 0 ]]; do
       STORAGE_SKU="StandardSSD_LRS"
       shift
       ;;
-    --deallocate)
+    --deallocate|--deallocate-vms)
       ACTION="deallocate"
       shift
       ;;
@@ -356,6 +491,7 @@ fi
 
 case "$ACTION" in
   provision) provision_range ;;
+  provision-live) provision_live_azure ;;
   pair) pair_forwarder ;;
   status) show_status ;;
   deallocate) deallocate_range ;;

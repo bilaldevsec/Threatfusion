@@ -200,6 +200,67 @@
   margin: 0.2rem 0;
 }
 
+.identity-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(9, 13, 22, 0.72);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 4rem 1rem 2rem;
+}
+
+.identity-modal-card {
+  width: min(40rem, 100%);
+  max-height: calc(100vh - 6rem);
+  overflow: auto;
+  background: #111827;
+  color: #f8fafc;
+  border: 1px solid rgba(88, 166, 255, 0.35);
+  border-radius: 0.75rem;
+  padding: 1rem 1.1rem 1.2rem;
+}
+
+.identity-modal-card label,
+.identity-modal-card input,
+.identity-modal-card select,
+.identity-modal-card textarea {
+  display: block;
+  width: 100%;
+  margin: 0.35rem 0 0.7rem;
+}
+
+.demo-credential-box {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.8rem;
+}
+
+.soar-playbook-inspector {
+  margin-top: 0.8rem;
+}
+
+.playbook-code {
+  max-height: 22rem;
+  overflow: auto;
+  white-space: pre;
+  background: #0b1220;
+  color: #d1e7ff;
+  border: 1px solid rgba(88, 166, 255, 0.25);
+  border-radius: 0.4rem;
+  padding: 0.75rem;
+  font-size: 0.75rem;
+}
+
+#azureProvisionSnippet {
+  white-space: pre-wrap;
+  background: #0b1220;
+  color: #d1e7ff;
+  padding: 0.6rem;
+}
+
 @media (max-width: 900px) {
   .observatory-gauges {
     grid-template-columns: 1fr;

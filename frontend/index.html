@@ -39,13 +39,12 @@
         </nav>
         <div class="header-telemetry">
           <span class="badge badge-auth" id="consoleTransportBadge" data-evidence-state="unavailable">Lab HTTP console</span>
-          <span class="badge badge-role" id="headerChainBadge" hidden data-evidence-state="unavailable">Playbook hash chain: unavailable</span>
-          <span class="badge badge-role" id="ledgerBadge" data-evidence-state="unavailable">Playbook hash chain: unavailable</span>
-          <span id="operatorProfileName">Muhammad Bilal (Triage Lead)</span>
-          <span class="badge badge-neutral" id="operatorIdentityBadge" hidden>unverified local label</span>
+          <span class="badge badge-role" id="headerChainBadge" data-evidence-state="unavailable">Playbook hash chain: unavailable</span>
+          <span id="operatorProfileName" hidden>unverified local label</span>
           <span class="badge badge-neutral" id="operatorAuthBadge" data-evidence-state="unavailable">unverified local label</span>
           <span class="badge" id="copilotProviderBadge" data-evidence-state="unavailable">AI Copilot: Local Air-Gapped Engine</span>
           <span id="liveClock">UTC</span>
+          <button id="btnOpenIdentityModal" class="btn" type="button">Sign In / Switch Operator</button>
           <button id="btnOpenLabDrawer" class="btn" type="button">Lab Range &amp; Simulation Controls</button>
           <button id="enterpriseWorkspaceToggleBtn" class="btn" type="button">Enterprise Workspaces, RBAC &amp; Live Range</button>
         </div>
@@ -281,6 +280,12 @@
                         <span class="badge" id="rangeConnectivityBadge" data-evidence-state="unavailable">172.29.0.10 -&gt; 172.29.0.20:80: waiting for a probe</span>
                       </li>
                     </ol>
+                    <section id="soarPlaybookInspectorSide" class="soar-playbook-inspector" aria-label="Dynamic Python SOAR Playbook and Live Execution Trace">
+                      <h3>Dynamic Python (.py) SOAR Playbook &amp; Live Execution Trace</h3>
+                      <div id="soarPlaybookMetaSide">Select an attack flow to render its responder script.</div>
+                      <pre id="soarPlaybookCodeSide" class="playbook-code">waiting</pre>
+                      <ol id="soarPlaybookTraceSide"></ol>
+                    </section>
                   </article>
                 </aside>
               </div>
@@ -362,6 +367,12 @@
                 <div id="remediationPlaybook">none</div>
                 <div id="inspectorPlaybookNote">No local technique is shown until a retrieval names one. Containment stays unauthorized.</div>
                 <div><b>Playbook:</b> <span id="inspectorPlaybook">none</span></div>
+                <section id="soarPlaybookInspector" class="soar-playbook-inspector" aria-label="Dynamic Python SOAR Playbook and Live Execution Trace">
+                  <h3>Dynamic Python (.py) SOAR Playbook &amp; Live Execution Trace</h3>
+                  <div id="soarPlaybookMeta">Select an attack flow to render its responder script.</div>
+                  <pre id="soarPlaybookCode" class="playbook-code">waiting</pre>
+                  <ol id="soarPlaybookTrace"></ol>
+                </section>
               </div>
             </div>
             <div class="inspector-tab-pane" data-inspector-tab="6">
@@ -726,7 +737,7 @@
           <option value="tier1_analyst">Muhammad Suhaib (22K-4302) · tier1_triage</option>
           <option value="compliance_auditor">Muhammad Hasnain (22K-4718) · auditor_readonly</option>
         </select>
-        <button id="btnSwitchOperator" type="button">Switch operator</button>
+        <button id="btnSwitchOperator" type="button">Sign In / Switch Operator</button>
         <button id="btnEnrollWorkspaceOperator" type="button">Enroll X.509 certificate</button>
         <h4>New Operator</h4>
         <label for="operatorActorRegister">Actor id</label>
@@ -756,6 +767,10 @@
       </section>
       <section>
         <h3>Suricata Forwarder &amp; Azure Sensor Registry</h3>
+        <h3>Azure Portal</h3>
+        <div id="azurePortalStatus" data-evidence-state="unavailable">Azure portal state has not been loaded.</div>
+        <pre id="azureProvisionSnippet">scripts/deploy_azure_cyber_range.sh --provision-live-azure</pre>
+        <button id="btnCopyAzureSnippet" type="button">Copy provision command</button>
         <div id="sensorRegistryList" data-evidence-state="unavailable">Sensor registry has not been loaded.</div>
         <label for="sensorIdInput">Sensor id</label>
         <input id="sensorIdInput" type="text" value="" maxlength="64" autocomplete="off">
@@ -791,6 +806,39 @@
     <div class="walkthrough-timeline" id="walkthroughTimeline"></div>
     <div id="walkthroughDisplay"></div>
   </section>
+  <div id="identityModal" class="identity-modal" hidden>
+    <div class="identity-modal-card" role="dialog" aria-modal="true" aria-labelledby="identityModalTitle">
+      <h2 id="identityModalTitle">ThreatFusion Identity &amp; Microsoft Entra ID Sign-In / Sign-Up Modal</h2>
+      <p>Authenticate with an email and access code, paste an Entra ID bearer token, or create a custom analyst account. The session identity does not change until authentication succeeds.</p>
+      <div class="demo-credential-box">
+        <h3>Demo Credentials Quick-Fill</h3>
+        <button type="button" class="btn" data-demo-user="bilal.21k3551@nu.edu.pk" data-demo-code="TF-Bilal-3551!">Muhammad Bilal (21K-3551) · soc_approver</button>
+        <button type="button" class="btn" data-demo-user="suhaib.22k4302@nu.edu.pk" data-demo-code="TF-Suhaib-4302!">Muhammad Suhaib (22K-4302) · tier1_triage</button>
+        <button type="button" class="btn" data-demo-user="hasnain.22k4718@nu.edu.pk" data-demo-code="TF-Hasnain-4718!">Muhammad Hasnain (22K-4718) · compliance_auditor</button>
+      </div>
+      <label for="rbacUsername">Email</label>
+      <input id="rbacUsername" type="text" maxlength="180" autocomplete="username">
+      <label for="rbacAccessCode">Access code</label>
+      <input id="rbacAccessCode" type="password" maxlength="128" autocomplete="current-password">
+      <button id="btnRbacLogin" type="button">Sign in</button>
+      <label for="rbacEntraToken">Entra ID bearer token</label>
+      <textarea id="rbacEntraToken" rows="3" maxlength="8000" placeholder="Paste a JWT with a roles claim"></textarea>
+      <button id="btnRbacEntra" type="button">Sign in with Entra ID token</button>
+      <h3>Create analyst account</h3>
+      <label for="rbacRegisterName">Display name</label>
+      <input id="rbacRegisterName" type="text" maxlength="120" autocomplete="name">
+      <label for="rbacRegisterRole">RBAC role</label>
+      <select id="rbacRegisterRole">
+        <option value="soc_approver">soc_approver</option>
+        <option value="tier1_triage">tier1_triage</option>
+        <option value="compliance_auditor">compliance_auditor</option>
+      </select>
+      <button id="btnRbacRegister" type="button">Create account and sign in</button>
+      <button id="btnRbacLogout" type="button">Sign out</button>
+      <button id="btnCloseIdentityModal" type="button">Close</button>
+      <div id="identityModalStatus" data-evidence-state="unavailable">No identity change yet.</div>
+    </div>
+  </div>
   <script src="js/soc_dashboard.js"></script>
 </body>
 </html>

@@ -13,6 +13,8 @@
     return String(meta.getAttribute('content') || '');
   }
   let liveCsrfToken = embeddedLiveCsrf();
+  let rbacSessionToken = '';
+  let sessionIdentity = null;
   const nativeFetch = window.fetch.bind(window);
   async function ensureLiveCsrf() {
     if (liveCsrfToken) return liveCsrfToken;
@@ -26,12 +28,20 @@
     const opts = options ? Object.assign({}, options) : {};
     const method = String(opts.method || 'GET').toUpperCase();
     const target = String(url);
-    if (method === 'POST' && target.indexOf('/api/v1/live/') !== -1) {
+    const needsCsrf = method === 'POST' && (
+      target.indexOf('/api/v1/live/') !== -1
+      || target.indexOf('/api/rbac/') !== -1
+      || target.indexOf('/api/soar/') !== -1
+    );
+    const headers = new Headers(opts.headers || {});
+    if (needsCsrf) {
       if (!liveCsrfToken) await ensureLiveCsrf();
-      const headers = new Headers(opts.headers || {});
       if (liveCsrfToken) headers.set('X-ThreatFusion-CSRF', liveCsrfToken);
-      opts.headers = headers;
     }
+    if (rbacSessionToken && target.indexOf('/api/') !== -1) {
+      headers.set('X-ThreatFusion-Session', rbacSessionToken);
+    }
+    opts.headers = headers;
     return nativeFetch(url, opts);
   };
 
@@ -647,6 +657,7 @@
     refreshAdvisoryStatus();
     refreshAgyAudit();
     refreshLiveCampaigns();
+    refreshRbacSession();
     refreshOperatorStamp();
     loadModelObservatory(0);
     loadEnterpriseControls();
@@ -1548,11 +1559,11 @@
   function paintLedgerBadge(status) {
     const normalized = status === 'verified' || status === 'invalid' ? status : 'unavailable';
     const text = normalized === 'verified'
-      ? 'Playbook hash chain: verified'
+      ? 'Playbook hash chain: verified (HMAC-SHA256)'
       : normalized === 'invalid'
         ? 'Playbook hash chain: invalid'
         : 'Playbook hash chain: unavailable';
-    ['headerChainBadge', 'ledgerBadge'].forEach(id => {
+    ['headerChainBadge'].forEach(id => {
       const node = document.getElementById(id);
       if (!node) return;
       node.textContent = text;
@@ -1659,6 +1670,7 @@
       setInspectorText('inspectorCallback', 'Callback receipt: not recorded');
       setInspectorText('inspectorExecutionPath', 'not dispatched');
       showOperatorStamp({ identity_verified: false, identity_label: 'unverified_local_label' });
+      renderPlaybookPreview(null);
       renderGlassBox(null);
       renderCitedRationale(null);
       renderContextMemoryPanels(null);
@@ -1809,6 +1821,7 @@
     renderModelProofSandbox(inc);
     applyContainmentGuard(inc);
     loadModelProofForSelection(inc);
+    loadSoarPlaybookPreview(inc);
   }
 
   function renderContextMemoryPanels(inc) {
@@ -2485,7 +2498,7 @@
     if (rollbackButton) {
       rollbackButton.addEventListener('click', () => {
         const inc = activeIncidents().find(i => i.id === selectedIncidentId);
-        postRangeContainment(inc, '/api/v1/live/soar/rollback');
+        postRangeContainment(inc, '/api/soar/rollback');
       });
     }
     const proofDos = document.getElementById('btnProofDos');
@@ -2545,7 +2558,7 @@
     }
     const switchOperatorButton = document.getElementById('btnSwitchOperator');
     if (switchOperatorButton) {
-      switchOperatorButton.addEventListener('click', () => { switchEnterpriseOperator(); });
+      switchOperatorButton.addEventListener('click', () => { openIdentityModal(true); });
     }
     const enrollWorkspaceOperator = document.getElementById('btnEnrollWorkspaceOperator');
     if (enrollWorkspaceOperator) {
@@ -2567,6 +2580,34 @@
     const dossierButton = document.getElementById('exportComplianceDossierBtn');
     if (dossierButton) {
       dossierButton.addEventListener('click', () => { exportComplianceDossier(); });
+    }
+    const openIdentity = document.getElementById('btnOpenIdentityModal');
+    if (openIdentity) openIdentity.addEventListener('click', () => { openIdentityModal(true); });
+    const closeIdentity = document.getElementById('btnCloseIdentityModal');
+    if (closeIdentity) closeIdentity.addEventListener('click', () => { openIdentityModal(false); });
+    document.querySelectorAll('[data-demo-user]').forEach(button => {
+      button.addEventListener('click', () => {
+        const user = document.getElementById('rbacUsername');
+        const code = document.getElementById('rbacAccessCode');
+        if (user) user.value = button.getAttribute('data-demo-user') || '';
+        if (code) code.value = button.getAttribute('data-demo-code') || '';
+      });
+    });
+    const loginButton = document.getElementById('btnRbacLogin');
+    if (loginButton) loginButton.addEventListener('click', () => { submitRbacLogin(false); });
+    const entraButton = document.getElementById('btnRbacEntra');
+    if (entraButton) entraButton.addEventListener('click', () => { submitRbacLogin(true); });
+    const registerButton = document.getElementById('btnRbacRegister');
+    if (registerButton) registerButton.addEventListener('click', () => { submitRbacRegister(); });
+    const logoutButton = document.getElementById('btnRbacLogout');
+    if (logoutButton) logoutButton.addEventListener('click', () => { submitRbacLogout(); });
+    const copyAzure = document.getElementById('btnCopyAzureSnippet');
+    if (copyAzure) {
+      copyAzure.addEventListener('click', () => {
+        const node = document.getElementById('azureProvisionSnippet');
+        const value = node ? node.textContent : '';
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(value);
+      });
     }
   }
 
@@ -3026,12 +3067,17 @@
     }
   }
 
+  let campaignRefreshGeneration = 0;
+
   async function refreshLiveCampaigns() {
+    const generation = ++campaignRefreshGeneration;
     try {
       await refreshAssetInventory();
       const resp = await fetch('/api/v1/live/campaigns');
+      if (generation !== campaignRefreshGeneration) return;
       if (!resp.ok) throw new Error('campaign status');
       const data = await resp.json();
+      if (generation !== campaignRefreshGeneration) return;
       const flowViews = [];
       (data.campaigns || []).forEach(campaign => {
         (campaign.flows || []).forEach(flow => {
@@ -3050,9 +3096,7 @@
       });
       ledgerChainStatus = data.playbook_hash_chain_status || '';
       paintLedgerBadge(ledgerChainStatus);
-      if (data.operator_enrollment && data.operator_enrollment.enrollment_state === 'enrolled') {
-        showOperatorStamp(data.operator_enrollment);
-      }
+      if (sessionIdentity && sessionIdentity.authenticated) paintSessionIdentity(sessionIdentity);
       liveCampaignIncidents = views;
       showStoredN8nMttr(views);
       showStoredContainment(views);
@@ -3214,30 +3258,64 @@
   }
 
   function paintOperatorBadge(text, verified) {
-    ['operatorIdentityBadge', 'operatorAuthBadge'].forEach(id => {
-      const node = document.getElementById(id);
-      if (!node) return;
-      node.textContent = text;
-      node.classList.toggle('badge-neutral', !verified);
-      node.setAttribute('data-evidence-state', verified ? 'verified' : 'unavailable');
-    });
+    const node = document.getElementById('operatorAuthBadge');
+    if (!node) return;
+    node.textContent = text;
+    node.classList.toggle('badge-neutral', !verified);
+    node.setAttribute('data-evidence-state', verified ? 'verified' : 'unavailable');
+  }
+
+  function headerLineForSession(session) {
+    if (!session) return 'unverified local label';
+    const actor = String(session.actor_id || '');
+    let line = String(session.header_identity || '');
+    if (actor === 'lab_operator' && session.identity_verified === true) {
+      return 'Muhammad Bilal (21K-3551) · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)';
+    }
+    if (actor === 'tier1_analyst' || (line.indexOf('/CN=lab_operator') !== -1 && actor !== 'lab_operator' && actor !== 'compliance_auditor')) {
+      return 'Muhammad Suhaib (22K-4302) · Tier-1 Triage | No SOAR Cert (Triage Only)';
+    }
+    if (actor === 'compliance_auditor') {
+      return 'Muhammad Hasnain (22K-4718) · Auditor | Read-Only Compliance Token';
+    }
+    if (line.indexOf('/CN=lab_operator') !== -1) return 'unverified local label';
+    return line || 'unverified local label';
+  }
+
+  function paintSessionIdentity(session) {
+    if (!session || session.authenticated === false) {
+      paintOperatorBadge('unverified local label', false);
+      return;
+    }
+    const line = headerLineForSession(session);
+    const verified = session.actor_id === 'lab_operator' && session.identity_verified === true
+      && line.indexOf('/CN=lab_operator') !== -1;
+    paintOperatorBadge(line, verified);
+    const node = document.getElementById('operatorAuthBadge');
+    if (node) {
+      if (verified) node.setAttribute('title', 'verified operator certificate');
+      else node.removeAttribute('title');
+    }
+    const profile = document.getElementById('operatorProfileName');
+    if (profile) profile.textContent = session.display_name || line;
   }
 
   function showOperatorStamp(stamp) {
-    const node = document.getElementById('operatorIdentityBadge');
+    const node = document.getElementById('operatorAuthBadge');
     if (!node || !stamp) return;
+    if (sessionIdentity && sessionIdentity.authenticated) {
+      paintSessionIdentity(sessionIdentity);
+      return;
+    }
     const profile = document.getElementById('operatorProfileName');
-    if (profile) profile.textContent = activeOperatorLabel || 'Muhammad Bilal (Triage Lead)';
+    if (profile && activeOperatorLabel) profile.textContent = activeOperatorLabel;
     const verified = stamp.identity_verified === true || stamp.identityVerified === true;
     const label = stamp.identity_label || stamp.identityLabel || '';
     const prefix = stamp.cert_sha256_prefix || stamp.certSha256Prefix || '';
-    const enrolled = stamp.enrollment_state === 'enrolled' || stamp.enrollmentState === 'enrolled';
-    const subject = stamp.certificate_subject || stamp.certificateSubject
-      || (stamp.operator_id ? '/CN=' + stamp.operator_id : '');
-    const enrolledLabel = stamp.operator_auth_label || stamp.operatorAuthLabel || '';
-    if ((verified && label !== 'unverified_local_label' && prefix) || (enrolled && subject) || enrolledLabel) {
+    const subject = stamp.certificate_subject || stamp.certificateSubject || '';
+    if (verified && label !== 'unverified_local_label' && prefix && subject === '/CN=lab_operator') {
       node.setAttribute('title', 'verified operator certificate');
-      paintOperatorBadge(enrolledLabel || ('verified mTLS cert (' + subject + ')'), true);
+      paintOperatorBadge('Muhammad Bilal (21K-3551) · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)', true);
       return;
     }
     paintOperatorBadge('unverified local label', false);
@@ -3266,7 +3344,14 @@
         body: JSON.stringify({ actor_id: operatorActorId() })
       });
       const data = await resp.json();
-      showOperatorStamp(data);
+      if (sessionIdentity && sessionIdentity.actor_id === 'lab_operator' && data.identity_verified === true) {
+        sessionIdentity.identity_verified = true;
+        sessionIdentity.header_identity = 'Muhammad Bilal (21K-3551) · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)';
+        sessionIdentity.certificate_subject = '/CN=lab_operator';
+        paintSessionIdentity(sessionIdentity);
+      } else if (!(sessionIdentity && sessionIdentity.authenticated)) {
+        showOperatorStamp({ identity_verified: false, identity_label: 'unverified_local_label' });
+      }
       setLiveText(
         'campaignQueueStatus',
         data.evidence_state === 'verified'
@@ -4085,6 +4170,7 @@
         );
         return;
       }
+      if (sessionIdentity && sessionIdentity.authenticated) paintSessionIdentity(sessionIdentity);
       if (resp.ok && (applied || rolled)) {
         const message = applied
           ? ('CONTAINMENT APPLIED — Source ' + srcIp + ' blocked at firewall (iptables DROP active). Click Rollback to restore.')
@@ -4575,6 +4661,7 @@
       renderSensorRegistry(sensors);
       renderRangeFirewall(telemetry);
       renderEntraIdentity(payloads[4]);
+      await loadAzurePortalStatus();
     } catch (err) {
       setLiveText('workspaceStatus', 'Enterprise controls unavailable.', 'unavailable');
     }
@@ -4634,25 +4721,221 @@
     if (profile && activeOperatorLabel) profile.textContent = activeOperatorLabel;
   }
 
-  async function switchEnterpriseOperator() {
-    const select = document.getElementById('operatorRoleSelect');
-    const actorId = select ? select.value : '';
+  function openIdentityModal(open) {
+    const modal = document.getElementById('identityModal');
+    if (!modal) return;
+    if (open) modal.removeAttribute('hidden');
+    else modal.setAttribute('hidden', '');
+  }
+
+  function rememberSession(token) {
+    rbacSessionToken = token || '';
     try {
-      const resp = await fetch('/api/v1/live/operators/switch', {
+      if (rbacSessionToken) sessionStorage.setItem('threatfusion.rbac.session', rbacSessionToken);
+      else sessionStorage.removeItem('threatfusion.rbac.session');
+    } catch (err) {
+      rbacSessionToken = token || '';
+    }
+  }
+
+  function applyAuthenticatedSession(data) {
+    if (!data || data.authenticated !== true) {
+      sessionIdentity = null;
+      rememberSession('');
+      paintOperatorBadge('unverified local label', false);
+      return;
+    }
+    sessionIdentity = data;
+    rememberSession(data.session_token || rbacSessionToken);
+    applyOperatorSelection(data.actor_id || '', data.display_name || '');
+    paintSessionIdentity(sessionIdentity);
+    const select = document.getElementById('operatorRoleSelect');
+    if (select && data.actor_id) select.value = data.actor_id;
+  }
+
+  function identityStatus(text, state) {
+    const node = document.getElementById('identityModalStatus');
+    if (!node) return;
+    node.textContent = text;
+    node.setAttribute('data-evidence-state', state || 'unavailable');
+  }
+
+  async function refreshRbacSession() {
+    try {
+      if (!rbacSessionToken) {
+        rbacSessionToken = sessionStorage.getItem('threatfusion.rbac.session') || '';
+      }
+    } catch (err) {
+      rbacSessionToken = rbacSessionToken || '';
+    }
+    if (!rbacSessionToken) {
+      sessionIdentity = null;
+      return;
+    }
+    try {
+      const resp = await fetch('/api/rbac/session');
+      const data = await readActionPayload(resp);
+      if (data && data.authenticated === true) applyAuthenticatedSession(data);
+      else {
+        sessionIdentity = null;
+        rememberSession('');
+        paintOperatorBadge('unverified local label', false);
+      }
+    } catch (err) {
+      sessionIdentity = null;
+    }
+  }
+
+  async function submitRbacLogin(useEntra) {
+    const body = useEntra
+      ? { entra_token: queueControlValue('rbacEntraToken', '') }
+      : {
+        username: queueControlValue('rbacUsername', ''),
+        access_code: queueControlValue('rbacAccessCode', '')
+      };
+    try {
+      const resp = await fetch('/api/rbac/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ actor_id: actorId })
+        body: JSON.stringify(body)
       });
       const data = await readActionPayload(resp);
-      if (resp.ok) applyOperatorSelection(data.actor_id || actorId, data.display_name || '');
-      setLiveText(
-        'operatorSwitchStatus',
-        resp.ok ? ('Operator ' + actorId + ' role ' + String(data.role || '') + '.') : actionFailureText(data, resp),
-        resp.ok ? 'verified' : 'unavailable'
-      );
+      if (resp.ok && data.authenticated === true) {
+        applyAuthenticatedSession(data);
+        identityStatus(headerLineForSession(data), data.identity_verified ? 'verified' : 'unavailable');
+        openIdentityModal(false);
+        return;
+      }
+      identityStatus(actionFailureText(data, resp), 'unavailable');
     } catch (err) {
-      setLiveText('operatorSwitchStatus', 'Operator switch unavailable.', 'unavailable');
+      identityStatus('Sign-in unavailable.', 'unavailable');
     }
+  }
+
+  async function submitRbacRegister() {
+    const body = {
+      username: queueControlValue('rbacUsername', ''),
+      access_code: queueControlValue('rbacAccessCode', ''),
+      display_name: queueControlValue('rbacRegisterName', ''),
+      role: queueControlValue('rbacRegisterRole', 'tier1_triage')
+    };
+    try {
+      const resp = await fetch('/api/rbac/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await readActionPayload(resp);
+      if (resp.ok && data.authenticated === true) {
+        applyAuthenticatedSession(data);
+        identityStatus(headerLineForSession(data), 'unavailable');
+        openIdentityModal(false);
+        return;
+      }
+      identityStatus(actionFailureText(data, resp), 'unavailable');
+    } catch (err) {
+      identityStatus('Account creation unavailable.', 'unavailable');
+    }
+  }
+
+  async function submitRbacLogout() {
+    try {
+      await fetch('/api/rbac/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+    } catch (err) {
+      identityStatus('Sign-out unavailable.', 'unavailable');
+    }
+    sessionIdentity = null;
+    rememberSession('');
+    paintOperatorBadge('unverified local label', false);
+    identityStatus('Signed out.', 'unavailable');
+  }
+
+  function renderPlaybookPreview(data) {
+    const targets = [
+      ['soarPlaybookMeta', 'soarPlaybookCode', 'soarPlaybookTrace'],
+      ['soarPlaybookMetaSide', 'soarPlaybookCodeSide', 'soarPlaybookTraceSide']
+    ];
+    targets.forEach(ids => {
+      const meta = document.getElementById(ids[0]);
+      const code = document.getElementById(ids[1]);
+      const trace = document.getElementById(ids[2]);
+      if (!data) {
+        if (meta) meta.textContent = 'Select an attack flow to render its responder script.';
+        if (code) code.textContent = 'waiting';
+        if (trace) trace.textContent = '';
+        return;
+      }
+      if (meta) {
+        meta.textContent = String(data.playbook_id || '')
+          + ' · ' + String(data.script_filename || '')
+          + ' · ' + String(data.mitre_technique_id || '')
+          + ' · TheHive severity ' + String(data.thehive_severity == null ? '' : data.thehive_severity)
+          + ' · ' + String(data.target_service || '')
+          + ' · ' + String(data.firewall_rule_preview || '');
+      }
+      if (code) code.textContent = String(data.rendered_python_code || '');
+      if (trace) {
+        const steps = Array.isArray(data.execution_steps_log) ? data.execution_steps_log : [];
+        trace.innerHTML = steps.map(step => '<li>' + escapeHtml(step.line || '') + '</li>').join('');
+      }
+    });
+  }
+
+  async function loadSoarPlaybookPreview(inc) {
+    const flowId = inc && (inc.flowId || inc.flow_id);
+    if (!flowId) {
+      renderPlaybookPreview(null);
+      return;
+    }
+    try {
+      const resp = await fetch('/api/soar/playbook-preview?flow_id=' + encodeURIComponent(String(flowId)));
+      const data = await readActionPayload(resp);
+      if (!resp.ok) {
+        renderPlaybookPreview(null);
+        return;
+      }
+      renderPlaybookPreview(data);
+    } catch (err) {
+      renderPlaybookPreview(null);
+    }
+  }
+
+  function renderAzurePortal(status) {
+    const node = document.getElementById('azurePortalStatus');
+    const snippet = document.getElementById('azureProvisionSnippet');
+    if (snippet && status && status.terminal_snippet) snippet.textContent = String(status.terminal_snippet);
+    if (!node) return;
+    if (!status) {
+      node.textContent = 'Azure portal state has not been loaded.';
+      node.setAttribute('data-evidence-state', 'unavailable');
+      return;
+    }
+    const connected = status.connected === true;
+    node.textContent = connected
+      ? ('Azure CLI connected. Tenant ' + String(status.tenant_id || '')
+        + '. Subscription ' + String(status.subscription_id || '')
+        + '. Victim ' + String(status.victim_vm_ip || '')
+        + '. Attacker ' + String(status.attacker_vm_ip || '') + '.')
+      : ('Azure CLI ' + (status.azure_cli_present ? 'is installed' : 'is not installed')
+        + '. Live subscription file is not connected. Run the provision command to write azure_portal_state.json.');
+    node.setAttribute('data-evidence-state', connected ? 'verified' : 'unavailable');
+  }
+
+  async function loadAzurePortalStatus() {
+    try {
+      const resp = await fetch('/api/azure/status');
+      renderAzurePortal(await readActionPayload(resp));
+    } catch (err) {
+      renderAzurePortal(null);
+    }
+  }
+
+  async function switchEnterpriseOperator() {
+    openIdentityModal(true);
   }
 
   async function enrollSelectedOperator() {

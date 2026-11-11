@@ -602,7 +602,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 flow_id = int(raw_flow)
             except (TypeError, ValueError):
                 flow_id = 0
-            result = run_live_model_proof(self._live_db_path(), flow_id=flow_id, repo_root=REPO_ROOT)
+            result = run_live_model_proof(
+                self._live_db_path(), flow_id=flow_id, repo_root=REPO_ROOT
+            )
             self._send_json(int(result.get("http_status") or 404), result)
             return
         if path == "/api/v1/live/model-observatory":
@@ -633,6 +635,35 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             from threatfusion.api.live_soc_console import list_operators
 
             self._send_json(200, list_operators(self._live_db_path()))
+            return
+        if path == "/api/rbac/session":
+            from threatfusion.api.live_soc_console import rbac_session_status
+
+            token = (self.headers.get("X-ThreatFusion-Session") or "").strip()
+            if not token:
+                authorization = self.headers.get("Authorization") or ""
+                if authorization.lower().startswith("bearer "):
+                    token = authorization[7:].strip()
+            result = rbac_session_status(self._live_db_path(), token)
+            self._send_json(int(result.get("http_status") or 200), result)
+            return
+        if path == "/api/soar/playbook-preview":
+            from threatfusion.api.live_soc_console import preview_soar_playbook
+
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            raw_flow = (query.get("flow_id") or ["0"])[0]
+            try:
+                flow_id = int(raw_flow)
+            except ValueError:
+                flow_id = 0
+            result = preview_soar_playbook(self._live_db_path(), flow_id=flow_id)
+            self._send_json(int(result.get("http_status") or 404), result)
+            return
+        if path == "/api/azure/status":
+            from threatfusion.api.live_soc_console import azure_portal_status
+
+            result = azure_portal_status()
+            self._send_json(int(result.get("http_status") or 200), result)
             return
         if path == "/api/v1/live/entra/status":
             from threatfusion.api.live_soc_console import entra_identity_status
@@ -756,7 +787,12 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
     def _csrf_origin_rejected(self, path: str) -> bool:
         """Refuse a browser POST whose Origin is not this loopback listener."""
-        if not path.startswith("/api/v1/live/"):
+        protected = (
+            path.startswith("/api/v1/live/")
+            or path.startswith("/api/rbac/")
+            or path.startswith("/api/soar/")
+        )
+        if not protected:
             return False
         if path == "/api/v1/live/sensor":
             return False
@@ -1445,7 +1481,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 result.get("evidence_state") == "verified"
                 or result.get("ledger_state") == "approved"
             )
-            status = int(result["http_status"]) if result.get("http_status") else (200 if operational else 400)
+            status = (
+                int(result["http_status"])
+                if result.get("http_status")
+                else (200 if operational else 400)
+            )
             self._send_json(status, _with_three_proof_state(result))
             return
 
@@ -1493,7 +1533,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             self._send_json(status, result)
             return
 
-        if path in {"/api/v1/live/soar/contain", "/api/v1/live/soar/rollback"}:
+        if path in {
+            "/api/v1/live/soar/contain",
+            "/api/v1/live/soar/rollback",
+            "/api/soar/rollback",
+        }:
             from threatfusion.api.live_soc_console import (
                 contain_range_source,
                 rollback_range_source,
@@ -1510,13 +1554,28 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             raw_flow = req_data.get("flow_id")
             flow_id = raw_flow if isinstance(raw_flow, int) else 0
             actor_id = str(req_data.get("actor_id") or "")
-            action = contain_range_source if path.endswith("/contain") else rollback_range_source
-            result = action(
-                self._live_db_path(),
-                self._live_soar_path(),
-                flow_id=flow_id,
-                actor_id=actor_id or None,
-            )
+            session_token = (self.headers.get("X-ThreatFusion-Session") or "").strip()
+            if not session_token:
+                authorization = self.headers.get("Authorization") or ""
+                if authorization.lower().startswith(
+                    "bearer "
+                ) and not authorization.lower().startswith("bearer lab-"):
+                    session_token = authorization[7:].strip()
+            if path.endswith("/rollback"):
+                result = rollback_range_source(
+                    self._live_db_path(),
+                    self._live_soar_path(),
+                    flow_id=flow_id,
+                    actor_id=actor_id or None,
+                    session_token=session_token,
+                )
+            else:
+                result = contain_range_source(
+                    self._live_db_path(),
+                    self._live_soar_path(),
+                    flow_id=flow_id,
+                    actor_id=actor_id or None,
+                )
             self._send_json(int(result.get("http_status") or 403), result)
             return
 
@@ -1625,8 +1684,8 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             self._send_json(int(result.get("http_status") or 401), result)
             return
 
-        if path == "/api/v1/live/operators/switch":
-            from threatfusion.api.live_soc_console import switch_operator
+        if path in {"/api/rbac/login", "/api/rbac/register", "/api/rbac/logout"}:
+            from threatfusion.api.live_soc_console import rbac_login, rbac_logout, rbac_register
 
             try:
                 req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
@@ -1636,9 +1695,58 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if not isinstance(req_data, dict):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
+            if path == "/api/rbac/logout":
+                token = str(req_data.get("session_token") or "")
+                if not token:
+                    token = (self.headers.get("X-ThreatFusion-Session") or "").strip()
+                result = rbac_logout(self._live_db_path(), token)
+            elif path == "/api/rbac/register":
+                result = rbac_register(
+                    self._live_db_path(),
+                    username=str(req_data.get("username") or ""),
+                    access_code=str(req_data.get("access_code") or ""),
+                    display_name=str(req_data.get("display_name") or ""),
+                    role=str(req_data.get("role") or ""),
+                )
+            else:
+                result = rbac_login(
+                    self._live_db_path(),
+                    username=str(req_data.get("username") or ""),
+                    access_code=str(req_data.get("access_code") or req_data.get("password") or ""),
+                    entra_token=str(req_data.get("entra_token") or req_data.get("id_token") or ""),
+                )
+            self._send_json(int(result.get("http_status") or 401), result)
+            return
+
+        if path == "/api/v1/live/operators/switch":
+            from threatfusion.api.live_soc_console import rbac_session_status, switch_operator
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            token = (self.headers.get("X-ThreatFusion-Session") or "").strip()
+            session = rbac_session_status(self._live_db_path(), token)
+            requested = str(req_data.get("actor_id") or "")
+            if session.get("authenticated") is not True or session.get("actor_id") != requested:
+                self._send_json(
+                    401,
+                    {
+                        "schema_version": "live_operator_v1",
+                        "evidence_state": "unavailable",
+                        "reason": "authentication_required",
+                        "http_status": 401,
+                        "production_fusion_enabled": False,
+                    },
+                )
+                return
             result = switch_operator(
                 self._live_db_path(),
-                actor_id=str(req_data.get("actor_id") or ""),
+                actor_id=requested,
             )
             self._send_json(int(result.get("http_status") or 400), result)
             return
