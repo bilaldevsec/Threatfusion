@@ -1567,6 +1567,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
         if path in {
             "/api/v1/live/soar/contain",
+            "/api/soar/isolate",
             "/api/v1/live/soar/rollback",
             "/api/soar/rollback",
         }:

@@ -2328,11 +2328,7 @@ def answer_mitre_copilot(
 
     bound_flow_id = None if stored is None else stored.get("flow_id")
     soar_receipt = {"status": "unavailable"}
-    if (
-        isinstance(bound_flow_id, int)
-        and bound_flow_id > 0
-        and isinstance(db_path, Path)
-    ):
+    if isinstance(bound_flow_id, int) and bound_flow_id > 0 and isinstance(db_path, Path):
         soar_receipt = _soar_receipt_status(
             soar_db_path if isinstance(soar_db_path, Path) else None,
             bound_flow_id,
@@ -3997,7 +3993,9 @@ def replay_live_scenarios(
     for spec in LIVE_SCENARIO_REPLAYS:
         label = spec["scenario_label"]
         title = _scenario_case_title(spec)
-        protocol = str(spec.get("protocol") or ("tcp" if int(spec.get("protocol_tcp") or 0) else "udp"))
+        protocol = str(
+            spec.get("protocol") or ("tcp" if int(spec.get("protocol_tcp") or 0) else "udp")
+        )
         provenance = _scenario_provenance(int(spec["dst_port"]), protocol)
         existing = _reuse_scenario_row(db_path, title, provenance)
         if existing is None:
@@ -6456,6 +6454,22 @@ RANGE_CONTAINMENT_SOURCE = "172.29.0.10"
 SCENARIO_CONTAINMENT_SOURCE = "10.0.0.4"
 SCENARIO_REPLAY_LABELS = frozenset({"scenario_replay", "live_scenario_replay"})
 RANGE_VICTIM_ADDRESS = "172.29.0.20"
+AZURE_PORTAL_STATE_PATH = Path("/tmp/threatfusion-range-demo/azure_portal_state.json")
+AZURE_LOCAL_CONTAINMENT_BADGE = (
+    "CONTAINMENT APPLIED — Source 172.29.0.10 blocked at Azure & Local firewall "
+    "(iptables DROP active)."
+)
+_AZURE_ISOLATE_REMOTE = (
+    "sudo iptables -C INPUT -s 172.29.0.10 -j DROP 2>/dev/null "
+    "|| sudo iptables -I INPUT 1 -s 172.29.0.10 -j DROP"
+)
+_AZURE_ROLLBACK_REMOTE = "sudo iptables -D INPUT -s 172.29.0.10 -j DROP 2>/dev/null || true"
+_AZURE_PROBE_REMOTE = "sudo iptables -C INPUT -s 172.29.0.10 -j DROP"
+_AZURE_REMOTE_COMMANDS = {
+    "isolate": _AZURE_ISOLATE_REMOTE,
+    "rollback": _AZURE_ROLLBACK_REMOTE,
+    "probe": _AZURE_PROBE_REMOTE,
+}
 
 
 def range_docker_argv(action: str) -> tuple[str, ...]:
@@ -6517,6 +6531,184 @@ def range_docker_argv(action: str) -> tuple[str, ...]:
     raise ValueError(action)
 
 
+def _azure_live_actions_suppressed() -> bool:
+    """Keep pytest off the recorded Azure victim unless a test opts in."""
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    return os.environ.get("THREATFUSION_ALLOW_LIVE_AZURE_ISOLATION") != "1"
+
+
+def read_azure_victim_public_ip(state_path: Path | None = None) -> str:
+    """Return a global victim address from the Azure portal state file."""
+    path = AZURE_PORTAL_STATE_PATH if state_path is None else state_path
+    if not path.is_file() or path.is_symlink():
+        return ""
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return ""
+    if not isinstance(loaded, dict):
+        return ""
+    try:
+        parsed = ipaddress.ip_address(str(loaded.get("victim_public_ip") or "").strip())
+    except ValueError:
+        return ""
+    if parsed.version != 4 or not parsed.is_global:
+        return ""
+    return str(parsed)
+
+
+def azure_victim_ssh_argv(public_ip: str, action: str) -> tuple[str, ...]:
+    """Non-interactive SSH argv for the Azure victim kernel filter."""
+    remote = _AZURE_REMOTE_COMMANDS[action]
+    return (
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "ConnectTimeout=3",
+        "-o",
+        "BatchMode=yes",
+        f"azureuser@{public_ip}",
+        remote,
+    )
+
+
+def apply_azure_kernel_isolation(action: str, *, state_path: Path | None = None) -> dict[str, Any]:
+    """Apply or remove the attacker DROP on the Azure victim. SSH failure stays local."""
+    if action not in _AZURE_REMOTE_COMMANDS:
+        raise ValueError(action)
+    if state_path is None and _azure_live_actions_suppressed():
+        return {
+            "attempted": False,
+            "applied": False,
+            "reason": "azure_live_action_suppressed",
+        }
+    public_ip = read_azure_victim_public_ip(state_path)
+    if not public_ip:
+        return {
+            "attempted": False,
+            "applied": False,
+            "reason": "azure_victim_not_recorded",
+        }
+    import subprocess
+
+    try:
+        completed = subprocess.run(
+            azure_victim_ssh_argv(public_ip, action),
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return {
+            "attempted": True,
+            "applied": False,
+            "victim_public_ip": public_ip,
+            "reason": "azure_ssh_unreachable",
+        }
+    applied = completed.returncode == 0
+    return {
+        "attempted": True,
+        "applied": applied,
+        "victim_public_ip": public_ip,
+        "returncode": completed.returncode,
+        "reason": "azure_kernel_rule_present" if applied else "azure_ssh_unreachable",
+    }
+
+
+def _azure_kernel_alongside_local(action: str) -> dict[str, Any]:
+    """Run the Azure victim command. Any failure leaves the local Docker result intact."""
+    mapped = "isolate" if action == "drop" else action
+    try:
+        return apply_azure_kernel_isolation(mapped)
+    except Exception:
+        return {
+            "attempted": True,
+            "applied": False,
+            "reason": "azure_ssh_unreachable",
+        }
+
+
+def _local_iptables_drop_active() -> bool:
+    """True when the local victim container already has the attacker DROP rule."""
+    import subprocess
+
+    try:
+        completed = subprocess.run(
+            range_docker_argv("drop_check"),
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
+def probe_local_and_azure_firewall(state_path: Path | None = None) -> dict[str, Any]:
+    """Check the local victim iptables rule and the live Azure victim rule."""
+    if state_path is None and _azure_live_actions_suppressed():
+        return {
+            "local_drop_active": False,
+            "azure_drop_active": False,
+            "local_reachable": None,
+            "azure_reachable": None,
+            "badge": "",
+            "status": "not_probed",
+            "reason": "live_probe_suppressed",
+            "src_ip": RANGE_CONTAINMENT_SOURCE,
+            "dst_ip": RANGE_VICTIM_ADDRESS,
+        }
+    local_drop = _local_iptables_drop_active()
+    try:
+        azure = apply_azure_kernel_isolation("probe", state_path=state_path)
+    except Exception:
+        azure = {
+            "attempted": True,
+            "applied": False,
+            "reason": "azure_ssh_unreachable",
+        }
+    azure_drop = bool(azure.get("applied"))
+    both = local_drop and azure_drop
+    return {
+        "local_drop_active": local_drop,
+        "azure_drop_active": azure_drop,
+        "local_reachable": False if local_drop else True,
+        "azure_reachable": False if azure_drop else True,
+        "azure_victim_public_ip": str(azure.get("victim_public_ip") or ""),
+        "azure_reason": str(azure.get("reason") or ""),
+        "badge": AZURE_LOCAL_CONTAINMENT_BADGE if both else "",
+        "status": "blocked_azure_and_local" if both else "not_blocked",
+        "firewall_scope": "azure_and_local" if both else "local",
+        "src_ip": RANGE_CONTAINMENT_SOURCE,
+        "dst_ip": RANGE_VICTIM_ADDRESS,
+    }
+
+
+def _attach_azure_kernel(result: dict[str, Any], azure_kernel: Mapping[str, Any] | None) -> None:
+    if not isinstance(azure_kernel, Mapping):
+        return
+    result["azure_kernel"] = dict(azure_kernel)
+    if azure_kernel.get("applied") is True and result.get("reason") == "containment_applied":
+        result["firewall_scope"] = "azure_and_local"
+        result["containment_badge"] = AZURE_LOCAL_CONTAINMENT_BADGE
+        result["reachability_probe"] = {
+            "local_drop_active": True,
+            "azure_drop_active": True,
+            "local_reachable": False,
+            "azure_reachable": False,
+            "badge": AZURE_LOCAL_CONTAINMENT_BADGE,
+            "status": "blocked_azure_and_local",
+            "firewall_scope": "azure_and_local",
+            "src_ip": RANGE_CONTAINMENT_SOURCE,
+            "dst_ip": RANGE_VICTIM_ADDRESS,
+            "azure_victim_public_ip": str(azure_kernel.get("victim_public_ip") or ""),
+        }
+
+
 def _run_range_action(action: str) -> dict[str, Any]:
     import subprocess
 
@@ -6547,7 +6739,10 @@ def _run_range_action(action: str) -> dict[str, Any]:
             )
             if inserted.returncode != 0:
                 return {"applied": False}
-        return {"applied": True}
+        return {
+            "applied": True,
+            "azure_kernel": _azure_kernel_alongside_local("drop"),
+        }
     if action == "rollback":
         removed = subprocess.run(
             range_docker_argv("rollback"),
@@ -6556,7 +6751,10 @@ def _run_range_action(action: str) -> dict[str, Any]:
             timeout=10,
             check=False,
         )
-        return {"removed": removed.returncode == 0}
+        return {
+            "removed": removed.returncode == 0,
+            "azure_kernel": _azure_kernel_alongside_local("rollback"),
+        }
     if action == "probe":
         probed = subprocess.run(
             range_docker_argv("probe"),
@@ -6804,7 +7002,8 @@ def contain_range_source(
     act = runner or _run_range_action
     if not act("status").get("running"):
         return _containment_refusal("range_not_running", 409)
-    if not act("drop").get("applied"):
+    dropped = act("drop")
+    if not isinstance(dropped, Mapping) or not dropped.get("applied"):
         return _containment_refusal("range_command_failed", 409)
     probe = act("probe")
     if not isinstance(probe, Mapping):
@@ -6819,7 +7018,7 @@ def contain_range_source(
     recorded_at = datetime.now(UTC).isoformat()
     _store_containment_state(live_db_path, flow_id, "applied", when=recorded_at)
     invalidate_copilot_brief_cache(flow_id, live_db_path)
-    return {
+    applied = {
         "schema_version": "live_range_containment_v1",
         "evidence_state": "verified",
         "reason": "containment_applied",
@@ -6829,9 +7028,13 @@ def contain_range_source(
         "production_fusion_enabled": False,
         "rollback_unlocked": True,
         "target": RANGE_CONTAINMENT_SOURCE,
+        "firewall_scope": "local",
         "containment_at": recorded_at,
         "http_status": 200,
     }
+    azure_kernel = dropped.get("azure_kernel") if isinstance(dropped, Mapping) else None
+    _attach_azure_kernel(applied, azure_kernel if isinstance(azure_kernel, Mapping) else None)
+    return applied
 
 
 def _rollback_range_source_work(
@@ -6859,8 +7062,15 @@ def _rollback_range_source_work(
     act = runner or _run_range_action
     if not act("status").get("running"):
         return _containment_refusal("range_not_running", 409)
-    if not act("rollback").get("removed"):
-        return _containment_refusal("rollback_rule_missing", 409)
+    rolled = act("rollback")
+    if not isinstance(rolled, Mapping):
+        rolled = {}
+    if not rolled.get("removed"):
+        refused = _containment_refusal("rollback_rule_missing", 409)
+        azure_kernel = rolled.get("azure_kernel")
+        if isinstance(azure_kernel, Mapping):
+            refused["azure_kernel"] = dict(azure_kernel)
+        return refused
     probe = act("probe")
     if not isinstance(probe, Mapping):
         probe = {}
@@ -6878,7 +7088,7 @@ def _rollback_range_source_work(
     recorded_at = datetime.now(UTC).isoformat()
     _store_containment_state(live_db_path, flow_id, "rolled_back", when=recorded_at)
     invalidate_copilot_brief_cache(flow_id, live_db_path)
-    return {
+    restored = {
         "schema_version": "live_range_containment_v1",
         "evidence_state": "verified",
         "reason": "containment_rolled_back",
@@ -6887,9 +7097,14 @@ def _rollback_range_source_work(
         "soar_receipt_status": "rolled_back",
         "production_fusion_enabled": False,
         "target": RANGE_CONTAINMENT_SOURCE,
+        "firewall_scope": "local",
         "rollback_at": recorded_at,
         "http_status": 200,
     }
+    azure_kernel = rolled.get("azure_kernel")
+    if isinstance(azure_kernel, Mapping):
+        restored["azure_kernel"] = dict(azure_kernel)
+    return restored
 
 
 def _flow_identity_row(db_path: Path, flow_id: int) -> dict[str, Any] | None:
@@ -9122,6 +9337,29 @@ def _latest_reachability_probe(db_path: Path) -> dict[str, Any]:
     return detail
 
 
+def _merge_live_firewall_probe(historical: Mapping[str, Any]) -> dict[str, Any]:
+    """Overlay the live local and Azure victim firewall check on the stored probe."""
+    merged = dict(historical)
+    try:
+        live = probe_local_and_azure_firewall()
+    except Exception:
+        return merged
+    if str(live.get("reason") or "") == "live_probe_suppressed":
+        return merged
+    merged["local_drop_active"] = bool(live.get("local_drop_active"))
+    merged["azure_drop_active"] = bool(live.get("azure_drop_active"))
+    merged["local_reachable"] = live.get("local_reachable")
+    merged["azure_reachable"] = live.get("azure_reachable")
+    public_ip = str(live.get("azure_victim_public_ip") or "")
+    if public_ip:
+        merged["azure_victim_public_ip"] = public_ip
+    if live.get("badge"):
+        merged["badge"] = live["badge"]
+        merged["status"] = "blocked_azure_and_local"
+        merged["firewall_scope"] = "azure_and_local"
+    return merged
+
+
 def range_telemetry(db_path: Path) -> dict[str, Any]:
     """Return the lab range topology, firewall state, and launchable profiles."""
     containment_state = "clear"
@@ -9178,7 +9416,7 @@ def range_telemetry(db_path: Path) -> dict[str, Any]:
         },
         "containment_state": containment_state,
         "blocked_sources": blocked_sources,
-        "reachability_probe": _latest_reachability_probe(db_path),
+        "reachability_probe": _merge_live_firewall_probe(_latest_reachability_probe(db_path)),
         "soar_receipts": soar_receipts,
         "attack_catalog": [dict(item) for item in _RANGE_ATTACK_CATALOG],
         "http_status": 200,

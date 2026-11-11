@@ -1744,7 +1744,8 @@ def test_workspaces_rbac_sensors_and_compliance_dossier(tmp_path: Path) -> None:
     assert "http://" not in html
     assert "https://" not in html
     assert "renderVisualObservatory" in script
-    assert "/api/v1/live/range/launch-vector" in script
+    assert "/api/range/launch" in script
+    assert "/api/soar/isolate" in script
     assert "production_fusion_enabled = True" not in script
     assert 'id="approvePlaybookBtn"' in html
     assert 'id="soarApproveBtn"' in html

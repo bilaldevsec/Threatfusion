@@ -15,6 +15,8 @@
   let liveCsrfToken = embeddedLiveCsrf();
   let rbacSessionToken = '';
   let sessionIdentity = null;
+  let latestDualFirewallProbe = null;
+  const AZURE_LOCAL_CONTAINMENT_BADGE = 'CONTAINMENT APPLIED — Source 172.29.0.10 blocked at Azure & Local firewall (iptables DROP active).';
   let selectedFlowId = null;
   let identityGateSwitchMode = false;
   const RBAC_SESSION_KEYS = ['threatfusion.rbac.session'];
@@ -1769,7 +1771,8 @@
         rangeBadge.setAttribute('data-connectivity', 'simulated');
         rangeBadge.setAttribute('data-evidence-state', 'simulated');
       } else if (inc.containmentState === 'applied') {
-        rangeBadge.textContent = src + ' -> ' + dst + ': BLOCKED (iptables DROP active)';
+        const azureBadge = azureLocalContainmentBadge(latestDualFirewallProbe);
+        rangeBadge.textContent = azureBadge || (src + ' -> ' + dst + ': BLOCKED (iptables DROP active)');
         rangeBadge.setAttribute('data-connectivity', 'blocked');
         rangeBadge.setAttribute('data-evidence-state', 'verified');
       } else if (inc.containmentState === 'rolled_back') {
@@ -2467,14 +2470,14 @@
     if (containButton) {
       containButton.addEventListener('click', () => {
         const inc = activeIncidents().find(i => i.id === selectedIncidentId);
-        postRangeContainment(inc, '/api/v1/live/soar/contain');
+        postRangeContainment(inc, '/api/soar/isolate');
       });
     }
     const isolateButton = document.getElementById('btnIsolateAttacker');
     if (isolateButton) {
       isolateButton.addEventListener('click', () => {
         const inc = activeIncidents().find(i => i.id === selectedIncidentId);
-        postRangeContainment(inc, '/api/v1/live/soar/contain');
+        postRangeContainment(inc, '/api/soar/isolate');
       });
     }
     const liveBridgePill = document.getElementById('pillLiveBridge');
@@ -2771,6 +2774,24 @@
     return 'Expected behavior for ' + srcIp + ' -> ' + dstIp + ' (' + techniqueLabel(inc) + ') stays on this stored flow.';
   }
 
+  function rememberDualFirewallProbe(probe) {
+    if (!probe || typeof probe !== 'object') return;
+    latestDualFirewallProbe = probe;
+  }
+
+  function azureLocalContainmentBadge(probe) {
+    if (!probe || typeof probe !== 'object') return '';
+    if (probe.local_drop_active === true && probe.azure_drop_active === true) {
+      return typeof probe.badge === 'string' && probe.badge
+        ? probe.badge
+        : AZURE_LOCAL_CONTAINMENT_BADGE;
+    }
+    if (typeof probe.badge === 'string' && probe.badge.indexOf('Azure & Local firewall') !== -1) {
+      return probe.badge;
+    }
+    return '';
+  }
+
   function containmentStatusLine(inc) {
     const fallback = 'Containment stays unauthorized until an analyst approves a stored playbook.';
     if (!inc) return fallback;
@@ -2780,6 +2801,8 @@
       return 'SIMULATED SCENARIO CONTAINMENT (No Host Firewall Rule Executed — Recorded in Ledger)';
     }
     if (state === 'applied') {
+      const azureBadge = azureLocalContainmentBadge(latestDualFirewallProbe);
+      if (azureBadge && (!srcIp || srcIp === '172.29.0.10')) return azureBadge;
       return 'CONTAINMENT APPLIED — Source ' + srcIp + ' blocked at firewall (iptables DROP active). Click Rollback to restore.';
     }
     if (state === 'rolled_back') {
@@ -4188,11 +4211,11 @@
     }
   }
 
-  function setRangeConnectivity(blocked) {
+  function setRangeConnectivity(blocked, badgeText) {
     const node = document.getElementById('rangeConnectivityBadge');
     if (!node) return;
     if (blocked) {
-      node.textContent = '172.29.0.10 -> 172.29.0.20:80: BLOCKED (Timeout exit 28)';
+      node.textContent = badgeText || '172.29.0.10 -> 172.29.0.20:80: BLOCKED (Timeout exit 28)';
       node.setAttribute('data-connectivity', 'blocked');
     } else {
       node.textContent = '172.29.0.10 -> 172.29.0.20:80: REACHABLE (range-victim)';
@@ -4233,18 +4256,21 @@
         body: JSON.stringify({ flow_id: inc.flowId, actor_id: operatorActorId() })
       });
       const data = await readActionPayload(resp);
+      const applied = data.reason === 'containment_applied';
+      const rolled = data.reason === 'containment_rolled_back';
+      if (data.reachability_probe) rememberDualFirewallProbe(data.reachability_probe);
+      if (rolled) latestDualFirewallProbe = null;
       const restore = preserveSelectionAfterMutation();
       await refreshLiveCampaigns();
       restore();
-      const applied = data.reason === 'containment_applied';
-      const rolled = data.reason === 'containment_rolled_back';
       const simulated = data.evidence_state === 'simulated'
         || data.containment_state === 'simulated_applied'
         || data.containment_state === 'simulated_rolled_back';
       const srcIp = inc.provenance && inc.provenance.srcIp ? String(inc.provenance.srcIp) : '';
       const blockedSrc = (typeof data.target === 'string' && data.target) ? String(data.target) : srcIp;
+      const azureBadge = applied ? azureLocalContainmentBadge(data.reachability_probe || latestDualFirewallProbe) : '';
       if (!srcIp || srcIp === '172.29.0.10' || blockedSrc === '172.29.0.10') {
-        if (applied) setRangeConnectivity(true);
+        if (applied) setRangeConnectivity(true, azureBadge);
         else if (rolled) setRangeConnectivity(false);
       }
       const isolating = String(path || '').indexOf('/rollback') === -1;
@@ -4284,7 +4310,7 @@
       if (sessionIdentity && sessionIdentity.authenticated) paintSessionIdentity(sessionIdentity);
       if (resp.ok && (applied || rolled)) {
         const message = applied
-          ? ('CONTAINMENT APPLIED — Source ' + (blockedSrc || srcIp) + ' blocked at firewall (iptables DROP active). Click Rollback to restore.')
+          ? (azureBadge || ('CONTAINMENT APPLIED — Source ' + (blockedSrc || srcIp) + ' blocked at firewall (iptables DROP active). Click Rollback to restore.'))
           : ('CONTAINMENT ROLLED BACK — Firewall block on ' + (blockedSrc || srcIp) + ' removed and rollback recorded in SHA-256 ledger.');
         showActionBanner(message, 'verified');
         refreshCopilotForSelection(selectedLiveIncident(inc) || selectedIncident(), true);
@@ -4711,6 +4737,19 @@
     const node = document.getElementById('rangeFirewallStatus');
     if (!node || !telemetry) return;
     const probe = telemetry.reachability_probe || {};
+    rememberDualFirewallProbe(probe);
+    const azureBadge = azureLocalContainmentBadge(probe);
+    if (azureBadge) {
+      node.textContent = azureBadge;
+      node.setAttribute('data-evidence-state', 'verified');
+      const rangeBadge = document.getElementById('rangeConnectivityBadge');
+      if (rangeBadge) {
+        rangeBadge.textContent = azureBadge;
+        rangeBadge.setAttribute('data-connectivity', 'blocked');
+        rangeBadge.setAttribute('data-evidence-state', 'verified');
+      }
+      return;
+    }
     const blocked = Array.isArray(telemetry.blocked_sources) ? telemetry.blocked_sources.join(', ') : '';
     node.textContent = 'Victim firewall ' + String(telemetry.containment_state || 'clear')
       + '. Blocked sources: ' + (blocked || 'none')
