@@ -211,6 +211,9 @@ def test_playbook_preview_changes_with_the_technique(tmp_path: Path) -> None:
         assert preview["firewall_rule_preview"].startswith(
             "iptables -I INPUT 1 -s 172.29.0.10 -p tcp --dport "
         )
+        assert preview["target_service"] == f"{preview['proto']}/{preview['dport']}"
+        assert f"-p {preview['proto']}" in preview["firewall_rule_preview"]
+        assert f"--dport {preview['dport']}" in preview["firewall_rule_preview"]
         assert "[Step 1: HMAC-SHA256 Approval]" in preview["execution_steps_log"][0]["line"]
         assert (
             "[Step 4: Rollback & Reachability Probe]" in preview["execution_steps_log"][3]["line"]
@@ -218,6 +221,19 @@ def test_playbook_preview_changes_with_the_technique(tmp_path: Path) -> None:
         ast.parse(preview["rendered_python_code"])
         assert f"FLOW_ID = {preview['flow_id']}" in preview["rendered_python_code"]
         assert technique in preview["rendered_python_code"]
+    flood_udp = _insert_flow(
+        live,
+        case_title="High-Rate Network DoS Flood scenario label T1498",
+        flow_protocol="udp",
+        service_or_port="4433",
+        dst_port=4433,
+    )
+    dos = preview_soar_playbook(live, flow_id=flood_udp)
+    assert dos["target_service"] == "udp/4433"
+    assert dos["proto"] == "udp"
+    assert dos["dport"] == 4433
+    assert "-p udp" in dos["firewall_rule_preview"]
+    assert "--dport 4433" in dos["firewall_rule_preview"]
     assert len({item["rendered_python_code"] for item in previews.values()}) == 4
     quiet = preview_soar_playbook(live, flow_id=benign)
     assert quiet["script_filename"] == "soar_pb_benign_noop_guard.py"
@@ -259,6 +275,12 @@ def test_header_has_one_chain_pill_and_one_operator_pill() -> None:
     assert html.count('id="operatorIdentityBadge"') == 0
     assert 'id="btnOpenIdentityModal"' in html
     assert 'id="identityModal"' in html
+    assert "zt-login-gate" in html
+    assert "Sign In to ThreatFusion SOC" in html
+    assert "Zero-Trust Identity &amp; Microsoft Entra ID (OIDC + X.509 mTLS) Gate" in html
+    assert 'id="btnReturnToConsole"' in html
+    assert 'id="activeSessionCard"' in html
+    assert "Switch Operator / Sign Out" in html
     assert 'id="soarPlaybookInspector"' in html
     assert 'id="soarPlaybookInspectorSide"' in html
     assert 'id="azurePortalStatus"' in html
@@ -269,3 +291,10 @@ def test_header_has_one_chain_pill_and_one_operator_pill() -> None:
     assert "/api/soar/playbook-preview" in script
     assert "/api/azure/status" in script
     assert "/api/soar/rollback" in script
+    assert "enforceAuthGate" in script
+    assert "preserveSelectionAfterMutation" in script
+    assert "selectedFlowId" in script
+    assert "enterpriseWorkspaceDrawer" in script
+    assert "labControlsDrawer" in script
+    assert "classList.remove('is-open')" in script
+    assert "localStorage.setItem('threatfusion.rbac.session'" in script

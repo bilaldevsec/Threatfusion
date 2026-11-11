@@ -12,6 +12,165 @@
       --bg-obsidian: #090D16;
       --bg-card: #111827;
     }
+    #identityModal.zt-login-gate {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: radial-gradient(circle at top, #0f1f3d 0%, #060b16 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    #identityModal.zt-login-gate[hidden] { display: none !important; }
+    #identityModal .identity-modal-card {
+      width: 560px;
+      max-width: 100%;
+      max-height: calc(100vh - 3rem);
+      overflow: auto;
+      background: #0b132b;
+      border: 1px solid #1e3a5f;
+      border-radius: 14px;
+      box-shadow: 0 24px 60px rgba(0,0,0,0.75);
+      padding: 28px;
+      color: #f8fafc;
+    }
+    #identityModal .zt-emblem {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.35rem;
+    }
+    #identityModal .zt-emblem-mark {
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #0284c7, #00b4d8);
+      color: #fff;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      letter-spacing: 0.04em;
+    }
+    #identityModal .zt-emblem-title {
+      font-size: 1.05rem;
+      font-weight: 650;
+      line-height: 1.25;
+    }
+    #identityModal .zt-emblem-sub {
+      color: #94a3b8;
+      font-size: 0.82rem;
+      margin: 0 0 1rem;
+    }
+    #identityModal .role-quick-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.55rem;
+      margin: 0.6rem 0 1rem;
+    }
+    #identityModal .role-quick-card {
+      background: #0f172a;
+      border: 1px solid #1e3a5f;
+      border-radius: 10px;
+      padding: 0.7rem 0.65rem;
+      text-align: left;
+      color: #e2e8f0;
+      cursor: pointer;
+    }
+    #identityModal .role-quick-card:hover,
+    #identityModal .role-quick-card:focus {
+      border-color: #0284c7;
+      outline: none;
+    }
+    #identityModal .role-quick-card .role-name {
+      display: block;
+      font-size: 0.78rem;
+      font-weight: 600;
+      margin-bottom: 0.35rem;
+    }
+    #identityModal .role-pill {
+      display: inline-block;
+      font-size: 0.68rem;
+      padding: 0.15rem 0.45rem;
+      border-radius: 999px;
+      background: #12304f;
+      color: #7dd3fc;
+      border: 1px solid #1e3a5f;
+    }
+    #identityModal .zt-field {
+      background: #0f172a;
+      color: #f8fafc;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 10px 14px;
+      width: 100%;
+      margin: 0.35rem 0 0.75rem;
+      box-sizing: border-box;
+    }
+    #identityModal .zt-primary-btn {
+      background: linear-gradient(90deg, #0284c7, #00b4d8);
+      color: #fff;
+      font-weight: 600;
+      border: 0;
+      border-radius: 8px;
+      padding: 11px 20px;
+      width: 100%;
+      cursor: pointer;
+      margin: 0.25rem 0 0.85rem;
+    }
+    #identityModal .zt-accordion {
+      border: 1px solid #1e3a5f;
+      border-radius: 10px;
+      margin: 0.55rem 0;
+      background: #0a1224;
+    }
+    #identityModal .zt-accordion > summary {
+      cursor: pointer;
+      padding: 0.7rem 0.85rem;
+      font-weight: 600;
+      color: #cbd5e1;
+      list-style: none;
+    }
+    #identityModal .zt-accordion > summary::-webkit-details-marker { display: none; }
+    #identityModal .zt-accordion[open] > summary {
+      border-bottom: 1px solid #1e3a5f;
+    }
+    #identityModal .zt-accordion-body {
+      padding: 0.75rem 0.85rem 0.95rem;
+    }
+    #identityModal .zt-secondary-btn,
+    #identityModal .zt-ghost-btn {
+      background: #111827;
+      color: #e2e8f0;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 0.55rem 0.9rem;
+      cursor: pointer;
+      margin: 0.25rem 0.35rem 0.25rem 0;
+    }
+    #identityModal .zt-actions-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      margin-top: 0.6rem;
+    }
+    .active-session-card {
+      background: #0b132b;
+      border: 1px solid #1e3a5f;
+      border-radius: 10px;
+      padding: 0.85rem 0.95rem;
+      margin-bottom: 0.75rem;
+    }
+    .active-session-card .session-line {
+      margin: 0.2rem 0;
+      color: #cbd5e1;
+      font-size: 0.9rem;
+    }
+    body.console-locked .soc-app {
+      visibility: hidden;
+      pointer-events: none;
+    }
   </style>
 </head>
 <body style="background-color: #090D16;">
@@ -730,28 +889,35 @@
           <div><b>Tenant:</b> <code id="entraTenantId">waiting</code></div>
           <div id="entraSubscriptionTier">Azure for Students · $60 Credit Active · Free Entra ID P1/OIDC</div>
         </div>
-        <h3>Operator Login &amp; RBAC Role Switcher</h3>
-        <label for="operatorRoleSelect">Operator</label>
-        <select id="operatorRoleSelect">
+        <h3>Active Operator Session</h3>
+        <div class="active-session-card" id="activeSessionCard">
+          <div class="session-line"><b>Operator:</b> <span id="activeSessionName">Signed out</span></div>
+          <div class="session-line"><b>UPN / Actor:</b> <code id="activeSessionActor">none</code></div>
+          <div class="session-line"><b>RBAC role:</b> <span id="activeSessionRole">unavailable</span></div>
+          <div class="session-line"><b>Session:</b> <span id="activeSessionState" data-evidence-state="unavailable">unauthenticated</span></div>
+        </div>
+        <label for="operatorRoleSelect" hidden>Operator</label>
+        <select id="operatorRoleSelect" hidden>
           <option value="lab_operator">Muhammad Bilal (21K-3551) · soc_approver</option>
           <option value="tier1_analyst">Muhammad Suhaib (22K-4302) · tier1_triage</option>
           <option value="compliance_auditor">Muhammad Hasnain (22K-4718) · auditor_readonly</option>
         </select>
-        <button id="btnSwitchOperator" type="button">Sign In / Switch Operator</button>
+        <button id="btnSwitchOperator" type="button">Switch Operator / Sign Out</button>
         <button id="btnEnrollWorkspaceOperator" type="button">Enroll X.509 certificate</button>
-        <h4>New Operator</h4>
-        <label for="operatorActorRegister">Actor id</label>
-        <input id="operatorActorRegister" type="text" value="" maxlength="64" autocomplete="off">
-        <label for="operatorNameRegister">Display name</label>
-        <input id="operatorNameRegister" type="text" value="" maxlength="120" autocomplete="off">
-        <label for="operatorRoleRegister">Role</label>
-        <select id="operatorRoleRegister">
-          <option value="soc_approver">soc_approver</option>
-          <option value="tier1_triage">tier1_triage</option>
-          <option value="auditor_readonly">auditor_readonly</option>
-        </select>
-        <button id="btnRegisterOperator" type="button">Register operator</button>
         <div id="operatorSwitchStatus" data-evidence-state="unavailable">No operator change yet.</div>
+        <div hidden>
+          <label for="operatorActorRegister">Actor id</label>
+          <input id="operatorActorRegister" type="text" value="" maxlength="64" autocomplete="off">
+          <label for="operatorNameRegister">Display name</label>
+          <input id="operatorNameRegister" type="text" value="" maxlength="120" autocomplete="off">
+          <label for="operatorRoleRegister">Role</label>
+          <select id="operatorRoleRegister">
+            <option value="soc_approver">soc_approver</option>
+            <option value="tier1_triage">tier1_triage</option>
+            <option value="auditor_readonly">auditor_readonly</option>
+          </select>
+          <button id="btnRegisterOperator" type="button">Register operator</button>
+        </div>
       </section>
       <section>
         <h3>1-Click Live Cyber Range Attack Vector Launcher</h3>
@@ -806,37 +972,60 @@
     <div class="walkthrough-timeline" id="walkthroughTimeline"></div>
     <div id="walkthroughDisplay"></div>
   </section>
-  <div id="identityModal" class="identity-modal" hidden>
+  <div id="identityModal" class="identity-modal zt-login-gate" hidden>
     <div class="identity-modal-card" role="dialog" aria-modal="true" aria-labelledby="identityModalTitle">
-      <h2 id="identityModalTitle">ThreatFusion Identity &amp; Microsoft Entra ID Sign-In / Sign-Up Modal</h2>
-      <p>Authenticate with an email and access code, paste an Entra ID bearer token, or create a custom analyst account. The session identity does not change until authentication succeeds.</p>
-      <div class="demo-credential-box">
-        <h3>Demo Credentials Quick-Fill</h3>
-        <button type="button" class="btn" data-demo-user="bilal.21k3551@nu.edu.pk" data-demo-code="TF-Bilal-3551!">Muhammad Bilal (21K-3551) · soc_approver</button>
-        <button type="button" class="btn" data-demo-user="suhaib.22k4302@nu.edu.pk" data-demo-code="TF-Suhaib-4302!">Muhammad Suhaib (22K-4302) · tier1_triage</button>
-        <button type="button" class="btn" data-demo-user="hasnain.22k4718@nu.edu.pk" data-demo-code="TF-Hasnain-4718!">Muhammad Hasnain (22K-4718) · compliance_auditor</button>
+      <div class="zt-emblem">
+        <div class="zt-emblem-mark" aria-hidden="true">TF</div>
+        <div id="identityModalTitle" class="zt-emblem-title">TF | ThreatFusion Enterprise SecOps &amp; NDR</div>
+      </div>
+      <p class="zt-emblem-sub">Zero-Trust Identity &amp; Microsoft Entra ID (OIDC + X.509 mTLS) Gate</p>
+      <div class="demo-credential-box role-quick-grid" aria-label="Role quick-fill cards">
+        <button type="button" class="role-quick-card" data-demo-user="bilal.21k3551@nu.edu.pk" data-demo-code="TF-Bilal-3551!" data-demo-actor="lab_operator">
+          <span class="role-name">Muhammad Bilal (21K-3551)</span>
+          <span class="role-pill">Tier-3 SOC Approver</span>
+        </button>
+        <button type="button" class="role-quick-card" data-demo-user="suhaib.22k4302@nu.edu.pk" data-demo-code="TF-Suhaib-4302!" data-demo-actor="tier1_analyst">
+          <span class="role-name">Muhammad Suhaib (22K-4302)</span>
+          <span class="role-pill">Tier-1 Triage Analyst</span>
+        </button>
+        <button type="button" class="role-quick-card" data-demo-user="hasnain.22k4718@nu.edu.pk" data-demo-code="TF-Hasnain-4718!" data-demo-actor="compliance_auditor">
+          <span class="role-name">Muhammad Hasnain (22K-4718)</span>
+          <span class="role-pill">Compliance Auditor</span>
+        </button>
       </div>
       <label for="rbacUsername">Email</label>
-      <input id="rbacUsername" type="text" maxlength="180" autocomplete="username">
-      <label for="rbacAccessCode">Access code</label>
-      <input id="rbacAccessCode" type="password" maxlength="128" autocomplete="current-password">
-      <button id="btnRbacLogin" type="button">Sign in</button>
-      <label for="rbacEntraToken">Entra ID bearer token</label>
-      <textarea id="rbacEntraToken" rows="3" maxlength="8000" placeholder="Paste a JWT with a roles claim"></textarea>
-      <button id="btnRbacEntra" type="button">Sign in with Entra ID token</button>
-      <h3>Create analyst account</h3>
-      <label for="rbacRegisterName">Display name</label>
-      <input id="rbacRegisterName" type="text" maxlength="120" autocomplete="name">
-      <label for="rbacRegisterRole">RBAC role</label>
-      <select id="rbacRegisterRole">
-        <option value="soc_approver">soc_approver</option>
-        <option value="tier1_triage">tier1_triage</option>
-        <option value="compliance_auditor">compliance_auditor</option>
-      </select>
-      <button id="btnRbacRegister" type="button">Create account and sign in</button>
-      <button id="btnRbacLogout" type="button">Sign out</button>
-      <button id="btnCloseIdentityModal" type="button">Close</button>
-      <div id="identityModalStatus" data-evidence-state="unavailable">No identity change yet.</div>
+      <input id="rbacUsername" class="zt-field" type="text" maxlength="180" autocomplete="username">
+      <label for="rbacAccessCode">Access Code</label>
+      <input id="rbacAccessCode" class="zt-field" type="password" maxlength="128" autocomplete="current-password">
+      <button id="btnRbacLogin" class="zt-primary-btn" type="button">Sign In to ThreatFusion SOC</button>
+      <details class="zt-accordion" id="entraAuthAccordion">
+        <summary>Sign In with Microsoft Entra ID JWT</summary>
+        <div class="zt-accordion-body">
+          <label for="rbacEntraToken">Entra ID bearer token</label>
+          <textarea id="rbacEntraToken" class="zt-field" rows="3" maxlength="8000" placeholder="Paste a JWT with a roles claim"></textarea>
+          <button id="btnRbacEntra" class="zt-secondary-btn" type="button">Sign in with Entra ID token</button>
+        </div>
+      </details>
+      <details class="zt-accordion" id="registerAuthAccordion">
+        <summary>Create New Analyst Account</summary>
+        <div class="zt-accordion-body">
+          <label for="rbacRegisterName">Display name</label>
+          <input id="rbacRegisterName" class="zt-field" type="text" maxlength="120" autocomplete="name">
+          <label for="rbacRegisterRole">RBAC role</label>
+          <select id="rbacRegisterRole" class="zt-field">
+            <option value="soc_approver">soc_approver</option>
+            <option value="tier1_triage">tier1_triage</option>
+            <option value="compliance_auditor">compliance_auditor</option>
+          </select>
+          <button id="btnRbacRegister" class="zt-secondary-btn" type="button">Create account and sign in</button>
+        </div>
+      </details>
+      <div class="zt-actions-row">
+        <button id="btnRbacLogout" class="zt-ghost-btn" type="button">Sign Out</button>
+        <button id="btnReturnToConsole" class="zt-secondary-btn" type="button" hidden>Return to Console</button>
+        <button id="btnCloseIdentityModal" class="zt-ghost-btn" type="button" hidden>Close</button>
+      </div>
+      <div id="identityModalStatus" data-evidence-state="unavailable">Authentication required before entering the SOC console.</div>
     </div>
   </div>
   <script src="js/soc_dashboard.js"></script>

@@ -15,6 +15,9 @@
   let liveCsrfToken = embeddedLiveCsrf();
   let rbacSessionToken = '';
   let sessionIdentity = null;
+  let selectedFlowId = null;
+  let identityGateSwitchMode = false;
+  const RBAC_SESSION_KEYS = ['threatfusion.rbac.session'];
   const nativeFetch = window.fetch.bind(window);
   async function ensureLiveCsrf() {
     if (liveCsrfToken) return liveCsrfToken;
@@ -613,6 +616,10 @@
 
   function openLabDrawer(open) {
     const drawer = document.getElementById('labControlsDrawer');
+    if (open) {
+      const other = document.getElementById('enterpriseWorkspaceDrawer');
+      if (other) other.classList.remove('is-open');
+    }
     if (drawer) drawer.classList.toggle('is-open', Boolean(open));
   }
 
@@ -646,7 +653,7 @@
     showSocView('investigations');
   }
 
-  function initApp() {
+  async function initApp() {
     renderLiveClock();
     setInterval(renderLiveClock, 1000);
     renderIncidentQueue();
@@ -656,8 +663,9 @@
     refreshOperationalVelocity();
     refreshAdvisoryStatus();
     refreshAgyAudit();
+    await refreshRbacSession();
+    enforceAuthGate();
     refreshLiveCampaigns();
-    refreshRbacSession();
     refreshOperatorStamp();
     loadModelObservatory(0);
     loadEnterpriseControls();
@@ -2558,7 +2566,7 @@
     }
     const switchOperatorButton = document.getElementById('btnSwitchOperator');
     if (switchOperatorButton) {
-      switchOperatorButton.addEventListener('click', () => { openIdentityModal(true); });
+      switchOperatorButton.addEventListener('click', () => { switchEnterpriseOperator(); });
     }
     const enrollWorkspaceOperator = document.getElementById('btnEnrollWorkspaceOperator');
     if (enrollWorkspaceOperator) {
@@ -2582,15 +2590,29 @@
       dossierButton.addEventListener('click', () => { exportComplianceDossier(); });
     }
     const openIdentity = document.getElementById('btnOpenIdentityModal');
-    if (openIdentity) openIdentity.addEventListener('click', () => { openIdentityModal(true); });
+    if (openIdentity) {
+      openIdentity.addEventListener('click', () => {
+        openIdentityModal(true, isSessionAuthenticated());
+      });
+    }
     const closeIdentity = document.getElementById('btnCloseIdentityModal');
     if (closeIdentity) closeIdentity.addEventListener('click', () => { openIdentityModal(false); });
+    const returnConsole = document.getElementById('btnReturnToConsole');
+    if (returnConsole) {
+      returnConsole.addEventListener('click', () => {
+        if (isSessionAuthenticated()) openIdentityModal(false);
+      });
+    }
     document.querySelectorAll('[data-demo-user]').forEach(button => {
       button.addEventListener('click', () => {
         const user = document.getElementById('rbacUsername');
         const code = document.getElementById('rbacAccessCode');
+        const actor = button.getAttribute('data-demo-actor') || '';
         if (user) user.value = button.getAttribute('data-demo-user') || '';
         if (code) code.value = button.getAttribute('data-demo-code') || '';
+        if (actor) applyOperatorSelection(actor, button.querySelector('.role-name')
+          ? button.querySelector('.role-name').textContent
+          : '');
       });
     });
     const loginButton = document.getElementById('btnRbacLogin');
@@ -3104,8 +3126,14 @@
       campaignFetchSettled = true;
       setSampleSurfacesHidden(true);
       if (!views.some(item => item.id === selectedIncidentId)) {
-        selectedIncidentId = views.length ? views[0].id : '';
+        if (Number.isInteger(selectedFlowId) && selectedFlowId > 0) {
+          const byFlow = views.find(item => Number(item.flowId || item.flow_id) === selectedFlowId);
+          selectedIncidentId = byFlow ? byFlow.id : (views.length ? views[0].id : '');
+        } else {
+          selectedIncidentId = views.length ? views[0].id : '';
+        }
       }
+      bindSelectedFlowId(selectedIncident());
       const badge = document.getElementById('queueCountBadge');
       if (badge) badge.textContent = views.length + ' stored rows';
       const flowCount = document.getElementById('liveHeroFlowCount');
@@ -3383,8 +3411,9 @@
       const receipt = typeof data.entry_sha256 === 'string' ? data.entry_sha256 : '';
       const reason = typeof data.reason === 'string' ? data.reason : '';
       showOperatorStamp(data);
+      const restore = preserveSelectionAfterMutation();
       await refreshLiveCampaigns();
-      renderForensicDrawer();
+      restore();
       const approved = resp.ok && (
         data.soar_state === 'approved'
         || data.playbook_state === 'approved'
@@ -3405,6 +3434,7 @@
           applyContainmentStatus(live);
           applyContainmentGuard(live);
           markResponseProgress(live);
+          loadSoarPlaybookPreview(live);
         }
         enableSoarControl('btnDispatchCallback');
         const message = soarOperatorMessage(
@@ -3431,11 +3461,6 @@
     const state = inc.soarState || (inc.soarRecord && inc.soarRecord.state) || '';
     if (state === 'approved' && hashChainVerified(inc)) return true;
     return approveLivePlaybook(inc);
-  }
-
-  function selectedLiveFlowId() {
-    const inc = activeIncidents().find(item => item.id === selectedIncidentId);
-    return inc && inc.flowId ? inc.flowId : null;
   }
 
   function showHandoffReport(text, state) {
@@ -3841,21 +3866,33 @@
   let lastCopilotFlowId = 0;
   let copilotRequestSerial = 0;
 
+  function bindSelectedFlowId(inc) {
+    const raw = inc && (inc.flowId != null ? inc.flowId : inc.flow_id);
+    const flowId = Number(raw);
+    if (Number.isInteger(flowId) && flowId > 0) {
+      selectedFlowId = flowId;
+      return flowId;
+    }
+    selectedFlowId = null;
+    return null;
+  }
+
   function selectInvestigation(inc) {
     if (!inc) return;
     clearStaleContainmentBanner();
     selectedIncidentId = inc.id;
+    bindSelectedFlowId(inc);
     renderIncidentQueue();
     renderForensicDrawer();
     showSocView('detail');
     loadModelProofForSelection(inc);
-    refreshCopilotForSelection(inc);
+    refreshCopilotForSelection(inc, true);
   }
 
-  function refreshCopilotForSelection(inc) {
-    const raw = inc && (inc.flowId != null ? inc.flowId : inc.flow_id);
-    const flowId = Number(raw);
-    if (!Number.isInteger(flowId) || flowId <= 0 || lastCopilotFlowId === flowId) return;
+  function refreshCopilotForSelection(inc, force) {
+    const flowId = bindSelectedFlowId(inc || selectedIncident());
+    if (!Number.isInteger(flowId) || flowId <= 0) return;
+    if (!force && lastCopilotFlowId === flowId) return;
     lastCopilotFlowId = flowId;
     const answer = document.getElementById('liveCopilotAnswer');
     if (answer) {
@@ -3863,6 +3900,25 @@
       answer.setAttribute('data-evidence-state', 'pending');
     }
     askLiveCopilot(flowId);
+  }
+
+  function preserveSelectionAfterMutation() {
+    const keptId = selectedIncidentId;
+    const keptFlow = selectedFlowId;
+    return function restoreSelection() {
+      if (keptId && activeIncidents().some(item => item.id === keptId)) {
+        selectedIncidentId = keptId;
+      }
+      if (Number.isInteger(keptFlow) && keptFlow > 0) {
+        selectedFlowId = keptFlow;
+      }
+      const inc = selectedIncident();
+      if (inc) {
+        bindSelectedFlowId(inc);
+        renderForensicDrawer();
+        refreshCopilotForSelection(inc, true);
+      }
+    };
   }
 
   async function loadModelProofForSelection(inc) {
@@ -4045,8 +4101,9 @@
         body: JSON.stringify({ flow_id: inc.flowId, actor_id: operatorActorId() })
       });
       const data = await readActionPayload(resp);
+      const restore = preserveSelectionAfterMutation();
       await refreshLiveCampaigns();
-      renderForensicDrawer();
+      restore();
       const sig = typeof data.signature_sha256 === 'string' ? data.signature_sha256 : '';
       const path = typeof data.execution_path === 'string' ? data.execution_path : 'not dispatched';
       const recorded = data.callback_recorded === true
@@ -4064,6 +4121,7 @@
           applyContainmentGuard(live);
           applyContainmentStatus(live);
           markResponseProgress(live);
+          loadSoarPlaybookPreview(live);
         }
         enableSoarControl('btnIsolateAttacker');
         enableSoarControl('btnContainRange');
@@ -4138,8 +4196,9 @@
         body: JSON.stringify({ flow_id: inc.flowId, actor_id: operatorActorId() })
       });
       const data = await readActionPayload(resp);
+      const restore = preserveSelectionAfterMutation();
       await refreshLiveCampaigns();
-      renderForensicDrawer();
+      restore();
       const applied = data.reason === 'containment_applied';
       const rolled = data.reason === 'containment_rolled_back';
       const simulated = data.evidence_state === 'simulated'
@@ -4243,19 +4302,17 @@
   }
 
   function selectedLiveFlowId() {
+    if (Number.isInteger(selectedFlowId) && selectedFlowId > 0) return selectedFlowId;
     const inc = selectedIncident();
-    if (!inc) return null;
-    const raw = inc.flowId != null ? inc.flowId : inc.flow_id;
-    const number = Number(raw);
-    if (!Number.isInteger(number) || number <= 0) return null;
-    return number;
+    return bindSelectedFlowId(inc);
   }
 
-  function firstConstituentAttackFlowId() {
+  function firstConstituentAttackFlowId(preferredDecision) {
     const rows = activeIncidents();
     for (let index = 0; index < rows.length; index += 1) {
       const row = rows[index];
-      if (!row || row.decision !== 'Attack') continue;
+      if (!row) continue;
+      if (preferredDecision && row.decision !== preferredDecision) continue;
       const raw = row.flowId != null ? row.flowId : row.flow_id;
       const number = Number(raw);
       if (Number.isInteger(number) && number > 0) return number;
@@ -4264,15 +4321,11 @@
   }
 
   function copilotFlowIdForSelection(inc) {
-    const direct = selectedLiveFlowId();
-    if (Number.isInteger(direct) && direct > 0) return direct;
+    const bound = selectedLiveFlowId();
+    if (Number.isInteger(bound) && bound > 0) return bound;
     const row = inc || selectedIncident();
-    const identity = row ? String(row.id || '') : '';
-    const src = row && row.provenance ? row.provenance.srcIp : '';
-    const dst = row && row.provenance ? row.provenance.dstIp : '';
-    if (identity.indexOf('incident_v1:') === 0 || isStoredIncident(row, src, dst) || direct == null) {
-      return firstConstituentAttackFlowId();
-    }
+    const direct = bindSelectedFlowId(row);
+    if (Number.isInteger(direct) && direct > 0) return direct;
     return null;
   }
 
@@ -4290,6 +4343,11 @@
     const flowId = Number.isInteger(override) && override > 0
       ? override
       : copilotFlowIdForSelection();
+    if (!Number.isInteger(flowId) || flowId <= 0) {
+      setLiveText('liveCopilotAnswer', 'Select a stored flow before requesting an advisory brief.', 'unavailable');
+      return;
+    }
+    selectedFlowId = flowId;
     if (progress) progress.hidden = false;
     try {
       const resp = await fetch('/api/v1/live/copilot', {
@@ -4299,6 +4357,7 @@
       });
       const data = await resp.json();
       if (requestSerial !== copilotRequestSerial) return;
+      if (Number.isInteger(selectedFlowId) && selectedFlowId > 0 && selectedFlowId !== flowId) return;
       const answer = document.getElementById('liveCopilotAnswer');
       if (answer) {
         answer.style.whiteSpace = 'pre-wrap';
@@ -4306,6 +4365,11 @@
       }
       if (data.reason === 'containment_refused') {
         setLiveText('liveCopilotAnswer', 'Containment refused. execution_authorized is false.', 'unavailable');
+        return;
+      }
+      const responseFlow = Number(data.flow_id);
+      if (Number.isInteger(responseFlow) && responseFlow > 0 && responseFlow !== flowId) {
+        setLiveText('liveCopilotAnswer', 'Advisory brief does not match the selected flow.', 'unavailable');
         return;
       }
       const hit = data.hits && data.hits[0];
@@ -4316,7 +4380,13 @@
       const selected = selectedIncident();
       const selectedTitle = selected && selected.advisory ? String(selected.advisory.summaryHeadline || '') : '';
       const selectedLabel = selected && selected.scenarioLabel ? String(selected.scenarioLabel) : '';
-      if (selectedTitle && narrative.indexOf(selectedTitle) === -1 && selectedLabel && narrative.indexOf(selectedLabel) === -1) {
+      const selectedSrc = selected && selected.provenance ? String(selected.provenance.srcIp || '') : '';
+      const selectedDecision = selected ? String(selected.decision || '') : '';
+      const titleMiss = selectedTitle && narrative.indexOf(selectedTitle) === -1;
+      const labelMiss = selectedLabel && narrative.indexOf(selectedLabel) === -1;
+      const srcMiss = selectedSrc && narrative.indexOf(selectedSrc) === -1;
+      const decisionMiss = selectedDecision && narrative.indexOf(selectedDecision) === -1;
+      if ((titleMiss && labelMiss) || (srcMiss && decisionMiss && (titleMiss || labelMiss))) {
         narrative = 'Advisory brief does not match the selected flow.';
       }
       showCopilotAnswer(narrative, data.evidence_state || 'unavailable');
@@ -4430,8 +4500,15 @@
 
   function openEnterpriseDrawer(open) {
     const drawer = document.getElementById('enterpriseWorkspaceDrawer');
+    if (open) {
+      const other = document.getElementById('labControlsDrawer');
+      if (other) other.classList.remove('is-open');
+    }
     if (drawer) drawer.classList.toggle('is-open', Boolean(open));
-    if (open) loadEnterpriseControls();
+    if (open) {
+      renderActiveSessionCard();
+      loadEnterpriseControls();
+    }
   }
 
   function percentText(value) {
@@ -4721,20 +4798,100 @@
     if (profile && activeOperatorLabel) profile.textContent = activeOperatorLabel;
   }
 
-  function openIdentityModal(open) {
+  function isSessionAuthenticated() {
+    return !!(sessionIdentity && sessionIdentity.authenticated === true && rbacSessionToken);
+  }
+
+  function renderActiveSessionCard() {
+    const name = document.getElementById('activeSessionName');
+    const actor = document.getElementById('activeSessionActor');
+    const role = document.getElementById('activeSessionRole');
+    const state = document.getElementById('activeSessionState');
+    if (!isSessionAuthenticated()) {
+      if (name) name.textContent = 'Signed out';
+      if (actor) actor.textContent = 'none';
+      if (role) role.textContent = 'unavailable';
+      if (state) {
+        state.textContent = 'unauthenticated';
+        state.setAttribute('data-evidence-state', 'unavailable');
+      }
+      return;
+    }
+    if (name) name.textContent = sessionIdentity.display_name || headerLineForSession(sessionIdentity);
+    if (actor) actor.textContent = sessionIdentity.actor_id || sessionIdentity.username || 'unknown';
+    if (role) role.textContent = sessionIdentity.role || 'unavailable';
+    if (state) {
+      state.textContent = 'authenticated';
+      state.setAttribute('data-evidence-state', 'verified');
+    }
+  }
+
+  function syncIdentityGateControls() {
+    const returnBtn = document.getElementById('btnReturnToConsole');
+    const closeBtn = document.getElementById('btnCloseIdentityModal');
+    const showReturn = identityGateSwitchMode && isSessionAuthenticated();
+    if (returnBtn) {
+      if (showReturn) returnBtn.removeAttribute('hidden');
+      else returnBtn.setAttribute('hidden', '');
+    }
+    if (closeBtn) closeBtn.setAttribute('hidden', '');
+  }
+
+  function enforceAuthGate() {
+    const locked = !isSessionAuthenticated();
+    document.body.classList.toggle('console-locked', locked);
+    if (locked) {
+      identityGateSwitchMode = false;
+      openIdentityModal(true);
+      identityStatus('Authentication required before entering the SOC console.', 'unavailable');
+    } else {
+      document.body.classList.remove('console-locked');
+    }
+    syncIdentityGateControls();
+    renderActiveSessionCard();
+  }
+
+  function openIdentityModal(open, switchMode) {
     const modal = document.getElementById('identityModal');
     if (!modal) return;
-    if (open) modal.removeAttribute('hidden');
-    else modal.setAttribute('hidden', '');
+    if (typeof switchMode === 'boolean') identityGateSwitchMode = switchMode;
+    if (open) {
+      modal.removeAttribute('hidden');
+      syncIdentityGateControls();
+    } else if (isSessionAuthenticated()) {
+      modal.setAttribute('hidden', '');
+      identityGateSwitchMode = false;
+      document.body.classList.remove('console-locked');
+    } else {
+      modal.removeAttribute('hidden');
+      document.body.classList.add('console-locked');
+      identityGateSwitchMode = false;
+      syncIdentityGateControls();
+    }
   }
 
   function rememberSession(token) {
     rbacSessionToken = token || '';
     try {
-      if (rbacSessionToken) sessionStorage.setItem('threatfusion.rbac.session', rbacSessionToken);
-      else sessionStorage.removeItem('threatfusion.rbac.session');
+      if (rbacSessionToken) {
+        sessionStorage.setItem('threatfusion.rbac.session', rbacSessionToken);
+        localStorage.setItem('threatfusion.rbac.session', rbacSessionToken);
+      } else {
+        sessionStorage.removeItem('threatfusion.rbac.session');
+        localStorage.removeItem('threatfusion.rbac.session');
+      }
     } catch (err) {
       rbacSessionToken = token || '';
+    }
+  }
+
+  function readStoredSessionToken() {
+    try {
+      return sessionStorage.getItem('threatfusion.rbac.session')
+        || localStorage.getItem('threatfusion.rbac.session')
+        || '';
+    } catch (err) {
+      return '';
     }
   }
 
@@ -4743,6 +4900,7 @@
       sessionIdentity = null;
       rememberSession('');
       paintOperatorBadge('unverified local label', false);
+      renderActiveSessionCard();
       return;
     }
     sessionIdentity = data;
@@ -4751,6 +4909,7 @@
     paintSessionIdentity(sessionIdentity);
     const select = document.getElementById('operatorRoleSelect');
     if (select && data.actor_id) select.value = data.actor_id;
+    renderActiveSessionCard();
   }
 
   function identityStatus(text, state) {
@@ -4762,9 +4921,7 @@
 
   async function refreshRbacSession() {
     try {
-      if (!rbacSessionToken) {
-        rbacSessionToken = sessionStorage.getItem('threatfusion.rbac.session') || '';
-      }
+      if (!rbacSessionToken) rbacSessionToken = readStoredSessionToken();
     } catch (err) {
       rbacSessionToken = rbacSessionToken || '';
     }
@@ -4788,10 +4945,10 @@
 
   async function submitRbacLogin(useEntra) {
     const body = useEntra
-      ? { entra_token: queueControlValue('rbacEntraToken', '') }
+      ? { entra_token: formControlValue('rbacEntraToken', '') }
       : {
-        username: queueControlValue('rbacUsername', ''),
-        access_code: queueControlValue('rbacAccessCode', '')
+        username: formControlValue('rbacUsername', ''),
+        access_code: formControlValue('rbacAccessCode', '')
       };
     try {
       const resp = await fetch('/api/rbac/login', {
@@ -4803,7 +4960,9 @@
       if (resp.ok && data.authenticated === true) {
         applyAuthenticatedSession(data);
         identityStatus(headerLineForSession(data), data.identity_verified ? 'verified' : 'unavailable');
+        identityGateSwitchMode = false;
         openIdentityModal(false);
+        enforceAuthGate();
         return;
       }
       identityStatus(actionFailureText(data, resp), 'unavailable');
@@ -4814,10 +4973,10 @@
 
   async function submitRbacRegister() {
     const body = {
-      username: queueControlValue('rbacUsername', ''),
-      access_code: queueControlValue('rbacAccessCode', ''),
-      display_name: queueControlValue('rbacRegisterName', ''),
-      role: queueControlValue('rbacRegisterRole', 'tier1_triage')
+      username: formControlValue('rbacUsername', ''),
+      access_code: formControlValue('rbacAccessCode', ''),
+      display_name: formControlValue('rbacRegisterName', ''),
+      role: formControlValue('rbacRegisterRole', 'tier1_triage')
     };
     try {
       const resp = await fetch('/api/rbac/register', {
@@ -4829,7 +4988,9 @@
       if (resp.ok && data.authenticated === true) {
         applyAuthenticatedSession(data);
         identityStatus(headerLineForSession(data), 'unavailable');
+        identityGateSwitchMode = false;
         openIdentityModal(false);
+        enforceAuthGate();
         return;
       }
       identityStatus(actionFailureText(data, resp), 'unavailable');
@@ -4851,7 +5012,9 @@
     sessionIdentity = null;
     rememberSession('');
     paintOperatorBadge('unverified local label', false);
-    identityStatus('Signed out.', 'unavailable');
+    identityStatus('Signed out. Authenticate to re-enter the SOC console.', 'unavailable');
+    identityGateSwitchMode = false;
+    enforceAuthGate();
   }
 
   function renderPlaybookPreview(data) {
@@ -4935,7 +5098,13 @@
   }
 
   async function switchEnterpriseOperator() {
-    openIdentityModal(true);
+    openIdentityModal(true, true);
+    identityStatus(
+      isSessionAuthenticated()
+        ? 'Switch operator or sign out. Return to Console keeps the current session.'
+        : 'Authentication required before entering the SOC console.',
+      isSessionAuthenticated() ? 'verified' : 'unavailable'
+    );
   }
 
   async function enrollSelectedOperator() {
@@ -4984,14 +5153,15 @@
       const data = await readActionPayload(resp);
       if (data && data.flow_id) {
         selectedIncidentId = 'live_flow:' + data.flow_id;
+        selectedFlowId = Number(data.flow_id);
         modelProofLoadedFlowId = null;
+        lastCopilotFlowId = 0;
       }
       await refreshLiveCampaigns();
       renderVisualObservatory(data);
       const inc = selectedIncident();
       if (inc) {
-        showSocView('detail');
-        loadModelProofForSelection(inc);
+        selectInvestigation(inc);
       }
       const score = Number(data.rf_attack_probability);
       setLiveText(

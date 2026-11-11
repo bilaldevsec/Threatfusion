@@ -2254,6 +2254,31 @@ def answer_mitre_copilot(
     )
     from threatfusion.api.analyst_dashboard import evidence_state_from_gates
 
+    bound_flow_id = None if stored is None else stored.get("flow_id")
+    if (
+        resolved_flow_id is not None
+        and resolved_flow_id > 0
+        and (stored is None or int(bound_flow_id or 0) != resolved_flow_id)
+    ):
+        return disclose_offline_fallback(
+            {
+                "schema_version": "live_mitre_copilot_v1",
+                "evidence_state": "unavailable",
+                "grounded": False,
+                "execution_authorized": False,
+                "reason": "flow_not_stored",
+                "hits": [],
+                "provider": "local_air_gapped",
+                "provider_label": "AI Copilot: Local Air-Gapped Engine",
+                "narrative": "",
+                "production_fusion_enabled": False,
+                "flow_id": resolved_flow_id,
+                "decision": None,
+                "rf_attack_probability": None,
+                "src_entity_id": None,
+                "dst_entity_id": None,
+            }
+        )
     return disclose_offline_fallback(
         {
             "schema_version": "live_mitre_copilot_v1",
@@ -2266,7 +2291,19 @@ def answer_mitre_copilot(
             "provider_label": narrative.get("provider_label"),
             "narrative": narrative_text,
             "production_fusion_enabled": False,
-            "flow_id": None if stored is None else stored.get("flow_id"),
+            "flow_id": bound_flow_id,
+            "decision": None if stored is None else stored.get("decision"),
+            "rf_attack_probability": (
+                None if stored is None else stored.get("rf_attack_probability")
+            ),
+            "src_entity_id": None if stored is None else stored.get("src_entity_id"),
+            "dst_entity_id": None if stored is None else stored.get("dst_entity_id"),
+            "case_title": None if stored is None else stored.get("case_title"),
+            "scenario_label": (
+                None
+                if stored is None
+                else (_scenario_technique_id(stored) or stored.get("scenario_label"))
+            ),
         }
     )
 
@@ -8421,9 +8458,28 @@ def preview_soar_playbook(db_path: Path, *, flow_id: int) -> dict[str, Any]:
         contained=contained,
         rolled_back=rolled_back,
     )
+    safe_proto = proto if proto in {"tcp", "udp", "icmp"} else "tcp"
+    safe_dport = observed_dport if observed_dport > 0 else 0
+    if safe_dport <= 0:
+        try:
+            safe_dport = int(str(match.get("service_or_port") or "0"))
+        except (TypeError, ValueError):
+            safe_dport = 0
+    rule = str(preview.get("firewall_rule_preview") or "")
+    rule_port = re.search(r"--dport\s+(\d+)", rule)
+    rule_proto = re.search(r"-p\s+(tcp|udp|icmp)", rule)
+    if rule_port and rule_proto:
+        safe_proto = rule_proto.group(1)
+        safe_dport = int(rule_port.group(1))
+    # Bind the metadata subtitle to this flow's live proto/dport (never a catalog default).
+    preview["target_service"] = (
+        f"{safe_proto}/{safe_dport}" if safe_dport > 0 else f"{safe_proto}/0"
+    )
     preview["schema_version"] = "soar_playbook_preview_v1"
     preview["evidence_state"] = "verified"
     preview["flow_id"] = flow_id
+    preview["proto"] = safe_proto
+    preview["dport"] = safe_dport
     preview["http_status"] = 200
     return preview
 
@@ -8917,10 +8973,27 @@ def ingest_live_flow(
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     campaign_id = f"campaign_range_vector:{vector_id or 'flow'}:{stamp}"
     try:
-        service = str(int(float(features.get("dst_port", 0))))
+        dst_port = int(float(features.get("dst_port", 0)))
     except (TypeError, ValueError):
-        service = "0"
-    protocol = "tcp" if float(features.get("protocol_tcp") or 0) >= 1.0 else "udp"
+        dst_port = 0
+    service = str(dst_port)
+    if float(features.get("protocol_udp") or 0) >= 1.0:
+        protocol = "udp"
+    elif float(features.get("protocol_icmp") or 0) >= 1.0:
+        protocol = "icmp"
+    else:
+        protocol = "tcp"
+    observation = {
+        "proto": protocol,
+        "src_port": 0,
+        "dst_port": dst_port,
+        "suricata_line": (
+            f"{protocol} {src_ip}:0 -> {dst_ip}:{dst_port}, range vector {vector_id or 'flow'}"
+        ),
+        "forest_line": (
+            f"{score.get('decision')}, {_probability_text(score.get('rf_attack_probability'))}"
+        ),
+    }
     stored = persist_scored_flow(
         db_path,
         features,
@@ -8936,6 +9009,7 @@ def ingest_live_flow(
             "service_or_port": service,
             "clock_synchronized": True,
         },
+        sensor_observation_json=json.dumps(observation, sort_keys=True),
         sensor_node="threatfusion_range_suricata",
     )
     if stored.get("reason") != "frozen_random_forest_scored":
