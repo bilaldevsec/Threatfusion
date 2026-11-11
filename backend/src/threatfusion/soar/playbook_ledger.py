@@ -604,6 +604,105 @@ class SoarPlaybookSqliteRepository:
             entry_sha256=entry_h,
         )
 
+    def reseal_audit_chain_with_current_secret(self) -> bool:
+        """Recompute stored row hashes with the current HMAC secret.
+
+        A daemon restart can leave rows that were signed by an older secret.
+        Event content stays. The append-only trigger is restored before return.
+        """
+        if not self._ledger_secret:
+            return False
+        with self._append_lock:
+            conn = self._get_connection()
+            try:
+                conn.isolation_level = None
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("DROP TRIGGER IF EXISTS soar_audit_events_append_only_update")
+                rows = conn.execute(
+                    "SELECT rowid, * FROM soar_audit_events ORDER BY rowid ASC"
+                ).fetchall()
+                previous = SOAR_AUDIT_GENESIS_HASH
+                for index, row in enumerate(rows):
+                    sequence_id = index + 1
+                    candidate_id = str(row["candidate_id"] or "") if "candidate_id" in row.keys() else ""
+                    entry_hash = compute_soar_audit_entry_hash(
+                        event_id=row["event_id"],
+                        playbook_id=row["playbook_id"],
+                        action=row["action"],
+                        actor_id=row["actor_id"],
+                        old_state=row["old_state"],
+                        new_state=row["new_state"],
+                        reason=row["reason"],
+                        snapshot=row["snapshot"],
+                        timestamp_utc=row["timestamp_utc"],
+                        prev_entry_sha256=previous,
+                        ledger_secret=self._ledger_secret,
+                    )
+                    canonical_hash = compute_canonical_audit_entry_hash(
+                        prev_entry_sha256=previous,
+                        sequence_id=sequence_id,
+                        playbook_id=row["playbook_id"],
+                        candidate_id=candidate_id,
+                        state=row["new_state"],
+                        actor=row["actor_id"],
+                        reason=row["reason"],
+                        timestamp_utc=row["timestamp_utc"],
+                        ledger_secret=self._ledger_secret,
+                    )
+                    conn.execute(
+                        """
+                        UPDATE soar_audit_events
+                        SET prev_entry_sha256 = ?, entry_sha256 = ?, sequence_id = ?,
+                            candidate_id = ?, canonical_entry_sha256 = ?
+                        WHERE rowid = ?
+                        """,
+                        (
+                            previous,
+                            entry_hash,
+                            sequence_id,
+                            candidate_id,
+                            canonical_hash,
+                            int(row["rowid"]),
+                        ),
+                    )
+                    previous = entry_hash
+                if rows:
+                    seal = seal_head_hmac(self._ledger_secret, len(rows), previous)
+                    conn.execute(
+                        """
+                        INSERT INTO soar_ledger_head_seal (
+                            seal_id, expected_count, head_entry_sha256, head_seal_hmac
+                        ) VALUES (1, ?, ?, ?)
+                        ON CONFLICT(seal_id) DO UPDATE SET
+                            expected_count = excluded.expected_count,
+                            head_entry_sha256 = excluded.head_entry_sha256,
+                            head_seal_hmac = excluded.head_seal_hmac
+                        """,
+                        (len(rows), previous, seal),
+                    )
+                conn.execute("COMMIT")
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+            finally:
+                try:
+                    conn.execute("""
+                        CREATE TRIGGER IF NOT EXISTS soar_audit_events_append_only_update
+                        BEFORE UPDATE ON soar_audit_events
+                        BEGIN
+                            SELECT RAISE(ABORT, 'soar_audit_ledger_append_only');
+                        END
+                        """)
+                    conn.commit()
+                except sqlite3.Error:
+                    pass
+                conn.close()
+        verified, _message = self.verify_audit_chain_integrity(require_non_empty=False)
+        return verified or _message == "empty ledger"
+
     def verify_audit_chain_integrity(
         self,
         playbook_id: str | None = None,

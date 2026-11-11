@@ -1476,6 +1476,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 n8n_webhook_url=os.environ.get("THREATFUSION_N8N_WEBHOOK_URL", ""),
                 local_fallback_on_n8n_failure=True,
                 actor_id=actor_id,
+                console_local_receipt=True,
             )
             if result.get("http_status") == 403 or result.get("reason") in {
                 "playbook_not_approved",

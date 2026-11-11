@@ -39,9 +39,11 @@
         </nav>
         <div class="header-telemetry">
           <span class="badge badge-auth" id="consoleTransportBadge" data-evidence-state="unavailable">Lab HTTP console</span>
-          <span class="badge badge-role" id="headerChainBadge" data-evidence-state="unavailable">Playbook hash chain: unavailable</span>
+          <span class="badge badge-role" id="headerChainBadge" hidden data-evidence-state="unavailable">Playbook hash chain: unavailable</span>
+          <span class="badge badge-role" id="ledgerBadge" data-evidence-state="unavailable">Playbook hash chain: unavailable</span>
           <span id="operatorProfileName">Muhammad Bilal (Triage Lead)</span>
-          <span class="badge badge-neutral" id="operatorIdentityBadge" data-evidence-state="unavailable">unverified local label</span>
+          <span class="badge badge-neutral" id="operatorIdentityBadge" hidden>unverified local label</span>
+          <span class="badge badge-neutral" id="operatorAuthBadge" data-evidence-state="unavailable">unverified local label</span>
           <span class="badge" id="copilotProviderBadge" data-evidence-state="unavailable">AI Copilot: Local Air-Gapped Engine</span>
           <span id="liveClock">UTC</span>
           <button id="btnOpenLabDrawer" class="btn" type="button">Lab Range &amp; Simulation Controls</button>
@@ -330,7 +332,7 @@
                         <h4>Stage 4 PyTorch 9-Class Supervised DNN (Attack Categorizer)</h4>
                         <div class="gauge-track"><div class="gauge-fill" id="gaugeDnnFill"></div><span class="gauge-threshold" id="gaugeDnnThreshold"></span></div>
                         <div id="gaugeDnnValue">9-class DNN: waiting</div>
-                        <button type="button" class="digest-badge" id="gaugeDnnDigest" data-copy-hash="4f11062d2259afdc1cb68012dbc1680ec372e4750c85fe411d3a4517cd3c0791">4f11062d</button>
+                        <button type="button" class="digest-badge" id="gaugeDnnDigest" data-copy-hash="614850ad84fc4ab32dc6e6d2318900668d97cad6edba37290ed9fe2b2482df1f">614850ad</button>
                       </article>
                     </div>
                     <h4>9-Class Deep Learning Softmax Distribution</h4>

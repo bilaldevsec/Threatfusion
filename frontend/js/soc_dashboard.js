@@ -1543,21 +1543,36 @@
     return id;
   }
 
+  let ledgerChainStatus = '';
+
+  function paintLedgerBadge(status) {
+    const normalized = status === 'verified' || status === 'invalid' ? status : 'unavailable';
+    const text = normalized === 'verified'
+      ? 'Playbook hash chain: verified'
+      : normalized === 'invalid'
+        ? 'Playbook hash chain: invalid'
+        : 'Playbook hash chain: unavailable';
+    ['headerChainBadge', 'ledgerBadge'].forEach(id => {
+      const node = document.getElementById(id);
+      if (!node) return;
+      node.textContent = text;
+      node.setAttribute('data-evidence-state', normalized === 'verified' ? 'verified' : 'unavailable');
+    });
+  }
+
   function syncHeaderChainBadge(inc) {
-    const node = document.getElementById('headerChainBadge');
-    if (!node) return;
     const chainOk = !!(
       inc
       && verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256)
       && selectedFlowHasReceipt(inc)
     );
     if (chainOk) {
-      node.textContent = 'Playbook hash chain: verified';
-      node.setAttribute('data-evidence-state', 'verified');
+      paintLedgerBadge('verified');
+      const verifiedNode = document.getElementById('headerChainBadge');
+      if (verifiedNode) verifiedNode.setAttribute('data-evidence-state', 'verified');
       return;
     }
-    node.textContent = 'Playbook hash chain: unavailable';
-    node.setAttribute('data-evidence-state', 'unavailable');
+    paintLedgerBadge(ledgerChainStatus === 'invalid' ? 'invalid' : (ledgerChainStatus === 'verified' ? 'verified' : 'unavailable'));
   }
 
   function playbookIsApproved(inc) {
@@ -2576,7 +2591,9 @@
     const messages = {
       analyst_approved_local: 'PLAYBOOK APPROVED — Signed into HMAC-SHA256 ledger by active SOC Approver. Step 2 (n8n Dispatch) is now unlocked.',
       already_approved: 'PLAYBOOK APPROVED — Already verified in HMAC-SHA256 ledger. Proceed to Step 2 (n8n Dispatch) or Step 3 (Isolate).',
-      role_insufficient_for_soar: 'ACCESS DENIED (HTTP 403) — Active Microsoft Entra / RBAC role (Tier-1 Triage / Read-Only Auditor) is not authorized for SOAR execution. Switch to a Tier-3 SOC Approver.'
+      role_insufficient_for_soar: 'ACCESS DENIED (HTTP 403) — Active Microsoft Entra / RBAC role (Tier-1 Triage / Read-Only Auditor) is not authorized for SOAR execution. Switch to a Tier-3 SOC Approver.',
+      audit_chain_invalid: 'SOAR LEDGER MISMATCH — The HMAC-SHA256 chain does not match this daemon key. Approve the playbook again so the ledger is re-sealed, then dispatch.',
+      callback_not_recorded: 'CALLBACK NOT RECORDED — Step 2 (n8n Dispatch) has not stored a signed receipt. Dispatch the approved playbook before Isolate.'
     };
     return messages[reason] || fallback;
   }
@@ -2912,15 +2929,17 @@
       secondaryAe: secondaryAeFromFlow(row),
       dnnAttackProbability: finiteOrNull(row.dnn_attack_probability),
       dnnBinaryDecision: row.dnn_binary_decision || '',
-      unswAttackCategory: row.unsw_attack_category || '',
+      unswAttackCategory: row.dnn_category || row.unsw_attack_category || '',
       consensusLabel: 'advisory_consensus',
       dnnFeatures: row.dnn_features && typeof row.dnn_features === 'object' ? row.dnn_features : null,
+      scenarioLabel: row.scenario_label || '',
+      mitreTechniqueId: row.mitre_technique_id || row.technique_id || '',
       advisory: {
-        summaryHeadline: 'Stored incident ' + row.incident_id,
+        summaryHeadline: row.case_title || ('Stored incident ' + row.incident_id),
         detectionRationale: 'Read from the incidents database. Fusion stays disabled.'
       },
       chromaRagHits: incidentChromaHits(row),
-      techniqueId: row.technique_id || '',
+      techniqueId: row.mitre_technique_id || row.technique_id || row.scenario_label || '',
       cveIds: Array.isArray(row.cve_ids) ? row.cve_ids : [],
       soarRecord: {
         playbookId: row.playbook_id || 'none',
@@ -3029,6 +3048,11 @@
         seenIncidents.add(shape);
         views.push(incidentRowToView(row));
       });
+      ledgerChainStatus = data.playbook_hash_chain_status || '';
+      paintLedgerBadge(ledgerChainStatus);
+      if (data.operator_enrollment && data.operator_enrollment.enrollment_state === 'enrolled') {
+        showOperatorStamp(data.operator_enrollment);
+      }
       liveCampaignIncidents = views;
       showStoredN8nMttr(views);
       showStoredContainment(views);
@@ -3189,6 +3213,16 @@
     return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value) ? value : 'analyst_a';
   }
 
+  function paintOperatorBadge(text, verified) {
+    ['operatorIdentityBadge', 'operatorAuthBadge'].forEach(id => {
+      const node = document.getElementById(id);
+      if (!node) return;
+      node.textContent = text;
+      node.classList.toggle('badge-neutral', !verified);
+      node.setAttribute('data-evidence-state', verified ? 'verified' : 'unavailable');
+    });
+  }
+
   function showOperatorStamp(stamp) {
     const node = document.getElementById('operatorIdentityBadge');
     if (!node || !stamp) return;
@@ -3200,16 +3234,13 @@
     const enrolled = stamp.enrollment_state === 'enrolled' || stamp.enrollmentState === 'enrolled';
     const subject = stamp.certificate_subject || stamp.certificateSubject
       || (stamp.operator_id ? '/CN=' + stamp.operator_id : '');
-    if ((verified && label !== 'unverified_local_label' && prefix) || (enrolled && subject)) {
+    const enrolledLabel = stamp.operator_auth_label || stamp.operatorAuthLabel || '';
+    if ((verified && label !== 'unverified_local_label' && prefix) || (enrolled && subject) || enrolledLabel) {
       node.setAttribute('title', 'verified operator certificate');
-      node.textContent = 'verified mTLS cert (' + subject + ')';
-      node.classList.remove('badge-neutral');
-      node.setAttribute('data-evidence-state', 'verified');
+      paintOperatorBadge(enrolledLabel || ('verified mTLS cert (' + subject + ')'), true);
       return;
     }
-    node.textContent = 'unverified local label';
-    node.classList.add('badge-neutral');
-    node.setAttribute('data-evidence-state', 'unavailable');
+    paintOperatorBadge('unverified local label', false);
   }
 
   async function refreshOperatorStamp() {
@@ -4195,7 +4226,13 @@
       const retrieved = hit
         ? ('retrieved candidate technique ' + hit.technique_id + ' ' + hit.technique_name)
         : 'No local corpus hit.';
-      const narrative = typeof data.narrative === 'string' && data.narrative ? data.narrative : retrieved;
+      let narrative = typeof data.narrative === 'string' && data.narrative ? data.narrative : retrieved;
+      const selected = selectedIncident();
+      const selectedTitle = selected && selected.advisory ? String(selected.advisory.summaryHeadline || '') : '';
+      const selectedLabel = selected && selected.scenarioLabel ? String(selected.scenarioLabel) : '';
+      if (selectedTitle && narrative.indexOf(selectedTitle) === -1 && selectedLabel && narrative.indexOf(selectedLabel) === -1) {
+        narrative = 'Advisory brief does not match the selected flow.';
+      }
       showCopilotAnswer(narrative, data.evidence_state || 'unavailable');
       const badge = document.getElementById('copilotProviderBadge');
       if (badge) {

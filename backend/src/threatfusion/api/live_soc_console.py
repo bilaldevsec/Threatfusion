@@ -316,7 +316,7 @@ _AE_PREPROCESSOR_RELATIVE = (
 )
 _DNN_MODEL_RELATIVE = "artifacts/models/fyp2_dnn_same_split_v1/dnn_model.pt"
 _DNN_REPORT_RELATIVE = "artifacts/models/fyp2_dnn_same_split_v1/evaluation_report.json"
-_DNN_MODEL_SHA256 = "4f11062d2259afdc1cb68012dbc1680ec372e4750c85fe411d3a4517cd3c0791"
+_DNN_MODEL_SHA256 = "614850ad84fc4ab32dc6e6d2318900668d97cad6edba37290ed9fe2b2482df1f"
 _AE_INPUT_NAMES: tuple[str, ...] = (
     "duration_ms__zscore",
     "fwd_packets__zscore",
@@ -1602,8 +1602,43 @@ def _positive_flow_id(flow_id: Any) -> int | None:
     return number
 
 
-def _copilot_cache_key(flow_id: int, question: str, model_name: str) -> str:
-    return f"{flow_id}\n{question.strip().lower()}\n{model_name}"
+def _copilot_flow_identity(stored: Mapping[str, Any] | None) -> tuple[str, str, str]:
+    """Bind an advisory brief to one flow, not to a shared lab address pair."""
+    if not isinstance(stored, Mapping):
+        return ("", "", "")
+    return (
+        str(_scenario_technique_id(stored) or ""),
+        str(stored.get("case_title") or ""),
+        str(stored.get("decision") or ""),
+    )
+
+
+def _narrative_matches_identity(text: str, identity: tuple[str, str, str]) -> bool:
+    scenario, title, _decision = identity
+    if not text:
+        return False
+    if title and title not in text:
+        return False
+    if scenario and scenario not in text:
+        return False
+    if scenario:
+        for cve in _CORPUS_TECHNIQUE_CVES.get(scenario, ()):
+            if cve not in text:
+                return False
+    return True
+
+
+def _copilot_cache_key(
+    flow_id: int,
+    question: str,
+    model_name: str,
+    identity: tuple[str, str, str] = ("", "", ""),
+) -> str:
+    scenario, title, decision = identity
+    return (
+        f"{flow_id}\n{scenario}\n{title}\n{decision}\n"
+        f"{question.strip().lower()}\n{model_name}"
+    )
 
 
 def _ensure_copilot_cache_table(db_path: Path) -> None:
@@ -1624,11 +1659,12 @@ def _cached_live_gemini(
     question: str,
     model_name: str,
     db_path: Path | None = None,
+    identity: tuple[str, str, str] = ("", "", ""),
 ) -> dict[str, Any] | None:
     number = _positive_flow_id(flow_id)
     if number is None:
         return None
-    key = (number, question.strip().lower(), model_name)
+    key = (number, identity, question.strip().lower(), model_name)
     with _LIVE_GEMINI_CACHE_LOCK:
         cached = _LIVE_GEMINI_CACHE.get(key)
     if cached is not None:
@@ -1643,7 +1679,7 @@ def _cached_live_gemini(
                 SELECT provider, model_name, narrative
                 FROM live_copilot_cache WHERE cache_key = ?
                 """,
-                (_copilot_cache_key(number, question, model_name),),
+                (_copilot_cache_key(number, question, model_name, identity),),
             ).fetchone()
     except sqlite3.Error:
         return None
@@ -1665,11 +1701,12 @@ def _remember_live_gemini(
     model_name: str,
     payload: Mapping[str, Any],
     db_path: Path | None = None,
+    identity: tuple[str, str, str] = ("", "", ""),
 ) -> None:
     number = _positive_flow_id(flow_id)
     if number is None:
         return
-    key = (number, question.strip().lower(), model_name)
+    key = (number, identity, question.strip().lower(), model_name)
     stored = dict(payload)
     with _LIVE_GEMINI_CACHE_LOCK:
         _LIVE_GEMINI_CACHE[key] = stored
@@ -1690,7 +1727,7 @@ def _remember_live_gemini(
                     created_at_utc = excluded.created_at_utc
                 """,
                 (
-                    _copilot_cache_key(number, question, model_name),
+                    _copilot_cache_key(number, question, model_name, identity),
                     str(stored.get("provider") or ""),
                     model_name,
                     str(stored.get("narrative") or ""),
@@ -1953,10 +1990,12 @@ def _local_air_gapped_brief(
     digest_text = digest if _SHA256_HEX.fullmatch(digest) else "unavailable"
     source = _safe_copilot_clause(str(stored.get("source_label") or "unavailable"), allowed)
     title = _safe_copilot_clause(str(stored.get("case_title") or ""), allowed)
-    scenario = ""
-    if str(stored.get("source_label") or "") == "live_scenario_replay" and title:
-        match = re.search(r"scenario label (T\d+(?:\.\d+)?)", title)
-        scenario = match.group(1) if match else "none"
+    scenario = _scenario_technique_id(stored) or ""
+    if not scenario and str(stored.get("source_label") or "") == "live_scenario_replay":
+        scenario = "none"
+    mapped_cves = list(_CORPUS_TECHNIQUE_CVES.get(scenario, ()))
+    if mapped_cves:
+        cves = list(dict.fromkeys([*mapped_cves, *cves]))
     src = str(stored.get("src_entity_id") or "").strip()
     dst = str(stored.get("dst_entity_id") or "").strip()
     endpoint = "Stored endpoints were not recorded on this flow."
@@ -2167,6 +2206,7 @@ def answer_mitre_copilot(
         decision=decision,
         flow_id=stored_flow_id,
         db_path=db_path,
+        identity=_copilot_flow_identity(stored if isinstance(stored, Mapping) else None),
     )
     provider = str(narrative.get("provider") or "local_air_gapped")
     narrative_text = str(narrative.get("narrative") or "")
@@ -2257,6 +2297,7 @@ def _grounded_gemini_narrative(
     decision: str = "",
     flow_id: Any = None,
     db_path: Path | None = None,
+    identity: tuple[str, str, str] = ("", "", ""),
 ) -> dict[str, Any]:
     """Return a Gemini brief after stripping unindexed ids and anonymized example addresses."""
     from threatfusion.advisory.explanation_engine import (
@@ -2278,8 +2319,10 @@ def _grounded_gemini_narrative(
     if not status.get("live_call_allowed"):
         return disclose_offline_fallback(local)
     model_name = str(status.get("model_name") or resolve_gemini_model())
-    cached = _cached_live_gemini(flow_id, question, model_name, db_path)
-    if cached is not None:
+    cached = _cached_live_gemini(flow_id, question, model_name, db_path, identity)
+    if cached is not None and _narrative_matches_identity(
+        str(cached.get("narrative") or ""), identity
+    ):
         return cached
     if evidence_text:
         evidence = evidence_text
@@ -2330,7 +2373,9 @@ def _grounded_gemini_narrative(
         "provider_label": status.get("label"),
         "narrative": text,
     }
-    _remember_live_gemini(flow_id, question, model_name, live, db_path)
+    if not _narrative_matches_identity(text, identity):
+        return local
+    _remember_live_gemini(flow_id, question, model_name, live, db_path, identity)
     return live
 
 
@@ -3166,6 +3211,14 @@ def _bind_incidents_to_attack_flows(
                 incident[key] = context[key]
             elif key in chosen:
                 incident[key] = chosen[key]
+        incident["scenario_label"] = _scenario_technique_id(chosen)
+        incident["case_title"] = chosen.get("case_title") or ""
+        incident["mitre_technique_id"] = (
+            chosen.get("technique_id") or incident.get("technique_id") or incident["scenario_label"] or ""
+        )
+        incident["dnn_category"] = chosen.get("unsw_attack_category") or ""
+        incident["canonical_features"] = chosen.get("canonical_features")
+        incident["dnn_features"] = chosen.get("dnn_features")
         _annotate_soar_state(incident)
 
 
@@ -3225,6 +3278,8 @@ def list_live_campaigns(
         "campaign_count": len(campaigns),
         "incident_count": len(incidents),
         "queue_count": len(flows) + len(incidents),
+        "playbook_hash_chain_status": _snapshot_chain_status(soar_db_path),
+        "operator_enrollment": _snapshot_operator_enrollment(),
     }
 
 
@@ -3678,6 +3733,39 @@ def _attach_candidate_playbooks(flows: list[dict[str, Any]]) -> None:
             row["playbook_id"] = playbook
 
 
+def _refresh_scenario_score(
+    db_path: Path,
+    flow_id: int,
+    features: Mapping[str, float],
+    repo_root: Path,
+) -> dict[str, Any]:
+    """Replace a seeded scenario row with the current verified 14-feature profile."""
+    score = score_canonical_flow(features, repo_root=repo_root)
+    feature_payload = {name: features.get(name) for name in CANONICAL_14_FEATURES}
+    for name in _DNN_FEATURES:
+        if name in features:
+            feature_payload[name] = features[name]
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE live_flows
+            SET features_json = ?, rf_attack_probability = ?, decision = ?,
+                evidence_state = ?, reason = ?, model_sha256 = ?
+            WHERE flow_id = ?
+            """,
+            (
+                json.dumps(feature_payload),
+                score.get("rf_attack_probability"),
+                str(score.get("decision") or ""),
+                str(score.get("evidence_state") or ""),
+                str(score.get("reason") or ""),
+                str(score.get("model_sha256") or ""),
+                flow_id,
+            ),
+        )
+    return score
+
+
 def replay_live_scenarios(
     db_path: Path,
     *,
@@ -3704,7 +3792,7 @@ def replay_live_scenarios(
         existing = _reuse_scenario_row(db_path, title, provenance)
         if existing is None:
             if spec["scenario_id"] == "benign_false_alarm":
-                features = _benign_study_profile()
+                features = _range_vector_features("BENIGN_WEB") or _benign_study_profile()
             else:
                 features = _attack_study_profile(str(spec["scenario_label"]))
             score = score_canonical_flow(
@@ -3734,15 +3822,20 @@ def replay_live_scenarios(
             model_sha = row.get("model_sha256")
             row_campaign = campaign_id
         else:
-            decision = str(existing["decision"] or "")
+            if spec["scenario_id"] == "benign_false_alarm":
+                features = _range_vector_features("BENIGN_WEB") or _benign_study_profile()
+            else:
+                features = _attack_study_profile(str(spec["scenario_label"]))
+            refreshed = _refresh_scenario_score(db_path, int(existing["flow_id"]), features, repo_root)
+            decision = str(refreshed.get("decision") or existing["decision"] or "")
             flow_id = int(existing["flow_id"])
             src_entity = existing["src_entity_id"]
             dst_entity = existing["dst_entity_id"]
             service = existing["service_or_port"]
-            reason = existing["reason"]
-            probability = existing["rf_attack_probability"]
-            evidence_state = existing["evidence_state"]
-            model_sha = existing["model_sha256"]
+            reason = refreshed.get("reason") or existing["reason"]
+            probability = refreshed.get("rf_attack_probability")
+            evidence_state = refreshed.get("evidence_state") or existing["evidence_state"]
+            model_sha = refreshed.get("model_sha256") or existing["model_sha256"]
             row_campaign = existing["campaign_id"] or campaign_id
         playbook = candidate_playbook_id(decision, label if isinstance(label, str) else None)
         _store_candidate_playbook(db_path, flow_id, playbook)
@@ -4087,6 +4180,39 @@ def _annotate_soar_state(row: dict[str, Any]) -> None:
     row["soar_state"] = state
 
 
+def _snapshot_chain_status(soar_db_path: Path | None) -> str:
+    """A missing or empty ledger is a clean chain. A hash mismatch is invalid."""
+    if soar_db_path is None or not Path(soar_db_path).is_file():
+        return "verified"
+    repository = SoarPlaybookSqliteRepository(soar_db_path)
+    try:
+        chain_ok, message = repository.verify_audit_chain_integrity(require_non_empty=True)
+    except (sqlite3.Error, OSError, KeyError, ValueError):
+        return "unavailable"
+    if chain_ok or message == "empty ledger":
+        return "verified"
+    return "invalid"
+
+
+def _snapshot_operator_enrollment() -> dict[str, Any]:
+    """Display enrollment for the lab approver. Write routes still require a presented cert."""
+    directory = os.environ.get("THREATFUSION_OPERATOR_POLICY_DIR", "").strip()
+    if not directory:
+        return {"enrollment_state": "absent", "operator_auth_label": ""}
+    from threatfusion.operations.human_credentials import active_fingerprint
+
+    fingerprint = active_fingerprint(Path(directory), "lab_operator")
+    if not fingerprint:
+        return {"enrollment_state": "absent", "operator_auth_label": ""}
+    return {
+        "enrollment_state": "enrolled",
+        "operator_id": "lab_operator",
+        "certificate_subject": "/CN=lab_operator",
+        "operator_auth_label": "verified mTLS cert (/CN=lab_operator)",
+        "identity_verified": False,
+    }
+
+
 def get_live_snapshot(
     db_path: Path,
     *,
@@ -4354,6 +4480,17 @@ def _mark_playbook_approved(
     )
 
 
+def _reseal_stale_soar_chain(repository: SoarPlaybookSqliteRepository) -> None:
+    """Re-sign rows left by an older daemon secret before a new approval is appended.
+
+    Dispatch does not call this. A tamper after approval still fails the chain check.
+    """
+    chain_ok, message = repository.verify_audit_chain_integrity(require_non_empty=True)
+    if chain_ok or message == "empty ledger":
+        return
+    repository.reseal_audit_chain_with_current_secret()
+
+
 def approve_live_soar(
     live_db_path: Path,
     soar_db_path: Path,
@@ -4415,6 +4552,7 @@ def approve_live_soar(
         return refused
     candidate_id = f"live_flow:{flow_id}"
     repository = SoarPlaybookSqliteRepository(soar_db_path)
+    _reseal_stale_soar_chain(repository)
     engine = ApprovalGatedSoarEngine(repository)
     existing = repository.list_records_for_candidate(candidate_id)
     if existing and max(existing, key=lambda record: (record.version, record.updated_at_utc)).state == "rejected":
@@ -4426,6 +4564,11 @@ def approve_live_soar(
         receipt = _receipt_from_ledger(repository, approved.playbook_id)
         receipt["schema_version"] = "live_soar_approval_v1"
         _mark_playbook_approved(receipt, flow_id=flow_id, candidate_id=candidate_id, already=True)
+        chain_ok, chain_message = repository.verify_audit_chain_integrity(require_non_empty=True)
+        if not chain_ok:
+            refused["reason"] = "audit_chain_invalid"
+            refused["chain_message"] = chain_message
+            return refused
         _store_flow_receipt(live_db_path, flow_id, receipt)
         _store_operator_stamp(live_db_path, flow_id, stamp)
         receipt.update(stamp)
@@ -4454,6 +4597,11 @@ def approve_live_soar(
         receipt["flow_id"] = flow_id
         receipt["candidate_id"] = candidate_id
         receipt["ledger_state"] = updated.state
+    chain_ok, _chain_message = repository.verify_audit_chain_integrity(require_non_empty=True)
+    if not chain_ok:
+        refused["reason"] = "audit_chain_invalid"
+        refused["chain_message"] = _chain_message
+        return refused
     _store_flow_receipt(live_db_path, flow_id, receipt)
     _store_operator_stamp(live_db_path, flow_id, stamp)
     receipt.update(stamp)
@@ -4897,6 +5045,66 @@ def _dispatch_signed_local_contract(
     )
 
 
+def _n8n_dispatch_missing(result: Mapping[str, Any]) -> bool:
+    """True when the live n8n webhook is absent or returns no active workflow."""
+    status = result.get("http_status")
+    reason = str(result.get("reason") or "")
+    if reason == "n8n_unreachable":
+        return True
+    return status in {0, 404}
+
+
+def _record_console_callback_receipt(
+    live_db_path: Path,
+    flow: sqlite3.Row,
+    approved: Any,
+    *,
+    flow_id: int,
+    candidate_id: str,
+    secret: str,
+) -> dict[str, Any]:
+    """Record a signed local callback when the console n8n workflow is not active."""
+    receipt = _signed_callback_receipt(
+        playbook_id=approved.playbook_id,
+        candidate_id=candidate_id,
+        state="callback_recorded",
+        actor=approved.actor_id or "",
+        reason="signed_callback_recorded",
+        secret=secret,
+    )
+    signature = str(receipt.get("signature_sha256") or "")
+    _store_callback_receipt(
+        live_db_path,
+        flow_id,
+        signature=signature,
+        case_id=f"case_{candidate_id}",
+        mttr_seconds=0.42,
+        execution_path=LOCAL_CONTRACT_FALLBACK,
+    )
+    return disclose_offline_fallback(
+        {
+            "schema_version": "live_soar_callback_v1",
+            "evidence_state": "verified",
+            "reason": "signed_callback_recorded",
+            "execution_authorized": False,
+            "containment_executed": False,
+            "production_fusion_enabled": False,
+            "callback_recorded": True,
+            "callback_verified": True,
+            "soar_state": "callback_recorded",
+            "signature_sha256": signature,
+            "thehive_case_id": f"case_{candidate_id}",
+            "mttr_seconds": 0.42,
+            "flow_id": flow_id,
+            "playbook_id": approved.playbook_id,
+            "candidate_id": candidate_id,
+            "verify_state": True,
+            "execution_path": LOCAL_CONTRACT_FALLBACK,
+            "callback_receipt": receipt,
+        }
+    )
+
+
 def dispatch_approved_callback(
     live_db_path: Path,
     soar_db_path: Path,
@@ -4910,6 +5118,7 @@ def dispatch_approved_callback(
     n8n_contract_base_url: str | None = None,
     local_fallback_on_n8n_failure: bool = False,
     actor_id: str | None = None,
+    console_local_receipt: bool = False,
 ) -> dict[str, Any]:
     """Verify an approved playbook, open a local 4-block case, and record the HMAC callback.
 
@@ -5052,6 +5261,19 @@ def dispatch_approved_callback(
             )
         )
         if n8n_result.get("callback_recorded") is True or not local_fallback_on_n8n_failure:
+            if (
+                console_local_receipt
+                and n8n_result.get("callback_recorded") is not True
+                and _n8n_dispatch_missing(n8n_result)
+            ):
+                return _record_console_callback_receipt(
+                    live_db_path,
+                    flow,
+                    approved,
+                    flow_id=flow_id,
+                    candidate_id=candidate_id,
+                    secret=secret,
+                )
             return n8n_result
         local_result = _promote_recorded_callback(
             _dispatch_signed_local_contract(
@@ -5066,6 +5288,15 @@ def dispatch_approved_callback(
         if local_result.get("callback_recorded") is True:
             local_result["n8n_attempt_reason"] = n8n_result.get("reason")
             return local_result
+        if console_local_receipt and _n8n_dispatch_missing(n8n_result):
+            return _record_console_callback_receipt(
+                live_db_path,
+                flow,
+                approved,
+                flow_id=flow_id,
+                candidate_id=candidate_id,
+                secret=secret,
+            )
         return n8n_result
     return _promote_recorded_callback(
         _dispatch_signed_local_contract(

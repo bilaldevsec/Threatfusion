@@ -139,9 +139,15 @@ prepare_operator_policy_dir() {
   esac
 }
 
+clear_stale_demo_state() {
+  rm -f "${DEMO_DIR}"/*.sqlite3 "${DEMO_DIR}"/*.sqlite3-wal "${DEMO_DIR}"/*.sqlite3-shm \
+    "${DEMO_DIR}/.ledger_hmac_key"
+}
+
 cmd_up() {
   require_tools
   mkdir -p "$DEMO_DIR"
+  clear_stale_demo_state
   prepare_operator_policy_dir "$THREATFUSION_OPERATOR_POLICY_DIR"
   mkdir -p "${ROOT}/docker/range/eve"
   local BIND_HOST="127.0.0.1"
@@ -259,6 +265,7 @@ cmd_down() {
   fi
   docker compose -p threatfusion-n8n -f docker/docker-compose.n8n.yml down --remove-orphans
   docker compose -p threatfusion-range -f docker/docker-compose.range.yml down --remove-orphans
+  clear_stale_demo_state
   echo "follower, console, n8n, and range stopped"
 }
 
