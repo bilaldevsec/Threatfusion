@@ -1750,6 +1750,28 @@ def _remember_live_gemini(
         return
 
 
+def invalidate_copilot_brief_cache(flow_id: int, db_path: Path | None = None) -> None:
+    """Drop cached advisory briefs after Approve / Dispatch / Isolate / Rollback."""
+    number = _positive_flow_id(flow_id)
+    if number is None:
+        return
+    with _LIVE_GEMINI_CACHE_LOCK:
+        stale = [key for key in _LIVE_GEMINI_CACHE if key[0] == number]
+        for key in stale:
+            _LIVE_GEMINI_CACHE.pop(key, None)
+    if db_path is None or not db_path.is_file():
+        return
+    try:
+        _ensure_copilot_cache_table(db_path)
+        with _connect(db_path) as conn:
+            conn.execute(
+                "DELETE FROM live_copilot_cache WHERE cache_key LIKE ?",
+                (f"{number}\n%",),
+            )
+    except (OSError, sqlite3.Error):
+        return
+
+
 def _live_copilot_callable() -> Any:
     """Live five-section request. The class default stays 512 tokens and temperature 0.0."""
     from threatfusion.advisory.gemini_client import (
@@ -2039,18 +2061,68 @@ def _local_air_gapped_brief(
         if rules
         else "No stored context memory rule names an address outside this flow."
     )
-    if decision == "Attack":
-        containment = (
-            "**Containment stays unauthorized.** A human must approve the SHA-256 hash-chained "
-            "playbook before any n8n webhook, victim firewall isolation, or rollback check. "
-            "`execution_authorized` remains false. The frozen forest recommendation does not "
-            "dispatch a response by itself."
-        )
-    else:
+    receipt_status = str(campaign.get("soar_receipt_status") or "unavailable")
+    containment_state = str(stored.get("containment_state") or "")
+    execution_authorized = receipt_status in {
+        "approved",
+        "verified",
+        "isolated",
+        "rolled_back",
+    } or containment_state in {
+        "applied",
+        "simulated_applied",
+        "rolled_back",
+        "simulated_rolled_back",
+    }
+    auth_token = "true" if execution_authorized else "false"
+    if decision != "Attack":
         containment = (
             f"**Containment is blocked.** The frozen Random Forest decision is `{decision}`. "
             "Do not isolate an endpoint while the score stays below the attack threshold. "
-            "`execution_authorized` remains false until a later stored Attack row is approved."
+            f"`execution_authorized` : `{auth_token}`. "
+            f"`soar_receipt_status` : `{receipt_status}`."
+        )
+    elif receipt_status == "isolated" or containment_state in {
+        "applied",
+        "simulated_applied",
+    }:
+        containment = (
+            "**Containment applied.** The approved playbook authorized victim-namespace "
+            "iptables isolation for this stored Attack row. "
+            f"`execution_authorized` : `{auth_token}`. "
+            f"`soar_receipt_status` : `{receipt_status}`."
+        )
+    elif receipt_status == "rolled_back" or containment_state in {
+        "rolled_back",
+        "simulated_rolled_back",
+    }:
+        containment = (
+            "**Containment rolled back.** The firewall drop was removed and the SHA-256 "
+            "ledger recorded the restore. "
+            f"`execution_authorized` : `{auth_token}`. "
+            f"`soar_receipt_status` : `{receipt_status}`."
+        )
+    elif receipt_status == "verified":
+        containment = (
+            "**Callback verified.** The signed HMAC receipt is recorded. Isolate remains "
+            "a separate human step. "
+            f"`execution_authorized` : `{auth_token}`. "
+            f"`soar_receipt_status` : `{receipt_status}`."
+        )
+    elif receipt_status == "approved":
+        containment = (
+            "**Playbook approved.** Dispatch via n8n (or the local contract fallback) is "
+            "unlocked. Host containment has not executed yet. "
+            f"`execution_authorized` : `{auth_token}`. "
+            f"`soar_receipt_status` : `{receipt_status}`."
+        )
+    else:
+        containment = (
+            "**Containment stays unauthorized.** A human must approve the SHA-256 hash-chained "
+            "playbook before any n8n webhook, victim firewall isolation, or rollback check. "
+            f"`execution_authorized` : `{auth_token}`. "
+            f"`soar_receipt_status` : `{receipt_status}`. "
+            "The frozen forest recommendation does not dispatch a response by itself."
         )
     sections = (
         f"{_COPILOT_HEADINGS[0]}\n"
@@ -2071,7 +2143,7 @@ def _local_air_gapped_brief(
         f"`destination_port_protocol_baseline` flow_count `{baseline.get('flow_count', 0)}`. "
         "The campaign ledger records "
         f"`stitched_flow_count` `{campaign.get('stitched_flow_count', 0)}` and "
-        f"`soar_receipt_status` `{campaign.get('soar_receipt_status', 'unavailable')}`. "
+        f"`soar_receipt_status` `{receipt_status}`. "
         f"{memory_text}",
         f"{_COPILOT_HEADINGS[2]}\n"
         + (
@@ -2255,6 +2327,23 @@ def answer_mitre_copilot(
     from threatfusion.api.analyst_dashboard import evidence_state_from_gates
 
     bound_flow_id = None if stored is None else stored.get("flow_id")
+    soar_receipt = {"status": "unavailable"}
+    if (
+        isinstance(bound_flow_id, int)
+        and bound_flow_id > 0
+        and isinstance(db_path, Path)
+    ):
+        soar_receipt = _soar_receipt_status(
+            soar_db_path if isinstance(soar_db_path, Path) else None,
+            bound_flow_id,
+            live_db_path=db_path,
+        )
+    execution_authorized = soar_receipt.get("status") in {
+        "approved",
+        "verified",
+        "isolated",
+        "rolled_back",
+    }
     if (
         resolved_flow_id is not None
         and resolved_flow_id > 0
@@ -2284,7 +2373,8 @@ def answer_mitre_copilot(
             "schema_version": "live_mitre_copilot_v1",
             "evidence_state": evidence_state_from_gates(receipt_ok, chain_ok, grounded),
             "grounded": grounded,
-            "execution_authorized": False,
+            "execution_authorized": execution_authorized,
+            "soar_receipt_status": soar_receipt.get("status"),
             "reason": reason,
             "hits": hit_rows,
             "provider": provider,
@@ -2465,9 +2555,16 @@ def read_n8n_workbench(workflow_path: Path) -> dict[str, Any]:
             "nodes": [],
         }
     document = json.loads(workflow_path.read_text(encoding="utf-8"))
+    doc_obj = (
+        document[0]
+        if isinstance(document, list) and document
+        else (document if isinstance(document, dict) else {})
+    )
+    if not isinstance(doc_obj, dict):
+        doc_obj = {}
     nodes = [
         {"name": node.get("name"), "type": node.get("type")}
-        for node in document.get("nodes", [])
+        for node in doc_obj.get("nodes", [])
         if isinstance(node, dict) and str(node.get("type", "")).startswith("n8n-nodes-base.")
     ]
     return {
@@ -2817,9 +2914,40 @@ def save_context_memory(
     }
 
 
-def _soar_receipt_status(soar_db_path: Path | None, flow_id: int) -> dict[str, str]:
-    """Read the current playbook state for this flow. A missing ledger stays unavailable."""
+def _soar_receipt_status(
+    soar_db_path: Path | None,
+    flow_id: int,
+    *,
+    live_db_path: Path | None = None,
+) -> dict[str, str]:
+    """Read the current playbook / containment receipt for this flow.
+
+    Status advances as the operator walks 1-2-3-4:
+    approved -> verified (callback) -> isolated -> rolled_back.
+    """
     unavailable = {"status": "unavailable", "evidence_state": "unavailable"}
+    containment_state = ""
+    callback_recorded = False
+    if live_db_path is not None and live_db_path.is_file():
+        try:
+            with _connect(live_db_path) as live_conn:
+                live_row = live_conn.execute(
+                    """
+                    SELECT containment_state, callback_recorded
+                    FROM live_flows WHERE flow_id = ?
+                    """,
+                    (flow_id,),
+                ).fetchone()
+            if live_row is not None:
+                containment_state = str(live_row["containment_state"] or "")
+                callback_recorded = bool(live_row["callback_recorded"])
+        except sqlite3.Error:
+            containment_state = ""
+            callback_recorded = False
+    if containment_state in {"applied", "simulated_applied"}:
+        return {"status": "isolated", "evidence_state": "verified"}
+    if containment_state in {"rolled_back", "simulated_rolled_back"}:
+        return {"status": "rolled_back", "evidence_state": "verified"}
     if soar_db_path is None or not soar_db_path.is_file():
         return unavailable
     conn: sqlite3.Connection | None = None
@@ -2847,7 +2975,12 @@ def _soar_receipt_status(soar_db_path: Path | None, flow_id: int) -> dict[str, s
             conn.close()
     if row is None:
         return {"status": "no_receipt", "evidence_state": "unavailable"}
-    return {"status": str(row["state"]), "evidence_state": "verified"}
+    ledger_state = str(row["state"] or "")
+    if callback_recorded and ledger_state in {"approved", "executed_simulated"}:
+        return {"status": "verified", "evidence_state": "verified"}
+    if ledger_state == "executed_simulated":
+        return {"status": "approved", "evidence_state": "verified"}
+    return {"status": ledger_state, "evidence_state": "verified"}
 
 
 def evidence_locker_queries(
@@ -2917,7 +3050,7 @@ def evidence_locker_queries(
         average = baseline["avg_rf"]
         if average is not None:
             average = float(average)
-    receipt = _soar_receipt_status(soar_db_path, flow_id)
+    receipt = _soar_receipt_status(soar_db_path, flow_id, live_db_path=db_path)
     return {
         "schema_version": "evidence_locker_queries_v1",
         "evidence_state": "verified",
@@ -3617,7 +3750,35 @@ def _lab_scenario_provenance(port: int, protocol: str) -> dict[str, Any]:
     }
 
 
+def _range_scenario_provenance(port: int, protocol: str) -> dict[str, Any]:
+    """Bind seeded attack rows to the live cyber-range endpoints when the range is up."""
+    return {
+        "entity_namespace_id": "lab:range-bridge-01",
+        "src_entity_id": RANGE_CONTAINMENT_SOURCE,
+        "dst_entity_id": RANGE_VICTIM_ADDRESS,
+        "protocol": protocol,
+        "service_or_port": str(port),
+        "clock_synchronized": True,
+    }
+
+
+def _range_lab_active() -> bool:
+    """True when the private range attacker and victim containers are running."""
+    return _container_is_running(RANGE_VICTIM_CONTAINER) and _container_is_running(
+        RANGE_ATTACKER_CONTAINER
+    )
+
+
+def _scenario_provenance(port: int, protocol: str) -> dict[str, Any]:
+    """Use live-range endpoints when the range is active; otherwise the offline lab pair."""
+    if _range_lab_active():
+        return _range_scenario_provenance(port, protocol)
+    return _lab_scenario_provenance(port, protocol)
+
+
 # The technique id is the scenario label. The frozen forest does not emit it.
+# Provenance is resolved at seed time via _scenario_provenance so a live range
+# binds T1046/T1110/T1190/T1498 rows to 172.29.0.10 -> 172.29.0.20.
 LIVE_SCENARIO_REPLAYS: tuple[dict[str, Any], ...] = (
     {
         "scenario_id": "web_exploit",
@@ -3626,7 +3787,7 @@ LIVE_SCENARIO_REPLAYS: tuple[dict[str, Any], ...] = (
         "dst_port": 443,
         "protocol_tcp": 0,
         "protocol_udp": 1,
-        "provenance": _lab_scenario_provenance(443, "udp"),
+        "protocol": "udp",
     },
     {
         "scenario_id": "ssh_brute",
@@ -3635,7 +3796,7 @@ LIVE_SCENARIO_REPLAYS: tuple[dict[str, Any], ...] = (
         "dst_port": 22,
         "protocol_tcp": 0,
         "protocol_udp": 1,
-        "provenance": _lab_scenario_provenance(22, "udp"),
+        "protocol": "udp",
     },
     {
         "scenario_id": "internal_recon",
@@ -3644,8 +3805,8 @@ LIVE_SCENARIO_REPLAYS: tuple[dict[str, Any], ...] = (
         "dst_port": 445,
         "protocol_tcp": 0,
         "protocol_udp": 1,
+        "protocol": "udp",
         "guard_value": "10.0.0.4",
-        "provenance": _lab_scenario_provenance(445, "udp"),
     },
     {
         "scenario_id": "benign_false_alarm",
@@ -3654,7 +3815,7 @@ LIVE_SCENARIO_REPLAYS: tuple[dict[str, Any], ...] = (
         "dst_port": 8080,
         "protocol_tcp": 1,
         "protocol_udp": 0,
-        "provenance": _lab_scenario_provenance(8080, "tcp"),
+        "protocol": "tcp",
     },
 )
 
@@ -3708,13 +3869,14 @@ def _scenario_case_title(spec: Mapping[str, Any]) -> str:
 def _reuse_scenario_row(
     db_path: Path, title: str, provenance: Mapping[str, Any]
 ) -> sqlite3.Row | None:
-    """Keep one stored scenario row and fill empty lab endpoints."""
+    """Keep one stored scenario row and bind it to the current lab or range endpoints."""
     with _connect(db_path) as conn:
         conn.execute(
             """
             UPDATE live_flows
-            SET src_entity_id = COALESCE(NULLIF(TRIM(src_entity_id), ''), ?),
-                dst_entity_id = COALESCE(NULLIF(TRIM(dst_entity_id), ''), ?),
+            SET src_entity_id = ?,
+                dst_entity_id = ?,
+                entity_namespace_id = COALESCE(?, entity_namespace_id),
                 flow_protocol = COALESCE(NULLIF(TRIM(flow_protocol), ''), ?),
                 service_or_port = COALESCE(NULLIF(TRIM(service_or_port), ''), ?)
             WHERE source_label = 'live_scenario_replay' AND case_title = ?
@@ -3722,6 +3884,7 @@ def _reuse_scenario_row(
             (
                 provenance.get("src_entity_id"),
                 provenance.get("dst_entity_id"),
+                provenance.get("entity_namespace_id"),
                 provenance.get("protocol"),
                 provenance.get("service_or_port"),
                 title,
@@ -3834,9 +3997,8 @@ def replay_live_scenarios(
     for spec in LIVE_SCENARIO_REPLAYS:
         label = spec["scenario_label"]
         title = _scenario_case_title(spec)
-        provenance = spec.get("provenance")
-        if not isinstance(provenance, Mapping):
-            provenance = {}
+        protocol = str(spec.get("protocol") or ("tcp" if int(spec.get("protocol_tcp") or 0) else "udp"))
+        provenance = _scenario_provenance(int(spec["dst_port"]), protocol)
         existing = _reuse_scenario_row(db_path, title, provenance)
         if existing is None:
             if spec["scenario_id"] == "benign_false_alarm":
@@ -3889,6 +4051,9 @@ def replay_live_scenarios(
             row_campaign = existing["campaign_id"] or campaign_id
         playbook = candidate_playbook_id(decision, label if isinstance(label, str) else None)
         _store_candidate_playbook(db_path, flow_id, playbook)
+        src_entity = provenance.get("src_entity_id") or src_entity
+        dst_entity = provenance.get("dst_entity_id") or dst_entity
+        service = provenance.get("service_or_port") or service
         row = {
             "flow_id": flow_id,
             "decision": decision,
@@ -3907,11 +4072,13 @@ def replay_live_scenarios(
             "production_fusion_enabled": False,
         }
         guard_value = spec.get("guard_value")
-        if isinstance(guard_value, str):
-            status, guard = private_ip_guard_response(guard_value)
-            row["misp_guard_status"] = status
-            row["private_ip_guard_triggered"] = guard.get("private_ip_guard_triggered")
-            row["external_lookup_performed"] = False
+        if isinstance(guard_value, str) or spec["scenario_id"] == "internal_recon":
+            probe = str(src_entity or guard_value or "")
+            if probe:
+                status, guard = private_ip_guard_response(probe)
+                row["misp_guard_status"] = status
+                row["private_ip_guard_triggered"] = guard.get("private_ip_guard_triggered")
+                row["external_lookup_performed"] = False
         stored.append(row)
     if inserted:
         with _connect(db_path) as conn:
@@ -4060,6 +4227,7 @@ def ensure_recorded_attack_row(
             "production_fusion_enabled": False,
         }
     title = f"{spec['title']} (scenario label {spec['scenario_label']})"
+    protocol = str(spec.get("protocol") or "udp")
     persist_scored_flow(
         db_path,
         features,
@@ -4067,6 +4235,7 @@ def ensure_recorded_attack_row(
         campaign_id=campaign_id,
         source_label="live_scenario_replay",
         case_title=title,
+        provenance=_scenario_provenance(int(spec["dst_port"]), protocol),
     )
     with _connect(db_path) as conn:
         conn.execute(
@@ -4626,6 +4795,7 @@ def approve_live_soar(
         _store_flow_receipt(live_db_path, flow_id, receipt)
         _store_operator_stamp(live_db_path, flow_id, stamp)
         receipt.update(stamp)
+        invalidate_copilot_brief_cache(flow_id, live_db_path)
         return receipt
     pending = next((record for record in existing if record.state == "pending_approval"), None)
     try:
@@ -4659,6 +4829,7 @@ def approve_live_soar(
     _store_flow_receipt(live_db_path, flow_id, receipt)
     _store_operator_stamp(live_db_path, flow_id, stamp)
     receipt.update(stamp)
+    invalidate_copilot_brief_cache(flow_id, live_db_path)
     return receipt
 
 
@@ -4718,6 +4889,7 @@ def _store_callback_receipt(
             """,
             (signature, case_id, mttr_seconds, execution_path, flow_id),
         )
+    invalidate_copilot_brief_cache(flow_id, db_path)
 
 
 def _mark_execution_path(db_path: Path, flow_id: int, execution_path: str) -> None:
@@ -6444,11 +6616,13 @@ def _container_is_running(name: str) -> bool:
 def _scenario_containment_without_runner(flow: sqlite3.Row, runner: Any | None) -> bool:
     """Record scenario containment when no custom runner is injected.
 
-    10.0.0.4 scenario replays have no victim-namespace iptables target. A scenario
-    replay whose tf-victim container is down follows the same recorded path. An
-    injected runner, including a failing one, keeps the Docker probe path.
+    10.0.0.4 scenario replays have no victim-namespace iptables target unless the
+    live range is up. A scenario replay whose tf-victim container is down follows
+    the same recorded path. An injected runner keeps the Docker probe path.
     """
     if runner is not None or not _scenario_replay_flow(flow):
+        return False
+    if _range_lab_active():
         return False
     if _flow_field(flow, "src_entity_id") == SCENARIO_CONTAINMENT_SOURCE:
         return True
@@ -6559,7 +6733,9 @@ def _scenario_firewall_rule(src_entity_id: str, *, rollback: bool) -> str:
 
 
 def _simulated_scenario_flow(flow: sqlite3.Row) -> bool:
-    """10.0.0.4 scenario replays have no host firewall to change."""
+    """10.0.0.4 scenario replays have no host firewall unless the live range is up."""
+    if _range_lab_active():
+        return False
     return _flow_field(
         flow, "src_entity_id"
     ) == SCENARIO_CONTAINMENT_SOURCE and _scenario_replay_flow(flow)
@@ -6585,6 +6761,7 @@ def _record_simulated_scenario(
         return _containment_refusal("ledger_append_failed", 409)
     recorded_at = datetime.now(UTC).isoformat()
     _store_containment_state(live_db_path, flow_id, state, when=recorded_at, rule=rule)
+    invalidate_copilot_brief_cache(flow_id, live_db_path)
     return {
         "schema_version": "live_range_containment_v1",
         "evidence_state": "simulated",
@@ -6595,7 +6772,8 @@ def _record_simulated_scenario(
         "containment_state": state,
         "rollback_unlocked": not rollback,
         "simulated_rule": rule,
-        "execution_authorized": False,
+        "execution_authorized": True,
+        "soar_receipt_status": "rolled_back" if rollback else "isolated",
         "production_fusion_enabled": False,
         "http_status": 200,
     }
@@ -6640,12 +6818,14 @@ def contain_range_source(
         return _containment_refusal("containment_not_observed", 502)
     recorded_at = datetime.now(UTC).isoformat()
     _store_containment_state(live_db_path, flow_id, "applied", when=recorded_at)
+    invalidate_copilot_brief_cache(flow_id, live_db_path)
     return {
         "schema_version": "live_range_containment_v1",
         "evidence_state": "verified",
         "reason": "containment_applied",
-        "execution_authorized": False,
+        "execution_authorized": True,
         "containment_executed": True,
+        "soar_receipt_status": "isolated",
         "production_fusion_enabled": False,
         "rollback_unlocked": True,
         "target": RANGE_CONTAINMENT_SOURCE,
@@ -6697,12 +6877,14 @@ def _rollback_range_source_work(
         return refused
     recorded_at = datetime.now(UTC).isoformat()
     _store_containment_state(live_db_path, flow_id, "rolled_back", when=recorded_at)
+    invalidate_copilot_brief_cache(flow_id, live_db_path)
     return {
         "schema_version": "live_range_containment_v1",
         "evidence_state": "verified",
         "reason": "containment_rolled_back",
-        "execution_authorized": False,
+        "execution_authorized": True,
         "containment_executed": False,
+        "soar_receipt_status": "rolled_back",
         "production_fusion_enabled": False,
         "target": RANGE_CONTAINMENT_SOURCE,
         "rollback_at": recorded_at,

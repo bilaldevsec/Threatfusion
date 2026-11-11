@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import os
 import sqlite3
 from pathlib import Path
@@ -224,3 +226,26 @@ def test_drop_and_rollback_follow_the_victim_probe(tmp_path: Path) -> None:
     assert restored["containment_executed"] is False
     assert restored["reason"] == "containment_rolled_back"
     assert runner.blocked is False
+
+def test_range_active_scenario_uses_real_iptables_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    live_db, soar_db, flow_id = _ready(tmp_path, source="10.0.0.4")
+    with sqlite3.connect(live_db) as conn:
+        conn.execute(
+            "UPDATE live_flows SET source_label = ? WHERE flow_id = ?",
+            ("live_scenario_replay", flow_id),
+        )
+    monkeypatch.setattr(
+        "threatfusion.api.live_soc_console._range_lab_active",
+        lambda: True,
+    )
+    runner = _Runner()
+    dropped = contain_range_source(live_db, soar_db, flow_id=flow_id, runner=runner)
+    assert dropped["http_status"] == 200
+    assert dropped["evidence_state"] == "verified"
+    assert dropped["reason"] == "containment_applied"
+    assert dropped["containment_executed"] is True
+    assert dropped["target"] == "172.29.0.10"
+    assert "drop" in runner.calls
+    assert "probe" in runner.calls

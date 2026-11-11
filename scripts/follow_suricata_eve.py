@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -117,14 +118,27 @@ def _console_csrf(url: str, timeout: float) -> str:
     return str(token or "")
 
 
-def post_sensor(url: str, payload: dict[str, Any], timeout: float) -> tuple[int, dict[str, Any]]:
+def post_sensor(
+    url: str,
+    payload: dict[str, Any],
+    timeout: float,
+    *,
+    ingest_token: str | None = None,
+) -> tuple[int, dict[str, Any]]:
     headers = {"Content-Type": "application/json"}
     try:
-        token = _console_csrf(url, timeout)
+        csrf = _console_csrf(url, timeout)
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
-        token = ""
+        csrf = ""
+    if csrf:
+        headers["X-ThreatFusion-CSRF"] = csrf
+    token = (
+        ingest_token
+        if ingest_token is not None
+        else os.environ.get("THREATFUSION_SENSOR_INGEST_TOKEN", "")
+    ).strip()
     if token:
-        headers["X-ThreatFusion-CSRF"] = token
+        headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -149,6 +163,8 @@ def handle_line(
     cache: dict[tuple[str, str, str, int], str],
     url: str,
     timeout: float,
+    *,
+    ingest_token: str | None = None,
 ) -> str:
     text = line.strip()
     if not text:
@@ -172,7 +188,7 @@ def handle_line(
     except (SourceRowValidationError, KeyError, TypeError, ValueError) as exc:
         print(f"sensor-skip: {exc}", file=sys.stderr)
         return "invalid_flow"
-    status, body = post_sensor(url, payload, timeout)
+    status, body = post_sensor(url, payload, timeout, ingest_token=ingest_token)
     decision = body.get("decision")
     probability = body.get("rf_attack_probability")
     observation = (
@@ -206,7 +222,13 @@ def _flow_record_is_noise(record: dict[str, Any]) -> bool:
     )
 
 
-def follow_eve(path: Path, url: str, timeout: float) -> None:
+def follow_eve(
+    path: Path,
+    url: str,
+    timeout: float,
+    *,
+    ingest_token: str | None = None,
+) -> None:
     """Read new lines. A file that already exists is followed from its current end."""
     cache: dict[tuple[str, str, str, int], str] = {}
     offset = 0
@@ -236,7 +258,7 @@ def follow_eve(path: Path, url: str, timeout: float) -> None:
             partial += chunk
             while "\n" in partial:
                 line, partial = partial.split("\n", 1)
-                handle_line(line, cache, url, timeout)
+                handle_line(line, cache, url, timeout, ingest_token=ingest_token)
         time.sleep(0.4)
 
 
@@ -255,12 +277,20 @@ def _parser() -> argparse.ArgumentParser:
         help="Live sensor route.",
     )
     parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument(
+        "--ingest-token",
+        default=None,
+        help="Bearer token for THREATFUSION_SENSOR_INGEST_TOKEN. Env wins when unset.",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    follow_eve(Path(args.eve), args.console_url, args.timeout)
+    token = args.ingest_token
+    if token is None:
+        token = os.environ.get("THREATFUSION_SENSOR_INGEST_TOKEN")
+    follow_eve(Path(args.eve), args.console_url, args.timeout, ingest_token=token)
     return 0
 
 

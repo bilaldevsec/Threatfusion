@@ -280,6 +280,16 @@ def test_workbench_lists_six_nodes_without_dispatch() -> None:
     assert report["evidence_state"] == "verified"
 
 
+def test_workbench_unwraps_list_shaped_live_console_playbook() -> None:
+    report = read_n8n_workbench(
+        REPO_ROOT / "docker" / "n8n" / "workflows" / "threatfusion_live_console_playbook.json"
+    )
+    assert report["evidence_state"] == "verified"
+    assert report["execution_authorized"] is False
+    assert report["node_count"] >= 1
+    assert all(isinstance(node.get("name"), str) for node in report["nodes"])
+
+
 def test_campaigns_read_stored_flows_and_incident_rows(tmp_path: Path) -> None:
     empty = list_live_campaigns(
         tmp_path / "missing.sqlite3", incidents_db_path=tmp_path / "missing-incidents.sqlite3"
@@ -857,13 +867,17 @@ def test_four_scenario_replay_uses_the_frozen_forest(tmp_path: Path) -> None:
     assert by_id["internal_recon"]["external_lookup_performed"] is False
     assert by_id["benign_false_alarm"]["decision"] == "Benign"
     assert by_id["benign_false_alarm"]["scenario_label"] is None
-    assert by_id["web_exploit"]["src_entity_id"] == "10.0.0.4"
-    assert by_id["web_exploit"]["dst_entity_id"] == "10.0.0.5"
+    # Offline unit runs keep the lab pair; a live range rebinds to 172.29.0.10/20.
+    assert by_id["web_exploit"]["src_entity_id"] in {"10.0.0.4", "172.29.0.10"}
+    assert by_id["web_exploit"]["dst_entity_id"] in {"10.0.0.5", "172.29.0.20"}
+    assert (
+        by_id["web_exploit"]["src_entity_id"] == "10.0.0.4"
+    ) == (by_id["web_exploit"]["dst_entity_id"] == "10.0.0.5")
     assert by_id["web_exploit"]["service_or_port"] == "443"
     assert by_id["ssh_brute"]["service_or_port"] == "22"
     assert by_id["internal_recon"]["service_or_port"] == "445"
     assert by_id["benign_false_alarm"]["service_or_port"] == "8080"
-    assert by_id["benign_false_alarm"]["src_entity_id"] == "10.0.0.4"
+    assert by_id["benign_false_alarm"]["src_entity_id"] == by_id["web_exploit"]["src_entity_id"]
     assert by_id["internal_recon"]["playbook_id"] == "pb-discovery-network-contain-v1"
     assert by_id["ssh_brute"]["playbook_id"] == "pb-ssh-bruteforce-contain-v1"
     assert by_id["web_exploit"]["playbook_id"] == "pb-web-exploit-contain-v1"
@@ -879,6 +893,22 @@ def test_four_scenario_replay_uses_the_frozen_forest(tmp_path: Path) -> None:
     script = (REPO_ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")
     assert 'id="btnReplayScenarios"' in html
     assert "/api/v1/live/scenarios" in script
+
+
+def test_range_active_scenarios_bind_live_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "threatfusion.api.live_soc_console._range_lab_active",
+        lambda: True,
+    )
+    db = tmp_path / "range-scenarios.sqlite3"
+    result = replay_live_scenarios(db, repo_root=REPO_ROOT)
+    by_id = {row["scenario_id"]: row for row in result["flows"]}
+    for scenario_id in ("web_exploit", "ssh_brute", "internal_recon", "benign_false_alarm"):
+        assert by_id[scenario_id]["src_entity_id"] == "172.29.0.10"
+        assert by_id[scenario_id]["dst_entity_id"] == "172.29.0.20"
+    again = replay_live_scenarios(db, repo_root=REPO_ROOT)
+    assert again["flows"][0]["src_entity_id"] == "172.29.0.10"
+
 
 
 class _BenignWidth14Model:

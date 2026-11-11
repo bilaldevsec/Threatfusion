@@ -1823,6 +1823,7 @@
       verdictNode.textContent = 'Analyst verdict: ' + verdict + '. Frozen RF decision: ' + String(inc.decision || 'withheld') + '.';
       verdictNode.setAttribute('data-evidence-state', inc.analystVerdict ? 'verified' : 'unavailable');
     }
+    syncVerdictRationaleForFlow(inc);
     const assignmentNode = document.getElementById('caseAssignmentDisplay');
     if (assignmentNode) {
       const assignee = inc.assigneeId || 'unassigned';
@@ -2741,6 +2742,28 @@
     return text;
   }
 
+  function syncVerdictRationaleForFlow(inc) {
+    const rationaleNode = document.getElementById('analystRationale');
+    const verdictSelect = document.getElementById('analystVerdictSelect');
+    if (!rationaleNode) return;
+    if (!inc) {
+      rationaleNode.value = '';
+      if (verdictSelect) verdictSelect.value = '';
+      return;
+    }
+    if (verdictSelect) {
+      const storedVerdict = inc.analystVerdict ? String(inc.analystVerdict) : '';
+      if (storedVerdict) verdictSelect.value = storedVerdict;
+      else if (!verdictSelect.value) verdictSelect.value = 'true_positive';
+    }
+    if (inc.analystRationale) {
+      rationaleNode.value = String(inc.analystRationale);
+      return;
+    }
+    const verdict = formControlValue('analystVerdictSelect', 'true_positive') || 'true_positive';
+    rationaleNode.value = groundedVerdictRationale(inc, verdict);
+  }
+
   function groundedContextRule(inc) {
     const srcIp = inc && inc.provenance && inc.provenance.srcIp ? String(inc.provenance.srcIp) : '';
     const dstIp = inc && inc.provenance && inc.provenance.dstIp ? String(inc.provenance.dstIp) : '';
@@ -3446,6 +3469,7 @@
           applyContainmentGuard(live);
           markResponseProgress(live);
           loadSoarPlaybookPreview(live);
+          refreshCopilotForSelection(live, true);
         }
         enableSoarControl('btnDispatchCallback');
         const message = soarOperatorMessage(
@@ -3893,6 +3917,7 @@
     clearStaleContainmentBanner();
     selectedIncidentId = inc.id;
     bindSelectedFlowId(inc);
+    syncVerdictRationaleForFlow(inc);
     renderIncidentQueue();
     renderForensicDrawer();
     showSocView('detail');
@@ -4133,6 +4158,7 @@
           applyContainmentStatus(live);
           markResponseProgress(live);
           loadSoarPlaybookPreview(live);
+          refreshCopilotForSelection(live, true);
         }
         enableSoarControl('btnIsolateAttacker');
         enableSoarControl('btnContainRange');
@@ -4216,7 +4242,8 @@
         || data.containment_state === 'simulated_applied'
         || data.containment_state === 'simulated_rolled_back';
       const srcIp = inc.provenance && inc.provenance.srcIp ? String(inc.provenance.srcIp) : '';
-      if (!srcIp || srcIp === '172.29.0.10') {
+      const blockedSrc = (typeof data.target === 'string' && data.target) ? String(data.target) : srcIp;
+      if (!srcIp || srcIp === '172.29.0.10' || blockedSrc === '172.29.0.10') {
         if (applied) setRangeConnectivity(true);
         else if (rolled) setRangeConnectivity(false);
       }
@@ -4240,6 +4267,9 @@
           live.rollbackUnlocked = true;
           applyContainmentGuard(live);
           markResponseProgress(live);
+          refreshCopilotForSelection(live, true);
+        } else {
+          refreshCopilotForSelection(selectedIncident(), true);
         }
         enableSoarControl('btnRollbackRange');
       }
@@ -4254,9 +4284,10 @@
       if (sessionIdentity && sessionIdentity.authenticated) paintSessionIdentity(sessionIdentity);
       if (resp.ok && (applied || rolled)) {
         const message = applied
-          ? ('CONTAINMENT APPLIED — Source ' + srcIp + ' blocked at firewall (iptables DROP active). Click Rollback to restore.')
-          : ('CONTAINMENT ROLLED BACK — Firewall block on ' + srcIp + ' removed and rollback recorded in SHA-256 ledger.');
+          ? ('CONTAINMENT APPLIED — Source ' + (blockedSrc || srcIp) + ' blocked at firewall (iptables DROP active). Click Rollback to restore.')
+          : ('CONTAINMENT ROLLED BACK — Firewall block on ' + (blockedSrc || srcIp) + ' removed and rollback recorded in SHA-256 ledger.');
         showActionBanner(message, 'verified');
+        refreshCopilotForSelection(selectedLiveIncident(inc) || selectedIncident(), true);
         return;
       }
       showActionBanner(actionFailureText(data, resp), 'unavailable');

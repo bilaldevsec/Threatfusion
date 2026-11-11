@@ -519,3 +519,34 @@ def test_range_scan_http_returns_503_json_when_sqlite_fails(
     assert body["reason"] == "database_unavailable"
     assert body["ingested"] is False
     assert body["evidence_state"] == "unavailable"
+
+def test_follower_post_sensor_sends_bearer_ingest_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.follow_suricata_eve import post_sensor
+
+    monkeypatch.setenv("THREATFUSION_SENSOR_INGEST_TOKEN", "lab-sensor-token")
+    captured: dict[str, object] = {}
+
+    class _Response:
+        status = 200
+
+        def read(self) -> bytes:
+            return b'{"decision":"Benign"}'
+
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def _fake_urlopen(request: urllib.request.Request, timeout: float = 0) -> _Response:
+        captured["headers"] = dict(request.headers)
+        return _Response()
+
+    monkeypatch.setattr("scripts.follow_suricata_eve._console_csrf", lambda url, timeout: "csrf-token")
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    status, body = post_sensor("http://127.0.0.1:8766/api/v1/live/sensor", {"features": {}}, 1.0)
+    assert status == 200
+    assert body["decision"] == "Benign"
+    headers = {str(key).lower(): value for key, value in captured["headers"].items()}
+    assert headers.get("authorization") == "Bearer lab-sensor-token"
+    assert headers.get("x-threatfusion-csrf") == "csrf-token"
