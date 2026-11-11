@@ -8207,6 +8207,7 @@ def rbac_login(
     db_path: Path,
     *,
     username: str = "",
+    email: str = "",
     access_code: str = "",
     entra_token: str = "",
 ) -> dict[str, Any]:
@@ -8229,7 +8230,7 @@ def rbac_login(
         switch_operator(db_path, actor_id=str(public["actor_id"]))
         public["reason"] = "entra_token_verified"
         return public
-    user = str(username or "").strip().lower()
+    user = str(username or email or "").strip().lower()
     if _RBAC_EMAIL.fullmatch(user) is None or not str(access_code or ""):
         return _rbac_refused("invalid_credentials", 401)
     with _connect(db_path) as conn:

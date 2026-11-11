@@ -695,6 +695,10 @@
     return node && node.value ? node.value : fallback;
   }
 
+  function formControlValue(id, fallback) {
+    return queueControlValue(id, fallback);
+  }
+
   function getFilteredIncidents() {
     let source = activeIncidents().slice();
     if (currentFilter === 'verified') source = source.filter(isReceiptVerified);
@@ -2604,7 +2608,7 @@
       });
     }
     document.querySelectorAll('[data-demo-user]').forEach(button => {
-      button.addEventListener('click', () => {
+      const fillDemo = () => {
         const user = document.getElementById('rbacUsername');
         const code = document.getElementById('rbacAccessCode');
         const actor = button.getAttribute('data-demo-actor') || '';
@@ -2613,14 +2617,16 @@
         if (actor) applyOperatorSelection(actor, button.querySelector('.role-name')
           ? button.querySelector('.role-name').textContent
           : '');
+      };
+      button.addEventListener('click', fillDemo);
+      button.addEventListener('dblclick', () => {
+        fillDemo();
+        submitRbacLogin(false);
       });
     });
-    const loginButton = document.getElementById('btnRbacLogin');
-    if (loginButton) loginButton.addEventListener('click', () => { submitRbacLogin(false); });
-    const entraButton = document.getElementById('btnRbacEntra');
-    if (entraButton) entraButton.addEventListener('click', () => { submitRbacLogin(true); });
-    const registerButton = document.getElementById('btnRbacRegister');
-    if (registerButton) registerButton.addEventListener('click', () => { submitRbacRegister(); });
+    bindControl(['btnRbacLogin', 'identityLoginBtn'], () => { submitRbacLogin(false); });
+    bindControl(['btnRbacEntra', 'identityTokenBtn'], () => { submitRbacLogin(true); });
+    bindControl(['btnRbacRegister', 'identityRegisterBtn'], () => { submitRbacRegister(); });
     const logoutButton = document.getElementById('btnRbacLogout');
     if (logoutButton) logoutButton.addEventListener('click', () => { submitRbacLogout(); });
     const copyAzure = document.getElementById('btnCopyAzureSnippet');
@@ -4851,23 +4857,58 @@
     renderActiveSessionCard();
   }
 
+  function bindControl(ids, handler) {
+    ids.forEach(id => {
+      const node = document.getElementById(id);
+      if (!node || node.dataset.boundClick === '1') return;
+      node.dataset.boundClick = '1';
+      node.addEventListener('click', handler);
+    });
+  }
+
+  function showLoginGate() {
+    const modal = document.getElementById('identityModal');
+    if (!modal) return;
+    modal.classList.add('identity-modal', 'zt-login-gate');
+    modal.hidden = false;
+    modal.removeAttribute('hidden');
+    modal.style.display = 'flex';
+    document.body.classList.add('console-locked');
+    syncIdentityGateControls();
+  }
+
+  function hideLoginGate() {
+    const modal = document.getElementById('identityModal');
+    const app = document.getElementById('consoleApp');
+    if (modal) {
+      modal.hidden = true;
+      modal.setAttribute('hidden', '');
+      modal.classList.remove('zt-login-gate');
+      modal.style.display = 'none';
+    }
+    document.body.classList.remove('console-locked');
+    if (app) {
+      app.style.visibility = 'visible';
+      app.style.pointerEvents = 'auto';
+    }
+    identityGateSwitchMode = false;
+  }
+
   function openIdentityModal(open, switchMode) {
     const modal = document.getElementById('identityModal');
     if (!modal) return;
     if (typeof switchMode === 'boolean') identityGateSwitchMode = switchMode;
     if (open) {
-      modal.removeAttribute('hidden');
-      syncIdentityGateControls();
-    } else if (isSessionAuthenticated()) {
-      modal.setAttribute('hidden', '');
-      identityGateSwitchMode = false;
-      document.body.classList.remove('console-locked');
-    } else {
-      modal.removeAttribute('hidden');
-      document.body.classList.add('console-locked');
-      identityGateSwitchMode = false;
-      syncIdentityGateControls();
+      showLoginGate();
+      return;
     }
+    if (isSessionAuthenticated()) {
+      hideLoginGate();
+      return;
+    }
+    showLoginGate();
+    identityGateSwitchMode = false;
+    syncIdentityGateControls();
   }
 
   function rememberSession(token) {
@@ -4944,10 +4985,12 @@
   }
 
   async function submitRbacLogin(useEntra) {
+    const email = formControlValue('rbacUsername', '');
     const body = useEntra
-      ? { entra_token: formControlValue('rbacEntraToken', '') }
+      ? { entra_token: formControlValue('rbacEntraToken', ''), email: email }
       : {
-        username: formControlValue('rbacUsername', ''),
+        email: email,
+        username: email,
         access_code: formControlValue('rbacAccessCode', '')
       };
     try {
@@ -4961,8 +5004,7 @@
         applyAuthenticatedSession(data);
         identityStatus(headerLineForSession(data), data.identity_verified ? 'verified' : 'unavailable');
         identityGateSwitchMode = false;
-        openIdentityModal(false);
-        enforceAuthGate();
+        hideLoginGate();
         return;
       }
       identityStatus(actionFailureText(data, resp), 'unavailable');
@@ -4972,8 +5014,10 @@
   }
 
   async function submitRbacRegister() {
+    const email = formControlValue('rbacUsername', '');
     const body = {
-      username: formControlValue('rbacUsername', ''),
+      email: email,
+      username: email,
       access_code: formControlValue('rbacAccessCode', ''),
       display_name: formControlValue('rbacRegisterName', ''),
       role: formControlValue('rbacRegisterRole', 'tier1_triage')
@@ -4989,8 +5033,7 @@
         applyAuthenticatedSession(data);
         identityStatus(headerLineForSession(data), 'unavailable');
         identityGateSwitchMode = false;
-        openIdentityModal(false);
-        enforceAuthGate();
+        hideLoginGate();
         return;
       }
       identityStatus(actionFailureText(data, resp), 'unavailable');

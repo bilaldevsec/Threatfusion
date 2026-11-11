@@ -1703,7 +1703,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             elif path == "/api/rbac/register":
                 result = rbac_register(
                     self._live_db_path(),
-                    username=str(req_data.get("username") or ""),
+                    username=str(req_data.get("username") or req_data.get("email") or ""),
                     access_code=str(req_data.get("access_code") or ""),
                     display_name=str(req_data.get("display_name") or ""),
                     role=str(req_data.get("role") or ""),
@@ -1711,7 +1711,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             else:
                 result = rbac_login(
                     self._live_db_path(),
-                    username=str(req_data.get("username") or ""),
+                    username=str(req_data.get("username") or req_data.get("email") or ""),
                     access_code=str(req_data.get("access_code") or req_data.get("password") or ""),
                     entra_token=str(req_data.get("entra_token") or req_data.get("id_token") or ""),
                 )
