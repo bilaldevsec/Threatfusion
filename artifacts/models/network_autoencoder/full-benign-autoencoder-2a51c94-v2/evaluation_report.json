@@ -16,7 +16,7 @@
     "validation_and_test_weight_fit_rows_zero": true
   },
   "completed": true,
-  "configuration_sha256": "51d4d664b5e017c5b039a08dc897d63e81a0b1e140eb1bb16457997ffa0727c2",
+  "configuration_sha256": "1beea31ee17b1f89f1ecb0d1f4e6d4f99dd71a5386e78359569a3f05ab0fc4e7",
   "evidence_labels": {
     "february_test": "later_period_development_informed_previously_inspected_benchmark",
     "validation": "development_informed_post_calibration"
@@ -188,7 +188,7 @@
   ],
   "model": {
     "artifact_identity": "bdb7fc33d5b092566995018b5f83aa66bdb8ce95841d6b8b9021111c9a392a9a",
-    "artifact_manifest_sha256": "c142d3352b406a689b6317f48ae513540076b02ffb2e0fdef9cd3e6a83da1866",
+    "artifact_manifest_sha256": "0507c1e71bcb9c8bc022e3b2944ef6f0972c098a687f740c91d4dbb33df6a4d8",
     "filename": "autoencoder_state.pt",
     "sha256": "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23",
     "size_bytes": 4931,
@@ -221,13 +221,13 @@
   },
   "schema_version": "unsw_network_benign_autoencoder_v2",
   "threshold": {
-    "artifact_sha256": "79bc7f3def3a4ed745fbc85d9cbf36a04f4fb4384de4db065569f81f60c78e3e",
+    "artifact_sha256": "57a92f78546feb1d750497f73bcfbc7ffd250107af68ed306bfde7e4f455ab99",
     "calibration_evidence": "January VALIDATION development data, not independent evaluation",
     "calibration_label": "Normal=0",
     "calibration_partition": "validation",
     "calibration_rows": 212210,
     "cic_influenced_threshold": false,
-    "configuration_sha256": "51d4d664b5e017c5b039a08dc897d63e81a0b1e140eb1bb16457997ffa0727c2",
+    "configuration_sha256": "1beea31ee17b1f89f1ecb0d1f4e6d4f99dd71a5386e78359569a3f05ab0fc4e7",
     "february_influenced_threshold": false,
     "method": "higher",
     "model_sha256": "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23",

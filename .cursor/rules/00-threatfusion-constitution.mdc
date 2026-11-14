@@ -4,7 +4,7 @@ globs:
 alwaysApply: true
 ---
 # ThreatFusion Master Engineering Constitution
-1. WORKSPACE ISOLATION: Operate EXCLUSIVELY inside `/home/muhammad-bilal/projects/threatfusion-gemini` (branch `gemini/product-20260924`). NEVER read, touch, or reference `/home/muhammad-bilal/projects/threatfusion`.
+1. WORKSPACE ISOLATION: Operate EXCLUSIVELY inside `<repo_root>` (branch `gemini/product-20260924`). NEVER read, touch, or reference `<protected_workspace>`.
 2. ISOLATED PYTHON EXECUTION (TF-015): Run all Python/pytest commands via `env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 threatfusion-venv/bin/...`.
 3. GATE G9 (DETERMINISTIC STAGES 1-4): Zero imports of `threatfusion.advisory`, `gemini_client`, or `chromadb` in Stages 1-4.
 4. SECTION 8 & FROZEN MODELS: Keep `production_fusion_enabled = False`. Never modify the 4 frozen model digests (`bd2853a6...`, `2cf4de66...`, `c8675d13...`, `1d02e5bb...`). Frozen RF is sole alert authority; v2 AE is secondary triage ranker.

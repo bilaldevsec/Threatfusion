@@ -10,9 +10,9 @@
 - Muhammad Suhaib Shaikh (`22K-4302`)
 - Muhammad Hasnain (`22K-4718`)
 
-**Harmonized Presentation Artifact:** [`artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx`](file:///home/muhammad-bilal/projects/threatfusion-gemini/artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx)  
-**Source Presentation Input:** `/home/muhammad-bilal/Downloads/Final Presentation (1).pptx`  
-**Generator Script:** [`scripts/generate_harmonized_defense_deck.py`](file:///home/muhammad-bilal/projects/threatfusion-gemini/scripts/generate_harmonized_defense_deck.py)  
+**Harmonized Presentation Artifact:** [`artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx`](file://<repo_root>/artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx)\
+**Source Presentation Input:** `<external-download>/Final Presentation (1).pptx`\
+**Generator Script:** [`scripts/generate_harmonized_defense_deck.py`](file://<repo_root>/scripts/generate_harmonized_defense_deck.py)\
 **Evaluation Baseline:** Canonical Evaluation Pack Rev2 (`AI-FYP-2006`, checkpoint `6a36dcd9af17bf509977bcf966f2ace72644d5b2`)  
 **Date:** 2026-10-16  
 
@@ -22,7 +22,7 @@
 
 The objective of Milestone #26 is the complete harmonization of the final academic defense presentation deck with the authoritative **Evaluation Pack Rev2 (`AI-FYP-2006`, checkpoint `6a36dcd`)** and the completed Milestone #1–#25 backend implementation.
 
-Historically, preliminary draft slides in `/home/muhammad-bilal/Downloads/Final Presentation (1).pptx` contained legacy FYP-I split-inversion figures (`89.77%` Random Forest accuracy on an inverted 82k/175k split, and an unverified `94.95%` deep multimodal fusion claim). Furthermore, Slide 14 previously marked the Azure live-ingestion pipeline as `PLANNED — VALIDATION PENDING`.
+Historically, preliminary draft slides in `<external-download>/Final Presentation (1).pptx` contained legacy FYP-I split-inversion figures (`89.77%` Random Forest accuracy on an inverted 82k/175k split, and an unverified `94.95%` deep multimodal fusion claim). Furthermore, Slide 14 previously marked the Azure live-ingestion pipeline as `PLANNED — VALIDATION PENDING`.
 
 This report documents the exact slide-by-slide transformation:
 1. **Metadata & Title Alignment**: Establishes `AI-FYP-2006`, FAST-NUCES Karachi CS492 FYP-II, the correct team roll numbers, and supervisor Sir Sameer Faisal.
@@ -59,7 +59,7 @@ The following table provides the comprehensive mapping from the draft deck (`Fin
 
 ## 3. Cryptographic Ground-Truth & Repository Verification Evidence
 
-The presentation deck's harmonized numbers are not static estimates; they are cryptographically pinned to immutable repository baselines and verified by the **Deterministic Zero-Trust Repository Truth Audit Gate** ([`scripts/audit_repo_truth.py`](file:///home/muhammad-bilal/projects/threatfusion-gemini/scripts/audit_repo_truth.py)):
+The presentation deck's harmonized numbers are not static estimates; they are cryptographically pinned to immutable repository baselines and verified by the **Deterministic Zero-Trust Repository Truth Audit Gate** ([`scripts/audit_repo_truth.py`](file://<repo_root>/scripts/audit_repo_truth.py)):
 
 ### 3.1 Immutable Model SHA-256 Hashes
 Every model referenced in the slides exists on disk and is verified byte-identical against its immutable digest:
@@ -82,7 +82,7 @@ Every model referenced in the slides exists on disk and is verified byte-identic
 ================================================================================
            THREATFUSION DETERMINISTIC ZERO-TRUST REPOSITORY TRUTH AUDIT
 ================================================================================
-Workspace Root:       /home/muhammad-bilal/projects/threatfusion-gemini
+Workspace Root:       <repo_root>
 Git Branch:           gemini/product-20260924
 Git Head Commit:      e9b6f86c2e391b10a9f5d1646738ee6346aa868f
 
@@ -172,7 +172,7 @@ This section provides authoritative talking points for **Sir Sameer Faisal** and
 
 ## 5. Verification Gate & Deliverable Integrity
 
-1. **Slide Deck Generator**: [`scripts/generate_harmonized_defense_deck.py`](file:///home/muhammad-bilal/projects/threatfusion-gemini/scripts/generate_harmonized_defense_deck.py) exits with code 0 and outputs [`artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx`](file:///home/muhammad-bilal/projects/threatfusion-gemini/artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx) (`92,623` bytes, exactly 15 slides).
+1. **Slide Deck Generator**: [`scripts/generate_harmonized_defense_deck.py`](file://<repo_root>/scripts/generate_harmonized_defense_deck.py) exits with code 0 and outputs [`artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx`](file://<repo_root>/artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx) (`92,623` bytes, exactly 15 slides).
 2. **Code Hygiene & Test Verification**:
    - `threatfusion-venv/bin/ruff check .` passes with 0 errors across the entire codebase.
    - `threatfusion-venv/bin/black --check .` confirms 202 files cleanly formatted.

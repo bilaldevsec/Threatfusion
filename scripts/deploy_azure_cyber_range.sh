@@ -270,8 +270,8 @@ pair_forwarder() {
   local remote
   remote=$(cat <<EOF
 set -euo pipefail
-sudo apt-get update
-sudo apt-get install -y suricata python3
+sudo DEBIAN_FRONTEND=noninteractive apt-get update -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" suricata python3
 sudo install -d -m 0750 /opt/threatfusion /etc/threatfusion
 sudo install -d -m 0755 /var/log/suricata
 if [[ ! -f ${EVE_LOG} ]]; then

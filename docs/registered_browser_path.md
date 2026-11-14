@@ -62,7 +62,7 @@ a graphical desktop, and permission to bind IPv4 loopback. No installation is ne
 Run in a desktop terminal:
 
 ```bash
-cd /home/muhammad-bilal/projects/threatfusion-gemini
+cd <repo_root>
 PYTHONDONTWRITEBYTECODE=1 threatfusion-venv/bin/python scripts/launch_browser_demo.py --seconds 900
 ```
 

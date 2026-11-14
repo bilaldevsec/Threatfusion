@@ -104,7 +104,7 @@ Explain decisions in clear language so I can defend the project to my supervisor
 
 | Item | Last known evidence |
 |---|---|
-| Workspace | `/home/muhammad-bilal/projects/threatfusion-gemini` |
+| Workspace | `<repo_root>` |
 | Branch | `gemini/product-20260924` |
 | Last reported committed HEAD | `2bac721c416afc7570171240197ca3d776ec1318` (Milestone #31: `feat(ml): implement 14-feature PSI drift monitor, supply-chain verifier, and pre-registered TF-008 holdout evaluator`) |
 | Git state | Mega-Milestone #32–#34 implemented (unstaged): Full Master-Plan SOC Stack Hardening, Ledger-Backed Contract Verification, Anti-Replay Idempotency, Zero `******` Placeholders, Fail-Closed Environment Variables, Specific Transport Exceptions, Durable SQLite Error Propagation, Strict Dashboard Badge Schema/Digest Validation, STRIDE Threat Model (`docs/stride_threat_model_and_production_readiness.md`), Harmonized Defense Presentation Deck & Presenter Guides, Check 6 Zero-Trust Verification. |

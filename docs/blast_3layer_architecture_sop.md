@@ -184,7 +184,7 @@ The integrity of the 3-Layer Deterministic Architecture is verified by automated
 To ensure enterprise-grade reproducibility and auditability, ThreatFusion enforces the 5 B.L.A.S.T. v2 governance rules across all code generation, agent execution, and release engineering:
 
 ### Rule 1: Programmatic Workspace & Whole-Tree Symlink Rejection
-- Audit Check 1 (`_check_1_workspace_and_git_state`) actively verifies that `git rev-parse --show-toplevel` resolves to the exact canonical workspace root (`/home/muhammad-bilal/projects/threatfusion-gemini`).
+- Audit Check 1 (`_check_1_workspace_and_git_state`) actively verifies that `git rev-parse --show-toplevel` resolves to the exact canonical workspace root (`<repo_root>`).
 - Check 1 recursively traverses `repo_root / "backend"`, `repo_root / "scripts"`, `repo_root / "docs"`, and `repo_root / "design_guidelines" using `os.walk(..., followlinks=False)`. If even a single symlink is detected anywhere in these trees, the audit **fails closed** immediately with:
   `"Unexpected symlink detected in workspace tree: <path>"`.
 - Symlink-based file aliasing or cross-tree shadowing is strictly banned.

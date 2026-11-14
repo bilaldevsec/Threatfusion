@@ -9726,23 +9726,39 @@ def _range_probe_argv(vector_id: str) -> tuple[str, ...]:
     )
 
 
+_RANGE_INSPECT_TTL_SECONDS = 5.0
+_range_inspect_lock = threading.Lock()
+_range_inspect_cache: tuple[float, bool] | None = None
+
+
 def _range_containers_running() -> bool:
     import subprocess
+    import time
 
-    for name in (RANGE_ATTACKER_CONTAINER, RANGE_VICTIM_CONTAINER):
-        try:
-            result = subprocess.run(
-                ["docker", "inspect", "-f", "{{.State.Running}}", name],
-                capture_output=True,
-                text=True,
-                timeout=2,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-        if result.returncode != 0 or result.stdout.strip().lower() != "true":
-            return False
-    return True
+    global _range_inspect_cache
+    now = time.monotonic()
+    with _range_inspect_lock:
+        cached = _range_inspect_cache
+        if cached is not None and (now - cached[0]) < _RANGE_INSPECT_TTL_SECONDS:
+            return cached[1]
+        running = True
+        for name in (RANGE_ATTACKER_CONTAINER, RANGE_VICTIM_CONTAINER):
+            try:
+                result = subprocess.run(
+                    ["docker", "inspect", "-f", "{{.State.Running}}", name],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                running = False
+                break
+            if result.returncode != 0 or result.stdout.strip().lower() != "true":
+                running = False
+                break
+        _range_inspect_cache = (time.monotonic(), running)
+        return running
 
 
 def _start_range_vector_probe(vector_id: str) -> dict[str, Any]:

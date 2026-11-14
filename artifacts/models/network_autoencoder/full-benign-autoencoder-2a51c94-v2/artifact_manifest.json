@@ -4,7 +4,7 @@
     "preflight_report_sha256": "f805424dc5f39ca41f7b1935b25938307d2e15c18caa008b3a1ca9250b8ab384",
     "report_sha256": "6913c1f2ef974d0b969506daf2b091a740fbf0d6b43d231a6f64f30841436857"
   },
-  "configuration_sha256": "51d4d664b5e017c5b039a08dc897d63e81a0b1e140eb1bb16457997ffa0727c2",
+  "configuration_sha256": "1beea31ee17b1f89f1ecb0d1f4e6d4f99dd71a5386e78359569a3f05ab0fc4e7",
   "identities": {
     "detector": "threatfusion.unsw_network_reconstruction_anomaly",
     "detector_version": "v2",
@@ -21,5 +21,5 @@
   },
   "schema_version": "unsw_autoencoder_artifact_manifest_v2",
   "source_provenance_manifest_sha256": "d412f390f0d081170917a2e784046239f3e5b14d9a604e1196d2e3cbd3c527a9",
-  "threshold_sha256": "79bc7f3def3a4ed745fbc85d9cbf36a04f4fb4384de4db065569f81f60c78e3e"
+  "threshold_sha256": "57a92f78546feb1d750497f73bcfbc7ffd250107af68ed306bfde7e4f455ab99"
 }

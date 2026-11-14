@@ -2464,6 +2464,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
+class ThreatFusionThreadingHTTPServer(ThreadingHTTPServer):
+    """Listen backlog above socketserver's default of 5."""
+
+    request_queue_size = 128
+
+
 def run_server(
     bind_addr: str = "127.0.0.1", port: int = 8080, soar_db_path: str | None = None
 ) -> None:
@@ -2490,7 +2496,7 @@ def run_server(
 
     server_address = (bind_addr, port)
     try:
-        httpd = ThreadingHTTPServer(server_address, MispAndCallbackContractHandler)
+        httpd = ThreatFusionThreadingHTTPServer(server_address, MispAndCallbackContractHandler)
     except OSError as exc:
         detail = exc.strerror or exc.__class__.__name__
         print(

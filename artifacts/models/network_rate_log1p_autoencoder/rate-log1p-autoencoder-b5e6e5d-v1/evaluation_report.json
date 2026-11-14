@@ -191,22 +191,22 @@
       {
         "denied": true,
         "errno": 13,
-        "path": "/home/muhammad-bilal/projects/threatfusion/data/raw/unsw_nb15/official/UNSW-NB15_1.csv"
+        "path": "<protected_workspace>/data/raw/unsw_nb15/official/UNSW-NB15_1.csv"
       },
       {
         "denied": true,
         "errno": 13,
-        "path": "/home/muhammad-bilal/projects/threatfusion/artifacts/reports/network_classical_evaluation/full-february-classical-2528ee8-v1/X_test.npy"
+        "path": "<protected_workspace>/artifacts/reports/network_classical_evaluation/full-february-classical-2528ee8-v1/X_test.npy"
       },
       {
         "denied": true,
         "errno": 13,
-        "path": "/home/muhammad-bilal/projects/threatfusion/artifacts/reports/network_classical_evaluation/full-february-classical-2528ee8-v1/y_test.npy"
+        "path": "<protected_workspace>/artifacts/reports/network_classical_evaluation/full-february-classical-2528ee8-v1/y_test.npy"
       },
       {
         "denied": true,
         "errno": 13,
-        "path": "/home/muhammad-bilal/projects/threatfusion/data/raw/cse_cic_ids2018/official/Wednesday-14-02-2018_TrafficForML_CICFlowMeter.csv"
+        "path": "<protected_workspace>/data/raw/cse_cic_ids2018/official/Wednesday-14-02-2018_TrafficForML_CICFlowMeter.csv"
       }
     ],
     "mechanism": "Linux Landlock",
@@ -231,8 +231,8 @@
     }
   },
   "provenance": {
-    "artifact_manifest_sha256": "7c4ebaf35347e8ec62c8253f443a237f9ba02e6c1f9c541d640a3383c130c79b",
-    "configuration_sha256": "4cc23ecec84b171be6d62079215c85f88f97574c7f9c35b78c0a2030cc7366c1",
+    "artifact_manifest_sha256": "61eafc22b21797696df730f019fb44b35a5807707113ced545edee99d8337a9c",
+    "configuration_sha256": "cbcd09e6d7b8166ed3cef375b07e27e709f855da3b455f7119510dfa01638464",
     "prepared_input_manifest": {
       "admission_report_sha256": "1c091a207771961abea741d9d7fddbaf7f8d277242cbd0d48beda8f7220ccd52",
       "files": {

@@ -7,7 +7,7 @@
     "y_train.npy": "f12ba5c05db37d5c34bf7f22fa62d41535bdeaab58014bdd3975d50c21a24209",
     "y_validation.npy": "38d87b7c7fbf27a59228a2a84f3f4eca4e026acedc4e4aa3626da28292dd467b"
   },
-  "configuration_sha256": "4cc23ecec84b171be6d62079215c85f88f97574c7f9c35b78c0a2030cc7366c1",
+  "configuration_sha256": "cbcd09e6d7b8166ed3cef375b07e27e709f855da3b455f7119510dfa01638464",
   "identities": {
     "model": "unsw_network_rate_log1p_benign_autoencoder_v1",
     "preprocessing": "unsw_train.rate_log1p_all_train_zscore.14_columns.v1",
@@ -19,5 +19,5 @@
   "prepared_input_manifest_sha256": "a14421f37c0b8b221a9ff087eb5dd4b3c0e5201caa8a8238eafb119a92aa1d8c",
   "schema_version": "unsw_rate_log1p_artifact_manifest_v1",
   "source_provenance_manifest_sha256": "fe561ae4a7bff3106e7ef84324d3e75a6bf0bd006e15b0fd13fbca21f86b0140",
-  "threshold_sha256": "f53c776178d7176cc319214bb6b91c5b7e0fb25e030390b217b6368f3968d853"
+  "threshold_sha256": "816bb3a01589ae60f6a7dc369b2b2096f4c67052733d7c3254df64f89a6db6db"
 }

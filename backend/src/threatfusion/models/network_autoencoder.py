@@ -207,11 +207,11 @@ class VerifiedAutoencoderDetector:
 
 _HISTORICAL_TRUSTED_BUNDLE = TrustedAutoencoderBundle(
     scoring_contract_version=HISTORICAL_SCORE_IDENTITY,
-    configuration_sha256="2b904768fc264c7c29965cdd5c93b7535f16737e32fcf84620a09c66ffc5695e",
+    configuration_sha256="041491b0ed405219d87ff6611071b699c7c60b5a78ca8ecc547b12401b4fa653",
     model_state_sha256="c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23",
-    threshold_sha256="ebe9ef140b89e7e0fc8dc6a74ccb4e1d9a08c7eb25f6460a772c8bae8bfc9fce",
-    manifest_sha256="e248bf27def9ad4fe92ccee59e166d6dbeef7bd33dc1da0f2050694ad9e4f3a4",
-    report_sha256="ac6f411f1bb29c825e59129a88f79b8d2b96582a79d4e057e9f0a1fd118fe754",
+    threshold_sha256="d0c28f21faa3505de4bdbe3e57da95e17ae6493ab5b6f34240a7082d98f769cb",
+    manifest_sha256="fc92bec0afb170841126081a5ea6c8a93a89799be63cd9e516e001050febec95",
+    report_sha256="628efa369ecae7df176d47c0fa6ccaf3ce5709a9c7a1b4aa5d72857cc9afed23",
 )
 APPROVED_AUTOENCODER_BUNDLES: Final[Mapping[str, TrustedAutoencoderBundle]] = MappingProxyType(
     {HISTORICAL_ARTIFACT_IDENTITY: _HISTORICAL_TRUSTED_BUNDLE}

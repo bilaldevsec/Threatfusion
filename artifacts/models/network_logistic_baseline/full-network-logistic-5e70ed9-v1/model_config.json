@@ -47,7 +47,7 @@
     "reason": "scikit-learn 1.9 deprecates the explicit penalty parameter",
     "requested": "penalty='l2'"
   },
-  "interpreter": "/home/muhammad-bilal/.local/share/uv/python/cpython-3.11.16-linux-x86_64-gnu/bin/python3.11",
+  "interpreter": "<local-python>/share/uv/python/cpython-3.11.16-linux-x86_64-gnu/bin/python3.11",
   "label_mapping": {
     "Attack": 1,
     "Normal": 0

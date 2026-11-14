@@ -1966,7 +1966,7 @@ def test_entra_token_syncs_app_role(tmp_path: Path) -> None:
             segment({"alg": "RS256", "typ": "JWT"}),
             segment(
                 {
-                    "tid": "72f988bf-86f1-41af-91ab-2d7cd011db47",
+                    "tid": "00000000-0000-0000-0000-000000000001",
                     "oid": "4c2e9b11-1a77-4e08-8d55-22b6c0e8f202",
                     "upn": "suhaib.shaikh@nu.edu.pk",
                     "roles": ["SOC.Analyst.Tier1"],

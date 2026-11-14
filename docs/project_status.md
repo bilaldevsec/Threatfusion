@@ -955,7 +955,7 @@ Recommended next action: review this uncommitted enrollment/revocation phase.
 
 ### 2026-09-28 — Credential gate completed; controlled human listener lifecycle
 
-Workspace verified as `/home/muhammad-bilal/projects/threatfusion-gemini`, branch
+Workspace verified as `<repo_root>`, branch
 `gemini/product-20260924`, HEAD `a6158cda69de1427d9cab30f5c96345c66fc0d16`,
 push URL `no-push://requires-explicit-review`. The initial six changed/untracked
 credential-phase files were preserved. The previously corrected combined gate was
@@ -1033,7 +1033,7 @@ admission, startup rollback and shutdown ownership contract before any deploymen
 
 ### 2026-10-14 — Operator credential action journaling and bounded handshake drain
 
-Workspace verified as `/home/muhammad-bilal/projects/threatfusion-gemini`, branch
+Workspace verified as `<repo_root>`, branch
 `gemini/product-20260924`, HEAD `c7d42b7`, push URL `no-push://requires-explicit-review`.
 
 Acceptance criteria addressed:
@@ -1083,7 +1083,7 @@ remain open. TF-008 and TF-009 remain open. All changes remain unstaged/uncommit
 
 ### 2026-10-14 — Coordinated multi-database online backup, snapshot verification, and atomic restore
 
-Workspace verified as `/home/muhammad-bilal/projects/threatfusion-gemini`, branch
+Workspace verified as `<repo_root>`, branch
 `gemini/product-20260924`, HEAD `5223784`, push URL `no-push://requires-explicit-review`.
 
 Acceptance criteria addressed:
@@ -1129,7 +1129,7 @@ TF-008 and TF-009 remain open. All changes remain unstaged/uncommitted for revie
 
 ### 2026-10-14 — Quiescent lifecycle snapshot/restore coordination and signal-safe service runner
 
-Workspace verified as `/home/muhammad-bilal/projects/threatfusion-gemini`, branch
+Workspace verified as `<repo_root>`, branch
 `gemini/product-20260924`, HEAD `2742aa9`, push URL `no-push://requires-explicit-review`.
 
 Acceptance criteria addressed:
@@ -1179,7 +1179,7 @@ remain unstaged/uncommitted for review.
 
 ### 2026-10-14 — Tamper-evident security audit export, retention pruning, and hash-chained journal rotation
 
-Workspace verified as `/home/muhammad-bilal/projects/threatfusion-gemini`, branch
+Workspace verified as `<repo_root>`, branch
 `gemini/product-20260924`, HEAD `b1faf50`, push URL `no-push://requires-explicit-review`.
 
 Acceptance criteria addressed:
@@ -1228,7 +1228,7 @@ remain unstaged/uncommitted for review.
 
 ### 2026-10-14 — Local offline human CA initialization, encrypted client bundle delivery, and enrollment coordination
 
-Workspace verified as `/home/muhammad-bilal/projects/threatfusion-gemini`, branch
+Workspace verified as `<repo_root>`, branch
 `gemini/product-20260924`, HEAD `73d0564`, push URL `no-push://requires-explicit-review`.
 
 Acceptance criteria addressed:
@@ -1282,7 +1282,7 @@ correlation key remain open under TF-008 and TF-009. All changes remain unstaged
 
 ### 2026-10-14 — Package discovery consolidation, zero-PYTHONPATH editable install, and full-repository verification gate
 
-Workspace verified as `/home/muhammad-bilal/projects/threatfusion-gemini`, branch
+Workspace verified as `<repo_root>`, branch
 `gemini/product-20260924`, HEAD `95d6094`, push URL `no-push://requires-explicit-review`.
 
 Acceptance criteria addressed:
@@ -1511,7 +1511,7 @@ TF-010 repository-side disposition registry is implemented in `backend/src/threa
 ### 2026-10-16 — Phase F / Milestone #22: Deep Presentation Extraction (Slides 1-15), Slide 14 Suricata 14-Feature Live-Ingestion Pipeline, CLAUDE.md Continuity Installation, and End-to-End Product Spine Verification (Milestone #22)
 
 - **Deep Extraction of Final Presentation (Slides 1–15) & Slide 14 Azure VM Architecture Audit:**
-  - Fully extracted all 15 slides, numeric claims, architectural diagrams, and verbatim speaker notes from `/home/muhammad-bilal/Downloads/Final Presentation (1).pptx` using custom XML parsing of presentation slide and notesSlide components.
+  - Fully extracted all 15 slides, numeric claims, architectural diagrams, and verbatim speaker notes from `<external-download>/Final Presentation (1).pptx` using custom XML parsing of presentation slide and notesSlide components.
   - Published comprehensive reference report `docs/fyp2_final_presentation_and_azure_live_path_audit.md` mapping each presentation slide to repository artifacts, documentation, and source modules.
   - Verified and documented all slide metrics (Random Forest 94.95% accuracy, 75.87% macro-F1, Autoencoder 96.36% / 96.41% accuracy, combined threshold, and 68.76% macro-F1).
   - Explicitly mapped the 5-stage Slide 14 planned Azure VM live-ingestion pipeline:
@@ -1521,7 +1521,7 @@ TF-010 repository-side disposition registry is implemented in `backend/src/threa
     - Box 04: Registered Producer secure record transfer over mutual TLS (TLS 1.3).
     - Box 05: ThreatFusion Backend executing frozen Random Forest inference (`random_forest.joblib`), dual-window incident correlation (`incidents.sqlite3`), operator mTLS triage via `HumanListenerLifecycle`, and 4-database atomic storage snapshot.
 - **`CLAUDE.md` Continuity Installation & Governance Alignment:**
-  - Installed `/home/muhammad-bilal/Downloads/THREATFUSION_CLAUDE_HANDOFF.md` into repository root as `CLAUDE.md` with dated Section 19 Gemini branch reconciliation.
+  - Installed `<external-download>/THREATFUSION_CLAUDE_HANDOFF.md` into repository root as `CLAUDE.md` with dated Section 19 Gemini branch reconciliation.
   - Enforced `CLAUDE.md` Section 7 ("Never close an issue because code 'looks complete.' Close only when its acceptance evidence is satisfied"): reconciled `docs/issue_register.md` to keep **TF-010 as `open`** until the external dated, signed FYP-1 jury brief/rubric is formally attached.
 - **Slide 14 Box 03 Suricata 14-Feature Flow Adapter (`SuricataFlowAdapter`):**
   - Implemented `backend/src/threatfusion/datasets/adapters/suricata_flow.py` extracting the exact 14 model features:
@@ -1627,7 +1627,7 @@ TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptan
 - **Deterministic Zero-Trust Repository Truth Audit Gate (`repo_truth_audit_v1`):**
   - Implemented `run_repository_truth_audit(repo_root)` in `backend/src/threatfusion/evaluation/repo_truth_audit.py` and CLI wrapper `scripts/audit_repo_truth.py`.
   - Executes 7 programmatic, non-mocked checks against live repository and runtime objects:
-    1. Workspace Isolation & Git State Check (`/home/muhammad-bilal/projects/threatfusion-gemini`, branch `gemini/product-20260924`, SHA-256 file hashes).
+    1. Workspace Isolation & Git State Check (`<repo_root>`, branch `gemini/product-20260924`, SHA-256 file hashes).
     2. Frozen Model Artifact SHA-256 Invariance Check (RF `bd2853a6...`, Logistic `2cf4de66...`, AE v2 `c8675d13...`, rate-log1p `1d02e5bb...`).
     3. Canonical Evaluation Pack Rev2 (`AI-FYP-2006`, checkpoint `6a36dcd`) Runtime Verification.
     4. Section 8 (`fusion_disabled`) Runtime Enforcement Check (`production_fusion_enabled=False`, ValueError on True).
@@ -1661,7 +1661,7 @@ TF-008, TF-009, TF-010, and TF-011 remain **open** per their documented acceptan
 ### Milestone #26: Presentation Deck & Academic Defense Harmonization (2026-10-16)
 
 - **Presentation Deck Harmonization (`scripts/generate_harmonized_defense_deck.py`):**
-  - Harmonized `/home/muhammad-bilal/Downloads/Final Presentation (1).pptx` with authoritative Evaluation Pack Rev2 (`AI-FYP-2006`, checkpoint `6a36dcd`) into `artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx` (92,623 bytes, exactly 15 slides).
+  - Harmonized `<external-download>/Final Presentation (1).pptx` with authoritative Evaluation Pack Rev2 (`AI-FYP-2006`, checkpoint `6a36dcd`) into `artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx` (92,623 bytes, exactly 15 slides).
   - Pinned project identity: `AI-FYP-2006`, FAST-NUCES Karachi CS492 FYP-II, Supervisor: Sir Sameer Faisal, Team: Muhammad Bilal (21K-3551), Muhammad Suhaib Shaikh (22K-4302), Muhammad Hasnain (22K-4718).
   - Completely eliminated legacy split-inversion metrics (89.77% RF, 94.95% multimodal fusion) from all slides.
   - Injected exact Evaluation Pack Rev2 metrics on January Validation (216,568 rows): Frozen RF precision 95.27%, recall 92.82%, F1 94.03%, FPR 0.095% (only 201 false alarms in 212,210 benign flows).

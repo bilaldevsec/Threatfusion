@@ -4,13 +4,13 @@
 **Document Location:** `docs/THREATFUSION_CHATGPT_FULL_AUDIT_REPORT.md`  
 **Date of Audit:** 2026-10-15  
 **Auditor / Environment:** Antigravity (Gemini 3.8 Flash High) / Linux x86_64  
-**Active Workspace:** `/home/muhammad-bilal/projects/threatfusion-gemini`  
+**Active Workspace:** `<repo_root>`\
 **Active Branch:** `gemini/product-20260924`  
 **Baseline Git Commit:** `d3f485aa3933fda996b8784ffe11dc54d43bbb8e`  
 **Current HEAD Commit:** `7bf6409` + working tree unstaged/uncommitted changes (Milestones #1–#16)  
 **Input Sources Audited:**
-1. `/home/muhammad-bilal/Downloads/threatfusion_chatgpt_project_history.md` (3.84 MB, 1,532 messages, 18 numbered thread sections)
-2. `/home/muhammad-bilal/Downloads/43d16f7cf7d2732fb1fc50ffbcb20527c021b6292ebf917725fb1b1d24b23a79-2026-10-14-03-52-47-8c8bc98da29d4aef9d065a72d3268c6f/conversations.json` (shards `conversations-000.json` through `conversations-005.json`, 557 total conversations, 48 ThreatFusion-matching threads, 6,389 messages)
+1. `<external-download>/threatfusion_chatgpt_project_history.md` (3.84 MB, 1,532 messages, 18 numbered thread sections)
+2. `<external-download>/43d16f7cf7d2732fb1fc50ffbcb20527c021b6292ebf917725fb1b1d24b23a79-2026-10-14-03-52-47-8c8bc98da29d4aef9d065a72d3268c6f/conversations.json` (shards `conversations-000.json` through `conversations-005.json`, 557 total conversations, 48 ThreatFusion-matching threads, 6,389 messages)
 
 ---
 

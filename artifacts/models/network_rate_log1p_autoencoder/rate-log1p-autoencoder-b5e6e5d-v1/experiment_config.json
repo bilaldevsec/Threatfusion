@@ -71,22 +71,22 @@
       {
         "denied": true,
         "errno": 13,
-        "path": "/home/muhammad-bilal/projects/threatfusion/data/raw/unsw_nb15/official/UNSW-NB15_1.csv"
+        "path": "<protected_workspace>/data/raw/unsw_nb15/official/UNSW-NB15_1.csv"
       },
       {
         "denied": true,
         "errno": 13,
-        "path": "/home/muhammad-bilal/projects/threatfusion/artifacts/reports/network_classical_evaluation/full-february-classical-2528ee8-v1/X_test.npy"
+        "path": "<protected_workspace>/artifacts/reports/network_classical_evaluation/full-february-classical-2528ee8-v1/X_test.npy"
       },
       {
         "denied": true,
         "errno": 13,
-        "path": "/home/muhammad-bilal/projects/threatfusion/artifacts/reports/network_classical_evaluation/full-february-classical-2528ee8-v1/y_test.npy"
+        "path": "<protected_workspace>/artifacts/reports/network_classical_evaluation/full-february-classical-2528ee8-v1/y_test.npy"
       },
       {
         "denied": true,
         "errno": 13,
-        "path": "/home/muhammad-bilal/projects/threatfusion/data/raw/cse_cic_ids2018/official/Wednesday-14-02-2018_TrafficForML_CICFlowMeter.csv"
+        "path": "<protected_workspace>/data/raw/cse_cic_ids2018/official/Wednesday-14-02-2018_TrafficForML_CICFlowMeter.csv"
       }
     ],
     "mechanism": "Linux Landlock",

@@ -32,7 +32,7 @@ EVIDENCE = {
 
 # This is a code-owned binding from the existing demonstration runner, rather
 # than a claim made by the report it verifies.
-TRUSTED_AE_REPORT_SHA256 = "0ec77eda4a58e40e1b75087bbc5131f39cad54d553771e174ea303bc506c3bef"
+TRUSTED_AE_REPORT_SHA256 = "2c36ca0a9f8465ded3ccdd19bc2e7672c4f8217fcf059879cf14767a3ffd7b77"
 V2_IDENTITY = "bdb7fc33d5b092566995018b5f83aa66bdb8ce95841d6b8b9021111c9a392a9a"
 
 

@@ -82,10 +82,10 @@ V2_DIRECTORY = (
 # These are independently pinned research/demo expectations. They do not add the
 # experimental identity to the product loader's approved registry.
 V2_FILE_HASHES = {
-    "artifact_manifest.json": "c142d3352b406a689b6317f48ae513540076b02ffb2e0fdef9cd3e6a83da1866",
-    "autoencoder_config.json": "51d4d664b5e017c5b039a08dc897d63e81a0b1e140eb1bb16457997ffa0727c2",
+    "artifact_manifest.json": "0507c1e71bcb9c8bc022e3b2944ef6f0972c098a687f740c91d4dbb33df6a4d8",
+    "autoencoder_config.json": "1beea31ee17b1f89f1ecb0d1f4e6d4f99dd71a5386e78359569a3f05ab0fc4e7",
     "autoencoder_state.pt": "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23",
-    "evaluation_report.json": "0ec77eda4a58e40e1b75087bbc5131f39cad54d553771e174ea303bc506c3bef",
+    "evaluation_report.json": "2c36ca0a9f8465ded3ccdd19bc2e7672c4f8217fcf059879cf14767a3ffd7b77",
     "network_autoencoder.snapshot.py": (
         "bcd2f8077de6cd9edeb3902aea5cb9a64f089111d7233aa6f94ee0257a1542c9"
     ),
@@ -95,7 +95,7 @@ V2_FILE_HASHES = {
     "source_provenance_manifest.json": (
         "d412f390f0d081170917a2e784046239f3e5b14d9a604e1196d2e3cbd3c527a9"
     ),
-    "threshold.json": "79bc7f3def3a4ed745fbc85d9cbf36a04f4fb4384de4db065569f81f60c78e3e",
+    "threshold.json": "57a92f78546feb1d750497f73bcfbc7ffd250107af68ed306bfde7e4f455ab99",
     "train_network_autoencoder.snapshot.py": (
         "1e85861ced0f341598f697387c2826ffdc31ad41d0516755ddff77850a6f6a54"
     ),

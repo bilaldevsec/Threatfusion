@@ -1,6 +1,6 @@
 {
   "comparison": {
-    "logistic_run_report_sha256": "0afe787ccbea3a7f43f3ff69e43d642adaa5d5954039848cd7dfa168b4a85cc8",
+    "logistic_run_report_sha256": "4de4740f9c327c319ed7f0e72a5478cbef51b4561ddd1a633523f824a6c3b22a",
     "same_preprocessing_and_validation_verified": true
   },
   "decision_threshold": {
@@ -58,7 +58,7 @@
     "random_state": 42,
     "warm_start": false
   },
-  "interpreter": "/home/muhammad-bilal/.local/share/uv/python/cpython-3.11.16-linux-x86_64-gnu/bin/python3.11",
+  "interpreter": "<local-python>/share/uv/python/cpython-3.11.16-linux-x86_64-gnu/bin/python3.11",
   "label_mapping": {
     "Attack": 1,
     "Normal": 0

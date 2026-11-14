@@ -4,7 +4,7 @@
   "calibration_partition": "validation",
   "calibration_rows": 212210,
   "cic_influenced_threshold": false,
-  "configuration_sha256": "51d4d664b5e017c5b039a08dc897d63e81a0b1e140eb1bb16457997ffa0727c2",
+  "configuration_sha256": "1beea31ee17b1f89f1ecb0d1f4e6d4f99dd71a5386e78359569a3f05ab0fc4e7",
   "february_influenced_threshold": false,
   "method": "higher",
   "model_sha256": "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23",

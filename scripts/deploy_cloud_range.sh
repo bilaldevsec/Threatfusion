@@ -583,7 +583,12 @@ ensure_admin_ssh_key() {
 
 ssh_base() {
   ensure_admin_ssh_key
-  printf '%s\n' "-i" "$SSH_IDENTITY" "-o" "StrictHostKeyChecking=no" "-o" "BatchMode=yes"
+  printf '%s\n' "-i" "$SSH_IDENTITY" \
+    "-o" "StrictHostKeyChecking=no" \
+    "-o" "BatchMode=yes" \
+    "-o" "ServerAliveInterval=30" \
+    "-o" "ServerAliveCountMax=6" \
+    "-o" "ConnectTimeout=15"
 }
 
 require_stack_env() {
@@ -602,14 +607,15 @@ require_stack_env() {
 deploy_full_stack() {
   local target env_file
   ensure_admin_ssh_key
-  target="$(victim_ssh_target)"
   require_stack_env
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "dry-run: rsync ${ROOT} to ${target}:/opt/threatfusion excluding .git venv __pycache__ .env"
+    echo "dry-run: deploy_full_stack preflight passed."
+    echo "dry-run: rsync repo to victim:/opt/threatfusion excluding .git venv __pycache__ .env"
     echo "dry-run: THREATFUSION_ENV=production docker compose restart: unless-stopped"
-    echo "dry-run: poll /readyz then ssh -N -L 8766:127.0.0.1:8766 ${target}"
+    echo "dry-run: poll /readyz then ssh -N -L 8766:127.0.0.1:8766"
     return 0
   fi
+  target="$(victim_ssh_target)"
   env_file="$(mktemp)"
   chmod 600 "$env_file"
   umask 077
@@ -624,7 +630,7 @@ THREATFUSION_N8N_USER=${THREATFUSION_N8N_USER:-}
 THREATFUSION_N8N_PASSWORD=${THREATFUSION_N8N_PASSWORD:-}
 EOF
   # shellcheck disable=SC2046
-  ssh $(ssh_base) "$target" "sudo mkdir -p /opt/threatfusion /var/lib/threatfusion && sudo chown \$(id -u):\$(id -g) /opt/threatfusion /var/lib/threatfusion && chmod 700 /var/lib/threatfusion"
+  ssh $(ssh_base) "$target" "sudo mkdir -p /opt/threatfusion /opt/threatfusion-venv /var/lib/threatfusion && sudo chown -R \$(id -u):\$(id -g) /opt/threatfusion /opt/threatfusion-venv /var/lib/threatfusion && chmod 700 /var/lib/threatfusion"
   tar -C "$ROOT" \
     --exclude .git \
     --exclude threatfusion-venv \
@@ -646,20 +652,40 @@ chmod 600 .env
 sudo mkdir -p /var/lib/threatfusion
 sudo chown "$(id -u):$(id -g)" /var/lib/threatfusion
 chmod 700 /var/lib/threatfusion
+echo "[1/5] Allocating 4GB swapfile"
+if ! swapon --show | grep -q '/swapfile'; then
+  if [[ ! -f /swapfile ]]; then
+    sudo fallocate -l 4G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+  fi
+  sudo swapon /swapfile || true
+  if ! grep -q '/swapfile' /etc/fstab; then
+    echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+  fi
+fi
+echo "[2/5] Installing packages non-interactively"
 if command -v apt-get >/dev/null 2>&1; then
-  sudo apt-get update
-  sudo apt-get install -y docker.io docker-compose-v2 suricata python3 python3-venv python3-pip
+  sudo DEBIAN_FRONTEND=noninteractive apt-get update -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+    docker.io docker-compose-v2 suricata python3 python3-venv python3-pip
   sudo systemctl enable --now docker
   sudo systemctl enable --now suricata || true
 fi
+echo "[3/5] Starting SOC stack without a second publisher on port 5678"
 sudo docker compose --env-file .env -f docker/docker-compose.soc-stack.yml up -d
-if [[ -f docker/docker-compose.n8n.yml ]]; then
+if [[ -f docker/docker-compose.n8n.yml ]] && ! grep -q '5678:5678' docker/docker-compose.soc-stack.yml; then
   sudo docker compose --env-file .env -f docker/docker-compose.n8n.yml up -d
 fi
+echo "[4/5] Preparing virtualenv and PyTorch wheel"
 if [[ ! -x /opt/threatfusion-venv/bin/python ]]; then
   python3 -m venv /opt/threatfusion-venv
   /opt/threatfusion-venv/bin/pip install --upgrade pip
-  /opt/threatfusion-venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.10.0+cpu'
+  if [[ "$(uname -m)" == "x86_64" ]]; then
+    /opt/threatfusion-venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.10.0+cpu'
+  else
+    /opt/threatfusion-venv/bin/pip install --no-cache-dir 'torch>=2.1,<2.7'
+  fi
   /opt/threatfusion-venv/bin/pip install 'pandas>=2,<3' 'pydantic>=2,<3' 'pydantic-settings>=2,<3' 'PyYAML>=6,<7' 'scikit-learn>=1.5'
 fi
 cat > /opt/threatfusion/run-console-watchdog.sh <<'WATCH'
@@ -676,7 +702,7 @@ chmod 700 "$THREATFUSION_DATA_DIR"
 export PYTHONPATH=/opt/threatfusion/backend/src
 while true; do
   /opt/threatfusion-venv/bin/python /opt/threatfusion/scripts/run_misp_and_callback_contract_server.py \
-    --bind 127.0.0.1 --port 8766 >>/var/log/threatfusion-console.log 2>&1 || true
+    --bind 127.0.0.1 --port 8766 >>/var/lib/threatfusion/console.log 2>&1 || true
   sleep 2
 done
 WATCH
@@ -686,17 +712,20 @@ if [[ -f /var/lib/threatfusion/console-watchdog.pid ]]; then
   if [[ -n "${old}" ]] && kill -0 "$old" 2>/dev/null; then
     echo "console watchdog already running (${old})"
   else
-    nohup /opt/threatfusion/run-console-watchdog.sh >/var/log/threatfusion-watchdog.log 2>&1 &
+    nohup /opt/threatfusion/run-console-watchdog.sh >/var/lib/threatfusion/watchdog.log 2>&1 &
     echo $! > /var/lib/threatfusion/console-watchdog.pid
   fi
 else
-  nohup /opt/threatfusion/run-console-watchdog.sh >/var/log/threatfusion-watchdog.log 2>&1 &
+  nohup /opt/threatfusion/run-console-watchdog.sh >/var/lib/threatfusion/watchdog.log 2>&1 &
   echo $! > /var/lib/threatfusion/console-watchdog.pid
 fi
+echo "[5/5] Polling /readyz for up to 180s"
 python3 - <<'PY'
-import json, time, urllib.request
-deadline = time.time() + 90
+import time, urllib.request
+deadline = time.time() + 180
+started = time.time()
 last = ""
+print("[5/5] polling /readyz (deadline 180s)", flush=True)
 while time.time() < deadline:
     try:
         with urllib.request.urlopen("http://127.0.0.1:8766/readyz", timeout=3) as response:
@@ -707,6 +736,8 @@ while time.time() < deadline:
             last = body
     except Exception as exc:
         last = str(exc)
+    elapsed = int(time.time() - started)
+    print(f"[5/5] /readyz waiting {elapsed}s", flush=True)
     time.sleep(2)
 print(last)
 raise SystemExit(1)

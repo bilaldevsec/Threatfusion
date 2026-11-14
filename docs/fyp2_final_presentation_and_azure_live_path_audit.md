@@ -1,7 +1,7 @@
 # ThreatFusion FYP-II Final Presentation Audit & Slide 14 Azure Live-Ingestion Specification
 
 **Document Identity:** `docs/fyp2_final_presentation_and_azure_live_path_audit.md`  
-**Source Artifact:** `/home/muhammad-bilal/Downloads/Final Presentation (1).pptx` (and `/home/muhammad-bilal/Downloads/Report Fyp 2.docx`)  
+**Source Artifact:** `<external-download>/Final Presentation (1).pptx` (and `<external-download>/Report Fyp 2.docx`)\
 **Audit Date:** 2026-10-16  
 **Status:** Canonical Reference & Architectural Traceability
 

@@ -1,6 +1,6 @@
 {
   "calibration_rows": 212210,
-  "configuration_sha256": "4cc23ecec84b171be6d62079215c85f88f97574c7f9c35b78c0a2030cc7366c1",
+  "configuration_sha256": "cbcd09e6d7b8166ed3cef375b07e27e709f855da3b455f7119510dfa01638464",
   "method": "higher",
   "model_sha256": "1d02e5bba556cb28709bd0faefce5f29da424a419a2d95332ad27a8995b26f63",
   "operator": ">",

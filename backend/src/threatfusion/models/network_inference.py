@@ -75,13 +75,13 @@ APPROVED_UNSW_MANIFEST_HASH = "c6794cab5af9de5bf218989461b2ad673d1a14232688edf46
 APPROVED_MODEL_HASHES = {
     COMPARISON_MODEL: {
         "model": "2cf4de6686d937c485d4dbcbfa21d3e90f65bbb922087c8b31be4b012d7fb148",
-        "configuration": "f8ebe49fb4aaeee482c8f7e5eb509bc7d29cae92b2fbc6df72172e22a248217e",
-        "report": "0afe787ccbea3a7f43f3ff69e43d642adaa5d5954039848cd7dfa168b4a85cc8",
+        "configuration": "9d0a0044ee162aa2435599f75a7c6c24d2b7eb9451809ace7d731b950f8a1e63",
+        "report": "4de4740f9c327c319ed7f0e72a5478cbef51b4561ddd1a633523f824a6c3b22a",
     },
     PRIMARY_MODEL: {
         "model": "bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9",
-        "configuration": "fffe5e839c28b4e1d216c87ea1db7c675fa1a267ccf450c02869fe41e3bab13f",
-        "report": "5e2c0c5e71e2c9d69b2beebd01a234a08f991a24edf90cc006fa3203fc5c3837",
+        "configuration": "8c7ce4ec22e5fa296cf4131e9cd451d242b400b297f0773ab6d7db48bd30e772",
+        "report": "a2eb09d75922fef560735ab7303d3fd76b7511d60f107a52693cf3f4e213c8e7",
     },
 }
 

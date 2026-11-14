@@ -12,7 +12,7 @@ alwaysApply: true
 2. CREATE SUBAGENTS, HELPER BOTS & SCRIPTS FREELY:
    - You have full authority to create new subagents in `.cursor/agents/`, automation scripts in `scripts/`, and full-stack modules in `backend/` and `frontend/` to turn ThreatFusion from a static sample walkthrough into a real, working, interactive enterprise SOC product.
 3. NON-NEGOTIABLE CONSTITUTIONAL LOCKS (VERIFY CONTINUOUSLY):
-   - Never read, touch, or reference `/home/muhammad-bilal/projects/threatfusion` (Boundary B0-B6 GO).
+   - Never read, touch, or reference `<protected_workspace>` (Boundary B0-B6 GO).
    - Keep `production_fusion_enabled = False` in `correlation_engine.py`.
    - Keep all 4 frozen model SHA-256 digests unchanged (`bd2853a6...`, `2cf4de66...`, `c8675d13...`, `1d02e5bb...`).
    - Keep Gate G9 clean (zero imports of `threatfusion.advisory`, `gemini_client`, `explanation_engine`, or `chromadb` in Stages 1-4).

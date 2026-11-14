@@ -31,7 +31,7 @@ from threatfusion.models.multi_signal_risk import evaluate_multi_signal_risk
 ROOT = Path(__file__).resolve().parents[3]
 SRC = ROOT / "backend" / "src"
 _PERSONAL_CLOUD_IDS = (
-    "72f988bf-86f1-41af-91ab-2d7cd011db47",
+    "72f988bf" + "-86f1-41af-91ab-2d7cd011db47",
     "7fb77266-5bb4-4d03-8a91-a744fd38db5c",
 )
 _FROZEN_DIGESTS = {
@@ -590,3 +590,44 @@ def test_no_hardcoded_personal_paths_or_cloud_ids() -> None:
     assert "Idle burn 0.00" in cloud
     demo = (ROOT / "scripts" / "run_full_range_demo.sh").read_text(encoding="utf-8")
     assert 'THREATFUSION_ENV="${THREATFUSION_ENV:-lab}"' in demo
+
+
+def test_cloud_deploy_dry_run_without_vm() -> None:
+    script = ROOT / "scripts" / "deploy_cloud_range.sh"
+    completed = subprocess.run(
+        ["bash", str(script), "--provider", "azure", "--deploy-full-stack", "--dry-run"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+
+
+def test_contract_server_listen_backlog() -> None:
+    from scripts.run_misp_and_callback_contract_server import ThreatFusionThreadingHTTPServer
+
+    assert ThreatFusionThreadingHTTPServer.request_queue_size >= 128
+
+
+def test_frontend_favicon_data_uri() -> None:
+    index = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    assert '<link rel="icon" href="data:,">' in index
+    assert "http://" not in index
+    assert "https://" not in index
+
+
+def test_personal_tenant_uuid_absent_from_repo() -> None:
+    needle = "72f988bf" + "-86f1-41af-91ab-2d7cd011db47"
+    skip = {".git", "threatfusion-venv", ".venv", "venv", "__pycache__", "node_modules"}
+    offenders: list[str] = []
+    for path in ROOT.rglob("*"):
+        if not path.is_file() or any(part in skip for part in path.parts):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        if needle in text:
+            offenders.append(str(path.relative_to(ROOT)))
+    assert offenders == []

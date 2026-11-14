@@ -4,8 +4,8 @@
 **Institution:** FAST-NUCES Karachi Campus (CS492 Final Year Project — FYP-II)
 **Team:** Muhammad Bilal (`21K-3551`), Muhammad Suhaib Shaikh (`22K-4302`), Muhammad Hasnain (`22K-4718`)
 **Supervisor:** Sir Sameer Faisal
-**Active Repo:** `/home/muhammad-bilal/projects/threatfusion-gemini` (Branch: `gemini/product-20260924`)
-**Protected Reference Repo (NEVER TOUCH):** `/home/muhammad-bilal/projects/threatfusion`
+**Active Repo:** `<repo_root>` (Branch: `gemini/product-20260924`)
+**Protected Reference Repo (NEVER TOUCH):** `<protected_workspace>`
 
 ## 1. Chronological Evolution (Era 1 to Era 5)
 1. Era 1 — Classical ML Baseline: 14 canonical network flow features (`dur`, `spkts`, `dpkts`, `sbytes`, `dbytes`, `rate`, `sload`, `dload`, `smean`, `dmean`, `sloss`, `dloss`, `service`, `state`). Frozen Random Forest (`bd2853a6...`) achieved TP=4,045, FP=201, TN=212,009, FN=313 (95.266% Precision, 92.818% Recall, 94.026% F1, 0.095% FPR).

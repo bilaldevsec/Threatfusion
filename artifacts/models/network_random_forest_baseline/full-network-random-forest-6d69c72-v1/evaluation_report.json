@@ -13,7 +13,7 @@
     "validation_only_evaluation": true
   },
   "completed": true,
-  "configuration_sha256": "fffe5e839c28b4e1d216c87ea1db7c675fa1a267ccf450c02869fe41e3bab13f",
+  "configuration_sha256": "8c7ce4ec22e5fa296cf4131e9cd451d242b400b297f0773ab6d7db48bd30e772",
   "global_training_ready": false,
   "limitations": [
     "exact fit time was not persisted before the initial strict reload check failed",
