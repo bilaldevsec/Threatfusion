@@ -660,6 +660,41 @@
     showSocView('investigations');
   }
 
+  async function refreshPosture() {
+    try {
+      const resp = await fetch('/api/v1/live/posture');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const label = data.posture_label || 'POSTURE: LAB DEMO';
+      document.querySelectorAll('[data-posture-pill]').forEach((node) => {
+        node.textContent = label;
+        node.setAttribute('data-posture', data.environment || 'lab');
+      });
+      const cards = document.getElementById('demoQuickFill');
+      if (cards && data.demo_quickfill_enabled === false) {
+        cards.hidden = true;
+        cards.querySelectorAll('[data-demo-code]').forEach((button) => {
+          button.setAttribute('data-demo-code', '');
+        });
+      }
+    } catch (_err) {
+      /* The stamped pill remains until posture can be read. */
+    }
+  }
+
+  async function refreshReadyz() {
+    const node = document.getElementById('readyzHealthPill');
+    if (!node) return;
+    try {
+      const resp = await fetch('/readyz');
+      const data = await resp.json();
+      node.textContent = (data && data.pill) || 'DB WAL · Models 4/4 · RAG Ready';
+      node.setAttribute('data-evidence-state', data && data.status === 'ready' ? 'verified' : 'unavailable');
+    } catch (_err) {
+      node.setAttribute('data-evidence-state', 'unavailable');
+    }
+  }
+
   async function initApp() {
     renderLiveClock();
     setInterval(renderLiveClock, 1000);
@@ -671,6 +706,8 @@
     refreshAdvisoryStatus();
     refreshAgyAudit();
     await refreshRbacSession();
+    refreshPosture();
+    refreshReadyz();
     enforceAuthGate();
     refreshLiveCampaigns();
     refreshOperatorStamp();

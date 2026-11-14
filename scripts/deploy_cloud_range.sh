@@ -444,7 +444,10 @@ provision_aws() {
   fi
   aws ec2 authorize-security-group-ingress --region "$REGION_NAME" --group-id "$sg" \
     --protocol tcp --port 22 --cidr "$cidr" >/dev/null 2>&1 || true
-  aws ec2 authorize-security-group-ingress --region "$REGION_NAME" --group-id "$sg" \
+  # Port 8766 stays closed to 0.0.0.0/0. Operators use an SSH local forward.
+  aws ec2 revoke-security-group-ingress --region "$REGION_NAME" --group-id "$sg" \
+    --protocol tcp --port 8766 --cidr "0.0.0.0/0" >/dev/null 2>&1 || true
+  aws ec2 revoke-security-group-ingress --region "$REGION_NAME" --group-id "$sg" \
     --protocol tcp --port 8766 --cidr "$cidr" >/dev/null 2>&1 || true
   ami="$(aws ssm get-parameter --region "$REGION_NAME" \
     --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
@@ -504,9 +507,12 @@ provision_gcp() {
     gcloud compute networks subnets create tf-range-subnet \
       --network "$RANGE_TAG" --range "$SUBNET_CIDR" --region "$REGION_NAME"
   fi
-  if ! gcloud compute firewall-rules describe threatfusion-range-ssh >/dev/null 2>&1; then
+  if gcloud compute firewall-rules describe threatfusion-range-ssh >/dev/null 2>&1; then
+    gcloud compute firewall-rules update threatfusion-range-ssh \
+      --allow tcp:22 --source-ranges "$cidr"
+  else
     gcloud compute firewall-rules create threatfusion-range-ssh \
-      --network "$RANGE_TAG" --allow tcp:22,tcp:8766 \
+      --network "$RANGE_TAG" --allow tcp:22 \
       --source-ranges "$cidr" --target-tags "$RANGE_TAG"
   fi
   local startup
@@ -551,6 +557,35 @@ victim_ssh_target() {
   printf '%s@%s\n' "$SSH_USER" "$VICTIM_PUBLIC"
 }
 
+ensure_admin_ssh_key() {
+  if [[ -n "${TF_SSH_IDENTITY:-}" && -f "${TF_SSH_IDENTITY}" ]]; then
+    SSH_IDENTITY="$TF_SSH_IDENTITY"
+    return 0
+  fi
+  local candidate
+  for candidate in "${HOME}/.ssh/id_ed25519" "${HOME}/.ssh/id_rsa" "${STATE_DIR}/threatfusion-range"; do
+    if [[ -f "$candidate" ]]; then
+      SSH_IDENTITY="$candidate"
+      return 0
+    fi
+  done
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    SSH_IDENTITY="${HOME}/.ssh/id_ed25519"
+    echo "dry-run: ssh-keygen -t ed25519 -f ${SSH_IDENTITY}"
+    return 0
+  fi
+  mkdir -p "${HOME}/.ssh" "$STATE_DIR"
+  chmod 700 "${HOME}/.ssh"
+  ssh-keygen -t ed25519 -N "" -f "${HOME}/.ssh/id_ed25519" -C "threatfusion-range"
+  chmod 600 "${HOME}/.ssh/id_ed25519"
+  SSH_IDENTITY="${HOME}/.ssh/id_ed25519"
+}
+
+ssh_base() {
+  ensure_admin_ssh_key
+  printf '%s\n' "-i" "$SSH_IDENTITY" "-o" "StrictHostKeyChecking=no" "-o" "BatchMode=yes"
+}
+
 require_stack_env() {
   local missing=() key
   for key in THREATFUSION_MISP_API_KEY THREATFUSION_SOAR_HMAC_SECRET THREATFUSION_THEHIVE_SECRET THREATFUSION_THEHIVE_API_KEY THREATFUSION_N8N_USER THREATFUSION_N8N_PASSWORD; do
@@ -566,17 +601,21 @@ require_stack_env() {
 
 deploy_full_stack() {
   local target env_file
+  ensure_admin_ssh_key
   target="$(victim_ssh_target)"
   require_stack_env
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "dry-run: rsync ${ROOT} to ${target}:/opt/threatfusion"
-    echo "dry-run: docker compose soc stack, n8n, suricata, and the console on ${target}"
+    echo "dry-run: rsync ${ROOT} to ${target}:/opt/threatfusion excluding .git venv __pycache__ .env"
+    echo "dry-run: THREATFUSION_ENV=production docker compose restart: unless-stopped"
+    echo "dry-run: poll /readyz then ssh -N -L 8766:127.0.0.1:8766 ${target}"
     return 0
   fi
   env_file="$(mktemp)"
   chmod 600 "$env_file"
   umask 077
   cat > "$env_file" <<EOF
+THREATFUSION_ENV=production
+THREATFUSION_DATA_DIR=/var/lib/threatfusion
 THREATFUSION_MISP_API_KEY=${THREATFUSION_MISP_API_KEY:-}
 THREATFUSION_SOAR_HMAC_SECRET=${THREATFUSION_SOAR_HMAC_SECRET:-}
 THREATFUSION_THEHIVE_SECRET=${THREATFUSION_THEHIVE_SECRET:-}
@@ -584,19 +623,29 @@ THREATFUSION_THEHIVE_API_KEY=${THREATFUSION_THEHIVE_API_KEY:-}
 THREATFUSION_N8N_USER=${THREATFUSION_N8N_USER:-}
 THREATFUSION_N8N_PASSWORD=${THREATFUSION_N8N_PASSWORD:-}
 EOF
-  ssh -o StrictHostKeyChecking=no -o BatchMode=yes "$target" "sudo mkdir -p /opt/threatfusion && sudo chown \$(id -u):\$(id -g) /opt/threatfusion"
+  # shellcheck disable=SC2046
+  ssh $(ssh_base) "$target" "sudo mkdir -p /opt/threatfusion /var/lib/threatfusion && sudo chown \$(id -u):\$(id -g) /opt/threatfusion /var/lib/threatfusion && chmod 700 /var/lib/threatfusion"
   tar -C "$ROOT" \
-    --exclude threatfusion-venv \
     --exclude .git \
-    --exclude .cursor \
+    --exclude threatfusion-venv \
+    --exclude .venv \
+    --exclude venv \
     --exclude __pycache__ \
-    -czf - . | ssh -o StrictHostKeyChecking=no -o BatchMode=yes "$target" "tar -C /opt/threatfusion -xzf -"
-  scp -o StrictHostKeyChecking=no -o BatchMode=yes "$env_file" "${target}:/opt/threatfusion/.env"
+    --exclude .env \
+    --exclude '.env.*' \
+    --exclude .cursor \
+    -czf - . | ssh $(ssh_base) "$target" "tar -C /opt/threatfusion -xzf -"
+  # shellcheck disable=SC2046
+  scp $(ssh_base) "$env_file" "${target}:/opt/threatfusion/.env"
   rm -f "$env_file"
-  ssh -o StrictHostKeyChecking=no -o BatchMode=yes "$target" "bash -s" <<'REMOTE'
+  # shellcheck disable=SC2046
+  ssh $(ssh_base) "$target" "bash -s" <<'REMOTE'
 set -euo pipefail
 cd /opt/threatfusion
 chmod 600 .env
+sudo mkdir -p /var/lib/threatfusion
+sudo chown "$(id -u):$(id -g)" /var/lib/threatfusion
+chmod 700 /var/lib/threatfusion
 if command -v apt-get >/dev/null 2>&1; then
   sudo apt-get update
   sudo apt-get install -y docker.io docker-compose-v2 suricata python3 python3-venv python3-pip
@@ -613,15 +662,121 @@ if [[ ! -x /opt/threatfusion-venv/bin/python ]]; then
   /opt/threatfusion-venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.10.0+cpu'
   /opt/threatfusion-venv/bin/pip install 'pandas>=2,<3' 'pydantic>=2,<3' 'pydantic-settings>=2,<3' 'PyYAML>=6,<7' 'scikit-learn>=1.5'
 fi
+cat > /opt/threatfusion/run-console-watchdog.sh <<'WATCH'
+#!/bin/bash
+set -euo pipefail
 set -a
 # shellcheck disable=SC1091
 . /opt/threatfusion/.env
 set +a
+export THREATFUSION_ENV=production
+export THREATFUSION_DATA_DIR="${THREATFUSION_DATA_DIR:-/var/lib/threatfusion}"
+mkdir -p "$THREATFUSION_DATA_DIR"
+chmod 700 "$THREATFUSION_DATA_DIR"
 export PYTHONPATH=/opt/threatfusion/backend/src
-nohup /opt/threatfusion-venv/bin/python /opt/threatfusion/scripts/run_misp_and_callback_contract_server.py \
-  --bind 0.0.0.0 --port 8766 >/var/log/threatfusion-console.log 2>&1 &
+while true; do
+  /opt/threatfusion-venv/bin/python /opt/threatfusion/scripts/run_misp_and_callback_contract_server.py \
+    --bind 127.0.0.1 --port 8766 >>/var/log/threatfusion-console.log 2>&1 || true
+  sleep 2
+done
+WATCH
+chmod 700 /opt/threatfusion/run-console-watchdog.sh
+if [[ -f /var/lib/threatfusion/console-watchdog.pid ]]; then
+  old="$(cat /var/lib/threatfusion/console-watchdog.pid || true)"
+  if [[ -n "${old}" ]] && kill -0 "$old" 2>/dev/null; then
+    echo "console watchdog already running (${old})"
+  else
+    nohup /opt/threatfusion/run-console-watchdog.sh >/var/log/threatfusion-watchdog.log 2>&1 &
+    echo $! > /var/lib/threatfusion/console-watchdog.pid
+  fi
+else
+  nohup /opt/threatfusion/run-console-watchdog.sh >/var/log/threatfusion-watchdog.log 2>&1 &
+  echo $! > /var/lib/threatfusion/console-watchdog.pid
+fi
+python3 - <<'PY'
+import json, time, urllib.request
+deadline = time.time() + 90
+last = ""
+while time.time() < deadline:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8766/readyz", timeout=3) as response:
+            body = response.read().decode("utf-8")
+            if response.status == 200 and '"ready"' in body:
+                print(body)
+                raise SystemExit(0)
+            last = body
+    except Exception as exc:
+        last = str(exc)
+    time.sleep(2)
+print(last)
+raise SystemExit(1)
+PY
 REMOTE
-  echo "Full stack started on ${target} port 8766. Restrict that port to the admin prefix."
+  # shellcheck disable=SC2046
+  ssh -N -L 8766:127.0.0.1:8766 -o ExitOnForwardFailure=yes $(ssh_base) -f "$target"
+  echo "Operator console: http://127.0.0.1:8766/"
+  echo "Port 8766 stays closed to 0.0.0.0/0. Access is the SSH local forward."
+}
+
+verify_teardown_zero_burn() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "dry-run: verify zero orphaned disks or public IPs remain (idle burn 0.00)"
+    return 0
+  fi
+  case "$PROVIDER" in
+    aws)
+      local volumes addresses
+      volumes="$(aws ec2 describe-volumes --region "$REGION_NAME" \
+        --filters "Name=tag:Name,Values=${RANGE_TAG}" "Name=status,Values=available" \
+        --query 'Volumes[].VolumeId' --output text 2>/dev/null || true)"
+      if [[ -n "$volumes" && "$volumes" != "None" ]]; then
+        local volume_id
+        for volume_id in $volumes; do
+          aws ec2 delete-volume --region "$REGION_NAME" --volume-id "$volume_id" || true
+        done
+      fi
+      addresses="$(aws ec2 describe-addresses --region "$REGION_NAME" \
+        --filters "Name=tag:Name,Values=${RANGE_TAG}" \
+        --query 'Addresses[?AssociationId==null].AllocationId' --output text 2>/dev/null || true)"
+      if [[ -n "$addresses" && "$addresses" != "None" ]]; then
+        local allocation
+        for allocation in $addresses; do
+          aws ec2 release-address --region "$REGION_NAME" --allocation-id "$allocation" || true
+        done
+      fi
+      volumes="$(aws ec2 describe-volumes --region "$REGION_NAME" \
+        --filters "Name=tag:Name,Values=${RANGE_TAG}" "Name=status,Values=available" \
+        --query 'Volumes[].VolumeId' --output text 2>/dev/null || true)"
+      if [[ -n "$volumes" && "$volumes" != "None" ]]; then
+        echo "Orphaned disks remain after teardown: ${volumes}" >&2
+        exit 1
+      fi
+      ;;
+    gcp)
+      local disks addresses
+      disks="$(gcloud compute disks list --filter="name~'^tf-' AND NOT users:*" --format='value(name)' 2>/dev/null || true)"
+      if [[ -n "$disks" ]]; then
+        echo "Orphaned disks remain after teardown: ${disks}" >&2
+        exit 1
+      fi
+      addresses="$(gcloud compute addresses list --filter="name~'tf-'" --format='value(name)' 2>/dev/null || true)"
+      if [[ -n "$addresses" ]]; then
+        echo "Orphaned public IPs remain after teardown: ${addresses}" >&2
+        exit 1
+      fi
+      ;;
+    azure)
+      if command -v az >/dev/null 2>&1; then
+        if az group exists --name ThreatFusion-RG --output tsv 2>/dev/null | grep -qx true; then
+          echo "Azure resource group ThreatFusion-RG still exists after teardown." >&2
+          exit 1
+        fi
+      fi
+      ;;
+    generic)
+      ;;
+  esac
+  echo "Teardown verified: zero orphaned disks or public IPs. Idle burn 0.00."
 }
 
 teardown_aws() {
@@ -784,6 +939,7 @@ case "$ACTION" in
       gcp) teardown_gcp ;;
       generic) teardown_generic ;;
     esac
+    verify_teardown_zero_burn
     clear_state_files
     ;;
   status)

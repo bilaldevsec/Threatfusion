@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import stat
+import subprocess
+import threading
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib import request as urlrequest
+from urllib.error import HTTPError
 
 import pytest
 
@@ -240,3 +247,346 @@ def test_cloud_status_reads_operator_state(tmp_path: Path) -> None:
     azure = azure_portal_status(path)
     assert azure["terminal_snippet"] == "scripts/deploy_azure_cyber_range.sh --provision-live-azure"
     assert azure["connected"] is False
+
+
+_MODEL_RELATIVE = (
+    "artifacts/models/network_random_forest_baseline/"
+    "full-network-random-forest-6d69c72-v1/random_forest.joblib",
+    "artifacts/models/network_logistic_baseline/"
+    "full-network-logistic-5e70ed9-v1/logistic_regression.joblib",
+    "artifacts/models/network_autoencoder/"
+    "full-benign-autoencoder-2a51c94-v2/autoencoder_state.pt",
+    "artifacts/models/network_rate_log1p_autoencoder/"
+    "rate-log1p-autoencoder-b5e6e5d-v1/autoencoder_state.pt",
+    "artifacts/models/fyp2_dnn_same_split_v1/dnn_model.pt",
+)
+
+
+def _http_json(
+    method: str,
+    url: str,
+    payload: dict[str, object] | None = None,
+) -> tuple[int, dict[str, str], dict[str, object]]:
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = {"X-ThreatFusion-Test-Client": "in-process"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+        headers["Content-Length"] = str(len(data))
+    req = urlrequest.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urlrequest.urlopen(req, timeout=30) as response:
+            body = json.loads(response.read().decode("utf-8"))
+            return response.status, dict(response.headers), body
+    except HTTPError as exc:
+        raw = exc.read().decode("utf-8")
+        body = json.loads(raw) if raw else {}
+        return exc.code, dict(exc.headers), body
+
+
+def _listen(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[ThreadingHTTPServer, threading.Thread]:
+    from scripts.run_misp_and_callback_contract_server import MispAndCallbackContractHandler
+
+    monkeypatch.setenv("THREATFUSION_ENV", "lab")
+    monkeypatch.setenv("THREATFUSION_DATA_DIR", str(db_path.parent))
+    monkeypatch.setenv("THREATFUSION_LIVE_CONSOLE_DB", str(db_path))
+    monkeypatch.delenv("SSH_CLIENT", raising=False)
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), MispAndCallbackContractHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def test_production_mode_disables_demo_quickfill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("THREATFUSION_ENV", "production")
+    monkeypatch.setenv("THREATFUSION_DATA_DIR", str(tmp_path / "prod-data"))
+    from threatfusion.api.live_soc_console import rbac_login
+    from threatfusion.operations.commercial_hardening import (
+        apply_posture_to_index,
+        console_posture,
+    )
+
+    posture = console_posture()
+    assert posture["environment"] == "production"
+    assert posture["posture_label"] == "POSTURE: PRODUCTION HARDENED"
+    assert posture["demo_quickfill_enabled"] is False
+    assert posture["demo_passwords_accepted"] is False
+    page = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    rendered = apply_posture_to_index(page)
+    assert 'id="demoQuickFill" class="demo-credential-box role-quick-grid" hidden' in rendered
+    assert 'data-demo-code="TF-Bilal-3551!"' not in rendered
+    refused = rbac_login(
+        tmp_path / "live.sqlite3",
+        username="bilal.21k3551@nu.edu.pk",
+        access_code="TF-Bilal-3551!",
+    )
+    assert refused["http_status"] == 401
+    assert refused["message"] == "Invalid credentials"
+    assert refused["authenticated"] is False
+
+
+def test_login_rate_limiting_429(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from threatfusion.operations.commercial_hardening import reset_login_rate_limiter
+
+    reset_login_rate_limiter()
+    server, _thread = _listen(tmp_path / "live.sqlite3", monkeypatch)
+    host, port = server.server_address
+    url = f"http://{host}:{port}/api/rbac/login"
+    try:
+        last_status = 0
+        last_headers: dict[str, str] = {}
+        for _attempt in range(6):
+            last_status, last_headers, body = _http_json(
+                "POST",
+                url,
+                {"username": "bilal.21k3551@nu.edu.pk", "access_code": "wrong-code"},
+            )
+        assert last_status == 429
+        assert body["message"] == "Too Many Requests"
+        assert body["reason"] == "login_rate_limited"
+        assert int(last_headers.get("Retry-After") or last_headers.get("retry-after") or "0") >= 1
+    finally:
+        server.shutdown()
+        reset_login_rate_limiter()
+
+
+def test_uniform_invalid_credentials_no_enumeration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from threatfusion.operations.commercial_hardening import reset_login_rate_limiter
+
+    reset_login_rate_limiter()
+    server, _thread = _listen(tmp_path / "live.sqlite3", monkeypatch)
+    host, port = server.server_address
+    url = f"http://{host}:{port}/api/rbac/login"
+    try:
+        unknown_status, _headers, unknown = _http_json(
+            "POST",
+            url,
+            {"username": "nobody@example.com", "access_code": "not-a-real-code"},
+        )
+        wrong_status, _headers, wrong = _http_json(
+            "POST",
+            url,
+            {"username": "bilal.21k3551@nu.edu.pk", "access_code": "wrong-code"},
+        )
+    finally:
+        server.shutdown()
+        reset_login_rate_limiter()
+    assert unknown_status == wrong_status == 401
+    assert unknown == wrong
+    assert unknown["message"] == "Invalid credentials"
+    assert "username" not in unknown
+    assert "not registered" not in json.dumps(unknown).lower()
+
+
+def test_auth_events_audited(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from threatfusion.api.live_soc_console import rbac_login, rbac_register
+    from threatfusion.operations.commercial_hardening import reset_login_rate_limiter
+
+    reset_login_rate_limiter()
+    database = tmp_path / "live.sqlite3"
+    monkeypatch.setenv("THREATFUSION_ENV", "lab")
+    monkeypatch.setenv("THREATFUSION_DATA_DIR", str(tmp_path))
+    refused = rbac_login(
+        database,
+        username="bilal.21k3551@nu.edu.pk",
+        access_code="wrong-code",
+        client_ip="203.0.113.8",
+    )
+    assert refused["http_status"] == 401
+    signed_in = rbac_login(
+        database,
+        username="bilal.21k3551@nu.edu.pk",
+        access_code="TF-Bilal-3551!",
+        client_ip="203.0.113.8",
+    )
+    assert signed_in["authenticated"] is True
+    created = rbac_register(
+        database,
+        username="new.analyst@example.com",
+        access_code="analyst-code-1",
+        display_name="New Analyst",
+        role="tier1_triage",
+    )
+    assert created["authenticated"] is True
+    server, _thread = _listen(database, monkeypatch)
+    host, port = server.server_address
+    try:
+        for _attempt in range(6):
+            _http_json(
+                "POST",
+                f"http://{host}:{port}/api/rbac/login",
+                {"username": "rate.limit@example.com", "access_code": "wrong-code"},
+            )
+    finally:
+        server.shutdown()
+        reset_login_rate_limiter()
+    connection = sqlite3.connect(database)
+    events = {
+        str(row[0]) for row in connection.execute("SELECT DISTINCT event_type FROM auth_audit_log")
+    }
+    connection.close()
+    assert {
+        "login_success",
+        "login_failed",
+        "login_rate_limited",
+        "operator_registered",
+    } <= events
+
+
+def test_protected_allowlist_blocks_self_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from threatfusion.operations.commercial_hardening import (
+        guard_isolation_source,
+        reset_login_rate_limiter,
+    )
+
+    reset_login_rate_limiter()
+    monkeypatch.setenv("SSH_CLIENT", "203.0.113.44 54000 22")
+    for address in ("127.0.0.1", "::1", "169.254.10.10", "203.0.113.44"):
+        guarded = guard_isolation_source(address)
+        assert guarded is not None
+        assert guarded["http_status"] == 400
+        assert guarded["reason"] == "protected_infrastructure_ip"
+    assert guard_isolation_source("172.29.0.10") is None
+    server, _thread = _listen(tmp_path / "live.sqlite3", monkeypatch)
+    monkeypatch.setenv("SSH_CLIENT", "203.0.113.44 54000 22")
+    host, port = server.server_address
+    try:
+        status, _headers, body = _http_json(
+            "POST",
+            f"http://{host}:{port}/api/soar/isolate",
+            {"src_ip": "127.0.0.1", "flow_id": 1},
+        )
+    finally:
+        server.shutdown()
+    assert status == 400
+    assert body["reason"] == "protected_infrastructure_ip"
+    console = (SRC / "threatfusion/api/live_soc_console.py").read_text(encoding="utf-8")
+    server_text = (ROOT / "scripts/run_misp_and_callback_contract_server.py").read_text(
+        encoding="utf-8"
+    )
+    assert "shell=True" not in console
+    assert "shell=True" not in server_text
+
+
+def test_invalid_ip_rejected_400(monkeypatch: pytest.MonkeyPatch) -> None:
+    from threatfusion.operations.commercial_hardening import (
+        assert_isolation_command_safe,
+        guard_isolation_source,
+    )
+
+    monkeypatch.delenv("SSH_CLIENT", raising=False)
+    for address in ("not-an-ip", "10.0.0.4; rm -rf /", "172.29.0.10 && id"):
+        guarded = guard_isolation_source(address)
+        assert guarded is not None
+        assert guarded["http_status"] == 400
+        assert guarded["reason"] == "invalid_ip"
+        with pytest.raises(ValueError):
+            assert_isolation_command_safe(address)
+    assert assert_isolation_command_safe("172.29.0.10") == "172.29.0.10"
+
+
+def test_security_headers_and_readyz(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from threatfusion.api.live_soc_console import build_compliance_dossier
+
+    server, _thread = _listen(tmp_path / "live.sqlite3", monkeypatch)
+    host, port = server.server_address
+    try:
+        status, headers, body = _http_json("GET", f"http://{host}:{port}/readyz")
+    finally:
+        server.shutdown()
+    assert status == 200
+    assert body["status"] == "ready"
+    assert body["pill"] == "DB WAL · Models 4/4 · RAG Ready"
+    assert headers["X-Content-Type-Options"] == "nosniff"
+    assert headers["X-Frame-Options"] == "DENY"
+    assert headers["Referrer-Policy"] == "no-referrer"
+    assert "default-src 'self'" in headers["Content-Security-Policy"]
+    assert "http://" not in headers["Content-Security-Policy"]
+    assert headers["Cache-Control"] == "no-store"
+    dossier = build_compliance_dossier(tmp_path / "live.sqlite3", repo_root=ROOT)
+    markdown = str(dossier["dossier_markdown"])
+    assert "Advisory Trace (Decision writes: 0, Frozen RF authoritative, Gate G9: PASS)" in markdown
+    assert "POSTURE: LAB DEMO" in markdown
+    assert "DB WAL · Models 4/4 · RAG Ready" in markdown
+    assert "TF-008, TF-009, TF-010, and TF-011 remain open." in markdown
+
+
+def test_fresh_clone_zero_laptop_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from threatfusion.operations.commercial_hardening import prepare_cold_boot
+
+    monkeypatch.delenv("THREATFUSION_SOAR_HMAC_SECRET", raising=False)
+    report = prepare_cold_boot(tmp_path / "empty-data", ROOT)
+    assert report["directory_mode"] == 0o700
+    assert report["journal_mode"] == "wal"
+    assert report["synchronous"] == 1
+    assert report["busy_timeout"] == 5000
+    assert "auth_audit_log_block_update" in report["triggers"]
+    assert "auth_audit_log_block_delete" in report["triggers"]
+    assert report["hmac_mode"] == 0o600
+    assert report["chromadb_ready"] is True
+    assert report["fixtures_verified"] is True
+    assert report["models"]["ok"] is True
+    assert Path(report["data_dir"]) == tmp_path / "empty-data"
+    connection = sqlite3.connect(report["db_path"])
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute("UPDATE auth_audit_log SET detail = 'tampered' WHERE event_id = 1")
+        connection.commit()
+    connection.close()
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", *_MODEL_RELATIVE],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert tracked.returncode == 0, tracked.stderr
+    for relative in _MODEL_RELATIVE:
+        assert (ROOT / relative).stat().st_size < 50 * 1024 * 1024
+    fixture = ROOT / "artifacts/benchmarks/unsw_nb15_calibrated_runtime_fixtures.json"
+    loaded = json.loads(fixture.read_text(encoding="utf-8"))
+    assert loaded["held_out_rows"] == 507846
+    assert loaded["requires_raw_csv"] is False
+    assert stat.S_IMODE(Path(report["hmac_path"]).stat().st_mode) == 0o600
+
+
+def test_no_hardcoded_personal_paths_or_cloud_ids() -> None:
+    personal = "/home/" + "muhammad-bilal"
+    offenders: list[str] = []
+    suffixes = {".py", ".sh", ".js", ".html", ".css", ".yml", ".yaml"}
+    for base in (ROOT / "backend" / "src", ROOT / "frontend", ROOT / "scripts"):
+        for path in base.rglob("*"):
+            if not path.is_file() or path.suffix not in suffixes:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            if personal in text:
+                offenders.append(f"{path}: personal path")
+            for needle in _PERSONAL_CLOUD_IDS:
+                if needle in text:
+                    offenders.append(f"{path}: {needle}")
+    assert offenders == []
+    index = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    assert "http://" not in index
+    assert "https://" not in index
+    cloud = (ROOT / "scripts" / "deploy_cloud_range.sh").read_text(encoding="utf-8")
+    assert "ssh -N -L 8766:127.0.0.1:8766" in cloud
+    assert "THREATFUSION_ENV=production" in cloud
+    assert "--exclude .git" in cloud
+    assert "/readyz" in cloud
+    assert "tcp:8766" not in cloud
+    assert "Port 8766 stays closed to 0.0.0.0/0" in cloud
+    assert "Idle burn 0.00" in cloud
+    demo = (ROOT / "scripts" / "run_full_range_demo.sh").read_text(encoding="utf-8")
+    assert 'THREATFUSION_ENV="${THREATFUSION_ENV:-lab}"' in demo

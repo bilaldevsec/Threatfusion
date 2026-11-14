@@ -52,7 +52,7 @@ def _find_repo_root(hint: Path | None = None) -> Path:
     for parent in (current, *current.parents):
         if (parent / ".git").exists() or (parent / "artifacts").exists():
             return parent
-    return Path("/home/muhammad-bilal/projects/threatfusion-gemini")
+    return Path(__file__).resolve().parents[4]
 
 
 def _compute_sha256(path: Path) -> str:

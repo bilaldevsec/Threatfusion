@@ -28,8 +28,13 @@ import re
 import sys
 from typing import Any
 
-_DECLARED_ACTIVE_WORKSPACE = Path("/home/muhammad-bilal/projects/threatfusion-gemini")
-CANONICAL_PROTECTED_WORKSPACE = Path("/home/muhammad-bilal/projects/threatfusion")
+
+def _module_checkout_root() -> Path:
+    return Path(__file__).resolve().parents[4]
+
+
+_DECLARED_ACTIVE_WORKSPACE = _module_checkout_root()
+CANONICAL_PROTECTED_WORKSPACE = _module_checkout_root().parent / "threatfusion"
 _ACTIVE_ANCHOR_DEPTH = 4
 
 

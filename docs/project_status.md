@@ -3,7 +3,9 @@
 ## Snapshot
 
 The following baseline snapshot is dated 2026-09-24 on `main`; later Gemini-branch milestones appear
-below. The corrected v2 experiment is checkpointed and pushed at
+below. On 2026-11-14 the console gained a lab/production posture, login rate limiting,
+immutable auth audit events, isolation IP guards, a cold-boot data directory, and `GET /readyz`.
+`TF-008`, `TF-009`, `TF-010`, and `TF-011` stay open. `production_fusion_enabled` stays false. The corrected v2 experiment is checkpointed and pushed at
 `8aa26ba250e4a63f95d90960ec87e224325b6d2f`; Backend quality run `35438412921` passed. The FYP-II
 recorded-data demonstration is checkpointed and pushed at
 `f71a5e74186a8975b4ca090b9d1a987384a55da4`. Both autoencoder runs and generated demonstration

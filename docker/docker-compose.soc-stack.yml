@@ -12,6 +12,7 @@ services:
   chromadb:
     image: chromadb/chroma:0.5.20
     container_name: threatfusion_chromadb
+    restart: unless-stopped
     environment:
       - IS_PERSISTENT=TRUE
       - PERSIST_DIRECTORY=/chroma/chroma
@@ -31,6 +32,7 @@ services:
   misp-connector:
     image: python:3.11.10-slim
     container_name: threatfusion_misp_connector
+    restart: unless-stopped
     command: python /app/scripts/run_misp_and_callback_contract_server.py --port 8080 --bind 172.28.0.10
     environment:
       - THREATFUSION_MISP_API_KEY=${THREATFUSION_MISP_API_KEY:?required}
@@ -53,6 +55,7 @@ services:
   threatfusion-callback:
     image: python:3.11.10-slim
     container_name: threatfusion_callback
+    restart: unless-stopped
     command: python /app/scripts/run_misp_and_callback_contract_server.py --port 8443 --bind 172.28.0.11 --soar-db-path /app/data/soar.sqlite3
     environment:
       - THREATFUSION_SOAR_HMAC_SECRET=${THREATFUSION_SOAR_HMAC_SECRET:?required}
@@ -76,6 +79,7 @@ services:
   thehive:
     image: strangebee/thehive:5.2.10
     container_name: threatfusion_thehive
+    restart: unless-stopped
     environment:
       - APPLICATION_SECRET=${THREATFUSION_THEHIVE_SECRET:?required}
       - THREATFUSION_THEHIVE_API_KEY=${THREATFUSION_THEHIVE_API_KEY:?required}
@@ -94,6 +98,7 @@ services:
   n8n:
     image: n8nio/n8n:1.68.0
     container_name: threatfusion_n8n
+    restart: unless-stopped
     environment:
       - N8N_BASIC_AUTH_ACTIVE=true
       - N8N_BASIC_AUTH_USER=${THREATFUSION_N8N_USER:?required}

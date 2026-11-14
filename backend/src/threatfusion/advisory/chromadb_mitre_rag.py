@@ -545,6 +545,7 @@ class ChromaDbMitrePlaybookRag:
         conn.isolation_level = None
         conn.execute("PRAGMA journal_mode=WAL")
         conn.isolation_level = previous_isolation
+        conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
     def _init_store(self) -> None:

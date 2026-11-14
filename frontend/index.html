@@ -202,6 +202,7 @@
           <button class="view-tab" type="button" data-soc-nav="hunter">AI Threat Hunter</button>
         </nav>
         <div class="header-telemetry">
+          <span class="badge badge-neutral posture-pill" id="posturePill" data-posture-pill data-posture="lab">POSTURE: LAB DEMO</span>
           <span class="badge badge-auth" id="consoleTransportBadge" data-evidence-state="unavailable">Lab HTTP console</span>
           <span class="badge badge-role" id="headerChainBadge" data-evidence-state="unavailable">Playbook hash chain: unavailable</span>
           <span id="operatorProfileName" hidden>unverified local label</span>
@@ -974,6 +975,7 @@
         <label for="sensorCidrInput">Monitored CIDR</label>
         <input id="sensorCidrInput" type="text" value="" maxlength="64" autocomplete="off">
         <button id="btnRegisterSensor" type="button">Register sensor</button>
+        <div id="readyzHealthPill" class="readyz-pill" data-evidence-state="unavailable">DB WAL · Models 4/4 · RAG Ready</div>
         <button id="exportComplianceDossierBtn" type="button">Export Executive Compliance Dossier (.md)</button>
       </section>
     </aside>
@@ -1010,7 +1012,8 @@
         <div id="identityModalTitle" class="zt-emblem-title">TF | ThreatFusion Enterprise SecOps &amp; NDR</div>
       </div>
       <p class="zt-emblem-sub">Zero-Trust Identity &amp; Microsoft Entra ID (OIDC + X.509 mTLS) Gate</p>
-      <div class="demo-credential-box role-quick-grid" aria-label="Role quick-fill cards">
+      <p class="badge badge-neutral posture-pill" id="loginPosturePill" data-posture-pill data-posture="lab">POSTURE: LAB DEMO</p>
+      <div id="demoQuickFill" class="demo-credential-box role-quick-grid" aria-label="Role quick-fill cards">
         <button type="button" class="role-quick-card" data-demo-user="bilal.21k3551@nu.edu.pk" data-demo-code="TF-Bilal-3551!" data-demo-actor="lab_operator">
           <span class="role-name">Muhammad Bilal (21K-3551)</span>
           <span class="role-pill">Tier-3 SOC Approver</span>

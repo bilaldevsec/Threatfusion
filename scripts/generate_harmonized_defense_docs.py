@@ -50,10 +50,9 @@ SPEAKERS = (
     ),
 )
 
-DEFAULT_REPORTS_DIR = Path("/home/muhammad-bilal/projects/threatfusion-gemini/artifacts/reports")
-DEFAULT_GUIDE_MD_PATH = Path(
-    "/home/muhammad-bilal/projects/threatfusion-gemini/docs/presenter_guide_15_slides_rev2.md"
-)
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_REPORTS_DIR = _REPO_ROOT / "artifacts" / "reports"
+DEFAULT_GUIDE_MD_PATH = _REPO_ROOT / "docs" / "presenter_guide_15_slides_rev2.md"
 
 
 def _write_docx_file(items: list[tuple[str, str]], output_path: Path, doc_title: str) -> None:

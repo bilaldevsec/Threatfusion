@@ -123,6 +123,7 @@ def _connect(db_path: Path) -> sqlite3.Connection:
         conn.execute("PRAGMA busy_timeout = 5000")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.isolation_level = previous
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS live_flows (
                 flow_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,6 +175,9 @@ def _connect(db_path: Path) -> sqlite3.Connection:
             WHERE source_event_id IS NOT NULL
             """)
         _ensure_enterprise_catalog(conn)
+        from threatfusion.operations.commercial_hardening import ensure_auth_audit_schema
+
+        ensure_auth_audit_schema(conn)
         conn.commit()
     if db_path.exists():
         os.chmod(db_path, stat.S_IRUSR | stat.S_IWUSR)
@@ -6604,7 +6608,9 @@ _AZURE_REMOTE_COMMANDS = {
 
 def range_docker_argv(action: str) -> tuple[str, ...]:
     """Commands that run only inside the victim or attacker container."""
-    source = f"{RANGE_CONTAINMENT_SOURCE}/32"
+    from threatfusion.operations.commercial_hardening import assert_isolation_command_safe
+
+    source = f"{assert_isolation_command_safe(RANGE_CONTAINMENT_SOURCE)}/32"
     if action == "status":
         return ("docker", "inspect", "-f", "{{.State.Running}}", RANGE_VICTIM_CONTAINER)
     if action == "drop_check":
@@ -6731,6 +6737,12 @@ def azure_victim_ssh_argv(
     public_ip: str, action: str, ssh_user: str = "azureuser"
 ) -> tuple[str, ...]:
     """Non-interactive SSH argv for the recorded victim kernel filter."""
+    from threatfusion.operations.commercial_hardening import assert_isolation_command_safe
+
+    assert_isolation_command_safe(RANGE_CONTAINMENT_SOURCE)
+    parsed_host = ipaddress.ip_address(str(public_ip).strip())
+    if parsed_host.is_loopback or parsed_host.is_link_local or parsed_host.is_unspecified:
+        raise ValueError("protected_infrastructure_ip")
     remote = _AZURE_REMOTE_COMMANDS[action]
     user = ssh_user if _SSH_USER_RE.fullmatch(ssh_user or "") else "azureuser"
     return (
@@ -7012,6 +7024,11 @@ def _authorized_range_flow(
     if str(flow["decision"] or "") != "Attack":
         return None, _containment_refusal("benign_flow_containment_blocked", 403)
     src_entity_id = _flow_field(flow, "src_entity_id")
+    from threatfusion.operations.commercial_hardening import guard_isolation_source
+
+    guarded = guard_isolation_source(src_entity_id)
+    if guarded is not None:
+        return None, guarded
     scenario_source = src_entity_id == SCENARIO_CONTAINMENT_SOURCE and _scenario_replay_flow(flow)
     if src_entity_id not in {RANGE_CONTAINMENT_SOURCE, SCENARIO_CONTAINMENT_SOURCE}:
         return None, _containment_refusal("containment_target_rejected", 403)
@@ -7869,13 +7886,19 @@ def _per_class_metrics(matrix: Any, classes: Sequence[str]) -> list[dict[str, An
 
 def _read_dnn_evaluation_report(repo_root: Path) -> dict[str, Any]:
     path = repo_root / _DNN_REPORT_RELATIVE
-    if path.is_symlink() or not path.is_file():
-        return {}
-    try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
+    loaded: dict[str, Any] | None = None
+    if not path.is_symlink() and path.is_file():
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            parsed = None
+        if isinstance(parsed, dict):
+            loaded = parsed
+    if loaded:
+        return loaded
+    from threatfusion.operations.commercial_hardening import runtime_scorecard_fallback
+
+    return runtime_scorecard_fallback(repo_root)
 
 
 def _benchmark_scorecard(repo_root: Path) -> dict[str, Any]:
@@ -8591,6 +8614,7 @@ def _ensure_rbac_accounts(conn: sqlite3.Connection) -> None:
             for seed in _RBAC_SEEDS
         ],
     )
+    _lock_demo_passwords_for_production(conn)
 
 
 def _lab_operator_certificate_enrolled() -> bool:
@@ -8665,7 +8689,38 @@ def operator_header_identity(
     }
 
 
+def _lock_demo_passwords_for_production(conn: sqlite3.Connection) -> None:
+    """Replace the three lab hashes with a one-time bootstrap secret in production."""
+    from threatfusion.operations.commercial_hardening import (
+        KNOWN_DEMO_PASSWORD_HASHES,
+        demo_passwords_enabled,
+        ensure_bootstrap_admin_secret,
+        resolve_data_dir,
+    )
+
+    if demo_passwords_enabled():
+        return
+    secret = ensure_bootstrap_admin_secret(resolve_data_dir())
+    admin_user = "bilal.21k3551@nu.edu.pk"
+    rows = conn.execute("SELECT username, password_hash FROM rbac_accounts").fetchall()
+    for row in rows:
+        if str(row["password_hash"]) not in KNOWN_DEMO_PASSWORD_HASHES:
+            continue
+        if str(row["username"]) == admin_user:
+            replacement = _hash_password(secret)
+        else:
+            replacement = _hash_password(secrets.token_hex(32))
+        conn.execute(
+            "UPDATE rbac_accounts SET password_hash = ? WHERE username = ?",
+            (replacement, str(row["username"])),
+        )
+
+
 def _verify_password(stored: str, password: str) -> bool:
+    from threatfusion.operations.commercial_hardening import demo_password_rejected
+
+    if demo_password_rejected(password):
+        return False
     parts = str(stored or "").split("$")
     if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
         return False
@@ -8861,7 +8916,25 @@ def _rbac_refused(reason: str, status: int) -> dict[str, Any]:
         "certificate_subject": "",
         "production_fusion_enabled": False,
         "http_status": status,
+        "message": "Invalid credentials" if reason == "invalid_credentials" else reason,
     }
+
+
+def _audit_auth(
+    db_path: Path,
+    event_type: str,
+    username: str,
+    client_ip: str,
+    detail: str,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    from threatfusion.operations.commercial_hardening import record_auth_event
+
+    if conn is not None:
+        record_auth_event(conn, event_type, username, client_ip, detail)
+        return
+    with _connect(db_path) as opened:
+        record_auth_event(opened, event_type, username, client_ip, detail)
 
 
 def rbac_login(
@@ -8871,13 +8944,21 @@ def rbac_login(
     email: str = "",
     access_code: str = "",
     entra_token: str = "",
+    client_ip: str = "",
 ) -> dict[str, Any]:
     """Authenticate with an access code or a Microsoft Entra ID token, then open a session."""
     presented = str(entra_token or "").strip()
     if presented:
         verified = verify_entra_token(db_path, presented)
         if int(verified.get("http_status") or 401) != 200:
-            return _rbac_refused(str(verified.get("reason") or "entra_token_invalid"), 401)
+            _audit_auth(
+                db_path,
+                "login_failed",
+                str(username or email or ""),
+                client_ip,
+                "invalid_credentials",
+            )
+            return _rbac_refused("invalid_credentials", 401)
         actor = str(verified.get("actor_id") or "")
         with _connect(db_path) as conn:
             row = conn.execute(
@@ -8885,14 +8966,24 @@ def rbac_login(
                 (actor,),
             ).fetchone()
             if row is None:
-                return _rbac_refused("operator_not_registered", 403)
+                _audit_auth(
+                    db_path,
+                    "login_failed",
+                    actor,
+                    client_ip,
+                    "invalid_credentials",
+                    conn,
+                )
+                return _rbac_refused("invalid_credentials", 401)
             token = _issue_session(conn, row)
             public = _account_public(row, session_token=token)
+            _audit_auth(db_path, "login_success", str(row["username"]), client_ip, "entra", conn)
         switch_operator(db_path, actor_id=str(public["actor_id"]))
         public["reason"] = "entra_token_verified"
         return public
     user = str(username or email or "").strip().lower()
     if _RBAC_EMAIL.fullmatch(user) is None or not str(access_code or ""):
+        _audit_auth(db_path, "login_failed", user, client_ip, "invalid_credentials")
         return _rbac_refused("invalid_credentials", 401)
     with _connect(db_path) as conn:
         row = conn.execute(
@@ -8900,9 +8991,11 @@ def rbac_login(
             (user,),
         ).fetchone()
         if row is None or not _verify_password(str(row["password_hash"]), access_code):
+            _audit_auth(db_path, "login_failed", user, client_ip, "invalid_credentials", conn)
             return _rbac_refused("invalid_credentials", 401)
         token = _issue_session(conn, row)
         public = _account_public(row, session_token=token)
+        _audit_auth(db_path, "login_success", user, client_ip, "access_code_verified", conn)
     switch_operator(db_path, actor_id=str(public["actor_id"]))
     public["reason"] = "access_code_verified"
     return public
@@ -8983,6 +9076,7 @@ def rbac_register(
                 datetime.now(UTC).isoformat(),
             ),
         )
+        _audit_auth(db_path, "operator_registered", user, "", "rbac_register", conn)
     registered = register_operator(db_path, actor_id=actor, display_name=name, role=chosen)
     if int(registered.get("http_status") or 400) != 200:
         return _rbac_refused(str(registered.get("reason") or "operator_invalid"), 400)
@@ -9464,6 +9558,24 @@ def build_compliance_dossier(
         key: spec["expected_sha256"] for key, spec in FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY.items()
     }
     active = workspaces.get("active_workspace_id")
+    from threatfusion.operations.commercial_hardening import (
+        ADVISORY_TRACE_DOSSIER_LINE,
+        build_readiness,
+        console_posture,
+    )
+
+    posture = console_posture()
+    try:
+        readiness = build_readiness(root, db_path)
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        readiness = {
+            "status": "degraded",
+            "pill": "DB UNAVAILABLE · Models 0/4 · RAG Unavailable",
+            "sqlite_wal": False,
+            "models_verified": "0/4",
+            "chromadb_ready": False,
+        }
+    advisory_line = ADVISORY_TRACE_DOSSIER_LINE
     lines = [
         "# ThreatFusion Executive Compliance Dossier",
         "",
@@ -9520,6 +9632,17 @@ def build_compliance_dossier(
             f"- Verified: {ledger['verified']}",
             f"- Detail: {ledger.get('message') or ledger.get('reason') or 'unavailable'}",
             "",
+            "## Advisory Trace",
+            advisory_line,
+            "",
+            "## Posture / Readiness",
+            str(posture.get("posture_label") or ""),
+            str(readiness.get("pill") or ""),
+            f"- Readiness: {readiness.get('status')}",
+            f"- SQLite WAL: {readiness.get('sqlite_wal')}",
+            f"- Frozen models: {readiness.get('models_verified')}",
+            f"- ChromaDB: {readiness.get('chromadb_ready')}",
+            "",
             "TF-008, TF-009, TF-010, and TF-011 remain open.",
             "production_fusion_enabled = False. The frozen Random Forest remains the alert authority.",
         ]
@@ -9543,6 +9666,9 @@ def build_compliance_dossier(
         "funnel": funnel,
         "playbook_ledger": ledger,
         "open_gates": ["TF-008", "TF-009", "TF-010", "TF-011"],
+        "advisory_trace": advisory_line,
+        "posture": posture,
+        "readiness": readiness,
         "dossier_markdown": "\n".join(lines) + "\n",
         "http_status": 200,
     }

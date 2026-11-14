@@ -424,11 +424,30 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return True
         return False
 
-    def _send_json(self, status_code: int, data: dict[str, Any]) -> None:
+    def _client_ip(self) -> str:
+        if self.client_address:
+            return str(self.client_address[0])
+        return ""
+
+    def _write_security_headers(self, *, cache_no_store: bool) -> None:
+        from threatfusion.operations.commercial_hardening import security_headers
+
+        for name, value in security_headers(cache_no_store=cache_no_store):
+            self.send_header(name, value)
+
+    def _send_json(
+        self,
+        status_code: int,
+        data: dict[str, Any],
+        extra_headers: list[tuple[str, str]] | None = None,
+    ) -> None:
         payload = json.dumps(data, indent=2).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
+        self._write_security_headers(cache_no_store=True)
+        for name, value in extra_headers or []:
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(payload)
 
@@ -440,6 +459,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(content)))
+        self._write_security_headers(cache_no_store=False)
         self.end_headers()
         self.wfile.write(content)
 
@@ -481,6 +501,17 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return
         if path in ("/healthz", "/api/v1/heartbeat", "/api/status"):
             self._send_json(200, {"status": "ok", "service": "threatfusion_soc_contract_server"})
+            return
+        if path == "/readyz":
+            from threatfusion.operations.commercial_hardening import build_readiness
+
+            report = build_readiness(REPO_ROOT, self._live_db_path())
+            self._send_json(int(report.get("http_status") or 503), report)
+            return
+        if path == "/api/v1/live/posture":
+            from threatfusion.operations.commercial_hardening import console_posture
+
+            self._send_json(200, console_posture())
             return
         if path == "/api/v1/live/queue":
             from threatfusion.api.live_soc_console import list_live_flows
@@ -896,6 +927,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "Not Found", "path": str(index_path)})
             return
         page = index_path.read_text(encoding="utf-8")
+        from threatfusion.operations.commercial_hardening import apply_posture_to_index
+
+        page = apply_posture_to_index(page)
         token = html.escape(_LIVE_CSRF_TOKEN, quote=True)
         meta = f'<meta name="threatfusion-csrf-token" content="{token}">'
         if "<head>" in page:
@@ -905,8 +939,8 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         content = page.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(content)))
+        self._write_security_headers(cache_no_store=True)
         self.end_headers()
         self.wfile.write(content)
 
@@ -924,6 +958,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         if allow:
             self.send_header("Allow", allow)
         self.send_header("Content-Length", str(len(payload)))
+        self._write_security_headers(cache_no_store=True)
         self.end_headers()
         self.wfile.write(payload)
 
@@ -1602,6 +1637,14 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if not isinstance(req_data, dict):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
+            presented_src = str(req_data.get("src_ip") or "").strip()
+            if presented_src:
+                from threatfusion.operations.commercial_hardening import guard_isolation_source
+
+                guarded = guard_isolation_source(presented_src)
+                if guarded is not None:
+                    self._send_json(400, guarded)
+                    return
             raw_flow = req_data.get("flow_id")
             flow_id = raw_flow if isinstance(raw_flow, int) else 0
             actor_id = str(req_data.get("actor_id") or "")
@@ -1769,12 +1812,15 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if not isinstance(req_data, dict):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
+            client_ip = self._client_ip()
             if path == "/api/rbac/logout":
                 token = str(req_data.get("session_token") or "")
                 if not token:
                     token = (self.headers.get("X-ThreatFusion-Session") or "").strip()
                 result = rbac_logout(self._live_db_path(), token)
-            elif path == "/api/rbac/register":
+                self._send_json(int(result.get("http_status") or 401), result)
+                return
+            if path == "/api/rbac/register":
                 result = rbac_register(
                     self._live_db_path(),
                     username=str(req_data.get("username") or req_data.get("email") or ""),
@@ -1782,14 +1828,51 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                     display_name=str(req_data.get("display_name") or ""),
                     role=str(req_data.get("role") or ""),
                 )
-            else:
-                result = rbac_login(
+                self._send_json(int(result.get("http_status") or 401), result)
+                return
+            from threatfusion.operations.commercial_hardening import (
+                LOGIN_RATE_LIMITER,
+                append_auth_event,
+                uniform_invalid_credentials,
+            )
+
+            email = str(req_data.get("username") or req_data.get("email") or "")
+            retry_after = LOGIN_RATE_LIMITER.rejected(client_ip, email)
+            if retry_after is not None:
+                append_auth_event(
                     self._live_db_path(),
-                    username=str(req_data.get("username") or req_data.get("email") or ""),
-                    access_code=str(req_data.get("access_code") or req_data.get("password") or ""),
-                    entra_token=str(req_data.get("entra_token") or req_data.get("id_token") or ""),
+                    "login_rate_limited",
+                    email,
+                    client_ip,
+                    "sliding_window",
                 )
-            self._send_json(int(result.get("http_status") or 401), result)
+                self._send_json(
+                    429,
+                    {
+                        "schema_version": "rbac_session_v1",
+                        "authenticated": False,
+                        "evidence_state": "unavailable",
+                        "reason": "login_rate_limited",
+                        "message": "Too Many Requests",
+                        "production_fusion_enabled": False,
+                        "http_status": 429,
+                    },
+                    extra_headers=[("Retry-After", str(retry_after))],
+                )
+                return
+            result = rbac_login(
+                self._live_db_path(),
+                username=email,
+                access_code=str(req_data.get("access_code") or req_data.get("password") or ""),
+                entra_token=str(req_data.get("entra_token") or req_data.get("id_token") or ""),
+                client_ip=client_ip,
+            )
+            status = int(result.get("http_status") or 401)
+            entra = str(req_data.get("entra_token") or req_data.get("id_token") or "")
+            if status == 401 and not entra:
+                LOGIN_RATE_LIMITER.record_failure(client_ip, email)
+                result = uniform_invalid_credentials()
+            self._send_json(status, result)
             return
 
         if path == "/api/v1/live/operators/switch":
@@ -2393,6 +2476,17 @@ def run_server(
     import threatfusion.api  # noqa: F401
     import threatfusion.api.analyst_dashboard  # noqa: F401
     import threatfusion.api.live_soc_console  # noqa: F401
+    from threatfusion.operations.commercial_hardening import (
+        ensure_bootstrap_admin_secret,
+        ensure_hmac_secret,
+        resolve_data_dir,
+        threatfusion_environment,
+    )
+
+    data_dir = resolve_data_dir()
+    ensure_hmac_secret(data_dir)
+    if threatfusion_environment() == "production":
+        ensure_bootstrap_admin_secret(data_dir)
 
     server_address = (bind_addr, port)
     try:

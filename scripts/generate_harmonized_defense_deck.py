@@ -13,6 +13,7 @@ Supports both:
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -20,9 +21,15 @@ from typing import Any
 from pptx import Presentation
 from pptx.util import Inches, Pt
 
-DEFAULT_INPUT_PATH = Path("/home/muhammad-bilal/Downloads/Final Presentation (1).pptx")
-DEFAULT_OUTPUT_PATH = Path(
-    "/home/muhammad-bilal/projects/threatfusion-gemini/artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx"
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_INPUT_PATH = Path(
+    os.environ.get(
+        "THREATFUSION_DEFENSE_DECK_INPUT",
+        str(_REPO_ROOT / "artifacts" / "reports" / "Final_Presentation.pptx"),
+    )
+)
+DEFAULT_OUTPUT_PATH = (
+    _REPO_ROOT / "artifacts" / "reports" / "ThreatFusion_FYP2_Final_Defense_Harmonized.pptx"
 )
 
 # Comprehensive speaker notes for each of the 15 slides with exact unrounded numbers

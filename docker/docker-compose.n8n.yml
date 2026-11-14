@@ -3,6 +3,7 @@ services:
   n8n:
     image: n8nio/n8n:1.68.0
     container_name: threatfusion_n8n_live
+    restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

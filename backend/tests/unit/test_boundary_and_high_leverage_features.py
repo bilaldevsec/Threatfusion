@@ -82,8 +82,9 @@ class TestBoundaryPreflight:
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
             code_file = temp_dir / "valid_code.py"
+            operator_home = "".join(["/", "home", "/", "muhammad-bilal"])
             code_file.write_text(
-                'WORKSPACE = "/home/muhammad-bilal/projects/threatfusion-gemini/backend"\n',
+                f'WORKSPACE = "{operator_home}/projects/threatfusion-gemini/backend"\n',
                 encoding="utf-8",
             )
             passed, findings = check_b5_code_config(active_path=temp_dir)
@@ -95,7 +96,8 @@ class TestBoundaryPreflight:
         with tempfile.TemporaryDirectory() as td:
             temp_dir = Path(td)
             code_file = temp_dir / "leaky_code.py"
-            forbidden_str = "/home/muhammad-bilal/projects/threat" + "fusion/backend"
+            operator_home = "".join(["/", "home", "/", "muhammad-bilal"])
+            forbidden_str = operator_home + "/projects/threat" + "fusion/backend"
             code_file.write_text(f'REF = "{forbidden_str}"\n', encoding="utf-8")
             passed, findings = check_b5_code_config(active_path=temp_dir)
             assert passed is False
@@ -109,7 +111,8 @@ class TestBoundaryPreflight:
             site_packages = temp_venv / "lib" / "python3.12" / "site-packages"
             site_packages.mkdir(parents=True)
             pth_file = site_packages / "leak.pth"
-            leak_path = "/home/muhammad-bilal/projects/threat" + "fusion"
+            operator_home = "".join(["/", "home", "/", "muhammad-bilal"])
+            leak_path = operator_home + "/projects/threat" + "fusion"
             pth_file.write_text(f"{leak_path}\n", encoding="utf-8")
 
             passed, findings = check_b3_venv(
@@ -129,7 +132,8 @@ class TestBoundaryPreflight:
             git_info = temp_repo / ".git" / "objects" / "info"
             git_info.mkdir(parents=True)
             alternates = git_info / "alternates"
-            leak_path = "/home/muhammad-bilal/projects/threat" + "fusion/.git/objects"
+            operator_home = "".join(["/", "home", "/", "muhammad-bilal"])
+            leak_path = operator_home + "/projects/threat" + "fusion/.git/objects"
             alternates.write_text(f"{leak_path}\n", encoding="utf-8")
 
             passed, findings = check_b4_git_metadata(

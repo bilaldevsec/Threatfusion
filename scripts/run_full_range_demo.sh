@@ -53,6 +53,10 @@ else
 fi
 SERVER="${ROOT}/scripts/run_misp_and_callback_contract_server.py"
 DEMO_DIR="${TMPDIR:-/tmp}/threatfusion-range-demo"
+export THREATFUSION_ENV="${THREATFUSION_ENV:-lab}"
+export THREATFUSION_DATA_DIR="${THREATFUSION_DATA_DIR:-$DEMO_DIR}"
+mkdir -p "$THREATFUSION_DATA_DIR"
+chmod 700 "$THREATFUSION_DATA_DIR" 2>/dev/null || true
 CONSOLE_PIDFILE="${DEMO_DIR}/console.pid"
 FOLLOWER_PIDFILE="${DEMO_DIR}/follower.pid"
 FOLLOWER_LOG="${DEMO_DIR}/follower.log"

@@ -1,5 +1,14 @@
 /* Visual model observatory, enterprise workspace drawer, and range launcher. */
 
+.posture-pill[data-posture="lab"] { border-color: #d29922; }
+.posture-pill[data-posture="production"] { border-color: #3fb950; }
+.readyz-pill {
+  margin: 0.5rem 0;
+  font-weight: 600;
+}
+.readyz-pill[data-evidence-state="verified"] { color: #3fb950; }
+.readyz-pill[data-evidence-state="unavailable"] { color: #d29922; }
+
 .enterprise-drawer {
   display: none;
   position: fixed;
