@@ -2632,12 +2632,18 @@ def read_n8n_workbench(workflow_path: Path) -> dict[str, Any]:
     }
 
 
-def _flow_rows(db_path: Path, *, limit: int) -> list[dict[str, Any]]:
+def _flow_rows(db_path: Path, *, limit: int, flow_id: int | None = None) -> list[dict[str, Any]]:
     if not db_path.is_file():
         return []
+    if flow_id is not None:
+        where_sql = "WHERE flow_id = ?"
+        query_params: tuple[Any, ...] = (int(flow_id), max(1, min(limit, 100)))
+    else:
+        where_sql = ""
+        query_params = (max(1, min(limit, 100)),)
     with _connect(db_path) as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT flow_id, observed_at_utc, rf_attack_probability, decision,
                    evidence_state, reason, model_sha256, campaign_id, source_label,
                    case_title, playbook_id, ledger_state, entry_sha256,
@@ -2652,10 +2658,11 @@ def _flow_rows(db_path: Path, *, limit: int) -> list[dict[str, Any]]:
                    identity_verified, identity_label, containment_state, containment_rule,
                    containment_at, rollback_at, sensor_node
             FROM live_flows
+            {where_sql}
             ORDER BY flow_id DESC
             LIMIT ?
             """,
-            (max(1, min(limit, 100)),),
+            query_params,
         ).fetchall()
     published: list[dict[str, Any]] = []
     repo_root = _console_repo_root()
@@ -3458,6 +3465,27 @@ def _bind_incidents_to_attack_flows(
         _annotate_soar_state(incident)
 
 
+def _attach_advisory_traces(db_path: Path, flows: list[dict[str, Any]]) -> None:
+    """Attach a read-only advisory trace. This does not write the flow row."""
+    from threatfusion.advisory.advisory_trace import (
+        build_advisory_trace,
+        read_cached_narratives,
+    )
+
+    narratives = read_cached_narratives(db_path)
+    for row in flows:
+        try:
+            flow_id = int(row.get("flow_id") or 0)
+        except (TypeError, ValueError):
+            flow_id = 0
+        cached = narratives.get(flow_id, {})
+        row["advisory_trace"] = build_advisory_trace(
+            row,
+            narrative=cached.get("narrative") or None,
+            narrative_recorded_at=cached.get("recorded_at_utc") or None,
+        )
+
+
 def list_live_campaigns(
     db_path: Path,
     *,
@@ -3469,6 +3497,7 @@ def list_live_campaigns(
     flows = _flow_rows(db_path, limit=limit)
     _attach_chroma_rag_hits(flows, db_path)
     _attach_candidate_playbooks(flows)
+    _attach_advisory_traces(db_path, flows)
     for row in flows:
         flow_id = int(row["flow_id"])
         row["evidence_locker"] = evidence_locker_queries(db_path, flow_id, soar_db_path)
@@ -3834,9 +3863,7 @@ def _scenario_provenance(port: int, protocol: str) -> dict[str, Any]:
 def _seed_scenario_provenance(spec: Mapping[str, Any]) -> dict[str, Any]:
     """Bind a seeded scenario. Range rows use the technique's transport metadata."""
     label = spec.get("scenario_label")
-    protocol = str(
-        spec.get("protocol") or ("tcp" if int(spec.get("protocol_tcp") or 0) else "udp")
-    )
+    protocol = str(spec.get("protocol") or ("tcp" if int(spec.get("protocol_tcp") or 0) else "udp"))
     port = int(spec["dst_port"])
     provenance = _scenario_provenance(port, protocol)
     display = _RANGE_DISPLAY_TRANSPORT.get(str(label or ""))
@@ -6543,7 +6570,21 @@ RANGE_CONTAINMENT_SOURCE = "172.29.0.10"
 SCENARIO_CONTAINMENT_SOURCE = "10.0.0.4"
 SCENARIO_REPLAY_LABELS = frozenset({"scenario_replay", "live_scenario_replay"})
 RANGE_VICTIM_ADDRESS = "172.29.0.20"
-AZURE_PORTAL_STATE_PATH = Path("/tmp/threatfusion-range-demo/azure_portal_state.json")
+_DEFAULT_AZURE_PORTAL_STATE = Path("/tmp/threatfusion-range-demo/azure_portal_state.json")
+AZURE_PORTAL_STATE_PATH = _DEFAULT_AZURE_PORTAL_STATE
+CLOUD_STATE_PATH = Path("/tmp/threatfusion-range-demo/cloud_state.json")
+_SSH_USER_RE = re.compile(r"[A-Za-z][A-Za-z0-9._-]{0,31}")
+_PROVIDER_LABELS = {
+    "azure": "Azure",
+    "aws": "AWS",
+    "gcp": "GCP",
+    "generic": "Generic",
+    "unbound": "Unbound",
+}
+_CLOUD_SETUP_GUIDE = (
+    "Run 'az login' / 'aws configure' / 'gcloud auth login' + "
+    "./scripts/deploy_cloud_range.sh --provision-range"
+)
 AZURE_LOCAL_CONTAINMENT_BADGE = (
     "CONTAINMENT APPLIED — Source 172.29.0.10 blocked at Azure & Local firewall "
     "(iptables DROP active)."
@@ -6627,19 +6668,30 @@ def _azure_live_actions_suppressed() -> bool:
     return os.environ.get("THREATFUSION_ALLOW_LIVE_AZURE_ISOLATION") != "1"
 
 
-def read_azure_victim_public_ip(state_path: Path | None = None) -> str:
-    """Return a global victim address from the Azure portal state file."""
-    path = AZURE_PORTAL_STATE_PATH if state_path is None else state_path
+def _resolve_range_state_path(state_path: Path | None = None) -> Path:
+    """Prefer an explicit file, then cloud_state.json, then the Azure portal file."""
+    if state_path is not None:
+        return state_path
+    if AZURE_PORTAL_STATE_PATH != _DEFAULT_AZURE_PORTAL_STATE:
+        return AZURE_PORTAL_STATE_PATH
+    if CLOUD_STATE_PATH.is_file() and not CLOUD_STATE_PATH.is_symlink():
+        return CLOUD_STATE_PATH
+    return AZURE_PORTAL_STATE_PATH
+
+
+def _read_range_state_dict(path: Path) -> dict[str, Any]:
     if not path.is_file() or path.is_symlink():
-        return ""
+        return {}
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeError):
-        return ""
-    if not isinstance(loaded, dict):
-        return ""
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _global_ipv4(value: Any) -> str:
     try:
-        parsed = ipaddress.ip_address(str(loaded.get("victim_public_ip") or "").strip())
+        parsed = ipaddress.ip_address(str(value or "").strip())
     except ValueError:
         return ""
     if parsed.version != 4 or not parsed.is_global:
@@ -6647,9 +6699,40 @@ def read_azure_victim_public_ip(state_path: Path | None = None) -> str:
     return str(parsed)
 
 
-def azure_victim_ssh_argv(public_ip: str, action: str) -> tuple[str, ...]:
-    """Non-interactive SSH argv for the Azure victim kernel filter."""
+def _victim_global_ip(loaded: Mapping[str, Any]) -> str:
+    candidates = [loaded.get("victim_public_ip"), loaded.get("victim_host")]
+    victim = loaded.get("victim")
+    if isinstance(victim, Mapping):
+        candidates.append(victim.get("public_ip"))
+    hosts = loaded.get("hosts")
+    if isinstance(hosts, Mapping) and isinstance(hosts.get("victim"), Mapping):
+        candidates.append(hosts["victim"].get("public_ip"))
+    for item in candidates:
+        parsed = _global_ipv4(item)
+        if parsed:
+            return parsed
+    return ""
+
+
+def _ssh_user_from_state(loaded: Mapping[str, Any]) -> str:
+    raw = str(loaded.get("ssh_user") or loaded.get("admin_username") or "azureuser").strip()
+    if _SSH_USER_RE.fullmatch(raw):
+        return raw
+    return "azureuser"
+
+
+def read_azure_victim_public_ip(state_path: Path | None = None) -> str:
+    """Return a global victim address from cloud_state.json or the Azure portal file."""
+    loaded = _read_range_state_dict(_resolve_range_state_path(state_path))
+    return _victim_global_ip(loaded)
+
+
+def azure_victim_ssh_argv(
+    public_ip: str, action: str, ssh_user: str = "azureuser"
+) -> tuple[str, ...]:
+    """Non-interactive SSH argv for the recorded victim kernel filter."""
     remote = _AZURE_REMOTE_COMMANDS[action]
+    user = ssh_user if _SSH_USER_RE.fullmatch(ssh_user or "") else "azureuser"
     return (
         "ssh",
         "-o",
@@ -6658,7 +6741,7 @@ def azure_victim_ssh_argv(public_ip: str, action: str) -> tuple[str, ...]:
         "ConnectTimeout=3",
         "-o",
         "BatchMode=yes",
-        f"azureuser@{public_ip}",
+        f"{user}@{public_ip}",
         remote,
     )
 
@@ -6673,7 +6756,8 @@ def apply_azure_kernel_isolation(action: str, *, state_path: Path | None = None)
             "applied": False,
             "reason": "azure_live_action_suppressed",
         }
-    public_ip = read_azure_victim_public_ip(state_path)
+    loaded = _read_range_state_dict(_resolve_range_state_path(state_path))
+    public_ip = _victim_global_ip(loaded)
     if not public_ip:
         return {
             "attempted": False,
@@ -6684,7 +6768,7 @@ def apply_azure_kernel_isolation(action: str, *, state_path: Path | None = None)
 
     try:
         completed = subprocess.run(
-            azure_victim_ssh_argv(public_ip, action),
+            azure_victim_ssh_argv(public_ip, action, _ssh_user_from_state(loaded)),
             capture_output=True,
             text=True,
             timeout=8,
@@ -7600,7 +7684,6 @@ _OPERATOR_SEEDS: tuple[tuple[str, str, str, int], ...] = (
     ("tier1_analyst", "Muhammad Suhaib (22K-4302)", "tier1_triage", 0),
     ("compliance_auditor", "Muhammad Hasnain (22K-4718)", "auditor_readonly", 0),
 )
-_ENTRA_TENANT_DEFAULT = "72f988bf-86f1-41af-91ab-2d7cd011db47"
 _AZURE_STUDENT_TIER = "Azure for Students · $60 Credit Active · Free Entra ID P1/OIDC"
 _ENTRA_DIRECTORY: dict[str, dict[str, Any]] = {
     "lab_operator": {
@@ -7988,15 +8071,20 @@ def _ensure_enterprise_catalog(conn: sqlite3.Connection) -> None:
 
 
 def _entra_tenant_id() -> str:
-    configured = os.environ.get("THREATFUSION_ENTRA_TENANT_ID", "").strip()
-    return configured or _ENTRA_TENANT_DEFAULT
+    """Operator-configured tenant. An empty value means the directory is unbound."""
+    return os.environ.get("THREATFUSION_ENTRA_TENANT_ID", "").strip()
+
+
+def _entra_tenant_public() -> str:
+    """Tenant shown in the console. Never a baked-in personal directory id."""
+    return _entra_tenant_id() or "unbound"
 
 
 def _entra_profile(actor_id: str, role: str) -> dict[str, Any]:
     known = _ENTRA_DIRECTORY.get(actor_id, {})
     roles = list(known.get("entra_app_roles") or _LOCAL_ROLE_APP_ROLES.get(role, []))
     return {
-        "entra_tenant_id": _entra_tenant_id(),
+        "entra_tenant_id": _entra_tenant_public(),
         "entra_object_id": str(known.get("entra_object_id") or ""),
         "entra_upn": str(known.get("entra_upn") or ""),
         "entra_app_roles": roles,
@@ -8018,7 +8106,7 @@ def _workspace_public(row: sqlite3.Row | Mapping[str, Any]) -> dict[str, Any]:
         "monitored_cidr": str(row["monitored_cidr"]),
         "default_service": str(row["default_service"]),
         "active": bool(row["active"]),
-        "entra_tenant_id": _entra_tenant_id(),
+        "entra_tenant_id": _entra_tenant_public(),
         "azure_subscription_tier": _AZURE_STUDENT_TIER,
     }
 
@@ -8249,8 +8337,9 @@ def entra_identity_status(db_path: Path) -> dict[str, Any]:
         "evidence_state": "verified",
         "provider": "microsoft_entra_id",
         "oidc": True,
-        "entra_tenant_id": _entra_tenant_id(),
+        "entra_tenant_id": _entra_tenant_public(),
         "azure_subscription_tier": _AZURE_STUDENT_TIER,
+        "tenant_binding": "bound" if _entra_tenant_id() else "unbound",
         "active_operator": active,
         "operators": rows,
         "app_roles": list(_ENTRA_ROLE_ACTOR),
@@ -8300,7 +8389,11 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
         roles = [str(item) for item in roles_raw if str(item).strip()]
     else:
         roles = []
-    if tenant != _entra_tenant_id() or not object_id or not upn or not roles:
+    expected_tenant = _entra_tenant_id()
+    if not tenant or not object_id or not upn or not roles:
+        refused["reason"] = "entra_claims_incomplete"
+        return refused
+    if expected_tenant and tenant != expected_tenant:
         refused["reason"] = "entra_claims_incomplete"
         return refused
     actor = ""
@@ -9053,45 +9146,193 @@ def preview_soar_playbook(db_path: Path, *, flow_id: int) -> dict[str, Any]:
     return preview
 
 
-def azure_portal_status(state_path: Path | None = None) -> dict[str, Any]:
-    """Report the recorded Azure subscription file. This route does not call az."""
-    path = state_path or Path("/tmp/threatfusion-range-demo/azure_portal_state.json")
-    state: dict[str, Any] = {}
-    if path.is_file() and not path.is_symlink():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            loaded = None
-        if isinstance(loaded, dict):
-            state = loaded
-    connected = bool(state.get("subscription_id") and state.get("tenant_id"))
+def _provider_code(state: Mapping[str, Any], path: Path) -> str:
+    raw = str(state.get("provider") or "").strip().lower()
+    if raw in {"azure", "aws", "gcp", "generic"}:
+        return raw
+    if state.get("subscription_id") or state.get("tenant_id"):
+        return "azure"
+    if state.get("project_id"):
+        return "gcp"
+    if state.get("account_id"):
+        return "aws"
+    if state.get("victim_public_ip") or state.get("victim_host"):
+        return "generic"
+    if state and "azure" in path.name:
+        return "azure"
+    return "unbound"
+
+
+def _range_connected(state: Mapping[str, Any], provider: str) -> bool:
+    if provider == "azure":
+        return bool(state.get("subscription_id") and state.get("tenant_id"))
+    if provider == "aws":
+        return bool(state.get("account_id") or state.get("subscription_id"))
+    if provider == "gcp":
+        return bool(state.get("project_id") or state.get("account_id"))
+    if provider == "generic":
+        return bool(
+            state.get("victim_public_ip")
+            or state.get("victim_host")
+            or state.get("attacker_public_ip")
+        )
+    return False
+
+
+def _nested_host(state: Mapping[str, Any], role: str) -> dict[str, Any]:
+    host = state.get(role)
+    if isinstance(host, Mapping):
+        return dict(host)
+    vms = state.get("vms")
+    names = {"victim": "tf-soc-victim-vm", "attacker": "tf-attacker-redteam-vm"}
+    if isinstance(vms, Mapping) and isinstance(vms.get(names[role]), Mapping):
+        return dict(vms[names[role]])
+    return {}
+
+
+def cloud_range_status(state_path: Path | None = None) -> dict[str, Any]:
+    """Report the operator's recorded cloud range. This route does not call a cloud CLI."""
+    path = _resolve_range_state_path(state_path)
+    state = _read_range_state_dict(path)
+    provider = _provider_code(state, path)
+    connected = _range_connected(state, provider)
+    victim = _nested_host(state, "victim")
+    attacker = _nested_host(state, "attacker")
+    victim_private = str(victim.get("private_ip") or state.get("victim_vm_ip") or "172.29.0.20")
+    attacker_private = str(
+        attacker.get("private_ip") or state.get("attacker_vm_ip") or "172.29.0.10"
+    )
+    victim_public = str(victim.get("public_ip") or state.get("victim_public_ip") or "")
+    attacker_public = str(attacker.get("public_ip") or state.get("attacker_public_ip") or "")
+    victim_power = str(
+        victim.get("power_state") or victim.get("state") or state.get("victim_state") or ""
+    )
+    attacker_power = str(
+        attacker.get("power_state") or attacker.get("state") or state.get("attacker_state") or ""
+    )
+    account_id = str(
+        state.get("account_id") or state.get("subscription_id") or state.get("project_id") or ""
+    )
+    region = str(state.get("region") or state.get("location") or "")
+    if not region and provider in {"azure", "unbound"}:
+        region = "southeastasia"
+    resource_group = str(state.get("resource_group") or state.get("stack_name") or "")
+    if not resource_group and provider in {"azure", "unbound"}:
+        resource_group = "ThreatFusion-RG"
+    auto_label = str(
+        state.get("auto_shutdown_label")
+        or state.get("cost_guardrail")
+        or "Enabled (02:00 PKT / 21:00 UTC)"
+    )
     return {
-        "schema_version": "azure_portal_status_v1",
+        "schema_version": "cloud_range_status_v1",
         "evidence_state": "verified" if connected else "unavailable",
+        "provider": provider,
+        "provider_label": _PROVIDER_LABELS[provider],
         "azure_cli_present": shutil.which("az") is not None,
+        "aws_cli_present": shutil.which("aws") is not None,
+        "gcloud_cli_present": shutil.which("gcloud") is not None,
         "connected": connected,
         "state_path": str(path),
         "portal_state": state,
-        "resource_group": str(state.get("resource_group") or "ThreatFusion-RG"),
+        "account_id": account_id,
         "tenant_id": str(state.get("tenant_id") or ""),
+        "project_id": str(state.get("project_id") or ""),
         "subscription_id": str(state.get("subscription_id") or ""),
         "app_id": str(state.get("app_id") or ""),
-        "location": str(state.get("location") or "southeastasia"),
+        "resource_group": resource_group,
+        "location": region,
+        "region": region,
         "victim_vm_name": "tf-soc-victim-vm",
         "attacker_vm_name": "tf-attacker-redteam-vm",
-        "victim_vm_ip": str(state.get("victim_vm_ip") or "172.29.0.20"),
-        "attacker_vm_ip": str(state.get("attacker_vm_ip") or "172.29.0.10"),
-        "victim_public_ip": str(state.get("victim_public_ip") or ""),
-        "attacker_public_ip": str(state.get("attacker_public_ip") or ""),
+        "victim_vm_ip": victim_private,
+        "attacker_vm_ip": attacker_private,
+        "victim_public_ip": victim_public,
+        "attacker_public_ip": attacker_public,
+        "victim_host": {
+            "private_ip": victim_private,
+            "public_ip": victim_public,
+            "state": victim_power,
+        },
+        "attacker_host": {
+            "private_ip": attacker_private,
+            "public_ip": attacker_public,
+            "state": attacker_power,
+        },
+        "ssh_user": _ssh_user_from_state(state) if state else "",
         "auto_shutdown_utc": str(state.get("auto_shutdown_utc") or "2100"),
         "auto_shutdown_pkt": str(state.get("auto_shutdown_pkt") or "02:00"),
-        "auto_shutdown_label": "Enabled (02:00 PKT / 21:00 UTC)",
-        "terminal_snippet": "scripts/deploy_azure_cyber_range.sh --provision-live-azure",
-        "status_snippet": "scripts/deploy_azure_cyber_range.sh --status",
-        "deallocate_snippet": "scripts/deploy_azure_cyber_range.sh --deallocate-vms",
+        "auto_shutdown_label": auto_label,
+        "cost_guardrail": str(state.get("cost_guardrail") or auto_label),
+        "setup_guide": _CLOUD_SETUP_GUIDE,
+        "terminal_snippet": "scripts/deploy_cloud_range.sh --provision-range",
+        "status_snippet": "scripts/deploy_cloud_range.sh --status",
+        "deallocate_snippet": "scripts/deploy_cloud_range.sh --teardown",
         "production_fusion_enabled": False,
         "http_status": 200,
     }
+
+
+def azure_portal_status(state_path: Path | None = None) -> dict[str, Any]:
+    """Report the recorded Azure subscription file. This route does not call az."""
+    payload = cloud_range_status(state_path)
+    state = payload.get("portal_state")
+    loaded = state if isinstance(state, dict) else {}
+    connected = bool(loaded.get("subscription_id") and loaded.get("tenant_id"))
+    payload["schema_version"] = "azure_portal_status_v1"
+    payload["connected"] = connected
+    payload["evidence_state"] = "verified" if connected else "unavailable"
+    payload["terminal_snippet"] = "scripts/deploy_azure_cyber_range.sh --provision-live-azure"
+    payload["status_snippet"] = "scripts/deploy_azure_cyber_range.sh --status"
+    payload["deallocate_snippet"] = "scripts/deploy_azure_cyber_range.sh --deallocate-vms"
+    payload["location"] = str(loaded.get("location") or payload.get("location") or "southeastasia")
+    payload["resource_group"] = str(loaded.get("resource_group") or "ThreatFusion-RG")
+    payload["victim_vm_ip"] = str(loaded.get("victim_vm_ip") or "172.29.0.20")
+    payload["attacker_vm_ip"] = str(loaded.get("attacker_vm_ip") or "172.29.0.10")
+    payload["auto_shutdown_label"] = "Enabled (02:00 PKT / 21:00 UTC)"
+    return payload
+
+
+def read_advisory_trace(db_path: Path, flow_id: int) -> dict[str, Any]:
+    """Read one flow's advisory trace. A missing flow does not create a database."""
+    from threatfusion.advisory.advisory_trace import (
+        build_advisory_trace,
+        read_cached_narratives,
+    )
+
+    number = _positive_flow_id(flow_id)
+    if number is None or not Path(db_path).is_file():
+        payload = build_advisory_trace(None)
+        payload["flow_id"] = flow_id
+        payload["reason"] = "flow_not_stored"
+        payload["http_status"] = 404
+        payload["production_fusion_enabled"] = False
+        return payload
+    rows = _flow_rows(db_path, limit=1, flow_id=number)
+    if not rows:
+        payload = build_advisory_trace(None)
+        payload["flow_id"] = number
+        payload["reason"] = "flow_not_stored"
+        payload["http_status"] = 404
+        payload["production_fusion_enabled"] = False
+        return payload
+    row = rows[0]
+    if not isinstance(row.get("chroma_rag_hits"), list):
+        technique = _attack_technique_id(row) or ""
+        hit = _corpus_technique_hit(technique) if technique else None
+        row["chroma_rag_hits"] = [hit] if hit else []
+    cached = read_cached_narratives(db_path).get(number, {})
+    payload = build_advisory_trace(
+        row,
+        narrative=cached.get("narrative") or None,
+        narrative_recorded_at=cached.get("recorded_at_utc") or None,
+    )
+    payload["flow_id"] = number
+    payload["decision"] = row.get("decision")
+    payload["reason"] = "advisory_trace"
+    payload["http_status"] = 200
+    payload["production_fusion_enabled"] = False
+    return payload
 
 
 def list_sensors(db_path: Path) -> dict[str, Any]:

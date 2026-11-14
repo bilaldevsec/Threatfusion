@@ -2148,3 +2148,11 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 - `POST /api/v1/live/handoff` builds the four blocks from the stored flow and passes the triage rows into `build_analyst_shift_handoff()`. Block 3 stays `unavailable` because no technique is stored. The default brief and any supplied note are checked with `verify_explanation_groundedness()`. A note that names an address outside the stored entity ids is refused and is not copied into the markdown. The page shows and downloads the markdown only after that check passes. `production_fusion_enabled` stays false. Containment stays unauthorized.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
+### Milestone #52: Advisory trace, provider-agnostic range, and investigation polish (2026-11-14)
+
+- `GET /api/v1/live/advisory-trace` and each stored campaign flow expose a read-only assigned-versus-actual trace for the v2 autoencoder, the 9-class head, ChromaDB MITRE retrieval, and the grounded narrative. Decision writes by those components stay computed at 0. The frozen Random Forest verdict is unchanged. Gate G9 stays PASS. The completeness badge is COMPLETE, PARTIAL, or PENDING ADVISORY from the recorded fields.
+- `scripts/deploy_cloud_range.sh` provisions, deploys, or tears down a range for Azure, AWS, GCP, or a generic Linux pair. Account identifiers come from the operator's CLI session. `scripts/deploy_azure_cyber_range.sh` delegates to that script. Isolate and rollback read `cloud_state.json` or `azure_portal_state.json`.
+- The investigation view shows the trace card. The enterprise drawer shows a structured cloud card. Tier-1 and auditor sessions keep Approve, Isolate, and Rollback clickable and marked Tier-3 only, so the backend 403 still renders.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.

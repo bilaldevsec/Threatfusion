@@ -1,4 +1,35 @@
 #!/usr/bin/env bash
+# Backwards-compatible Azure entry. Public flags delegate to
+# scripts/deploy_cloud_range.sh. TF_AZURE_RANGE_IMPL=1 runs this file's
+# Azure CLI implementation and must not delegate again.
+if [[ "${TF_AZURE_RANGE_IMPL:-}" != "1" ]]; then
+  set -euo pipefail
+  _root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  _mapped=()
+  for _arg in "$@"; do
+    case "$_arg" in
+      --provision|--provision-live-azure|--provision-range)
+        _mapped+=(--provision-range)
+        ;;
+      --teardown|--teardown-rg)
+        _mapped+=(--teardown)
+        ;;
+      --deploy-full-stack)
+        _mapped+=(--deploy-full-stack)
+        ;;
+      --deallocate|--deallocate-vms)
+        _mapped+=(--deallocate)
+        ;;
+      --status|--pair-forwarder|--setup-entra-app|--dry-run|--student-free-tier|--help|-h)
+        _mapped+=("$_arg")
+        ;;
+      *)
+        _mapped+=("$_arg")
+        ;;
+    esac
+  done
+  exec "${_root}/scripts/deploy_cloud_range.sh" --provider azure "${_mapped[@]}"
+fi
 # ThreatFusion Azure 2-VM cyber range.
 #
 # Builds or reuses ThreatFusion-RG, ThreatFusion-VNet (172.29.0.0/16),

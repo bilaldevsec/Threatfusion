@@ -659,6 +659,24 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             result = preview_soar_playbook(self._live_db_path(), flow_id=flow_id)
             self._send_json(int(result.get("http_status") or 404), result)
             return
+        if path == "/api/v1/live/advisory-trace":
+            from threatfusion.api.live_soc_console import read_advisory_trace
+
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            raw_flow = (query.get("flow_id") or ["0"])[0]
+            try:
+                flow_id = int(raw_flow)
+            except ValueError:
+                flow_id = 0
+            result = read_advisory_trace(self._live_db_path(), flow_id)
+            self._send_json(int(result.get("http_status") or 200), result)
+            return
+        if path == "/api/cloud/status":
+            from threatfusion.api.live_soc_console import cloud_range_status
+
+            result = cloud_range_status()
+            self._send_json(int(result.get("http_status") or 200), result)
+            return
         if path == "/api/azure/status":
             from threatfusion.api.live_soc_console import azure_portal_status
 

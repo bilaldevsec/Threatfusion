@@ -1641,6 +1641,41 @@
         else node.removeAttribute('title');
       });
     });
+    applyTier3SoarAffordance();
+  }
+
+  function sessionRoleIsTier3Limited() {
+    const role = sessionIdentity && sessionIdentity.role ? String(sessionIdentity.role) : '';
+    return role === 'tier1_triage' || role === 'auditor_readonly' || role === 'compliance_auditor';
+  }
+
+  function applyTier3SoarAffordance() {
+    const limited = isSessionAuthenticated() && sessionRoleIsTier3Limited();
+    [
+      'approvePlaybookBtn',
+      'soarApproveBtn',
+      'evidenceApproveBtn',
+      'btnIsolateAttacker',
+      'btnContainRange',
+      'btnRollbackRange'
+    ].forEach(function (id) {
+      const node = document.getElementById(id);
+      if (!node) return;
+      node.classList.toggle('tier3-only', limited);
+      const existing = node.querySelector('.tier3-lock');
+      if (limited) {
+        if (!existing) {
+          const tag = document.createElement('span');
+          tag.className = 'tier3-lock';
+          tag.textContent = '🔒 Tier-3 Only';
+          node.appendChild(tag);
+        }
+        node.disabled = false;
+        node.removeAttribute('title');
+      } else if (existing) {
+        existing.remove();
+      }
+    });
   }
 
   function renderCitedRationale(inc) {
@@ -1845,8 +1880,101 @@
     renderTimelineGroupedView(inc);
     renderModelProofSandbox(inc);
     applyContainmentGuard(inc);
+    renderAdvisoryTrace(inc && inc.advisoryTrace);
     loadModelProofForSelection(inc);
     loadSoarPlaybookPreview(inc);
+  }
+
+  function formatTraceOutput(component) {
+    const value = component ? component.actual_output : null;
+    if (value == null || value === '') return 'not recorded';
+    if (component.component_id === 'v2_autoencoder_ranker' && value && typeof value === 'object' && value.mse != null) {
+      const mse = Number(value.mse);
+      return 'MSE ' + (Number.isFinite(mse) ? mse.toFixed(6) : String(value.mse));
+    }
+    if (component.component_id === 'pytorch_9class_head' && value && typeof value === 'object') {
+      return Object.keys(value).map(function (key) {
+        const score = Number(value[key]);
+        return key + ' ' + (Number.isFinite(score) ? score.toFixed(4) : String(value[key]));
+      }).join(', ');
+    }
+    if (component.component_id === 'chromadb_mitre_rag' && Array.isArray(value)) {
+      if (!value.length) return 'no corpus hit';
+      return value.map(function (hit) {
+        const cosine = Number(hit && hit.cosine_similarity);
+        const technique = hit && hit.technique_id ? String(hit.technique_id) : 'technique';
+        return technique + (Number.isFinite(cosine) ? ' cosine ' + cosine.toFixed(4) : '');
+      }).join('; ');
+    }
+    if (typeof value === 'string') return value;
+    try {
+      return JSON.stringify(value);
+    } catch (err) {
+      return String(value);
+    }
+  }
+
+  function renderAdvisoryTrace(trace) {
+    const pill = document.getElementById('advisoryCompletenessPill');
+    const bar = document.getElementById('advisoryAuthorityBar');
+    const body = document.getElementById('advisoryTraceBody');
+    const gaps = document.getElementById('advisoryTraceGaps');
+    if (!body) return;
+    const payload = trace && Array.isArray(trace.components) ? trace : null;
+    if (!payload) {
+      if (pill) {
+        pill.textContent = 'PENDING ADVISORY';
+        pill.setAttribute('data-completeness', 'PENDING ADVISORY');
+      }
+      if (bar) bar.textContent = 'Advisory authority loads with the selected flow.';
+      body.innerHTML = '<tr><td colspan="5">Select a stored flow to read the advisory trace.</td></tr>';
+      if (gaps) gaps.textContent = '';
+      return;
+    }
+    const badge = String(payload.completeness_badge || 'PENDING ADVISORY');
+    if (pill) {
+      pill.textContent = badge;
+      pill.setAttribute('data-completeness', badge);
+    }
+    const authority = payload.authority && typeof payload.authority === 'object' ? payload.authority : {};
+    const writes = authority.decision_writes_by_advisory_components;
+    const verdict = authority.frozen_rf_verdict || 'withheld';
+    const gate = authority.gate_g9 || 'FAIL';
+    const line = payload.authority_bar || authority.authority_bar || (
+      'Decision writes: ' + (writes == null ? 'unavailable' : String(writes))
+      + ' · Frozen RF verdict: ' + verdict + ' (unchanged) · Gate G9: ' + gate
+    );
+    if (bar) bar.textContent = line;
+    body.innerHTML = payload.components.map(function (component) {
+      const integrity = String(component.measurement_integrity || '');
+      const evidence = Array.isArray(component.evidence_ids_read) ? component.evidence_ids_read.join(' ') : '';
+      const integrityClass = integrity.indexOf('display-adjusted') === 0 ? ' class="integrity-adjusted"' : '';
+      return '<tr><td>' + escapeHtml(component.display_name || component.component_id || '')
+        + '</td><td>' + escapeHtml(component.assigned_scope || '—')
+        + '</td><td><span class="trace-output">' + escapeHtml(formatTraceOutput(component))
+        + '</span></td><td>' + escapeHtml(evidence || '—')
+        + '</td><td' + integrityClass + '>' + escapeHtml(integrity || '—') + '</td></tr>';
+    }).join('');
+    if (gaps) {
+      const listed = Array.isArray(payload.completeness_gaps) ? payload.completeness_gaps : [];
+      gaps.textContent = badge === 'PARTIAL' && listed.length ? listed.join(' · ') : '';
+    }
+  }
+
+  async function loadAdvisoryTrace(inc) {
+    renderAdvisoryTrace(inc && inc.advisoryTrace);
+    const raw = inc && (inc.flowId != null ? inc.flowId : inc.flow_id);
+    const flowId = Number(raw);
+    if (!Number.isInteger(flowId) || flowId <= 0) return;
+    try {
+      const resp = await fetch('/api/v1/live/advisory-trace?flow_id=' + encodeURIComponent(String(flowId)));
+      const data = await readActionPayload(resp);
+      if (!resp.ok || !data || !Array.isArray(data.components)) return;
+      if (inc) inc.advisoryTrace = data;
+      renderAdvisoryTrace(data);
+    } catch (err) {
+      renderAdvisoryTrace(inc && inc.advisoryTrace);
+    }
   }
 
   function renderContextMemoryPanels(inc) {
@@ -2659,9 +2787,24 @@
     if (state) node.setAttribute('data-evidence-state', state);
   }
 
+  let toastTimer = 0;
+
+  function showToast(text, state) {
+    const node = document.getElementById('socToast');
+    if (!node || !text) return;
+    node.hidden = false;
+    node.textContent = text;
+    node.setAttribute('data-evidence-state', state || 'pending');
+    window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(function () {
+      node.hidden = true;
+    }, 4200);
+  }
+
   function showActionBanner(text, state, reason) {
     setLiveText('actionStatusBanner', text, state || 'unavailable');
     setLiveText('campaignQueueStatus', text, state || 'unavailable');
+    showToast(text, state || 'unavailable');
     const node = document.getElementById('actionStatusBanner');
     if (node) {
       if (reason) node.setAttribute('data-reason', reason);
@@ -2987,7 +3130,8 @@
       contextMemory: Array.isArray(flow.context_memory) ? flow.context_memory : [],
       sensorNode: flow.sensor_node || '',
       thehiveCaseRecord: null,
-      n8nPlaybookReceipt: null
+      n8nPlaybookReceipt: null,
+      advisoryTrace: flow.advisory_trace && typeof flow.advisory_trace === 'object' ? flow.advisory_trace : null
     };
   }
 
@@ -3089,7 +3233,8 @@
       reviewStatus: 'unassigned',
       glassBox: null,
       thehiveCaseRecord: null,
-      n8nPlaybookReceipt: null
+      n8nPlaybookReceipt: null,
+      advisoryTrace: row.advisory_trace && typeof row.advisory_trace === 'object' ? row.advisory_trace : null
     };
   }
 
@@ -3155,10 +3300,12 @@
 
   let campaignRefreshGeneration = 0;
 
-  async function refreshLiveCampaigns() {
+  async function refreshLiveCampaigns(options) {
+    const queueOnly = !!(options && options.queueOnly);
+    const force = !!(options && options.force);
     const generation = ++campaignRefreshGeneration;
     try {
-      await refreshAssetInventory();
+      if (!queueOnly) await refreshAssetInventory();
       const resp = await fetch('/api/v1/live/campaigns');
       if (generation !== campaignRefreshGeneration) return;
       if (!resp.ok) throw new Error('campaign status');
@@ -3230,7 +3377,7 @@
           ? item.evidenceLocker.queries.map(query => query.entity_count || query.flow_count || query.stitched_flow_count || query.soar_receipt_status).join(',')
           : ''
       ].join(':')).join('|');
-      if (nextPrint === campaignFingerprint) return;
+      if (!force && nextPrint === campaignFingerprint) return;
       campaignFingerprint = nextPrint;
       const verifiedCount = views.filter(isReceiptVerified).length;
       setLiveText(
@@ -3377,6 +3524,7 @@
   function paintSessionIdentity(session) {
     if (!session || session.authenticated === false) {
       paintOperatorBadge('unverified local label', false);
+      applyTier3SoarAffordance();
       return;
     }
     const line = headerLineForSession(session);
@@ -3390,6 +3538,7 @@
     }
     const profile = document.getElementById('operatorProfileName');
     if (profile) profile.textContent = session.display_name || line;
+    applyTier3SoarAffordance();
   }
 
   function showOperatorStamp(stamp) {
@@ -3571,14 +3720,14 @@
       });
       const data = await readActionPayload(resp);
       showOperatorStamp(data);
-      await refreshLiveCampaigns();
-      renderForensicDrawer();
       const stored = resp.ok && (data.reason === 'analyst_verdict_stored' || data.evidence_state === 'verified');
       const message = stored
         ? ('Analyst verdict ' + data.analyst_verdict + ' stored. Frozen RF decision ' + data.frozen_rf_decision + '.')
         : actionFailureText(data, resp);
       setLiveText('analystVerdictDisplay', message, stored ? 'verified' : 'unavailable');
       showActionBanner(message, stored ? 'verified' : 'unavailable');
+      refreshLiveCampaigns({ queueOnly: true, force: true });
+      renderForensicDrawer();
     } catch (err) {
       const message = err && err.message ? String(err.message) : 'Analyst verdict unavailable.';
       setLiveText('analystVerdictDisplay', message, 'unavailable');
@@ -3952,6 +4101,7 @@
     renderForensicDrawer();
     showSocView('detail');
     loadModelProofForSelection(inc);
+    loadAdvisoryTrace(inc);
     refreshCopilotForSelection(inc, true);
   }
 
@@ -4489,6 +4639,7 @@
         narrative = 'Advisory brief does not match the selected flow.';
       }
       showCopilotAnswer(narrative, data.evidence_state || 'unavailable');
+      loadAdvisoryTrace(selectedIncident());
       const badge = document.getElementById('copilotProviderBadge');
       if (badge) {
         badge.textContent = copilotBadgeLabel(data.provider);
@@ -5294,51 +5445,93 @@
     }
   }
 
-  function renderAzurePortal(status) {
+  function cloudHostState(value) {
+    const text = String(value || '').trim();
+    if (!text) return 'unrecorded';
+    return text.replace(/^VM\s+/i, '');
+  }
+
+  function cloudStatusCell(label, valueHtml) {
+    return '<div class="cloud-status-item"><span class="cloud-status-label">'
+      + escapeHtml(label) + '</span><span class="cloud-status-value">' + valueHtml + '</span></div>';
+  }
+
+  function renderCloudStatus(status) {
     const node = document.getElementById('azurePortalStatus');
+    const card = document.getElementById('cloudStatusCard');
     const snippet = document.getElementById('azureProvisionSnippet');
     if (snippet && status && status.terminal_snippet) snippet.textContent = String(status.terminal_snippet);
     if (!node) return;
-    node.style.whiteSpace = 'pre-line';
+    node.style.whiteSpace = 'normal';
     if (!status) {
-      node.textContent = 'Azure portal state has not been loaded.';
+      node.textContent = 'Cloud range state has not been loaded.';
       node.setAttribute('data-evidence-state', 'unavailable');
+      if (card) card.setAttribute('data-evidence-state', 'unavailable');
       return;
     }
-    const connected = status.connected === true;
+    const provider = String(status.provider_label || status.provider || 'Unbound');
+    const connected = status.connected === true && provider !== 'Unbound';
+    if (!connected) {
+      const guide = String(status.setup_guide || "Run 'az login' / 'aws configure' / 'gcloud auth login' + ./scripts/deploy_cloud_range.sh --provision-range");
+      node.innerHTML = '<p class="cloud-setup-guide">' + escapeHtml(guide) + '</p>';
+      node.setAttribute('data-evidence-state', 'unavailable');
+      if (card) card.setAttribute('data-evidence-state', 'unavailable');
+      return;
+    }
     const portal = status.portal_state && typeof status.portal_state === 'object' ? status.portal_state : {};
+    const victimHost = status.victim_host && typeof status.victim_host === 'object' ? status.victim_host : {};
+    const attackerHost = status.attacker_host && typeof status.attacker_host === 'object' ? status.attacker_host : {};
     const vms = portal.vms && typeof portal.vms === 'object' ? portal.vms : {};
-    const victim = vms['tf-soc-victim-vm'] || {};
-    const attacker = vms['tf-attacker-redteam-vm'] || {};
-    const region = String(status.location || portal.location || 'southeastasia');
-    const resourceGroup = String(status.resource_group || portal.resource_group || 'ThreatFusion-RG');
-    const victimPower = String(victim.power_state || 'VM running');
-    const attackerPower = String(attacker.power_state || 'VM running');
-    const victimPublic = String(status.victim_public_ip || portal.victim_public_ip || victim.public_ip || '');
-    const attackerPublic = String(status.attacker_public_ip || portal.attacker_public_ip || attacker.public_ip || '');
-    const victimPrivate = String(victim.private_ip || status.victim_vm_ip || '172.29.0.20');
-    const attackerPrivate = String(attacker.private_ip || status.attacker_vm_ip || '172.29.0.10');
-    if (connected) {
-      node.textContent = [
-        'Resource Group & Region: ' + resourceGroup + ' (' + region + ')',
-        'Victim VM: tf-soc-victim-vm · ' + victimPrivate + ' (Public IP: ' + victimPublic + ' · ' + victimPower + ')',
-        'Attacker VM: tf-attacker-redteam-vm · ' + attackerPrivate + ' (Public IP: ' + attackerPublic + ' · ' + attackerPower + ')',
-        'Auto-Shutdown: Enabled (02:00 PKT / 21:00 UTC)'
-      ].join('\n');
-      node.setAttribute('data-evidence-state', 'verified');
-      return;
+    const victimVm = vms['tf-soc-victim-vm'] || {};
+    const attackerVm = vms['tf-attacker-redteam-vm'] || {};
+    const account = String(status.account_id || status.subscription_id || portal.account_id || portal.subscription_id || '');
+    const tenant = String(status.tenant_id || portal.tenant_id || '');
+    const accountLine = [account, tenant].filter(Boolean).join(' / ') || 'Unbound';
+    const region = String(status.region || status.location || portal.region || portal.location || '');
+    const resourceGroup = String(status.resource_group || portal.resource_group || '');
+    const regionLine = [region, resourceGroup].filter(Boolean).join(' · ') || 'Unrecorded';
+    const victimPrivate = String(victimHost.private_ip || victimVm.private_ip || status.victim_vm_ip || '');
+    const attackerPrivate = String(attackerHost.private_ip || attackerVm.private_ip || status.attacker_vm_ip || '');
+    const victimPublic = String(victimHost.public_ip || status.victim_public_ip || victimVm.public_ip || '');
+    const attackerPublic = String(attackerHost.public_ip || status.attacker_public_ip || attackerVm.public_ip || '');
+    const victimState = cloudHostState(victimHost.state || victimVm.power_state || portal.victim_state);
+    const attackerState = cloudHostState(attackerHost.state || attackerVm.power_state || portal.attacker_state);
+    const guard = String(status.cost_guardrail || status.auto_shutdown_label || 'Auto-shutdown not recorded');
+    function hostLine(privateIp, publicIp, state) {
+      const stateToken = state.toLowerCase();
+      return escapeHtml(privateIp || 'private unrecorded')
+        + ' · ' + escapeHtml(publicIp || 'public unrecorded')
+        + ' <span class="host-state" data-host-state="' + escapeHtml(stateToken) + '">'
+        + escapeHtml(state) + '</span>';
     }
-    node.textContent = 'Azure CLI ' + (status.azure_cli_present ? 'is installed' : 'is not installed')
-      + '. Live subscription file is not connected. Run the provision command to write azure_portal_state.json.';
-    node.setAttribute('data-evidence-state', 'unavailable');
+    node.innerHTML = '<div class="cloud-status-grid">'
+      + cloudStatusCell('Provider', escapeHtml(provider))
+      + cloudStatusCell('Account / Tenant', escapeHtml(accountLine))
+      + cloudStatusCell('Region & Resource Group', escapeHtml(regionLine))
+      + cloudStatusCell('Auto-Shutdown / Cost Guardrail', escapeHtml(guard))
+      + cloudStatusCell('Victim Host', hostLine(victimPrivate, victimPublic, victimState))
+      + cloudStatusCell('Attacker Host', hostLine(attackerPrivate, attackerPublic, attackerState))
+      + '</div>';
+    node.setAttribute('data-evidence-state', 'verified');
+    if (card) card.setAttribute('data-evidence-state', 'verified');
+  }
+
+  function renderAzurePortal(status) {
+    renderCloudStatus(status);
   }
 
   async function loadAzurePortalStatus() {
     try {
-      const resp = await fetch('/api/azure/status');
-      renderAzurePortal(await readActionPayload(resp));
+      let resp = await fetch('/api/cloud/status');
+      if (!resp.ok) resp = await fetch('/api/azure/status');
+      renderCloudStatus(await readActionPayload(resp));
     } catch (err) {
-      renderAzurePortal(null);
+      try {
+        const resp = await fetch('/api/azure/status');
+        renderCloudStatus(await readActionPayload(resp));
+      } catch (inner) {
+        renderCloudStatus(null);
+      }
     }
   }
 
@@ -5404,15 +5597,22 @@
       });
       const data = await readActionPayload(resp);
       if (!resp.ok || !data || !data.flow_id) {
-        setLiveText('rangeFirewallStatus', actionFailureText(data, resp), 'unavailable');
+        const failure = actionFailureText(data, resp);
+        setLiveText('rangeFirewallStatus', failure, 'unavailable');
+        showToast(failure, 'unavailable');
         return;
       }
+      const score = Number(data.rf_attack_probability);
+      const launchMessage = 'Launched ' + vectorId + ' flow ' + data.flow_id + ' RF '
+        + (Number.isFinite(score) ? score.toFixed(4) : 'unavailable') + '.';
+      setLiveText('rangeFirewallStatus', launchMessage, 'verified');
+      showToast(launchMessage, 'verified');
       selectedIncidentId = 'live_flow:' + data.flow_id;
       selectedFlowId = Number(data.flow_id);
       modelProofLoadedFlowId = null;
       lastCopilotFlowId = 0;
       openEnterpriseDrawer(false);
-      await refreshLiveCampaigns();
+      await refreshLiveCampaigns({ queueOnly: true, force: true });
       if (selectedFlowId) {
         const match = activeIncidents().find(item => Number(item.flowId || item.flow_id) === selectedFlowId);
         if (match) selectedIncidentId = match.id;
@@ -5423,15 +5623,6 @@
         selectInvestigation(inc);
         loadSoarPlaybookPreview(inc);
       }
-      const score = Number(data.rf_attack_probability);
-      setLiveText(
-        'rangeFirewallStatus',
-        resp.ok
-          ? ('Launched ' + vectorId + ' flow ' + data.flow_id + ' RF '
-            + (Number.isFinite(score) ? score.toFixed(4) : 'unavailable') + '.')
-          : actionFailureText(data, resp),
-        resp.ok ? 'verified' : 'unavailable'
-      );
       const telemetry = await fetch('/api/v1/live/range/telemetry');
       renderRangeFirewall(await readActionPayload(telemetry));
     } catch (err) {

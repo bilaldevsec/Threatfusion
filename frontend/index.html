@@ -391,6 +391,30 @@
             <div class="inspector-tab-pane active" data-inspector-tab="1">
               <div class="detail-split">
                 <div class="detail-main">
+                  <article class="card advisory-trace-card" id="advisoryTraceCard" aria-label="Advisory Trace: Assigned vs. Actual" style="background: #111827;">
+                    <div class="advisory-trace-head">
+                      <h3>Advisory Trace: Assigned vs. Actual</h3>
+                      <span class="completeness-pill" id="advisoryCompletenessPill" data-completeness="PENDING ADVISORY">PENDING ADVISORY</span>
+                    </div>
+                    <div class="authority-bar" id="advisoryAuthorityBar">Advisory authority loads with the selected flow.</div>
+                    <div class="trace-table-wrap">
+                      <table class="advisory-trace-table">
+                        <thead>
+                          <tr>
+                            <th>Component</th>
+                            <th>Assigned Scope</th>
+                            <th>Actual Output</th>
+                            <th>Evidence Read</th>
+                            <th>Integrity</th>
+                          </tr>
+                        </thead>
+                        <tbody id="advisoryTraceBody">
+                          <tr><td colspan="5">Select a stored flow to read the advisory trace.</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div id="advisoryTraceGaps" class="trace-gaps"></div>
+                  </article>
                   <article class="card" data-anatomy-block="1" style="background: #111827;">
                     <h3>Alert Summary</h3>
                     <div id="inspectorSensorLine">Suricata: waiting</div>
@@ -938,9 +962,11 @@
       </section>
       <section>
         <h3>Suricata Forwarder &amp; Azure Sensor Registry</h3>
-        <h3>Azure Portal</h3>
-        <div id="azurePortalStatus" data-evidence-state="unavailable">Azure portal state has not been loaded.</div>
-        <pre id="azureProvisionSnippet">scripts/deploy_azure_cyber_range.sh --provision-live-azure</pre>
+        <h3>Cloud range</h3>
+        <section id="cloudStatusCard" class="cloud-status-card" data-evidence-state="unavailable" aria-label="Multi-cloud range status">
+          <div id="azurePortalStatus" data-evidence-state="unavailable">Cloud range state has not been loaded.</div>
+        </section>
+        <pre id="azureProvisionSnippet">scripts/deploy_cloud_range.sh --provision-range</pre>
         <button id="btnCopyAzureSnippet" type="button">Copy provision command</button>
         <div id="sensorRegistryList" data-evidence-state="unavailable">Sensor registry has not been loaded.</div>
         <label for="sensorIdInput">Sensor id</label>
@@ -1033,6 +1059,7 @@
       <div id="identityModalStatus" data-evidence-state="unavailable">Authentication required before entering the SOC console.</div>
     </div>
   </div>
+  <div id="socToast" class="soc-toast" role="status" aria-live="polite" hidden></div>
   <script src="js/soc_dashboard.js"></script>
 </body>
 </html>
