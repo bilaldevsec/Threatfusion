@@ -35,6 +35,8 @@ VM_SIZE="${AZURE_VM_SIZE:-Standard_B2s}"
 VICTIM_SIZE="$VM_SIZE"
 ATTACKER_SIZE="$VM_SIZE"
 IMAGE="${AZURE_VM_IMAGE:-Ubuntu2404}"
+VICTIM_IMAGE=""
+ATTACKER_IMAGE=""
 OS_DISK_GB=""
 STORAGE_SKU=""
 STUDENT_FREE_TIER=0
@@ -48,15 +50,16 @@ ACTION=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy_azure_cyber_range.sh [--dry-run] [--student-free-tier] (--help|--provision|--provision-live-azure|--pair-forwarder|--status|--deallocate|--deallocate-vms|--setup-entra-app)
+Usage: scripts/deploy_azure_cyber_range.sh [--dry-run] [--student-free-tier] (--help|--provision|--provision-live-azure|--pair-forwarder|--status|--deallocate|--deallocate-vms|--teardown-rg|--setup-entra-app)
 
   --help             Show this text and exit 0.
   --dry-run          Print the az and remote steps without calling them.
   --student-free-tier
                      Azure for Students budget mode. Uses free-tier eligible
-                     Standard_B1s and Standard_B2pts_v2, Ubuntu 22.04, a 64 GB
-                     Standard SSD, and an auto-shutdown at 23:59 Pakistan time
-                     so the $60 credit is not left running overnight.
+                     Standard_B1s (x86 Ubuntu 22.04) and Standard_B2pts_v2
+                     (Arm64 Ubuntu 22.04), 64 GiB Premium_LRS disks, and an
+                     auto-shutdown at 23:59 Pakistan time so the $60 credit is
+                     not left running overnight.
   --provision        Create the resource group, VNet, NSG, and both VMs.
   --provision-live-azure
                      Sign in with az when needed, register the ThreatFusion-SOC-Platform
@@ -64,7 +67,7 @@ Usage: scripts/deploy_azure_cyber_range.sh [--dry-run] [--student-free-tier] (--
                      ThreatFusion-Subnet / ThreatFusion-NSG in southeastasia, and create
                      two Ubuntu 22.04 VMs on verified 2-vCPU SKUs (6-core student quota).
                      Victim 172.29.0.20, attacker 172.29.0.10, admin azureuser.
-                     Auto-shutdown is 21:00 UTC (02:00 PKT). Writes
+                     Auto-shutdown is 21:00 UTC, which is 02:00 PKT. Writes
                      /tmp/threatfusion-range-demo/azure_portal_state.json from az vm list.
   --pair-forwarder   Install Suricata and suricata_eve_follower.py on the victim
                      and pair it with the ThreatFusion console over the sensor
@@ -73,6 +76,8 @@ Usage: scripts/deploy_azure_cyber_range.sh [--dry-run] [--student-free-tier] (--
   --status           Show live VMs, public/private IPs, and auto-shutdown policy.
   --deallocate       Stop both VMs and release compute so billing stops after a demo.
   --deallocate-vms   Same as --deallocate.
+  --teardown-rg      Delete ThreatFusion-RG without waiting, then remove
+                     /tmp/threatfusion-range-demo/azure_portal_state.json.
   --setup-entra-app  Register the ThreatFusion Microsoft Entra ID app roles.
 
 The address plan is fixed: tf-soc-victim-vm 172.29.0.20 and
@@ -154,13 +159,15 @@ provision_range() {
     --name "$SUBNET" \
     --network-security-group "$NSG"
   local -a disk_args=()
+  local victim_image="${VICTIM_IMAGE:-$IMAGE}"
+  local attacker_image="${ATTACKER_IMAGE:-$IMAGE}"
   if [[ -n "$OS_DISK_GB" ]]; then
     disk_args+=(--os-disk-size-gb "$OS_DISK_GB" --storage-sku "$STORAGE_SKU")
   fi
   run az vm create \
     --resource-group "$RG" \
     --name "$VICTIM_NAME" \
-    --image "$IMAGE" \
+    --image "$victim_image" \
     --size "$VICTIM_SIZE" \
     --admin-username "$ADMIN_USER" \
     --generate-ssh-keys \
@@ -173,7 +180,7 @@ provision_range() {
   run az vm create \
     --resource-group "$RG" \
     --name "$ATTACKER_NAME" \
-    --image "$IMAGE" \
+    --image "$attacker_image" \
     --size "$ATTACKER_SIZE" \
     --admin-username "$ADMIN_USER" \
     --generate-ssh-keys \
@@ -239,21 +246,13 @@ sudo install -d -m 0755 /var/log/suricata
 if [[ ! -f ${EVE_LOG} ]]; then
   sudo touch ${EVE_LOG}
 fi
-sudo tee /etc/threatfusion/range.env >/dev/null <<'ENV'
-THREATFUSION_CONSOLE_URL=${console_url}
-THREATFUSION_SENSOR_TOKEN=${sensor_token}
-THREATFUSION_SOAR_HMAC_SECRET=${hmac_secret}
-THREATFUSION_CLIENT_CERT=/etc/threatfusion/client.crt
-THREATFUSION_CLIENT_KEY=/etc/threatfusion/client.key
-ENV
-sudo chmod 0600 /etc/threatfusion/range.env
 sudo tee /etc/systemd/system/threatfusion-eve-follower.service >/dev/null <<'UNIT'
 [Unit]
 Description=ThreatFusion Suricata EVE follower
 After=network-online.target suricata.service
 
 [Service]
-EnvironmentFile=/etc/threatfusion/range.env
+EnvironmentFile=/etc/threatfusion/forwarder.env
 ExecStart=/usr/bin/python3 /opt/threatfusion/suricata_eve_follower.py --eve ${EVE_LOG} --console-url ${console_url}
 Restart=on-failure
 NoNewPrivileges=true
@@ -270,6 +269,12 @@ EOF
     printf 'dry-run: copy %s to %s:%s\n' "$FORWARDER_SRC" "$VICTIM_NAME" "$FORWARDER_DST"
     printf 'dry-run: az vm run-command invoke --resource-group %s --name %s --command-id RunShellScript\n' "$RG" "$VICTIM_NAME"
     printf 'dry-run remote script follows\n%s\n' "$remote"
+    printf 'dry-run: ssh stdin umask 077; cat > /etc/threatfusion/forwarder.env\n'
+    printf 'THREATFUSION_CONSOLE_URL=%s\n' "${console_url:-}"
+    printf 'THREATFUSION_SENSOR_TOKEN=<redacted>\n'
+    printf 'THREATFUSION_SOAR_HMAC_SECRET=<redacted>\n'
+    printf 'THREATFUSION_CLIENT_CERT=/etc/threatfusion/client.crt\n'
+    printf 'THREATFUSION_CLIENT_KEY=/etc/threatfusion/client.key\n'
     if [[ -n "${THREATFUSION_CLIENT_CERT:-}" && -n "${THREATFUSION_CLIENT_KEY:-}" ]]; then
       echo "dry-run: copy optional mTLS client certificate and key to /etc/threatfusion/"
     fi
@@ -282,21 +287,41 @@ EOF
     --name "$VICTIM_NAME" \
     --command-id RunShellScript \
     --scripts "echo ${encoded} | base64 -d | sudo tee ${FORWARDER_DST} >/dev/null && sudo chmod 0755 ${FORWARDER_DST}"
-  if [[ -n "${THREATFUSION_CLIENT_CERT:-}" && -n "${THREATFUSION_CLIENT_KEY:-}" && -f "$THREATFUSION_CLIENT_CERT" && -f "$THREATFUSION_CLIENT_KEY" ]]; then
-    local cert_b64 key_b64
-    cert_b64="$(base64 -w 0 "$THREATFUSION_CLIENT_CERT" 2>/dev/null || base64 "$THREATFUSION_CLIENT_CERT" | tr -d '\n')"
-    key_b64="$(base64 -w 0 "$THREATFUSION_CLIENT_KEY" 2>/dev/null || base64 "$THREATFUSION_CLIENT_KEY" | tr -d '\n')"
-    run az vm run-command invoke \
-      --resource-group "$RG" \
-      --name "$VICTIM_NAME" \
-      --command-id RunShellScript \
-      --scripts "echo ${cert_b64} | base64 -d | sudo tee /etc/threatfusion/client.crt >/dev/null; echo ${key_b64} | base64 -d | sudo tee /etc/threatfusion/client.key >/dev/null; sudo chmod 0600 /etc/threatfusion/client.key"
-  fi
   run az vm run-command invoke \
     --resource-group "$RG" \
     --name "$VICTIM_NAME" \
     --command-id RunShellScript \
     --scripts "$remote"
+  local public_ip
+  public_ip="$(az vm list-ip-addresses -g "$RG" -n "$VICTIM_NAME" --query "[0].virtualMachine.network.publicIpAddresses[0].ipAddress" -o tsv)"
+  if [[ -z "$public_ip" ]]; then
+    echo "Victim public IP is required to push forwarder.env over ssh." >&2
+    exit 1
+  fi
+  # Secrets go over ssh stdin. Azure run-command history never stores them.
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    "${LIVE_ADMIN_USER}@${public_ip}" \
+    "sudo sh -c 'umask 077; cat > /etc/threatfusion/forwarder.env'" <<ENV
+THREATFUSION_CONSOLE_URL=${console_url}
+THREATFUSION_SENSOR_TOKEN=${sensor_token}
+THREATFUSION_SOAR_HMAC_SECRET=${hmac_secret}
+THREATFUSION_CLIENT_CERT=/etc/threatfusion/client.crt
+THREATFUSION_CLIENT_KEY=/etc/threatfusion/client.key
+ENV
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    "${LIVE_ADMIN_USER}@${public_ip}" \
+    "sudo chmod 0600 /etc/threatfusion/forwarder.env"
+  if [[ -n "${THREATFUSION_CLIENT_CERT:-}" && -n "${THREATFUSION_CLIENT_KEY:-}" && -f "$THREATFUSION_CLIENT_CERT" && -f "$THREATFUSION_CLIENT_KEY" ]]; then
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      "${LIVE_ADMIN_USER}@${public_ip}" \
+      "sudo sh -c 'umask 077; cat > /etc/threatfusion/client.crt'" <"$THREATFUSION_CLIENT_CERT"
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      "${LIVE_ADMIN_USER}@${public_ip}" \
+      "sudo sh -c 'umask 077; cat > /etc/threatfusion/client.key'" <"$THREATFUSION_CLIENT_KEY"
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+      "${LIVE_ADMIN_USER}@${public_ip}" \
+      "sudo chmod 0600 /etc/threatfusion/client.key /etc/threatfusion/forwarder.env"
+  fi
 }
 
 # Verified unrestricted 2-vCPU SKUs in southeastasia for the Azure for Students
@@ -359,7 +384,7 @@ show_status() {
     printf '%-28s %-16s %-16s\n' "$name" "${private:-n/a}" "${public:-n/a}"
   done
   echo
-  echo "=== Auto-shutdown (21:00 UTC / 02:00 PKT) ==="
+  echo "=== Auto-shutdown (21:00 UTC, which is 02:00 PKT) ==="
   for name in "$VICTIM_NAME" "$ATTACKER_NAME"; do
     local sched_name="shutdown-computevm-${name}"
     local sched enabled time_val tz
@@ -594,17 +619,21 @@ ensure_live_nsg() {
       --destination-address-prefixes "$SUBNET_PREFIX" \
       --destination-port-ranges '*'
   fi
-  if [[ -n "${AZURE_ADMIN_SSH_CIDR:-}" && "${AZURE_ADMIN_SSH_CIDR}" != "0.0.0.0/0" && "${AZURE_ADMIN_SSH_CIDR}" != "*" ]]; then
-    if [[ "$DRY_RUN" -eq 1 ]] || ! az network nsg rule show --resource-group "$RG" --nsg-name "$LIVE_NSG" --name allow-admin-ssh >/dev/null 2>&1; then
+  local ssh_source="${AZURE_ADMIN_SSH_CIDR:-}"
+  if [[ -z "$ssh_source" && "$DRY_RUN" -eq 1 ]]; then
+    ssh_source="operator-prefix-required"
+  fi
+  if [[ -n "$ssh_source" && "$ssh_source" != "0.0.0.0/0" && "$ssh_source" != "*" ]]; then
+    if [[ "$DRY_RUN" -eq 1 ]] || ! az network nsg rule show --resource-group "$RG" --nsg-name "$LIVE_NSG" --name Allow-SSH-Inbound >/dev/null 2>&1; then
       run az network nsg rule create \
         --resource-group "$RG" \
         --nsg-name "$LIVE_NSG" \
-        --name allow-admin-ssh \
+        --name Allow-SSH-Inbound \
         --priority 110 \
         --access Allow \
         --direction Inbound \
         --protocol Tcp \
-        --source-address-prefixes "$AZURE_ADMIN_SSH_CIDR" \
+        --source-address-prefixes "$ssh_source" \
         --destination-port-ranges 22
     fi
   fi
@@ -806,8 +835,18 @@ print(state_path)
 PY
 }
 
+teardown_resource_group() {
+  require_az
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "dry-run: az group delete --name ThreatFusion-RG --yes --no-wait && rm -f /tmp/threatfusion-range-demo/azure_portal_state.json"
+    return 0
+  fi
+  az group delete --name ThreatFusion-RG --yes --no-wait && rm -f /tmp/threatfusion-range-demo/azure_portal_state.json
+}
+
 provision_live_azure() {
   require_az
+  require_ssh_cidr
   local vm_size image
   SELECTED_VM_SIZE=""
   SELECTED_VM_IMAGE=""
@@ -883,9 +922,15 @@ while [[ $# -gt 0 ]]; do
       STUDENT_FREE_TIER=1
       VICTIM_SIZE="Standard_B1s"
       ATTACKER_SIZE="Standard_B2pts_v2"
-      IMAGE="Ubuntu2204"
+      VICTIM_IMAGE="$(ubuntu_image_for_sku "$VICTIM_SIZE")"
+      ATTACKER_IMAGE="$(ubuntu_image_for_sku "$ATTACKER_SIZE")"
+      IMAGE="$VICTIM_IMAGE"
       OS_DISK_GB="64"
-      STORAGE_SKU="StandardSSD_LRS"
+      STORAGE_SKU="Premium_LRS"
+      shift
+      ;;
+    --teardown-rg)
+      ACTION="teardown"
       shift
       ;;
     --deallocate|--deallocate-vms)
@@ -927,6 +972,7 @@ case "$ACTION" in
   pair) pair_forwarder ;;
   status) show_status ;;
   deallocate) deallocate_range ;;
+  teardown) teardown_resource_group ;;
   entra) setup_entra_app ;;
   *)
     usage >&2

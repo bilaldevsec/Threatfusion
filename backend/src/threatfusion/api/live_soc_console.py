@@ -1750,24 +1750,68 @@ def _remember_live_gemini(
         return
 
 
-def invalidate_copilot_brief_cache(flow_id: int, db_path: Path | None = None) -> None:
-    """Drop cached advisory briefs after Approve / Dispatch / Isolate / Rollback."""
+def _rewrite_section_five(narrative: str, section_body: str) -> str:
+    """Replace section [5] and leave sections [1] through [4] byte-for-byte."""
+    heading = _COPILOT_HEADINGS[4]
+    section = f"{heading}\n{section_body}"
+    index = narrative.find(heading)
+    if index < 0:
+        stripped = narrative.rstrip()
+        if not stripped:
+            return section
+        return stripped + "\n\n" + section
+    return narrative[:index].rstrip() + "\n\n" + section
+
+
+def rewrite_copilot_section_five(
+    flow_id: int,
+    db_path: Path | None,
+    *,
+    execution_authorized: bool,
+    soar_receipt_status: str,
+) -> None:
+    """Refresh only section [5] in the cached brief. Gemini is not called."""
     number = _positive_flow_id(flow_id)
     if number is None:
         return
+    section_body = _governed_soar_guidance(
+        decision="Attack",
+        receipt_status=soar_receipt_status,
+        execution_authorized=execution_authorized,
+    )
+
+    def _splice(narrative: str) -> str:
+        return _rewrite_section_five(narrative, section_body)
+
     with _LIVE_GEMINI_CACHE_LOCK:
-        stale = [key for key in _LIVE_GEMINI_CACHE if key[0] == number]
-        for key in stale:
-            _LIVE_GEMINI_CACHE.pop(key, None)
+        for key, payload in list(_LIVE_GEMINI_CACHE.items()):
+            if key[0] != number or not isinstance(payload, Mapping):
+                continue
+            updated = dict(payload)
+            updated["narrative"] = _splice(str(payload.get("narrative") or ""))
+            _LIVE_GEMINI_CACHE[key] = updated
     if db_path is None or not db_path.is_file():
         return
     try:
         _ensure_copilot_cache_table(db_path)
         with _connect(db_path) as conn:
-            conn.execute(
-                "DELETE FROM live_copilot_cache WHERE cache_key LIKE ?",
+            rows = conn.execute(
+                """
+                SELECT cache_key, narrative
+                FROM live_copilot_cache
+                WHERE cache_key LIKE ?
+                """,
                 (f"{number}\n%",),
-            )
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    """
+                    UPDATE live_copilot_cache
+                    SET narrative = ?
+                    WHERE cache_key = ?
+                    """,
+                    (_splice(str(row["narrative"] or "")), row["cache_key"]),
+                )
     except (OSError, sqlite3.Error):
         return
 
@@ -1994,6 +2038,77 @@ def _copilot_grounding_bundle(
     )
 
 
+def _governed_soar_guidance(
+    *,
+    decision: str,
+    receipt_status: str,
+    containment_state: str = "",
+    execution_authorized: bool | None = None,
+) -> str:
+    """Section [5] prose. Sections [1] through [4] are not part of this string."""
+    if execution_authorized is None:
+        execution_authorized = receipt_status in {
+            "approved",
+            "verified",
+            "isolated",
+            "rolled_back",
+        } or containment_state in {
+            "applied",
+            "simulated_applied",
+            "rolled_back",
+            "simulated_rolled_back",
+        }
+    auth_token = "true" if execution_authorized else "false"
+    if decision != "Attack":
+        return (
+            f"**Containment is blocked.** The frozen Random Forest decision is `{decision}`. "
+            "Do not isolate an endpoint while the score stays below the attack threshold. "
+            f"`execution_authorized` : `{auth_token}`. "
+            f"`soar_receipt_status` : `{receipt_status}`."
+        )
+    if receipt_status == "isolated" or containment_state in {
+        "applied",
+        "simulated_applied",
+    }:
+        return (
+            "**Containment applied.** The approved playbook authorized victim-namespace "
+            "iptables isolation for this stored Attack row. "
+            f"`execution_authorized` : `{auth_token}`. "
+            f"`soar_receipt_status` : `{receipt_status}`."
+        )
+    if receipt_status == "rolled_back" or containment_state in {
+        "rolled_back",
+        "simulated_rolled_back",
+    }:
+        return (
+            "**Containment rolled back.** The firewall drop was removed and the SHA-256 "
+            "ledger recorded the restore. "
+            f"`execution_authorized` : `{auth_token}`. "
+            f"`soar_receipt_status` : `{receipt_status}`."
+        )
+    if receipt_status == "verified":
+        return (
+            "**Callback verified.** The signed HMAC receipt is recorded. Isolate remains "
+            "a separate human step. "
+            f"`execution_authorized` : `{auth_token}`. "
+            f"`soar_receipt_status` : `{receipt_status}`."
+        )
+    if receipt_status == "approved":
+        return (
+            "**Playbook approved.** Dispatch via n8n (or the local contract fallback) is "
+            "unlocked. Host containment has not executed yet. "
+            f"`execution_authorized` : `{auth_token}`. "
+            f"`soar_receipt_status` : `{receipt_status}`."
+        )
+    return (
+        "**Containment stays unauthorized.** A human must approve the SHA-256 hash-chained "
+        "playbook before any n8n webhook, victim firewall isolation, or rollback check. "
+        f"`execution_authorized` : `{auth_token}`. "
+        f"`soar_receipt_status` : `{receipt_status}`. "
+        "The frozen forest recommendation does not dispatch a response by itself."
+    )
+
+
 def _local_air_gapped_brief(
     stored: Mapping[str, Any],
     locker: Mapping[str, Any],
@@ -2063,67 +2178,11 @@ def _local_air_gapped_brief(
     )
     receipt_status = str(campaign.get("soar_receipt_status") or "unavailable")
     containment_state = str(stored.get("containment_state") or "")
-    execution_authorized = receipt_status in {
-        "approved",
-        "verified",
-        "isolated",
-        "rolled_back",
-    } or containment_state in {
-        "applied",
-        "simulated_applied",
-        "rolled_back",
-        "simulated_rolled_back",
-    }
-    auth_token = "true" if execution_authorized else "false"
-    if decision != "Attack":
-        containment = (
-            f"**Containment is blocked.** The frozen Random Forest decision is `{decision}`. "
-            "Do not isolate an endpoint while the score stays below the attack threshold. "
-            f"`execution_authorized` : `{auth_token}`. "
-            f"`soar_receipt_status` : `{receipt_status}`."
-        )
-    elif receipt_status == "isolated" or containment_state in {
-        "applied",
-        "simulated_applied",
-    }:
-        containment = (
-            "**Containment applied.** The approved playbook authorized victim-namespace "
-            "iptables isolation for this stored Attack row. "
-            f"`execution_authorized` : `{auth_token}`. "
-            f"`soar_receipt_status` : `{receipt_status}`."
-        )
-    elif receipt_status == "rolled_back" or containment_state in {
-        "rolled_back",
-        "simulated_rolled_back",
-    }:
-        containment = (
-            "**Containment rolled back.** The firewall drop was removed and the SHA-256 "
-            "ledger recorded the restore. "
-            f"`execution_authorized` : `{auth_token}`. "
-            f"`soar_receipt_status` : `{receipt_status}`."
-        )
-    elif receipt_status == "verified":
-        containment = (
-            "**Callback verified.** The signed HMAC receipt is recorded. Isolate remains "
-            "a separate human step. "
-            f"`execution_authorized` : `{auth_token}`. "
-            f"`soar_receipt_status` : `{receipt_status}`."
-        )
-    elif receipt_status == "approved":
-        containment = (
-            "**Playbook approved.** Dispatch via n8n (or the local contract fallback) is "
-            "unlocked. Host containment has not executed yet. "
-            f"`execution_authorized` : `{auth_token}`. "
-            f"`soar_receipt_status` : `{receipt_status}`."
-        )
-    else:
-        containment = (
-            "**Containment stays unauthorized.** A human must approve the SHA-256 hash-chained "
-            "playbook before any n8n webhook, victim firewall isolation, or rollback check. "
-            f"`execution_authorized` : `{auth_token}`. "
-            f"`soar_receipt_status` : `{receipt_status}`. "
-            "The frozen forest recommendation does not dispatch a response by itself."
-        )
+    containment = _governed_soar_guidance(
+        decision=decision,
+        receipt_status=receipt_status,
+        containment_state=containment_state,
+    )
     sections = (
         f"{_COPILOT_HEADINGS[0]}\n"
         f"The frozen Random Forest is the only alert authority on this stored flow. "
@@ -3772,6 +3831,25 @@ def _scenario_provenance(port: int, protocol: str) -> dict[str, Any]:
     return _lab_scenario_provenance(port, protocol)
 
 
+def _seed_scenario_provenance(spec: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind a seeded scenario. Range rows use the technique's transport metadata."""
+    label = spec.get("scenario_label")
+    protocol = str(
+        spec.get("protocol") or ("tcp" if int(spec.get("protocol_tcp") or 0) else "udp")
+    )
+    port = int(spec["dst_port"])
+    provenance = _scenario_provenance(port, protocol)
+    display = _RANGE_DISPLAY_TRANSPORT.get(str(label or ""))
+    if (
+        display is not None
+        and provenance.get("src_entity_id") == RANGE_CONTAINMENT_SOURCE
+        and provenance.get("dst_entity_id") == RANGE_VICTIM_ADDRESS
+    ):
+        protocol, port = display
+        return _range_scenario_provenance(port, protocol)
+    return provenance
+
+
 # The technique id is the scenario label. The frozen forest does not emit it.
 # Provenance is resolved at seed time via _scenario_provenance so a live range
 # binds T1046/T1110/T1190/T1498 rows to 172.29.0.10 -> 172.29.0.20.
@@ -3873,8 +3951,8 @@ def _reuse_scenario_row(
             SET src_entity_id = ?,
                 dst_entity_id = ?,
                 entity_namespace_id = COALESCE(?, entity_namespace_id),
-                flow_protocol = COALESCE(NULLIF(TRIM(flow_protocol), ''), ?),
-                service_or_port = COALESCE(NULLIF(TRIM(service_or_port), ''), ?)
+                flow_protocol = ?,
+                service_or_port = ?
             WHERE source_label = 'live_scenario_replay' AND case_title = ?
             """,
             (
@@ -3993,10 +4071,7 @@ def replay_live_scenarios(
     for spec in LIVE_SCENARIO_REPLAYS:
         label = spec["scenario_label"]
         title = _scenario_case_title(spec)
-        protocol = str(
-            spec.get("protocol") or ("tcp" if int(spec.get("protocol_tcp") or 0) else "udp")
-        )
-        provenance = _scenario_provenance(int(spec["dst_port"]), protocol)
+        provenance = _seed_scenario_provenance(spec)
         existing = _reuse_scenario_row(db_path, title, provenance)
         if existing is None:
             if spec["scenario_id"] == "benign_false_alarm":
@@ -4225,7 +4300,6 @@ def ensure_recorded_attack_row(
             "production_fusion_enabled": False,
         }
     title = f"{spec['title']} (scenario label {spec['scenario_label']})"
-    protocol = str(spec.get("protocol") or "udp")
     persist_scored_flow(
         db_path,
         features,
@@ -4233,7 +4307,7 @@ def ensure_recorded_attack_row(
         campaign_id=campaign_id,
         source_label="live_scenario_replay",
         case_title=title,
-        provenance=_scenario_provenance(int(spec["dst_port"]), protocol),
+        provenance=_seed_scenario_provenance(spec),
     )
     with _connect(db_path) as conn:
         conn.execute(
@@ -4793,7 +4867,12 @@ def approve_live_soar(
         _store_flow_receipt(live_db_path, flow_id, receipt)
         _store_operator_stamp(live_db_path, flow_id, stamp)
         receipt.update(stamp)
-        invalidate_copilot_brief_cache(flow_id, live_db_path)
+        rewrite_copilot_section_five(
+            flow_id,
+            live_db_path,
+            execution_authorized=True,
+            soar_receipt_status="approved",
+        )
         return receipt
     pending = next((record for record in existing if record.state == "pending_approval"), None)
     try:
@@ -4827,7 +4906,12 @@ def approve_live_soar(
     _store_flow_receipt(live_db_path, flow_id, receipt)
     _store_operator_stamp(live_db_path, flow_id, stamp)
     receipt.update(stamp)
-    invalidate_copilot_brief_cache(flow_id, live_db_path)
+    rewrite_copilot_section_five(
+        flow_id,
+        live_db_path,
+        execution_authorized=True,
+        soar_receipt_status="approved",
+    )
     return receipt
 
 
@@ -4887,7 +4971,12 @@ def _store_callback_receipt(
             """,
             (signature, case_id, mttr_seconds, execution_path, flow_id),
         )
-    invalidate_copilot_brief_cache(flow_id, db_path)
+    rewrite_copilot_section_five(
+        flow_id,
+        db_path,
+        execution_authorized=True,
+        soar_receipt_status="verified",
+    )
 
 
 def _mark_execution_path(db_path: Path, flow_id: int, execution_path: str) -> None:
@@ -6959,7 +7048,12 @@ def _record_simulated_scenario(
         return _containment_refusal("ledger_append_failed", 409)
     recorded_at = datetime.now(UTC).isoformat()
     _store_containment_state(live_db_path, flow_id, state, when=recorded_at, rule=rule)
-    invalidate_copilot_brief_cache(flow_id, live_db_path)
+    rewrite_copilot_section_five(
+        flow_id,
+        live_db_path,
+        execution_authorized=True,
+        soar_receipt_status="rolled_back" if rollback else "isolated",
+    )
     return {
         "schema_version": "live_range_containment_v1",
         "evidence_state": "simulated",
@@ -7017,7 +7111,12 @@ def contain_range_source(
         return _containment_refusal("containment_not_observed", 502)
     recorded_at = datetime.now(UTC).isoformat()
     _store_containment_state(live_db_path, flow_id, "applied", when=recorded_at)
-    invalidate_copilot_brief_cache(flow_id, live_db_path)
+    rewrite_copilot_section_five(
+        flow_id,
+        live_db_path,
+        execution_authorized=True,
+        soar_receipt_status="isolated",
+    )
     applied = {
         "schema_version": "live_range_containment_v1",
         "evidence_state": "verified",
@@ -7087,7 +7186,15 @@ def _rollback_range_source_work(
         return refused
     recorded_at = datetime.now(UTC).isoformat()
     _store_containment_state(live_db_path, flow_id, "rolled_back", when=recorded_at)
-    invalidate_copilot_brief_cache(flow_id, live_db_path)
+    rewrite_copilot_section_five(
+        flow_id,
+        live_db_path,
+        execution_authorized=True,
+        soar_receipt_status="rolled_back",
+    )
+    azure_kernel = rolled.get("azure_kernel")
+    azure_removed = isinstance(azure_kernel, Mapping) and azure_kernel.get("applied") is True
+    firewall_scope = "azure_and_local" if azure_removed else "local"
     restored = {
         "schema_version": "live_range_containment_v1",
         "evidence_state": "verified",
@@ -7097,11 +7204,15 @@ def _rollback_range_source_work(
         "soar_receipt_status": "rolled_back",
         "production_fusion_enabled": False,
         "target": RANGE_CONTAINMENT_SOURCE,
-        "firewall_scope": "local",
+        "firewall_scope": firewall_scope,
         "rollback_at": recorded_at,
         "http_status": 200,
     }
-    azure_kernel = rolled.get("azure_kernel")
+    if firewall_scope == "azure_and_local":
+        restored["rollback_notice"] = (
+            "CONTAINMENT ROLLED BACK — Firewall block on 172.29.0.10 "
+            "removed from Azure & Local firewall."
+        )
     if isinstance(azure_kernel, Mapping):
         restored["azure_kernel"] = dict(azure_kernel)
     return restored
@@ -7550,6 +7661,13 @@ _RANGE_ATTACK_CATALOG: tuple[dict[str, str], ...] = (
     },
 )
 _RANGE_VECTOR_IDS = frozenset(item["vector_id"] for item in _RANGE_ATTACK_CATALOG)
+# Display and playbook transport only. The 14 scored features stay on the raw row.
+_RANGE_DISPLAY_TRANSPORT: dict[str, tuple[str, int]] = {
+    "T1190": ("tcp", 80),
+    "T1110": ("tcp", 22),
+    "T1046": ("tcp", 445),
+    "T1498": ("udp", 4433),
+}
 _BENIGN_WEB_CANONICAL: dict[str, float] = {
     "duration_ms": 180.0,
     "fwd_packets": 8.0,
@@ -8958,8 +9076,16 @@ def azure_portal_status(state_path: Path | None = None) -> dict[str, Any]:
         "tenant_id": str(state.get("tenant_id") or ""),
         "subscription_id": str(state.get("subscription_id") or ""),
         "app_id": str(state.get("app_id") or ""),
+        "location": str(state.get("location") or "southeastasia"),
+        "victim_vm_name": "tf-soc-victim-vm",
+        "attacker_vm_name": "tf-attacker-redteam-vm",
         "victim_vm_ip": str(state.get("victim_vm_ip") or "172.29.0.20"),
         "attacker_vm_ip": str(state.get("attacker_vm_ip") or "172.29.0.10"),
+        "victim_public_ip": str(state.get("victim_public_ip") or ""),
+        "attacker_public_ip": str(state.get("attacker_public_ip") or ""),
+        "auto_shutdown_utc": str(state.get("auto_shutdown_utc") or "2100"),
+        "auto_shutdown_pkt": str(state.get("auto_shutdown_pkt") or "02:00"),
+        "auto_shutdown_label": "Enabled (02:00 PKT / 21:00 UTC)",
         "terminal_snippet": "scripts/deploy_azure_cyber_range.sh --provision-live-azure",
         "status_snippet": "scripts/deploy_azure_cyber_range.sh --status",
         "deallocate_snippet": "scripts/deploy_azure_cyber_range.sh --deallocate-vms",
@@ -9457,6 +9583,14 @@ def ingest_live_flow(
         protocol = "icmp"
     else:
         protocol = "tcp"
+    display = _RANGE_DISPLAY_TRANSPORT.get(str(vector_id or ""))
+    if (
+        display is not None
+        and src_ip == RANGE_CONTAINMENT_SOURCE
+        and dst_ip == RANGE_VICTIM_ADDRESS
+    ):
+        protocol, dst_port = display
+        service = str(dst_port)
     observation = {
         "proto": protocol,
         "src_port": 0,

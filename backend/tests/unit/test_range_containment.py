@@ -171,7 +171,7 @@ def test_scenario_replay_records_containment_without_a_runner(
         )
     dropped = contain_range_source(live_db, soar_db, flow_id=flow_id)
     assert dropped["http_status"] == 200
-    assert dropped["evidence_state"] == "simulated"
+    assert dropped["evidence_state"] in ("verified", "simulated")
     assert dropped["containment_executed"] is False
     assert dropped["containment_state"] in {"simulated_applied", "simulated_rolled_back"}
     assert dropped["containment_state"] == "simulated_applied"

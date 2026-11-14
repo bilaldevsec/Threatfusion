@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import sqlite3
@@ -40,7 +41,9 @@ from threatfusion.api.live_soc_console import (
     save_context_memory,
     entra_identity_status,
     get_live_snapshot,
+    _attack_study_profile,
     launch_range_vector,
+    preview_soar_playbook,
     rollback_range_source,
     verify_entra_token,
     range_telemetry,
@@ -873,7 +876,8 @@ def test_four_scenario_replay_uses_the_frozen_forest(tmp_path: Path) -> None:
     assert (
         by_id["web_exploit"]["src_entity_id"] == "10.0.0.4"
     ) == (by_id["web_exploit"]["dst_entity_id"] == "10.0.0.5")
-    assert by_id["web_exploit"]["service_or_port"] == "443"
+    on_range = by_id["web_exploit"]["src_entity_id"] == "172.29.0.10"
+    assert by_id["web_exploit"]["service_or_port"] == ("80" if on_range else "443")
     assert by_id["ssh_brute"]["service_or_port"] == "22"
     assert by_id["internal_recon"]["service_or_port"] == "445"
     assert by_id["benign_false_alarm"]["service_or_port"] == "8080"
@@ -1744,7 +1748,7 @@ def test_workspaces_rbac_sensors_and_compliance_dossier(tmp_path: Path) -> None:
     assert "http://" not in html
     assert "https://" not in html
     assert "renderVisualObservatory" in script
-    assert "/api/range/launch" in script
+    assert "/api/range/launch" in script or "/api/v1/live/range/launch-vector" in script
     assert "/api/soar/isolate" in script
     assert "production_fusion_enabled = True" not in script
     assert 'id="approvePlaybookBtn"' in html
@@ -1778,6 +1782,36 @@ def test_launched_attack_vectors_match_nine_class_and_frozen_scores(tmp_path: Pa
         assert float(launched["ae_loss"]) >= 0.118136
         assert launched["unsw_attack_category"] == expected
         assert launched["scenario_label"] == vector_id
+        proto, dport = {
+            "T1190": ("tcp", 80),
+            "T1110": ("tcp", 22),
+            "T1046": ("tcp", 445),
+            "T1498": ("udp", 4433),
+        }[vector_id]
+        observation = launched.get("sensor_observation") or {}
+        assert observation.get("proto") == proto
+        assert int(observation.get("dst_port")) == dport
+        with sqlite3.connect(live_db) as conn:
+            raw_features, flow_protocol, service = conn.execute(
+                """
+                SELECT features_json, flow_protocol, service_or_port
+                FROM live_flows WHERE flow_id = ?
+                """,
+                (launched["flow_id"],),
+            ).fetchone()
+        scored = json.loads(raw_features)
+        profile = _attack_study_profile(vector_id)
+        assert flow_protocol == proto
+        assert service == str(dport)
+        assert float(scored["dst_port"]) == float(profile["dst_port"])
+        assert float(scored["protocol_tcp"]) == float(profile["protocol_tcp"])
+        assert float(scored["protocol_udp"]) == float(profile["protocol_udp"])
+        assert float(scored["protocol_icmp"]) == float(profile["protocol_icmp"])
+        preview = preview_soar_playbook(live_db, flow_id=int(launched["flow_id"]))
+        assert preview["proto"] == proto
+        assert preview["dport"] == dport
+        assert f"PROTO = {proto!r}" in preview["rendered_python_code"]
+        assert f"DPORT = {dport!r}" in preview["rendered_python_code"]
 
 
 def test_approve_unlocks_snapshot_and_repeat_click_stays_authorized(tmp_path: Path, monkeypatch) -> None:

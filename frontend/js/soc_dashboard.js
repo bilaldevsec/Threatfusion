@@ -16,6 +16,10 @@
   let rbacSessionToken = '';
   let sessionIdentity = null;
   let latestDualFirewallProbe = null;
+  let latestAzureRollback = false;
+  let lastCopilotNarrative = '';
+  let pendingSectionFive = null;
+  const COPILOT_SECTION_FIVE = '[5] GOVERNED SOAR PLAYBOOK & CONTAINMENT GUIDANCE';
   const AZURE_LOCAL_CONTAINMENT_BADGE = 'CONTAINMENT APPLIED — Source 172.29.0.10 blocked at Azure & Local firewall (iptables DROP active).';
   let selectedFlowId = null;
   let identityGateSwitchMode = false;
@@ -2806,6 +2810,9 @@
       return 'CONTAINMENT APPLIED — Source ' + srcIp + ' blocked at firewall (iptables DROP active). Click Rollback to restore.';
     }
     if (state === 'rolled_back') {
+      if (latestAzureRollback && (!srcIp || srcIp === '172.29.0.10')) {
+        return 'CONTAINMENT ROLLED BACK — Firewall block on 172.29.0.10 removed from Azure & Local firewall.';
+      }
       return 'CONTAINMENT ROLLED BACK — Firewall block on ' + srcIp + ' removed and rollback recorded in SHA-256 ledger.';
     }
     const callback = inc.callbackRecorded === true
@@ -3492,7 +3499,7 @@
           applyContainmentGuard(live);
           markResponseProgress(live);
           loadSoarPlaybookPreview(live);
-          refreshCopilotForSelection(live, true);
+          patchCopilotSectionFive(live.flowId, 'approved');
         }
         enableSoarControl('btnDispatchCallback');
         const message = soarOperatorMessage(
@@ -3975,7 +3982,6 @@
       if (inc) {
         bindSelectedFlowId(inc);
         renderForensicDrawer();
-        refreshCopilotForSelection(inc, true);
       }
     };
   }
@@ -4181,7 +4187,7 @@
           applyContainmentStatus(live);
           markResponseProgress(live);
           loadSoarPlaybookPreview(live);
-          refreshCopilotForSelection(live, true);
+          patchCopilotSectionFive(live.flowId, 'verified');
         }
         enableSoarControl('btnIsolateAttacker');
         enableSoarControl('btnContainRange');
@@ -4259,7 +4265,12 @@
       const applied = data.reason === 'containment_applied';
       const rolled = data.reason === 'containment_rolled_back';
       if (data.reachability_probe) rememberDualFirewallProbe(data.reachability_probe);
-      if (rolled) latestDualFirewallProbe = null;
+      if (rolled) {
+        latestAzureRollback = data.firewall_scope === 'azure_and_local';
+        latestDualFirewallProbe = null;
+      } else if (applied) {
+        latestAzureRollback = false;
+      }
       const restore = preserveSelectionAfterMutation();
       await refreshLiveCampaigns();
       restore();
@@ -4293,9 +4304,9 @@
           live.rollbackUnlocked = true;
           applyContainmentGuard(live);
           markResponseProgress(live);
-          refreshCopilotForSelection(live, true);
+          patchCopilotSectionFive(live.flowId, 'isolated');
         } else {
-          refreshCopilotForSelection(selectedIncident(), true);
+          patchCopilotSectionFive(selectedFlowId, 'isolated');
         }
         enableSoarControl('btnRollbackRange');
       }
@@ -4309,11 +4320,17 @@
       }
       if (sessionIdentity && sessionIdentity.authenticated) paintSessionIdentity(sessionIdentity);
       if (resp.ok && (applied || rolled)) {
+        const azureRolled = rolled && data.firewall_scope === 'azure_and_local';
         const message = applied
           ? (azureBadge || ('CONTAINMENT APPLIED — Source ' + (blockedSrc || srcIp) + ' blocked at firewall (iptables DROP active). Click Rollback to restore.'))
-          : ('CONTAINMENT ROLLED BACK — Firewall block on ' + (blockedSrc || srcIp) + ' removed and rollback recorded in SHA-256 ledger.');
+          : (azureRolled
+            ? 'CONTAINMENT ROLLED BACK — Firewall block on 172.29.0.10 removed from Azure & Local firewall.'
+            : ('CONTAINMENT ROLLED BACK — Firewall block on ' + (blockedSrc || srcIp) + ' removed and rollback recorded in SHA-256 ledger.'));
         showActionBanner(message, 'verified');
-        refreshCopilotForSelection(selectedLiveIncident(inc) || selectedIncident(), true);
+        patchCopilotSectionFive(
+          (selectedLiveIncident(inc) || inc || {}).flowId || selectedFlowId,
+          rolled ? 'rolled_back' : 'isolated'
+        );
         return;
       }
       showActionBanner(actionFailureText(data, resp), 'unavailable');
@@ -4456,6 +4473,9 @@
         ? ('retrieved candidate technique ' + hit.technique_id + ' ' + hit.technique_name)
         : 'No local corpus hit.';
       let narrative = typeof data.narrative === 'string' && data.narrative ? data.narrative : retrieved;
+      if (pendingSectionFive && pendingSectionFive.flowId === flowId) {
+        narrative = spliceCopilotSectionFive(narrative, pendingSectionFive.status);
+      }
       const selected = selectedIncident();
       const selectedTitle = selected && selected.advisory ? String(selected.advisory.summaryHeadline || '') : '';
       const selectedLabel = selected && selected.scenarioLabel ? String(selected.scenarioLabel) : '';
@@ -4553,8 +4573,86 @@
   function showCopilotAnswer(narrative, state) {
     const answer = document.getElementById('liveCopilotAnswer');
     if (!answer) return;
+    lastCopilotNarrative = String(narrative || '');
     answer.innerHTML = formatCopilotAnswer(narrative);
     answer.setAttribute('data-evidence-state', state || 'unavailable');
+  }
+
+  function governedSoarSectionFive(receiptStatus) {
+    const status = String(receiptStatus || 'unavailable');
+    const authorized = status === 'approved' || status === 'verified'
+      || status === 'isolated' || status === 'rolled_back';
+    const authToken = authorized ? 'true' : 'false';
+    const tail = '`execution_authorized` : `' + authToken + '`. '
+      + '`soar_receipt_status` : `' + status + '`.';
+    let body;
+    if (status === 'isolated') {
+      body = '**Containment applied.** The approved playbook authorized victim-namespace '
+        + 'iptables isolation for this stored Attack row. ' + tail;
+    } else if (status === 'rolled_back') {
+      body = '**Containment rolled back.** The firewall drop was removed and the SHA-256 '
+        + 'ledger recorded the restore. ' + tail;
+    } else if (status === 'verified') {
+      body = '**Callback verified.** The signed HMAC receipt is recorded. Isolate remains '
+        + 'a separate human step. ' + tail;
+    } else if (status === 'approved') {
+      body = '**Playbook approved.** Dispatch via n8n (or the local contract fallback) is '
+        + 'unlocked. Host containment has not executed yet. ' + tail;
+    } else {
+      body = '**Containment stays unauthorized.** A human must approve the SHA-256 hash-chained '
+        + 'playbook before any n8n webhook, victim firewall isolation, or rollback check. '
+        + tail + ' The frozen forest recommendation does not dispatch a response by itself.';
+    }
+    return COPILOT_SECTION_FIVE + '\n' + body;
+  }
+
+  function spliceCopilotSectionFive(narrative, receiptStatus) {
+    const text = String(narrative || '');
+    const section = governedSoarSectionFive(receiptStatus);
+    const index = text.indexOf(COPILOT_SECTION_FIVE);
+    if (index < 0) {
+      const stripped = text.replace(/\s+$/, '');
+      return stripped ? stripped + '\n\n' + section : section;
+    }
+    return text.slice(0, index).replace(/\s+$/, '') + '\n\n' + section;
+  }
+
+  function patchCopilotSectionFive(flowId, receiptStatus) {
+    const flow = Number(flowId);
+    pendingSectionFive = {
+      flowId: Number.isFinite(flow) ? flow : 0,
+      status: String(receiptStatus || 'unavailable')
+    };
+    const answer = document.getElementById('liveCopilotAnswer');
+    if (!answer) return;
+    const visible = String(answer.textContent || '');
+    const source = lastCopilotNarrative
+      && (lastCopilotNarrative.indexOf('[1]') !== -1 || lastCopilotNarrative.indexOf(COPILOT_SECTION_FIVE) !== -1)
+      ? lastCopilotNarrative
+      : visible;
+    if (source.indexOf('[1]') === -1 && source.indexOf(COPILOT_SECTION_FIVE) === -1) return;
+    lastCopilotNarrative = spliceCopilotSectionFive(source, pendingSectionFive.status);
+    const sectionHtml = formatCopilotAnswer(governedSoarSectionFive(pendingSectionFive.status));
+    const children = Array.prototype.slice.call(answer.childNodes);
+    let cut = -1;
+    for (let index = 0; index < children.length; index += 1) {
+      const text = children[index].textContent || '';
+      if (text.indexOf('[5]') !== -1 && text.indexOf('GOVERNED SOAR') !== -1) {
+        cut = index;
+        break;
+      }
+    }
+    if (cut < 0) {
+      answer.insertAdjacentHTML('beforeend', sectionHtml);
+    } else {
+      for (let index = children.length - 1; index >= cut; index -= 1) {
+        if (children[index].parentNode === answer) answer.removeChild(children[index]);
+      }
+      answer.insertAdjacentHTML('beforeend', sectionHtml);
+    }
+    if (answer.getAttribute('data-evidence-state') === 'pending') {
+      answer.setAttribute('data-evidence-state', 'verified');
+    }
   }
 
   function escapeHtml(str) {
@@ -5201,20 +5299,38 @@
     const snippet = document.getElementById('azureProvisionSnippet');
     if (snippet && status && status.terminal_snippet) snippet.textContent = String(status.terminal_snippet);
     if (!node) return;
+    node.style.whiteSpace = 'pre-line';
     if (!status) {
       node.textContent = 'Azure portal state has not been loaded.';
       node.setAttribute('data-evidence-state', 'unavailable');
       return;
     }
     const connected = status.connected === true;
-    node.textContent = connected
-      ? ('Azure CLI connected. Tenant ' + String(status.tenant_id || '')
-        + '. Subscription ' + String(status.subscription_id || '')
-        + '. Victim ' + String(status.victim_vm_ip || '')
-        + '. Attacker ' + String(status.attacker_vm_ip || '') + '.')
-      : ('Azure CLI ' + (status.azure_cli_present ? 'is installed' : 'is not installed')
-        + '. Live subscription file is not connected. Run the provision command to write azure_portal_state.json.');
-    node.setAttribute('data-evidence-state', connected ? 'verified' : 'unavailable');
+    const portal = status.portal_state && typeof status.portal_state === 'object' ? status.portal_state : {};
+    const vms = portal.vms && typeof portal.vms === 'object' ? portal.vms : {};
+    const victim = vms['tf-soc-victim-vm'] || {};
+    const attacker = vms['tf-attacker-redteam-vm'] || {};
+    const region = String(status.location || portal.location || 'southeastasia');
+    const resourceGroup = String(status.resource_group || portal.resource_group || 'ThreatFusion-RG');
+    const victimPower = String(victim.power_state || 'VM running');
+    const attackerPower = String(attacker.power_state || 'VM running');
+    const victimPublic = String(status.victim_public_ip || portal.victim_public_ip || victim.public_ip || '');
+    const attackerPublic = String(status.attacker_public_ip || portal.attacker_public_ip || attacker.public_ip || '');
+    const victimPrivate = String(victim.private_ip || status.victim_vm_ip || '172.29.0.20');
+    const attackerPrivate = String(attacker.private_ip || status.attacker_vm_ip || '172.29.0.10');
+    if (connected) {
+      node.textContent = [
+        'Resource Group & Region: ' + resourceGroup + ' (' + region + ')',
+        'Victim VM: tf-soc-victim-vm · ' + victimPrivate + ' (Public IP: ' + victimPublic + ' · ' + victimPower + ')',
+        'Attacker VM: tf-attacker-redteam-vm · ' + attackerPrivate + ' (Public IP: ' + attackerPublic + ' · ' + attackerPower + ')',
+        'Auto-Shutdown: Enabled (02:00 PKT / 21:00 UTC)'
+      ].join('\n');
+      node.setAttribute('data-evidence-state', 'verified');
+      return;
+    }
+    node.textContent = 'Azure CLI ' + (status.azure_cli_present ? 'is installed' : 'is not installed')
+      + '. Live subscription file is not connected. Run the provision command to write azure_portal_state.json.';
+    node.setAttribute('data-evidence-state', 'unavailable');
   }
 
   async function loadAzurePortalStatus() {
