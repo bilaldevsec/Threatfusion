@@ -397,6 +397,7 @@
                     <div class="advisory-trace-head">
                       <h3>Advisory Trace: Assigned vs. Actual</h3>
                       <span class="completeness-pill" id="advisoryCompletenessPill" data-completeness="PENDING ADVISORY">PENDING ADVISORY</span>
+                      <span class="completeness-pill ledger-fence-pill" id="ledgerFencePill" data-ledger-status="pending">Ledger Pending</span>
                     </div>
                     <div class="authority-bar" id="advisoryAuthorityBar">Advisory authority loads with the selected flow.</div>
                     <div class="trace-table-wrap">
@@ -662,6 +663,17 @@
           <span>JANUARY BENCHMARK: 216,568 FLOWS</span>
           <span data-kpi-basis="reference_benchmark_not_measured">NOISE REDUCTION: 99.9889% reference_benchmark_not_measured</span>
         </div>
+        <article class="card" id="hunterDraftRuleCard" style="background: #111827;" aria-label="Draft Detection Rule">
+          <h3>Draft Detection Rule (Suricata / Sigma)</h3>
+          <p>Grounds a review-only detection rule in the active flow protocol, destination port, and technique. Human approval is required before deployment.</p>
+          <label for="hunterDraftRuleQuery">Custom hunt intent</label>
+          <input id="hunterDraftRuleQuery" type="text" value="Detect lateral movement toward the active destination port" maxlength="240">
+          <div class="hunter-draft-actions">
+            <button id="btnDraftHunterRule" type="button">Draft Rule from Active Flow</button>
+            <button id="btnCopyHunterRule" type="button">Copy Draft</button>
+          </div>
+          <pre id="hunterDraftRulePreview" class="hunter-draft-preview" data-evidence-state="unavailable">No draft yet. Select a stored flow, then draft a Suricata or Sigma rule.</pre>
+        </article>
         <article class="card" id="mitreCoverageMatrix" style="background: #111827;">
           <h3>Read-only MITRE and CVE coverage</h3>
           <div class="inv-table-wrap">

@@ -24,6 +24,12 @@ from threatfusion.advisory.gemini_client import (
     GeminiAdvisoryUnavailableError,
     build_grounded_gemini_prompt,
 )
+from threatfusion.advisory.telemetry_shield import (
+    compute_flow_simhash,
+    draft_detection_rule,
+    verify_advisory_against_ledger,
+    wrap_untrusted_telemetry_envelope,
+)
 
 __all__ = [
     "AdvisoryEvidenceBundle",
@@ -45,5 +51,9 @@ __all__ = [
     "MitrePlaybookRagDocument",
     "build_four_block_investigation_anatomy",
     "build_grounded_gemini_prompt",
+    "compute_flow_simhash",
+    "draft_detection_rule",
+    "verify_advisory_against_ledger",
     "verify_explanation_groundedness",
+    "wrap_untrusted_telemetry_envelope",
 ]

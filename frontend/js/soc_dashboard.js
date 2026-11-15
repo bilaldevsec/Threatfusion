@@ -1535,7 +1535,7 @@
         + '<td>' + escapeHtml(observed) + '</td>'
         + '<td><code title="' + escapeHtml(fullId) + '">' + escapeHtml(shortId) + '</code>'
         + '<button type="button" class="copy-incident-id" data-full-id="' + escapeHtml(fullId) + '" title="' + escapeHtml(fullId) + '">Copy</button></td>'
-        + '<td><span class="decision-pill ' + (malicious ? 'decision-malicious' : 'decision-benign') + '">' + (malicious ? 'MALICIOUS' : 'BENIGN') + '</span><span class="alert-title">' + escapeHtml(title) + '</span></td>'
+        + '<td><span class="decision-pill ' + (malicious ? 'decision-malicious' : 'decision-benign') + '">' + (malicious ? 'MALICIOUS' : 'BENIGN') + '</span><span class="alert-title">' + escapeHtml(title) + '</span> ' + burstBadgeHtml(inc) + '</td>'
         + '<td>' + entitiesHtml + '</td>'
         + '<td>' + escapeHtml(sourceDisplayName(inc.sourceLabel)) + '</td>'
         + '<td>' + escapeHtml(triage) + ' <span class="priority-pill priority-info">' + escapeHtml(rfDecisionLabel(inc)) + '</span>' + escapeHtml(analystNote) + '</td>';
@@ -1951,6 +1951,44 @@
     }
   }
 
+  function renderLedgerFencePill(trace) {
+    const fence = document.getElementById('ledgerFencePill');
+    if (!fence) return;
+    const ledger = trace && trace.ledger_verification && typeof trace.ledger_verification === 'object'
+      ? trace.ledger_verification
+      : null;
+    const envelope = trace && trace.evidence_envelope && typeof trace.evidence_envelope === 'object'
+      ? trace.evidence_envelope
+      : null;
+    const verified = ledger && ledger.status === 'VERIFIED';
+    const fenceActive = !!(envelope && envelope.envelope_sha256);
+    if (verified && fenceActive) {
+      fence.textContent = 'Ledger Verified · Fence Active';
+      fence.setAttribute('data-ledger-status', 'verified');
+      return;
+    }
+    if (ledger && ledger.status === 'FLAGGED_UNGROUNDED') {
+      fence.textContent = 'Ledger Flagged · Fence Active';
+      fence.setAttribute('data-ledger-status', 'flagged');
+      return;
+    }
+    if (fenceActive) {
+      fence.textContent = 'Fence Active';
+      fence.setAttribute('data-ledger-status', 'fence');
+      return;
+    }
+    fence.textContent = 'Ledger Pending';
+    fence.setAttribute('data-ledger-status', 'pending');
+  }
+
+  function burstBadgeHtml(inc) {
+    const count = Number(inc && (inc.burstCount != null ? inc.burstCount : inc.burst_count));
+    if (!Number.isFinite(count) || count < 1) return '';
+    const digest = String((inc && (inc.simhashSignature || inc.simhash_signature)) || '').slice(0, 8);
+    return '<span class="badge badge-burst">Burst ×' + escapeHtml(String(count))
+      + (digest ? (' · SimHash ' + escapeHtml(digest)) : ' · SimHash') + '</span>';
+  }
+
   function renderAdvisoryTrace(trace) {
     const pill = document.getElementById('advisoryCompletenessPill');
     const bar = document.getElementById('advisoryAuthorityBar');
@@ -1963,6 +2001,7 @@
         pill.textContent = 'PENDING ADVISORY';
         pill.setAttribute('data-completeness', 'PENDING ADVISORY');
       }
+      renderLedgerFencePill(null);
       if (bar) bar.textContent = 'Advisory authority loads with the selected flow.';
       body.innerHTML = '<tr><td colspan="5">Select a stored flow to read the advisory trace.</td></tr>';
       if (gaps) gaps.textContent = '';
@@ -1973,6 +2012,7 @@
       pill.textContent = badge;
       pill.setAttribute('data-completeness', badge);
     }
+    renderLedgerFencePill(payload);
     const authority = payload.authority && typeof payload.authority === 'object' ? payload.authority : {};
     const writes = authority.decision_writes_by_advisory_components;
     const verdict = authority.frozen_rf_verdict || 'withheld';
@@ -2177,6 +2217,7 @@
             <span class="evidence-cell-val">
               <span class="badge badge-decision">${escapeHtml(inc.decision)}</span>
               <span class="badge badge-secondary-anomaly">Secondary Anomaly Indicator (Unfused v2 AE — Section 8 Fusion Disabled)</span>
+              ${burstBadgeHtml(inc)}
             </span>
           </div>
           ${inc.triageState ? `
@@ -2586,6 +2627,14 @@
         copilotButton.addEventListener('click', () => { askLiveCopilot(); });
       }
     });
+    const draftRuleButton = document.getElementById('btnDraftHunterRule');
+    if (draftRuleButton) {
+      draftRuleButton.addEventListener('click', () => { draftHunterDetectionRule(); });
+    }
+    const copyRuleButton = document.getElementById('btnCopyHunterRule');
+    if (copyRuleButton) {
+      copyRuleButton.addEventListener('click', () => { copyHunterDetectionRule(); });
+    }
     const noteButton = document.getElementById('btnSaveAnalystNote');
     if (noteButton) {
       noteButton.addEventListener('click', () => { saveLiveAnalystNote(); });
@@ -3168,7 +3217,12 @@
       sensorNode: flow.sensor_node || '',
       thehiveCaseRecord: null,
       n8nPlaybookReceipt: null,
-      advisoryTrace: flow.advisory_trace && typeof flow.advisory_trace === 'object' ? flow.advisory_trace : null
+      advisoryTrace: flow.advisory_trace && typeof flow.advisory_trace === 'object' ? flow.advisory_trace : null,
+      burstCount: Number.isFinite(Number(flow.burst_count)) ? Number(flow.burst_count) : 1,
+      burst_count: Number.isFinite(Number(flow.burst_count)) ? Number(flow.burst_count) : 1,
+      simhashSignature: typeof flow.simhash_signature === 'string' ? flow.simhash_signature : '',
+      simhash_signature: typeof flow.simhash_signature === 'string' ? flow.simhash_signature : '',
+      lastSeenAt: flow.last_seen_at || flow.observed_at_utc || ''
     };
   }
 
@@ -4615,6 +4669,66 @@
   function copilotBadgeLabel(provider) {
     if (provider === 'gemini') return 'Live Gemini 3.5 Flash (Grounded API Call)';
     return 'Local Air-Gapped Engine';
+  }
+
+  let lastHunterDraftText = '';
+
+  async function draftHunterDetectionRule() {
+    const preview = document.getElementById('hunterDraftRulePreview');
+    const queryNode = document.getElementById('hunterDraftRuleQuery');
+    const flowId = copilotFlowIdForSelection();
+    const query = queryNode ? String(queryNode.value || '') : '';
+    if (preview) {
+      preview.setAttribute('data-evidence-state', 'unavailable');
+      preview.textContent = 'Drafting review-only Suricata and Sigma rules…';
+    }
+    try {
+      const resp = await fetch('/api/v1/live/hunter/draft-rule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          flow_id: Number.isInteger(flowId) && flowId > 0 ? flowId : null,
+          query: query,
+          format: 'both'
+        })
+      });
+      const data = await resp.json();
+      const suricata = typeof data.suricata_rule === 'string' ? data.suricata_rule : '';
+      const sigma = typeof data.sigma_rule === 'string' ? data.sigma_rule : '';
+      const explanation = typeof data.explanation === 'string' ? data.explanation : '';
+      const mode = data.deployment_mode || 'REVIEW_ONLY_HUMAN_APPROVAL_REQUIRED';
+      const text = [
+        '# deployment_mode: ' + mode,
+        '# ' + explanation,
+        '',
+        '# Suricata',
+        suricata,
+        '',
+        '# Sigma',
+        sigma
+      ].join('\n');
+      lastHunterDraftText = text;
+      if (preview) {
+        preview.textContent = text;
+        preview.setAttribute(
+          'data-evidence-state',
+          resp.ok && (suricata || sigma) ? 'verified' : 'unavailable'
+        );
+      }
+    } catch (err) {
+      lastHunterDraftText = '';
+      if (preview) {
+        preview.textContent = 'Draft rule unavailable.';
+        preview.setAttribute('data-evidence-state', 'unavailable');
+      }
+    }
+  }
+
+  function copyHunterDetectionRule() {
+    const preview = document.getElementById('hunterDraftRulePreview');
+    const text = lastHunterDraftText || (preview ? preview.textContent : '');
+    if (!text || !navigator.clipboard || !navigator.clipboard.writeText) return;
+    navigator.clipboard.writeText(text);
   }
 
   async function askLiveCopilot(flowIdOverride) {

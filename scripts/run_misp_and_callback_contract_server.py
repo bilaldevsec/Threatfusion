@@ -1278,6 +1278,33 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/api/v1/live/hunter/draft-rule":
+            from threatfusion.api.live_soc_console import draft_live_hunter_rule
+
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            flow_id = None
+            raw_flow = req_data.get("flow_id")
+            if raw_flow not in (None, ""):
+                try:
+                    flow_id = int(raw_flow)
+                except (TypeError, ValueError):
+                    flow_id = None
+            result = draft_live_hunter_rule(
+                self._live_db_path(),
+                flow_id=flow_id,
+                query=str(req_data.get("query") or ""),
+                rule_format=str(req_data.get("format") or "both"),
+            )
+            self._send_json(int(result.get("http_status") or 200), result)
+            return
+
         if path == "/api/v1/live/correlate":
             from threatfusion.api.live_soc_console import correlate_stored_attacks
 

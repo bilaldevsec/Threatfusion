@@ -22,6 +22,7 @@ import shutil
 import sqlite3
 import stat
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -94,6 +95,10 @@ _FLOW_EXTRA_COLUMNS: tuple[tuple[str, str], ...] = (
     ("rollback_at", "TEXT"),
     ("containment_rule", "TEXT"),
     ("sensor_node", "TEXT"),
+    ("burst_count", "INTEGER"),
+    ("simhash_signature", "TEXT"),
+    ("last_seen_at", "TEXT"),
+    ("burst_key", "TEXT"),
 )
 
 _SCHEMA_LOCK = threading.Lock()
@@ -1128,6 +1133,40 @@ def _refused_sensor(reason: str) -> dict[str, Any]:
     }
 
 
+def _burst_fields_for_flow(
+    *,
+    src_entity: str | None,
+    dst_entity: str | None,
+    protocol: str | None,
+    service: str | None,
+    case_title: str | None,
+    technique_id: str | None = None,
+    alert_signature: str | None = None,
+) -> dict[str, Any]:
+    """Compute SimHash burst metadata for one live flow observation."""
+    from threatfusion.advisory.telemetry_shield import observe_burst
+
+    payload = {
+        "src_ip": src_entity or "",
+        "dst_ip": dst_entity or "",
+        "dst_port": service or "0",
+        "proto": protocol or "tcp",
+        "technique_id": technique_id or "",
+        "alert_signature": alert_signature or case_title or "",
+        "case_title": case_title or "",
+    }
+    burst = observe_burst(payload)
+    return {
+        "burst_count": int(burst.get("burst_count") or 1),
+        "simhash_signature": str(burst.get("simhash_signature") or ""),
+        "last_seen_at": datetime.fromtimestamp(
+            float(burst.get("last_seen_at") or time.time()), tz=UTC
+        ).isoformat(),
+        "burst_key": str(burst.get("burst_key") or ""),
+        "reused_advisory": bool(burst.get("reused_advisory")),
+    }
+
+
 def persist_scored_flow(
     db_path: Path,
     features: Mapping[str, Any],
@@ -1141,6 +1180,7 @@ def persist_scored_flow(
     source_event_id: str | None = None,
     sensor_observation_json: str | None = None,
     sensor_node: str | None = None,
+    technique_id: str | None = None,
 ) -> dict[str, Any]:
     """Append one scored flow to the live WAL queue."""
     observed = _coerce_observed_at(observed_at_utc)
@@ -1154,6 +1194,23 @@ def persist_scored_flow(
             "production_fusion_enabled": False,
         }
     namespace, src_entity, dst_entity, protocol, service, clock = _provenance_fields(provenance)
+    signature = None
+    if sensor_observation_json:
+        try:
+            observation = json.loads(sensor_observation_json)
+            if isinstance(observation, dict):
+                signature = observation.get("signature") or observation.get("suricata_line")
+        except json.JSONDecodeError:
+            signature = None
+    burst = _burst_fields_for_flow(
+        src_entity=src_entity,
+        dst_entity=dst_entity,
+        protocol=protocol,
+        service=service,
+        case_title=case_title,
+        technique_id=technique_id,
+        alert_signature=str(signature) if signature else None,
+    )
     feature_payload = {name: features.get(name) for name in CANONICAL_14_FEATURES}
     for name in _DNN_FEATURES:
         if name in features:
@@ -1167,8 +1224,9 @@ def persist_scored_flow(
                 campaign_id, source_label, case_title,
                 entity_namespace_id, src_entity_id, dst_entity_id,
                 flow_protocol, service_or_port, clock_synchronized,
-                source_event_id, sensor_observation_json, sensor_node
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_event_id, sensor_observation_json, sensor_node,
+                burst_count, simhash_signature, last_seen_at, burst_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 observed,
@@ -1191,9 +1249,28 @@ def persist_scored_flow(
                 source_event_id,
                 sensor_observation_json,
                 sensor_node,
+                burst["burst_count"],
+                burst["simhash_signature"],
+                burst["last_seen_at"],
+                burst["burst_key"],
             ),
         )
         flow_id = int(cursor.lastrowid)
+        if burst.get("burst_key") and int(burst.get("burst_count") or 1) > 1:
+            # Keep sibling rows in the same 60s burst coherent for UI badges.
+            conn.execute(
+                """
+                UPDATE live_flows
+                SET burst_count = ?, last_seen_at = ?, simhash_signature = ?
+                WHERE burst_key = ?
+                """,
+                (
+                    burst["burst_count"],
+                    burst["last_seen_at"],
+                    burst["simhash_signature"],
+                    burst["burst_key"],
+                ),
+            )
     stored = dict(score)
     stored["flow_id"] = flow_id
     stored["observed_at_utc"] = observed
@@ -1203,6 +1280,11 @@ def persist_scored_flow(
     stored["source_event_id"] = source_event_id
     stored["sensor_node"] = sensor_node
     stored["production_fusion_enabled"] = False
+    stored["burst_count"] = burst["burst_count"]
+    stored["simhash_signature"] = burst["simhash_signature"]
+    stored["last_seen_at"] = burst["last_seen_at"]
+    stored["burst_key"] = burst["burst_key"]
+    stored["reused_advisory"] = bool(burst.get("reused_advisory"))
     if sensor_observation_json:
         try:
             stored["sensor_observation"] = json.loads(sensor_observation_json)
@@ -1326,14 +1408,22 @@ def list_live_flows(db_path: Path, *, limit: int = 20) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT flow_id, observed_at_utc, rf_attack_probability, decision,
-                   evidence_state, reason, model_sha256, triage_state
+                   evidence_state, reason, model_sha256, triage_state,
+                   burst_count, simhash_signature, last_seen_at, burst_key
             FROM live_flows
             ORDER BY flow_id DESC
             LIMIT ?
             """,
             (max(1, min(limit, 100)),),
         ).fetchall()
-    return [dict(row) for row in rows]
+    published: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["burst_count"] = int(item.get("burst_count") or 1)
+        item["simhash_signature"] = str(item.get("simhash_signature") or "")
+        item["last_seen_at"] = str(item.get("last_seen_at") or item.get("observed_at_utc") or "")
+        published.append(item)
+    return published
 
 
 def add_analyst_note(
@@ -2508,19 +2598,64 @@ def _grounded_gemini_narrative(
         resolve_gemini_model,
     )
 
+    from threatfusion.advisory.telemetry_shield import (
+        build_fenced_advisory_prompt,
+        verify_advisory_against_ledger,
+    )
+
     status = advisory_provider_status()
     local = {
         "provider": "local_air_gapped",
         "provider_label": "AI Copilot: Local Air-Gapped Engine",
         "narrative": local_narrative,
     }
+    untrusted = {
+        "src_ip": identity[0] if identity else "",
+        "dst_ip": identity[1] if len(identity) > 1 else "",
+        "alert_signature": str(source_label or question or ""),
+        "payload_excerpt": "",
+        "dns_query": "",
+        "http_uri": "",
+    }
+    fence = build_fenced_advisory_prompt(
+        trusted_preamble=_COPILOT_BRIEF_INSTRUCTION,
+        untrusted_fields=untrusted,
+    )
+    local["evidence_envelope"] = fence["evidence_envelope"]
+    local["prompt_injection_filtered"] = fence["prompt_injection_filtered"]
+    local["envelope_sha256"] = fence["envelope_sha256"]
     if not status.get("live_call_allowed"):
-        return disclose_offline_fallback(local)
+        fallback = disclose_offline_fallback(local)
+        ledger = verify_advisory_against_ledger(
+            str(fallback.get("narrative") or local_narrative),
+            {
+                "src_ip": untrusted["src_ip"],
+                "dst_ip": untrusted["dst_ip"],
+                "technique_id": identity[2] if len(identity) > 2 else "",
+            },
+            hits,
+        )
+        fallback["ledger_verification"] = ledger
+        return fallback
     model_name = str(status.get("model_name") or resolve_gemini_model())
     cached = _cached_live_gemini(flow_id, question, model_name, db_path, identity)
     if cached is not None and _narrative_matches_identity(
         str(cached.get("narrative") or ""), identity
     ):
+        cached = dict(cached)
+        cached["evidence_envelope"] = fence["evidence_envelope"]
+        cached["prompt_injection_filtered"] = fence["prompt_injection_filtered"]
+        cached["envelope_sha256"] = fence["envelope_sha256"]
+        cached["ledger_verification"] = verify_advisory_against_ledger(
+            str(cached.get("narrative") or ""),
+            {
+                "src_ip": untrusted["src_ip"],
+                "dst_ip": untrusted["dst_ip"],
+                "technique_id": identity[2] if len(identity) > 2 else "",
+            },
+            hits,
+        )
+        cached["reused_advisory"] = True
         return cached
     if evidence_text:
         evidence = evidence_text
@@ -2534,10 +2669,9 @@ def _grounded_gemini_narrative(
         if not hits:
             lines.append("No local corpus hit.")
         evidence = "\n".join(lines)
+    fenced_prompt = fence["prompt"] + "\n\n" + evidence
     try:
-        text = _live_copilot_callable().generate_copilot_text(
-            _COPILOT_BRIEF_INSTRUCTION + "\n" + evidence
-        )
+        text = _live_copilot_callable().generate_copilot_text(fenced_prompt)
     except (GeminiAdvisoryUnavailableError, OSError, TimeoutError):
         return local
     text = _ensure_copilot_headings(_normalize_copilot_headings(text))
@@ -2566,10 +2700,26 @@ def _grounded_gemini_narrative(
         return local
     if evidence_text and not _copilot_sections_have_prose(text):
         return local
+    ledger = verify_advisory_against_ledger(
+        text,
+        {
+            "src_ip": untrusted["src_ip"],
+            "dst_ip": untrusted["dst_ip"],
+            "technique_id": identity[2] if len(identity) > 2 else "",
+        },
+        hits,
+    )
+    if ledger["status"] == "FLAGGED_UNGROUNDED":
+        text = str(ledger.get("annotated_summary") or text)
     live = {
         "provider": "gemini",
         "provider_label": status.get("label"),
         "narrative": text,
+        "evidence_envelope": fence["evidence_envelope"],
+        "prompt_injection_filtered": fence["prompt_injection_filtered"],
+        "envelope_sha256": fence["envelope_sha256"],
+        "ledger_verification": ledger,
+        "reused_advisory": False,
     }
     if not _narrative_matches_identity(text, identity):
         return local
@@ -2660,7 +2810,8 @@ def _flow_rows(db_path: Path, *, limit: int, flow_id: int | None = None) -> list
                    correlation_window_checked, source_event_id, sensor_observation_json,
                    execution_path, operator_id, cert_sha256_prefix,
                    identity_verified, identity_label, containment_state, containment_rule,
-                   containment_at, rollback_at, sensor_node
+                   containment_at, rollback_at, sensor_node,
+                   burst_count, simhash_signature, last_seen_at, burst_key
             FROM live_flows
             {where_sql}
             ORDER BY flow_id DESC
@@ -2672,6 +2823,12 @@ def _flow_rows(db_path: Path, *, limit: int, flow_id: int | None = None) -> list
     repo_root = _console_repo_root()
     for row in rows:
         item = dict(row)
+        if item.get("burst_count") is None:
+            item["burst_count"] = 1
+        else:
+            item["burst_count"] = int(item["burst_count"] or 1)
+        item["simhash_signature"] = str(item.get("simhash_signature") or "")
+        item["last_seen_at"] = str(item.get("last_seen_at") or item.get("observed_at_utc") or "")
         item["glass_box"] = build_glass_box_checklist(item)
         _annotate_soar_state(item)
         raw_observation = item.pop("sensor_observation_json", None)
@@ -3850,8 +4007,17 @@ def _range_scenario_provenance(port: int, protocol: str) -> dict[str, Any]:
     }
 
 
+def _pytest_isolates_live_range() -> bool:
+    """Unit tests must not hit a live Docker range unless explicitly opted in."""
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    return os.environ.get("THREATFUSION_ALLOW_LIVE_RANGE") != "1"
+
+
 def _range_lab_active() -> bool:
     """True when the private range attacker and victim containers are running."""
+    if _pytest_isolates_live_range():
+        return False
     return _container_is_running(RANGE_VICTIM_CONTAINER) and _container_is_running(
         RANGE_ATTACKER_CONTAINER
     )
@@ -7121,12 +7287,20 @@ def _scenario_firewall_rule(src_entity_id: str, *, rollback: bool) -> str:
 
 
 def _simulated_scenario_flow(flow: sqlite3.Row) -> bool:
-    """10.0.0.4 scenario replays have no host firewall unless the live range is up."""
+    """10.0.0.4 scenario replays have no host firewall unless the live range is up.
+
+    Pytest isolation is enforced inside ``_range_lab_active`` so a live Docker
+    range cannot hijack unit tests, while an explicit monkeypatch of
+    ``_range_lab_active`` can still exercise the real iptables runner path.
+    """
+    if not (
+        _flow_field(flow, "src_entity_id") == SCENARIO_CONTAINMENT_SOURCE
+        and _scenario_replay_flow(flow)
+    ):
+        return False
     if _range_lab_active():
         return False
-    return _flow_field(
-        flow, "src_entity_id"
-    ) == SCENARIO_CONTAINMENT_SOURCE and _scenario_replay_flow(flow)
+    return True
 
 
 def _record_simulated_scenario(
@@ -9393,6 +9567,10 @@ def read_advisory_trace(db_path: Path, flow_id: int) -> dict[str, Any]:
         build_advisory_trace,
         read_cached_narratives,
     )
+    from threatfusion.advisory.telemetry_shield import (
+        build_fenced_advisory_prompt,
+        verify_advisory_against_ledger,
+    )
 
     number = _positive_flow_id(flow_id)
     if number is None or not Path(db_path).is_file():
@@ -9416,17 +9594,87 @@ def read_advisory_trace(db_path: Path, flow_id: int) -> dict[str, Any]:
         hit = _corpus_technique_hit(technique) if technique else None
         row["chroma_rag_hits"] = [hit] if hit else []
     cached = read_cached_narratives(db_path).get(number, {})
+    narrative = cached.get("narrative") or None
     payload = build_advisory_trace(
         row,
-        narrative=cached.get("narrative") or None,
+        narrative=narrative,
         narrative_recorded_at=cached.get("recorded_at_utc") or None,
+    )
+    technique = _attack_technique_id(row) or ""
+    fence = build_fenced_advisory_prompt(
+        trusted_preamble="ThreatFusion Stage-5 advisory trace.",
+        untrusted_fields={
+            "src_ip": str(row.get("src_entity_id") or ""),
+            "dst_ip": str(row.get("dst_entity_id") or ""),
+            "alert_signature": str(row.get("case_title") or ""),
+            "payload_excerpt": "",
+            "dns_query": "",
+            "http_uri": "",
+        },
+    )
+    ledger = verify_advisory_against_ledger(
+        str(narrative or ""),
+        {
+            "src_ip": row.get("src_entity_id"),
+            "dst_ip": row.get("dst_entity_id"),
+            "src_port": 0,
+            "dst_port": row.get("service_or_port"),
+            "technique_id": technique,
+            "cve_ids": row.get("cve_ids") or [],
+        },
+        row.get("chroma_rag_hits") if isinstance(row.get("chroma_rag_hits"), list) else [],
     )
     payload["flow_id"] = number
     payload["decision"] = row.get("decision")
     payload["reason"] = "advisory_trace"
     payload["http_status"] = 200
     payload["production_fusion_enabled"] = False
+    payload["burst_count"] = int(row.get("burst_count") or 1)
+    payload["simhash_signature"] = str(row.get("simhash_signature") or "")
+    payload["evidence_envelope"] = fence["evidence_envelope"]
+    payload["prompt_injection_filtered"] = fence["prompt_injection_filtered"]
+    payload["envelope_sha256"] = fence["envelope_sha256"]
+    payload["ledger_verification"] = ledger
     return payload
+
+
+def draft_live_hunter_rule(
+    db_path: Path,
+    *,
+    flow_id: int | None = None,
+    query: str = "",
+    rule_format: str = "both",
+) -> dict[str, Any]:
+    """Draft a review-only Suricata/Sigma rule grounded in a stored flow when present."""
+    from threatfusion.advisory.telemetry_shield import draft_detection_rule
+
+    flow_record: dict[str, Any] = {}
+    number = _positive_flow_id(flow_id) if flow_id is not None else None
+    if number is not None and Path(db_path).is_file():
+        rows = _flow_rows(db_path, limit=1, flow_id=number)
+        if rows:
+            row = rows[0]
+            technique = _attack_technique_id(row) or ""
+            flow_record = {
+                "flow_id": number,
+                "proto": row.get("flow_protocol") or "tcp",
+                "flow_protocol": row.get("flow_protocol") or "tcp",
+                "src_ip": row.get("src_entity_id") or "",
+                "src_entity_id": row.get("src_entity_id") or "",
+                "dst_port": row.get("service_or_port") or 0,
+                "service_or_port": row.get("service_or_port") or 0,
+                "technique_id": technique,
+                "vector": row.get("case_title") or technique,
+                "vector_id": technique,
+            }
+    drafted = draft_detection_rule(
+        query=query,
+        flow_record=flow_record or None,
+        rule_format=rule_format,
+    )
+    drafted["flow_id"] = number
+    drafted["http_status"] = 200
+    return drafted
 
 
 def list_sensors(db_path: Path) -> dict[str, Any]:
@@ -9735,6 +9983,8 @@ def _range_containers_running() -> bool:
     import subprocess
     import time
 
+    if _pytest_isolates_live_range():
+        return False
     global _range_inspect_cache
     now = time.monotonic()
     with _range_inspect_lock:
