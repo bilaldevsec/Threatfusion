@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🛡️ ThreatFusion (AI-FYP-2006)
+# 🛡️ ThreatFusion
 
 **Deterministic-First AI Security Operations Center (SOC) — Mitigating Alert Fatigue in Security Operations through a Unified Threat Intelligence and Analytics Interface**
 
@@ -11,10 +11,9 @@
 [![n8n Hash-Chained SOAR](https://img.shields.io/badge/n8n-Hash--Chained%20SOAR-EA4B71?logo=n8n&logoColor=white)](#analyst-workflow)
 [![MCP Server](https://img.shields.io/badge/MCP-Read--Only%20Server-8A2BE2)](#read-only-model-context-protocol-mcp-server)
 [![Tests: 1685 passed](https://img.shields.io/badge/Tests-1685%20passed-success)](#verification--testing)
-[![FAST-NUCES CS492 FYP-II](https://img.shields.io/badge/FAST--NUCES-CS492%20FYP--II-0A2540)](#project)
 [![Repository Integrity Gate](https://img.shields.io/badge/Repository%20Integrity%20Gate-GO-1f6feb)](#gate-g9--boundary-preflight)
 
-[Product tour](#product-tour) · [Architecture](#architecture) · [MCP server](#read-only-model-context-protocol-mcp-server) · [Telemetry shield](#telemetry-shield--evidence-fence) · [Quickstart](#quickstart) · [Analyst workflow](#analyst-workflow) · [Section 8 benchmark](#section-8-benchmark) · [Verification & testing](#verification--testing) · [Governance](#governance) · [Project](#project)
+[Product tour](#product-tour) · [Architecture](#architecture) · [MCP server](#read-only-model-context-protocol-mcp-server) · [Telemetry shield](#telemetry-shield--evidence-fence) · [Quickstart](#quickstart) · [Analyst workflow](#analyst-workflow) · [Section 8 benchmark](#section-8-benchmark) · [Verification & testing](#verification--testing) · [Governance](#governance) · [Acknowledgments](#acknowledgments)
 
 </div>
 
@@ -279,6 +278,6 @@ threatfusion-venv/bin/pytest -q -o cache_dir=/tmp/.pytest_cache
 - Host containment stays unauthorized.
 - TF-008, TF-009, TF-010, and TF-011 remain open. Scores on unseen traffic, a human cohort of at least 10, a signed jury form, and a live feed are not done.
 
-## Project
+## Acknowledgments
 
-Muhammad Bilal (21K-3551), Muhammad Suhaib Shaikh (22K-4302), Muhammad Hasnain (22K-4718), Supervisor Sir Sameer Faisal — FAST-NUCES Karachi CS492 AI-FYP-2006. Documented evaluation checkpoint: 21 September 2026.
+FAST-NUCES Karachi CS492 FYP-II (AI-FYP-2006). Muhammad Bilal (21K-3551), Muhammad Suhaib Shaikh (22K-4302), Muhammad Hasnain (22K-4718), Supervisor Sir Sameer Faisal. Documented evaluation checkpoint: 21 September 2026.
