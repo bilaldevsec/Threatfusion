@@ -6,12 +6,15 @@
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Ubuntu 24.04 LTS](https://img.shields.io/badge/Ubuntu-24.04%20LTS-E95420?logo=ubuntu&logoColor=white)](https://ubuntu.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Frozen Random Forest](https://img.shields.io/badge/Frozen%20Random%20Forest-bd2853a6-238636)](#section-8-benchmark)
 [![n8n Hash-Chained SOAR](https://img.shields.io/badge/n8n-Hash--Chained%20SOAR-EA4B71?logo=n8n&logoColor=white)](#analyst-workflow)
+[![MCP Server](https://img.shields.io/badge/MCP-Read--Only%20Server-8A2BE2)](#read-only-model-context-protocol-mcp-server)
+[![Tests: 1685 passed](https://img.shields.io/badge/Tests-1685%20passed-success)](#verification--testing)
 [![FAST-NUCES CS492 FYP-II](https://img.shields.io/badge/FAST--NUCES-CS492%20FYP--II-0A2540)](#project)
-[![Repository Integrity Gate](https://img.shields.io/badge/Repository%20Integrity%20Gate-GO-1f6feb)](#governance)
+[![Repository Integrity Gate](https://img.shields.io/badge/Repository%20Integrity%20Gate-GO-1f6feb)](#gate-g9--boundary-preflight)
 
-[Product tour](#product-tour) · [Architecture](#architecture) · [Quickstart](#quickstart) · [Analyst workflow](#analyst-workflow) · [Section 8 benchmark](#section-8-benchmark) · [Governance](#governance) · [Project](#project)
+[Product tour](#product-tour) · [Architecture](#architecture) · [MCP server](#read-only-model-context-protocol-mcp-server) · [Telemetry shield](#telemetry-shield--evidence-fence) · [Quickstart](#quickstart) · [Analyst workflow](#analyst-workflow) · [Section 8 benchmark](#section-8-benchmark) · [Verification & testing](#verification--testing) · [Governance](#governance) · [Project](#project)
 
 </div>
 
@@ -23,6 +26,8 @@ ThreatFusion is a local security operations console. A frozen Random Forest is t
 - **Secondary v2 autoencoder ranker.** The autoencoder can order a queue. It does not change the forest decision.
 - **Institutional context memory.** A grounded analyst verdict remembers an entity rule beside the score. The forest probability stays as stored.
 - **Cryptographic SOAR ledger.** Approval is an HMAC-SHA256 keyed hash chain. Dispatch records an HMAC callback. Containment of `172.29.0.10` runs only inside the lab victim after that chain and callback.
+- **Read-Only Model Context Protocol (MCP) Server.** Standardized JSON-RPC 2.0 interface for AI assistants with strict programmatic containment blocks.
+- **Stage-5 Telemetry Shield & Evidence Fence.** 64-bit SimHash burst compression and prompt injection mitigation to secure LLM forensic reasoning.
 
 ## Product tour
 
@@ -83,6 +88,7 @@ flowchart LR
     stitch["30.0s burst and 600.0s campaign"]
     rag[Local MITRE and CVE retrieval]
     memory[Context memory]
+    shield[Telemetry Shield & SimHash]
   end
   subgraph stage6 [Stage 6 SOAR and Containment]
     chain[SHA-256 approval chain]
@@ -92,7 +98,7 @@ flowchart LR
   sensor --> mtls --> forest
   gate --- forest
   forest --> ae
-  forest --> stitch --> rag --> memory
+  forest --> stitch --> rag --> memory --> shield
   memory --> chain --> callback --> lab
 ```
 
@@ -110,6 +116,63 @@ Recorded 14-feature flow
 ```
 
 Approval, verify-state, and the callback share one ledger file. A missing ledger fails closed.
+
+### Gate G9 & Boundary Preflight
+
+ThreatFusion enforces architectural decoupling via **Gate G9**:
+- **0 Advisory Decision Writes:** Advisory components (`threatfusion.advisory.*`), the Telemetry Shield, and the MCP server strictly observe telemetry and generate draft rules; they are programmatically barred from writing alert decisions or modifying forest probabilities.
+- **Deterministic Boundary Preflight:** Automated by `scripts/boundary_preflight.py`, checking 7 distinct isolation boundaries (`B0` through `B6`):
+  * **B0:** Workspace non-overlap.
+  * **B1:** Current Working Directory containment.
+  * **B2:** Workspace symlink non-escape check.
+  * **B3:** Virtualenv configuration and symlink isolation.
+  * **B4:** Git repository metadata (`.git`) boundary isolation.
+  * **B5:** Runtime code and configuration non-leakage.
+  * **B6:** Runtime import path isolation (`PYTHONPATH`, `sys.path`).
+
+Run boundary verification:
+```bash
+threatfusion-venv/bin/python3 scripts/boundary_preflight.py
+```
+
+---
+
+## Read-Only Model Context Protocol (MCP) Server
+
+ThreatFusion provides a native Model Context Protocol (MCP) server implemented in `scripts/threatfusion_mcp_server.py`. The server exposes a JSON-RPC 2.0 transport over stdio, enabling external AI agents and coding tools (such as OpenAI Codex, Claude, or local assistants) to inspect security telemetry without bypassing human-in-the-loop authorization gates.
+
+### Available Read-Only Tools
+
+1. `threatfusion_list_queue`: Lists prioritized active incidents with scores from the Frozen Random Forest, Autoencoder, 9-Class DNN, and burst counts.
+2. `threatfusion_get_incident`: Retrieves complete forensic telemetry, stored feature vectors, and MITRE/CVE context for a given `flow_id`.
+3. `threatfusion_get_advisory_trace`: Inspects Gate G9 compliance proof, confirms zero advisory decision writes, and retrieves the Evidence Fence digest and Ledger Verification state.
+4. `threatfusion_draft_detection_rule`: Drafts review-only Suricata and Sigma rules for an investigated incident or threat query.
+
+### Safety Guarantee: Containment Hard-Block
+The MCP server enforces a strict programmatic deny-list against destructive actions:
+- `threatfusion_approve`, `threatfusion_dispatch`, `threatfusion_isolate`, `threatfusion_rollback`, and `contain` are hard-blocked at the schema and handler layers. Containment actions remain strictly reserved for authorized human analysts via the signed HMAC ledger.
+
+### Starting the MCP Server
+```bash
+threatfusion-venv/bin/python3 scripts/threatfusion_mcp_server.py
+```
+
+---
+
+## Telemetry Shield & Evidence Fence
+
+The Stage-5 Telemetry Shield (`backend/src/threatfusion/advisory/telemetry_shield.py`) hardens LLM advisory operations against telemetry floods and prompt injection attacks:
+
+1. **64-bit SimHash Burst Compression:**
+   - Aggregates high-frequency repetitive flows within a 60-second sliding window (`BURST_WINDOW_SECONDS = 60.0`, `SIMHASH_BITS = 64`).
+   - Compresses burst volume while preserving salient behavioral anomalies and signature tokens.
+2. **Untrusted Telemetry Envelope (Evidence Fencing):**
+   - Encloses unparsed network fields (`src_ip`, `dst_ip`, payload fragments, alert signatures) inside `<untrusted_telemetry_envelope>` tags.
+   - Instructs LLMs to treat enclosed text strictly as passive forensic evidence, preventing prompt injection payloads from hijacking analyst workflows.
+3. **Ledger Verification (`verify_advisory_against_ledger`):**
+   - Verifies all generated advisory insights against the tamper-evident HMAC-SHA256 ledger to prevent hallucinations during shift handoffs.
+
+---
 
 ## Quickstart
 
@@ -149,6 +212,7 @@ The lab HMAC and MISP values are not production credentials. Replace them before
 | Assignment | `POST /api/v1/live/assignment` | Local assignee and `unassigned`, `in_review`, or `reviewed` |
 | Triage | `POST /api/v1/live/triage` | Acknowledge, escalate, or dismiss |
 | Handoff | `POST /api/v1/live/handoff` | Four blocks plus the verdict, assignee, and review status, only when the note stays inside stored evidence |
+| Hunter draft rule | `POST /api/v1/live/hunter/draft-rule` | Review-only Suricata and Sigma detection rules drafted from live telemetry or natural-language threat queries |
 | Approve | `POST /api/v1/live/soar/approve` | Hash-chained approval. `containment_executed` stays false |
 | Dispatch | `POST /api/v1/live/soar/dispatch` | Signed callback. Uses live n8n when `THREATFUSION_N8N_WEBHOOK_URL` is set, otherwise `local_contract_fallback`. `containment_executed` stays false |
 | Contain | `POST /api/v1/live/soar/contain` | Drops `172.29.0.10` inside the victim container after an approved hash chain and a verified callback |
@@ -173,12 +237,37 @@ January validation has 216,568 rows. The frozen Random Forest counts are TP 4,04
 
 That is a +2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045). `production_fusion_enabled = False` because those 96 extra attacks cost 1,574 extra false alarms.
 
+### Model Registry
+
 | Model | Role | SHA-256 |
 |---|---|---|
 | Random Forest | sole alert authority | `bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9` |
 | Logistic regression | linear baseline | `2cf4de6686d937c485d4dbcbfa21d3e90f65bbb922087c8b31be4b012d7fb148` |
 | Autoencoder v2 | unfused ranker | `c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23` |
+| 9-Class DNN | multi-class classifier | `614850ad84fc4ab32dc6e6d2318900668d97cad6edba37290ed9fe2b2482df1f` |
 | Rate-log1p candidate | blocked baseline | `1d02e5bba556cb28709bd0faefce5f29da424a419a2d95332ad27a8995b26f63` |
+
+---
+
+## Verification & Testing
+
+ThreatFusion enforces an automated, zero-regression test regime. To verify system integrity and reproduction:
+
+### 1. Run Protocol 0 Boundary Preflight (B0–B6)
+Ensures zero leaks between active development, virtual environments, and reference baselines:
+```bash
+threatfusion-venv/bin/python3 scripts/boundary_preflight.py
+```
+*Expected: `BOUNDARY DECISION VERDICT: GO` (0 findings)*
+
+### 2. Execute Pytest Regression Suite
+Executes unit, API, integration, and advisory shield tests:
+```bash
+threatfusion-venv/bin/pytest -q -o cache_dir=/tmp/.pytest_cache
+```
+*Expected: `1,685 passed, 1 skipped, 0 failed` across 1,686 tests.*
+
+---
 
 ## Governance
 
