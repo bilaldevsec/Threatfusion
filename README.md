@@ -10,7 +10,7 @@
 [![Frozen Random Forest](https://img.shields.io/badge/Frozen%20Random%20Forest-bd2853a6-238636)](#section-8-benchmark)
 [![n8n Hash-Chained SOAR](https://img.shields.io/badge/n8n-Hash--Chained%20SOAR-EA4B71?logo=n8n&logoColor=white)](#analyst-workflow)
 [![MCP Server](https://img.shields.io/badge/MCP-Read--Only%20Server-8A2BE2)](#read-only-model-context-protocol-mcp-server)
-[![Tests: 1685 passed](https://img.shields.io/badge/Tests-1685%20passed-success)](#verification--testing)
+[![Backend quality](https://github.com/bilaldevsec/Threatfusion/actions/workflows/backend-quality.yml/badge.svg)](https://github.com/bilaldevsec/Threatfusion/actions/workflows/backend-quality.yml)
 [![Repository Integrity Gate](https://img.shields.io/badge/Repository%20Integrity%20Gate-GO-1f6feb)](#gate-g9--boundary-preflight)
 
 [Product tour](#product-tour) · [Architecture](#architecture) · [MCP server](#read-only-model-context-protocol-mcp-server) · [Telemetry shield](#telemetry-shield--evidence-fence) · [Quickstart](#quickstart) · [Analyst workflow](#analyst-workflow) · [Section 8 benchmark](#section-8-benchmark) · [Verification & testing](#verification--testing) · [Governance](#governance) · [Acknowledgments](#acknowledgments)
