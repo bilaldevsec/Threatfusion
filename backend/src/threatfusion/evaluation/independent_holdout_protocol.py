@@ -20,12 +20,15 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import math
 from pathlib import Path
 import random
 import re
 from typing import Any
+
+UTC = timezone.utc
+
 
 INDEPENDENT_HOLDOUT_SCHEMA_VERSION = "independent_holdout_evaluation_report_v1"
 

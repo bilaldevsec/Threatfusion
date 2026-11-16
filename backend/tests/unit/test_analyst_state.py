@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import sqlite3
 from uuid import uuid4
 
@@ -27,6 +27,9 @@ from threatfusion.schemas.analyst_state import (
     AnalystRegistryEntry,
     AnalystStateError,
 )
+
+UTC = timezone.utc
+
 
 NOW = datetime(2026, 9, 23, 12, 0, tzinfo=UTC)
 

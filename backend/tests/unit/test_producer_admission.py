@@ -6,7 +6,7 @@ import hashlib
 import io
 import json
 from dataclasses import FrozenInstanceError, replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import pytest
@@ -38,6 +38,9 @@ from threatfusion.api.producer_admission import (
     serialize_producer_response,
 )
 from threatfusion.db.alert_repository import AlertCandidateRepository
+
+UTC = timezone.utc
+
 
 NOW = datetime(2026, 9, 12, 12, 0, 0, tzinfo=UTC)
 FINGERPRINT = "a" * 64

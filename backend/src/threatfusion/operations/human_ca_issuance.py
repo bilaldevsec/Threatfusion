@@ -27,13 +27,16 @@ import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator
 from uuid import uuid4
 
 from threatfusion.operations import human_credentials
 from threatfusion.schemas.analyst_state import valid_actor_id
+
+UTC = timezone.utc
+
 
 CA_MANIFEST_SCHEMA = "operator_human_ca_v1"
 CA_MANIFEST_FILENAME = "ca_manifest.json"

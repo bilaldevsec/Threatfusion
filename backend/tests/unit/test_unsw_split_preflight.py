@@ -2,7 +2,7 @@ import csv
 import gzip
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,9 @@ from threatfusion.datasets.unsw_split_preflight import (
 )
 from threatfusion.schemas.dataset_manifest import DatasetFile, DatasetManifest
 from threatfusion.utils.checksum import sha256_file
+
+UTC = timezone.utc
+
 
 FEATURE_NAMES = (
     "srcip",

@@ -14,8 +14,7 @@ import csv
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from decimal import Decimal
-from datetime import UTC, datetime
-from enum import StrEnum
+from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -58,6 +57,21 @@ from threatfusion.preprocessing.network_behavior_v1 import (
     NetworkBehaviorPreprocessor,
     NetworkPreprocessingError,
 )
+
+try:
+    from enum import StrEnum
+except ImportError:  # Python 3.10
+    from enum import Enum
+
+    class StrEnum(str, Enum):
+        """Value string enum for interpreters without enum.StrEnum."""
+
+        def __str__(self) -> str:
+            return str(self.value)
+
+
+UTC = timezone.utc
+
 
 INFERENCE_SCHEMA_VERSION = "unsw_network_inference_v1"
 MAX_INFERENCE_BATCH_SIZE = 256

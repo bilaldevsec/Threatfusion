@@ -17,7 +17,7 @@ MTTR Pipeline:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 # Re-export canonical correlation symbols for backward and forward compatibility
@@ -34,6 +34,9 @@ from threatfusion.alerts.correlation_engine import (
     IncidentSqliteRepository,
     correlate_alert_candidates,
 )
+
+UTC = timezone.utc
+
 
 MTTI_MANUAL_BASELINE_SECONDS: float = 1080.0  # 18.0 minutes human SOC baseline
 MTTR_MANUAL_BASELINE_SECONDS: float = 2700.0  # 45.0 minutes human SOC baseline

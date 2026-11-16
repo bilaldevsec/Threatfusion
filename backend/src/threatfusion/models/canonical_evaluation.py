@@ -17,7 +17,7 @@ scientific baseline for FAST-NUCES CS492 FYP-II:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from threatfusion.models.jury_traceability import (
@@ -26,6 +26,9 @@ from threatfusion.models.jury_traceability import (
     FROZEN_RF_EXPECTED_SHA256,
     FROZEN_RF_RELATIVE_PATH,
 )
+
+UTC = timezone.utc
+
 
 CANONICAL_EVALUATION_SCHEMA_VERSION = "canonical_evaluation_pack_v2"
 PROJECT_ID = "AI-FYP-2006"

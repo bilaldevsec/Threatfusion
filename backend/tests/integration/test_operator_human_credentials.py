@@ -3,7 +3,7 @@
 import json
 import os
 import ssl
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -13,6 +13,9 @@ from backend.tests.integration import test_analyst_browser_tls_service as browse
 from threatfusion.operations import human_credentials as policy
 from threatfusion.schemas.analyst_state import AnalystAuthorizationRegistry, AnalystRegistryEntry
 from threatfusion.api.analyst_tls_service import AnalystTlsError
+
+UTC = timezone.utc
+
 
 certificates = api.certificates
 

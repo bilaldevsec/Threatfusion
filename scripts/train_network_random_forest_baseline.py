@@ -6,8 +6,11 @@ import argparse
 import os
 import sys
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
+
+UTC = timezone.utc
+
 
 # Random Forest owns four workers; keep nested numeric runtimes single-threaded.
 for variable in (

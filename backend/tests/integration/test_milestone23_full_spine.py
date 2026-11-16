@@ -15,7 +15,7 @@ Exercises the full chain across:
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -77,6 +77,8 @@ from threatfusion.soar.playbook_ledger import (
     SoarPlaybookSqliteRepository,
     SoarStateTransitionError,
 )
+
+UTC = timezone.utc
 
 
 def test_milestone23_complete_product_spine() -> None:

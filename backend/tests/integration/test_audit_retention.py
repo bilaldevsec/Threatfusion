@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -23,6 +23,9 @@ from threatfusion.operations.audit_retention import (
     verify_security_audit_archive,
 )
 from threatfusion.operations.human_listener_lifecycle import HumanListenerLifecycle
+
+UTC = timezone.utc
+
 
 certificates = api.certificates
 directory = operator.directory

@@ -9,7 +9,7 @@ import os
 import signal
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from multiprocessing.connection import Connection
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -24,6 +24,9 @@ from threatfusion.models.network_inference import (
     UnswNetworkInferenceBoundary,
 )
 from threatfusion.schemas.alert_candidate import derive_source_event_id
+
+UTC = timezone.utc
+
 
 PROCESSING_RECORD_SECONDS = 30.0
 PROCESSING_REQUEST_SECONDS = 300.0

@@ -14,7 +14,7 @@ import struct
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +32,9 @@ from threatfusion.datasets.unsw_split_preflight import (
     verify_registered_unsw_inputs,
 )
 from threatfusion.utils.checksum import sha256_file
+
+UTC = timezone.utc
+
 
 ASSIGNMENT_SCHEMA_VERSION = "unsw_development_split_v1"
 ASSIGNMENT_SEED = "threatfusion-unsw-dev-split-v1"

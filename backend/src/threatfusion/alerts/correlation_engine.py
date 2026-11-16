@@ -27,11 +27,14 @@ import struct
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from threatfusion.schemas.alert_candidate import AlertCandidate
+
+UTC = timezone.utc
+
 
 BURST_WINDOW_SECONDS = 30.0
 CAMPAIGN_WINDOW_SECONDS = 600.0

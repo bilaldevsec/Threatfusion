@@ -1,6 +1,6 @@
 """Integration tests for the incident correlation pipeline and dashboard surfacing (TF-008)."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -35,6 +35,8 @@ from threatfusion.schemas.alert_candidate import (
     derive_source_event_id,
 )
 from threatfusion.schemas.analyst_state import AnalystRegistryEntry
+
+UTC = timezone.utc
 
 
 def _make_candidate(

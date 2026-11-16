@@ -30,12 +30,15 @@ import sys
 import tempfile
 from collections.abc import Callable
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator
 from uuid import uuid4
 
 from threatfusion.operations import human_ca_issuance as ca_ops
+
+UTC = timezone.utc
+
 
 PROFILE_MANIFEST_SCHEMA = "operator_human_firefox_profile_v1"
 PROFILE_MANIFEST_FILENAME = "profile_manifest.json"

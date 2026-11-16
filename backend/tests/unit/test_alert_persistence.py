@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import csv
 import hashlib
 import json
@@ -40,6 +40,9 @@ from threatfusion.schemas.alert_candidate import (
     derive_alert_candidate_id,
     derive_source_event_id,
 )
+
+UTC = timezone.utc
+
 
 RAW_NAMES = tuple(
     "srcip sport dstip dsport proto state dur sbytes dbytes sttl dttl sloss dloss service "

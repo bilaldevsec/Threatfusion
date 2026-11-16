@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 from contextlib import contextmanager
 from dataclasses import asdict, replace
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -30,6 +30,9 @@ from threatfusion.schemas.analyst_state import (
     valid_actor_id,
     is_utc,
 )
+
+UTC = timezone.utc
+
 
 SCHEMA = "operator_human_credentials_v1"
 FILENAME = "human-credentials.json"

@@ -1,9 +1,11 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from ipaddress import ip_address
 from math import isfinite
 from typing import Any
 
 import pandas as pd
+
+UTC = timezone.utc
 
 
 class SourceRowValidationError(ValueError):

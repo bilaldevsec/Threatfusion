@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import ipaddress
@@ -46,6 +46,8 @@ from threatfusion.soar.playbook_ledger import (
     SoarPlaybookSqliteRepository,
     SoarStateTransitionError,
 )
+
+UTC = timezone.utc
 
 
 def _connect_durable_sqlite(db_path: Path) -> sqlite3.Connection:

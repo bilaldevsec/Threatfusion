@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import hashlib
 import importlib
 import json
@@ -30,6 +30,9 @@ from types import ModuleType
 from typing import Any, Mapping
 
 from threatfusion.evaluation.boundary_preflight import resolve_default_active_workspace
+
+UTC = timezone.utc
+
 
 REPO_TRUTH_AUDIT_SCHEMA_VERSION = "repo_truth_audit_v1"
 CANONICAL_WORKSPACE_PATH = resolve_default_active_workspace(Path(__file__))

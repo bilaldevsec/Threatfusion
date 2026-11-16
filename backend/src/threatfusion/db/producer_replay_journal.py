@@ -11,7 +11,7 @@ import stat
 import struct
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from threatfusion.api.producer_admission import (
@@ -23,6 +23,9 @@ from threatfusion.api.producer_admission import (
     decode_producer_response,
 )
 from threatfusion.db.alert_repository import SQLITE_BUSY_TIMEOUT_MS
+
+UTC = timezone.utc
+
 
 REPLAY_JOURNAL_SCHEMA_VERSION = 1
 REPLAY_JOURNAL_SCHEMA_IDENTITY = "producer_replay_journal_sqlite_v1"

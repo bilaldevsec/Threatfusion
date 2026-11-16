@@ -28,7 +28,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +50,9 @@ from threatfusion.soar.playbook_ledger import (
     SoarPlaybookSqliteRepository,
     SoarStateTransitionError,
 )
+
+UTC = timezone.utc
+
 
 _CONTAINMENT_REQUEST = re.compile(
     r"\b(isolate|contain|containment|quarantine|execute|block|kill)\b",

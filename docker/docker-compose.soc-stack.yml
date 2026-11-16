@@ -33,21 +33,26 @@ services:
     image: python:3.11.10-slim
     container_name: threatfusion_misp_connector
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "/app/docker/contract-entrypoint.sh"]
     command: python /app/scripts/run_misp_and_callback_contract_server.py --port 8080 --bind 172.28.0.10
     environment:
       - THREATFUSION_MISP_API_KEY=${THREATFUSION_MISP_API_KEY:?required}
       - THREATFUSION_SOAR_HMAC_SECRET=${THREATFUSION_SOAR_HMAC_SECRET:?required}
       - PYTHONPATH=/app/backend/src
+      - THREATFUSION_PYDEPS=/opt/tf-pydeps
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
       - ../scripts:/app/scripts:ro
       - ../backend/src:/app/backend/src:ro
+      - ./contract-entrypoint.sh:/app/docker/contract-entrypoint.sh:ro
+      - tf_contract_pydeps:/opt/tf-pydeps
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://172.28.0.10:8080/healthz')"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
     networks:
       threatfusion_soc_net:
         ipv4_address: 172.28.0.10
@@ -56,22 +61,27 @@ services:
     image: python:3.11.10-slim
     container_name: threatfusion_callback
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "/app/docker/contract-entrypoint.sh"]
     command: python /app/scripts/run_misp_and_callback_contract_server.py --port 8443 --bind 172.28.0.11 --soar-db-path /app/data/soar.sqlite3
     environment:
       - THREATFUSION_SOAR_HMAC_SECRET=${THREATFUSION_SOAR_HMAC_SECRET:?required}
       - THREATFUSION_SOAR_LEDGER_DB_PATH=${THREATFUSION_SOAR_LEDGER_DB_PATH:-/app/data/soar.sqlite3}
       - PYTHONPATH=/app/backend/src
+      - THREATFUSION_PYDEPS=/opt/tf-pydeps
     ports:
       - "127.0.0.1:8443:8443"
     volumes:
       - ../scripts:/app/scripts:ro
       - ../backend/src:/app/backend/src:ro
       - ../data:/app/data
+      - ./contract-entrypoint.sh:/app/docker/contract-entrypoint.sh:ro
+      - tf_contract_pydeps:/opt/tf-pydeps
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://172.28.0.11:8443/healthz')"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
     networks:
       threatfusion_soc_net:
         ipv4_address: 172.28.0.11
@@ -121,9 +131,19 @@ services:
       - misp-connector
       - threatfusion-callback
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5678/healthz"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      # n8nio/n8n:1.68.0 ships Node and does not ship curl. Give a 1 GB ARM64
+      # VM time to open :5678 before failures count.
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://127.0.0.1:5678/healthz',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
     networks:
       - threatfusion_soc_net
+
+volumes:
+  tf_contract_pydeps:

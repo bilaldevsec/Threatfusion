@@ -31,7 +31,7 @@ Orchestrates the three-tier autonomous product audit:
 from __future__ import annotations
 
 import argparse
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import hashlib
 from http.server import ThreadingHTTPServer
 import json
@@ -46,6 +46,9 @@ import threading
 from typing import Any
 import urllib.error
 import urllib.request
+
+UTC = timezone.utc
+
 
 ROOT = Path(__file__).resolve().parents[1]
 

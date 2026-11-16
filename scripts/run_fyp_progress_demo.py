@@ -13,7 +13,7 @@ import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from queue import Empty, Queue
 from tempfile import TemporaryDirectory
@@ -21,6 +21,9 @@ from threading import Thread
 from uuid import uuid4
 
 import numpy as np
+
+UTC = timezone.utc
+
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1] / "backend/src"
 if str(SOURCE_ROOT) not in sys.path:

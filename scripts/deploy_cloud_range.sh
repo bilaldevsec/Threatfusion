@@ -28,17 +28,27 @@ VPC_CIDR="172.29.0.0/16"
 SUBNET_CIDR="172.29.0.0/24"
 AUTO_SHUTDOWN_UTC="2100"
 COST_GUARDRAIL="Auto-shutdown at 21:00 UTC. Teardown removes the recorded stack so ongoing cost is 0.00."
+CLOUD_ENV_FILE="${ROOT}/.env.cloud"
+STACK_SECRET_KEYS=(
+  THREATFUSION_MISP_API_KEY
+  THREATFUSION_SOAR_HMAC_SECRET
+  THREATFUSION_THEHIVE_SECRET
+  THREATFUSION_THEHIVE_API_KEY
+  THREATFUSION_N8N_USER
+  THREATFUSION_N8N_PASSWORD
+)
 
 PROVIDER=""
 ACTION=""
 DRY_RUN=0
+AUTO_IP=0
 STUDENT=0
 VICTIM_HOST="${TF_VICTIM_PUBLIC_IP:-}"
 ATTACKER_HOST="${TF_ATTACKER_PUBLIC_IP:-}"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy_cloud_range.sh [--dry-run] [--provider azure|aws|gcp|generic] [--victim-host IP] [--attacker-host IP] (--provision-range|--deploy-full-stack|--teardown|--status|--deallocate|--help)
+Usage: scripts/deploy_cloud_range.sh [--dry-run] [--auto-ip] [--provider azure|aws|gcp|generic] [--victim-host IP] [--attacker-host IP] (--provision-range|--deploy-full-stack|--teardown|--status|--deallocate|--help)
 
   --provider         azure, aws, gcp, or generic. When omitted, the first
                      logged-in CLI wins: az account show, aws sts
@@ -47,7 +57,10 @@ Usage: scripts/deploy_cloud_range.sh [--dry-run] [--provider azure|aws|gcp|gener
                      TF_ATTACKER_PUBLIC_IP select generic.
   --provision-range  Create the 2-VM range in the signed-in account, or record
                      a generic Ubuntu/Linux pair. Opens SSH port 22 from
-                     CLOUD_ADMIN_SSH_CIDR or AZURE_ADMIN_SSH_CIDR only.
+                     CLOUD_ADMIN_SSH_CIDR, AZURE_ADMIN_SSH_CIDR, or
+                     AWS_ADMIN_SSH_CIDR only. 0.0.0.0/0 is refused.
+  --auto-ip          When no admin SSH prefix is set, use
+                     $(curl -fsS https://api.ipify.org)/32.
   --deploy-full-stack
                      Copy the repo to the victim and start Console, ML engine,
                      Suricata, and n8n with Docker Compose over SSH.
@@ -59,8 +72,10 @@ Usage: scripts/deploy_cloud_range.sh [--dry-run] [--provider azure|aws|gcp|gener
   --attacker-host    Public address of a generic attacker.
 
 Environment: CLOUD_PROVIDER, CLOUD_ACCOUNT_ID, CLOUD_REGION,
-TF_VICTIM_PUBLIC_IP, TF_ATTACKER_PUBLIC_IP, CLOUD_ADMIN_SSH_CIDR.
+TF_VICTIM_PUBLIC_IP, TF_ATTACKER_PUBLIC_IP, CLOUD_ADMIN_SSH_CIDR,
+AZURE_ADMIN_SSH_CIDR, AWS_ADMIN_SSH_CIDR.
 Account identifiers are read from the CLI session, not from the repository.
+Missing THREATFUSION_* stack secrets are generated into mode-0600 .env.cloud.
 EOF
 }
 
@@ -75,20 +90,39 @@ run_cmd() {
 }
 
 require_ssh_cidr() {
-  local cidr="${CLOUD_ADMIN_SSH_CIDR:-${AZURE_ADMIN_SSH_CIDR:-}}"
-  if [[ -z "$cidr" && "$DRY_RUN" -eq 1 ]]; then
+  local cidr="${CLOUD_ADMIN_SSH_CIDR:-${AZURE_ADMIN_SSH_CIDR:-${AWS_ADMIN_SSH_CIDR:-}}}"
+  if [[ -z "$cidr" && "$AUTO_IP" -eq 1 ]]; then
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      cidr="auto-ip/32"
+    else
+      local ip
+      ip="$(curl -fsS --max-time 20 https://api.ipify.org | tr -d '[:space:]')"
+      if [[ ! "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        echo "Could not resolve an IPv4 address from https://api.ipify.org." >&2
+        exit 1
+      fi
+      cidr="${ip}/32"
+    fi
+  fi
+  if [[ -n "$cidr" ]]; then
+    if [[ "$cidr" == "0.0.0.0/0" || "$cidr" == "*" ]]; then
+      echo "The admin SSH prefix must not be open to the internet." >&2
+      exit 1
+    fi
+    export CLOUD_ADMIN_SSH_CIDR="${CLOUD_ADMIN_SSH_CIDR:-$cidr}"
+    export AZURE_ADMIN_SSH_CIDR="${AZURE_ADMIN_SSH_CIDR:-$cidr}"
+    export AWS_ADMIN_SSH_CIDR="${AWS_ADMIN_SSH_CIDR:-$cidr}"
+    printf '%s\n' "$cidr"
+    return 0
+  fi
+  if [[ "$DRY_RUN" -eq 1 ]]; then
     printf '%s\n' "operator-prefix-required"
     return 0
   fi
-  if [[ -z "$cidr" ]]; then
-    echo "Set CLOUD_ADMIN_SSH_CIDR or AZURE_ADMIN_SSH_CIDR. 0.0.0.0/0 is refused." >&2
-    exit 1
-  fi
-  if [[ "$cidr" == "0.0.0.0/0" || "$cidr" == "*" ]]; then
-    echo "The admin SSH prefix must not be open to the internet." >&2
-    exit 1
-  fi
-  printf '%s\n' "$cidr"
+  echo "Set AZURE_ADMIN_SSH_CIDR or AWS_ADMIN_SSH_CIDR. 0.0.0.0/0 is refused." >&2
+  echo "Pass --auto-ip, or export the operator prefix:" >&2
+  echo '  export AZURE_ADMIN_SSH_CIDR="$(curl -fsS https://api.ipify.org)/32"' >&2
+  exit 1
 }
 
 cli_ok() {
@@ -591,17 +625,63 @@ ssh_base() {
     "-o" "ConnectTimeout=15"
 }
 
+load_cloud_env_file() {
+  local env_file="$1" line key value
+  [[ -f "$env_file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    case "$line" in
+      ''|\#*) continue ;;
+    esac
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "$key" in
+      THREATFUSION_MISP_API_KEY|THREATFUSION_SOAR_HMAC_SECRET|THREATFUSION_THEHIVE_SECRET|THREATFUSION_THEHIVE_API_KEY|THREATFUSION_N8N_USER|THREATFUSION_N8N_PASSWORD)
+        if [[ -z "${!key:-}" ]]; then
+          export "${key}=${value}"
+        fi
+        ;;
+    esac
+  done < "$env_file"
+}
+
+write_cloud_env_file() {
+  local env_file="$1" tmp key
+  umask 077
+  tmp="$(mktemp "${env_file}.XXXXXX")"
+  chmod 600 "$tmp"
+  {
+    echo "# Local cloud secrets generated by scripts/deploy_cloud_range.sh. Do not commit."
+    for key in "${STACK_SECRET_KEYS[@]}"; do
+      printf '%s=%s\n' "$key" "${!key}"
+    done
+  } > "$tmp"
+  mv "$tmp" "$env_file"
+  chmod 600 "$env_file"
+}
+
 require_stack_env() {
-  local missing=() key
-  for key in THREATFUSION_MISP_API_KEY THREATFUSION_SOAR_HMAC_SECRET THREATFUSION_THEHIVE_SECRET THREATFUSION_THEHIVE_API_KEY THREATFUSION_N8N_USER THREATFUSION_N8N_PASSWORD; do
+  local key missing=0
+  load_cloud_env_file "$CLOUD_ENV_FILE"
+  for key in "${STACK_SECRET_KEYS[@]}"; do
     if [[ -z "${!key:-}" ]]; then
-      missing+=("$key")
+      missing=1
+      if [[ "$DRY_RUN" -eq 0 ]]; then
+        if ! command -v openssl >/dev/null 2>&1; then
+          echo "openssl is required to generate stack secrets." >&2
+          exit 1
+        fi
+        export "${key}=$(openssl rand -hex 32)"
+      fi
     fi
   done
-  if ((${#missing[@]})) && [[ "$DRY_RUN" -eq 0 ]]; then
-    echo "Missing stack environment: ${missing[*]}" >&2
-    exit 1
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    if [[ "$missing" -eq 1 ]]; then
+      echo "dry-run: generate missing THREATFUSION_* secrets into ${CLOUD_ENV_FILE} mode 0600"
+    fi
+    return 0
   fi
+  write_cloud_env_file "$CLOUD_ENV_FILE"
 }
 
 deploy_full_stack() {
@@ -912,6 +992,10 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN=1
       shift
       ;;
+    --auto-ip)
+      AUTO_IP=1
+      shift
+      ;;
     --student-free-tier)
       STUDENT=1
       shift
@@ -954,7 +1038,10 @@ esac
 case "$ACTION" in
   provision-range)
     case "$PROVIDER" in
-      azure) azure_delegate --provision-live-azure ;;
+      azure)
+        require_ssh_cidr >/dev/null
+        azure_delegate --provision-live-azure
+        ;;
       aws) provision_aws ;;
       gcp) provision_gcp ;;
       generic) provision_generic ;;

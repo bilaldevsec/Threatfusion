@@ -20,13 +20,15 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import re
 import sys
 from typing import Any
+
+UTC = timezone.utc
 
 
 def _module_checkout_root() -> Path:

@@ -6,12 +6,15 @@ import sqlite3
 import stat
 import uuid
 from dataclasses import dataclass, fields
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 from threatfusion.db.alert_repository import SQLITE_BUSY_TIMEOUT_MS
 from threatfusion.schemas.analyst_state import valid_actor_id
+
+UTC = timezone.utc
+
 
 AUDIT_EVENT_SCHEMA_VERSION = "analyst_security_audit_event_v1"
 AUDIT_REPOSITORY_SCHEMA_VERSION = 1

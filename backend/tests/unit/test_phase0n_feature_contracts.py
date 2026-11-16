@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -16,6 +16,8 @@ from threatfusion.features.network_behavior import (
     assert_network_behavior_model_fields,
 )
 from threatfusion.schemas.host_event import HostEvent
+
+UTC = timezone.utc
 
 
 def test_cross_dataset_network_allowlist_is_exact_and_deterministic() -> None:

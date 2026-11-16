@@ -22,11 +22,14 @@ import stat
 import threading
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from threatfusion.alerts.correlation_engine import EntityProvenanceContract
+
+UTC = timezone.utc
+
 
 SOAR_SCHEMA_VERSION = "soar_ledger_sqlite_v1"
 SOAR_AUDIT_GENESIS_HASH = "0" * 64

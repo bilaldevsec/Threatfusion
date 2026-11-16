@@ -7,7 +7,7 @@ import json
 import sqlite3
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -39,6 +39,9 @@ from threatfusion.db.producer_replay_journal import (
     ProducerReplayJournalError,
     ReplayClaim,
 )
+
+UTC = timezone.utc
+
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=UTC)
 GENERATION = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"

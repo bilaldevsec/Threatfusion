@@ -2158,3 +2158,12 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 - The investigation view shows the trace card. The enterprise drawer shows a structured cloud card. Tier-1 and auditor sessions keep Approve, Isolate, and Rollback clickable and marked Tier-3 only, so the backend 403 still renders.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
+### Milestone #53: Python 3.10 cloud runtime and 1 GB ARM64 onboarding (2026-11-17)
+
+- `datetime.UTC` and `enum.StrEnum` in `backend/` and `scripts/` load on Python 3.10. `UTC` is `timezone.utc`. There is no `tomllib` import to replace.
+- `threatfusion_misp_connector` and `threatfusion_callback` install `pydantic` on amd64 and arm64 before the contract server listens. Importing correlation or drift no longer loads the ML stack, so those containers do not need scikit-learn. `threatfusion_n8n` probes `/healthz` with Node, waits `90s` before failures count, and retries 10 times.
+- `--auto-ip` sets the admin SSH prefix to the operator address from `api.ipify.org` with `/32`. `0.0.0.0/0` stays refused. If the prefix is unset and `--auto-ip` was not passed, the error prints `export AZURE_ADMIN_SSH_CIDR="$(curl -fsS https://api.ipify.org)/32"`. Missing `THREATFUSION_*` stack secrets are generated with `openssl rand` into mode-0600 `.env.cloud`, which `.gitignore` already covers. An exported value is kept.
+- Frozen model digests, `production_fusion_enabled = False`, Gate G9, and `.git/threatfusion_fyp_baseline.state` are unchanged.
+
+TF-008, TF-009, TF-010, and TF-011 remain **open**.

@@ -9,11 +9,14 @@ import math
 import socket
 import ssl
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
 from typing import Callable, Sequence
+
+UTC = timezone.utc
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:

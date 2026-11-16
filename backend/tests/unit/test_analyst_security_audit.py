@@ -7,7 +7,7 @@ import math
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, fields, replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import pytest
@@ -28,6 +28,9 @@ from threatfusion.db.analyst_security_audit import (
     AnalystSecurityAuditRepository,
     create_analyst_security_audit_event,
 )
+
+UTC = timezone.utc
+
 
 NOW = datetime(2026, 9, 13, 12, 0, tzinfo=UTC)
 CORRELATION_ID = "11111111-1111-4111-8111-111111111111"

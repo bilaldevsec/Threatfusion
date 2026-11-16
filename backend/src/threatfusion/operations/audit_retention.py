@@ -12,7 +12,7 @@ import sqlite3
 import stat
 import sys
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator
 
@@ -22,6 +22,9 @@ from threatfusion.db.analyst_security_audit import (
     AUDIT_REPOSITORY_SCHEMA_VERSION,
 )
 from threatfusion.schemas.analyst_state import is_utc
+
+UTC = timezone.utc
+
 
 AUDIT_ARCHIVE_SCHEMA = "security_audit_archive_v1"
 AUDIT_ARCHIVE_EVENTS_FILENAME = "audit_events.jsonl"

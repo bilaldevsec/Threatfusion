@@ -6,7 +6,7 @@ import socket
 import ssl
 import sqlite3
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from threading import Event, Thread
 from uuid import uuid4
 
@@ -22,6 +22,9 @@ from threatfusion.operations.human_listener_lifecycle import (
     HumanLifecycleError,
     HumanListenerLifecycle,
 )
+
+UTC = timezone.utc
+
 
 certificates = api.certificates
 directory = operator.directory

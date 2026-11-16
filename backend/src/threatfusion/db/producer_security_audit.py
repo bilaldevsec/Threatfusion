@@ -10,7 +10,7 @@ import sqlite3
 import stat
 import uuid
 from dataclasses import dataclass, fields
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -19,6 +19,9 @@ from threatfusion.api.producer_admission import (
     REGISTERED_UNSW_SOURCE_CONTRACT,
 )
 from threatfusion.db.alert_repository import SQLITE_BUSY_TIMEOUT_MS
+
+UTC = timezone.utc
+
 
 AUDIT_EVENT_SCHEMA_VERSION = "producer_security_audit_event_v2"
 AUDIT_REPOSITORY_SCHEMA_VERSION = 2

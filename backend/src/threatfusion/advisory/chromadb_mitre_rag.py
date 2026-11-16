@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
@@ -36,6 +36,9 @@ import stat
 from typing import Any
 
 from threatfusion.advisory.explanation_engine import AdvisoryEvidenceBundle
+
+UTC = timezone.utc
+
 
 CHROMADB_RAG_SCHEMA_VERSION = "chromadb_mitre_rag_sqlite_v1"
 EMBEDDING_DIMENSION = 64

@@ -1,6 +1,6 @@
 """Unit tests for package discovery, zero-PYTHONPATH editable installation, and TF-005 parsing."""
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import subprocess
@@ -12,6 +12,9 @@ import pytest
 from setuptools import find_packages
 
 from threatfusion.datasets.adapters.base import SourceRowValidationError, parse_required_timestamp
+
+UTC = timezone.utc
+
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 

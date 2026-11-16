@@ -1,6 +1,6 @@
 """Unit tests for the provenance-gated dual-window correlation engine (TF-008)."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -24,6 +24,8 @@ from threatfusion.schemas.alert_candidate import (
     derive_alert_candidate_id,
     derive_source_event_id,
 )
+
+UTC = timezone.utc
 
 
 def _make_candidate(

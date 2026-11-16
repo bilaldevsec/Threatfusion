@@ -6,13 +6,16 @@ import hashlib
 import math
 import struct
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from threatfusion.features.network_behavior import (
     NETWORK_BEHAVIOR_V1_CONTRACT_VERSION,
     UNSW_NB15_ARGUS_RAW_REPRESENTATION_V1,
 )
+
+UTC = timezone.utc
+
 
 ALERT_CANDIDATE_SCHEMA_VERSION = "alert_candidate_v1"
 SOURCE_EVENT_ID_SCHEMA_VERSION = "unsw_registered_source_event_v1"

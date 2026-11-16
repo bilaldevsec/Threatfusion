@@ -1394,7 +1394,9 @@ class TestMilestone36ArchitecturalElevation:
         assert mttr == 4.500123
         assert compute_mttr(t_queued, t_queued - 5.0) == 0.0  # Safe non-negative
 
-        from datetime import UTC, datetime
+        from datetime import datetime, timezone
+
+        UTC = timezone.utc
 
         # 3. SQLite Persistence in IncidentSqliteRepository
         inc_db = tmp_path / "test_incidents.sqlite3"

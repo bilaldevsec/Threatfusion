@@ -9,7 +9,7 @@ Executes the complete ThreatFusion SOC architecture end-to-end across two tracks
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -73,6 +73,9 @@ from threatfusion.soar.playbook_ledger import (
     SoarPlaybookSqliteRepository,
     SoarStateTransitionError,
 )
+
+UTC = timezone.utc
+
 
 REGISTERED_UNSW_MEMBER_SHA256 = "7d851bbeabd27894ce39c8e78835c73341fc946652fb7743b9eff193b55eb511"
 DEMO_SCHEMA_VERSION = "full_soc_demo_report_v1"

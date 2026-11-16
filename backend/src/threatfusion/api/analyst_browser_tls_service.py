@@ -12,7 +12,7 @@ import threading
 import time
 import urllib.parse
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from threatfusion.api.analyst_tls_service import (
@@ -41,6 +41,9 @@ from threatfusion.api.analyst_dashboard import (
     _parse_summary,
     _parse_detail,
 )
+
+UTC = timezone.utc
+
 
 # Human client-certificate selection occurs within the TLS handshake.
 # This fixed total timeout bounds even unauthenticated connections.

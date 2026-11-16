@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import tempfile
@@ -29,6 +29,8 @@ from threatfusion.evaluation.workload_measurement import (
     TriageTrialRecord,
     WorkloadStudySummary,
 )
+
+UTC = timezone.utc
 
 
 @dataclass(frozen=True, slots=True)

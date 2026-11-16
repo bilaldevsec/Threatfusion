@@ -4,7 +4,6 @@ import hashlib
 import json
 import math
 
-from threatfusion.models.network_inference import APPROVED_MODEL_HASHES
 from threatfusion.schemas.alert_candidate import (
     DECISION_POLICY_VERSION,
     DETECTOR_IDENTITY,
@@ -37,23 +36,31 @@ def unavailable(evidence: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _approved_random_forest_sha256() -> str:
+    """Load the frozen digest without importing the inference stack at module import."""
+    from threatfusion.models.network_inference import APPROVED_MODEL_HASHES
+
+    return APPROVED_MODEL_HASHES["random_forest"]["model"]
+
+
 def generate_explanation(evidence: dict[str, object]) -> dict[str, object]:
     result = unavailable(evidence)
     score = evidence["uncalibrated_model_score"]
+    approved_sha256 = _approved_random_forest_sha256()
     expected_id = derive_alert_candidate_id(
         source_event_id=evidence["source_event_id"],
         detector_identity=DETECTOR_IDENTITY,
         detector_version=DETECTOR_VERSION,
         model_identity="random_forest",
         model_version="network_random_forest_baseline_v1",
-        model_artifact_sha256=APPROVED_MODEL_HASHES["random_forest"]["model"],
+        model_artifact_sha256=approved_sha256,
         decision_policy_version=DECISION_POLICY_VERSION,
     )
     if not (
         evidence["alert_candidate_id"] == expected_id
         and evidence["model_identity"] == "random_forest"
         and evidence["model_version"] == "network_random_forest_baseline_v1"
-        and evidence["model_artifact_sha256"] == APPROVED_MODEL_HASHES["random_forest"]["model"]
+        and evidence["model_artifact_sha256"] == approved_sha256
         and evidence["feature_contract_identity"] == "network_behavior_v1"
         and evidence["source_representation_identity"]
         == "unsw_nb15.argus.raw_49.transaction_bytes.v1"

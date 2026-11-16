@@ -6,8 +6,11 @@ import argparse
 import os
 import sys
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
+
+UTC = timezone.utc
+
 
 # Set hard process defaults before NumPy/SciPy/scikit-learn are imported.
 for variable in (

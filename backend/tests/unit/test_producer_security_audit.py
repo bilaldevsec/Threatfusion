@@ -8,7 +8,7 @@ import sqlite3
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, fields, replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -34,6 +34,9 @@ from threatfusion.db.producer_security_audit import (
     ProducerSecurityAuditRepository,
     create_producer_security_audit_event,
 )
+
+UTC = timezone.utc
+
 
 NOW = datetime(2026, 9, 13, 12, 0, tzinfo=UTC)
 CORRELATION_ID = "11111111-1111-4111-8111-111111111111"

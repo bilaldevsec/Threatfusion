@@ -10,7 +10,7 @@ import socket
 import ssl
 import subprocess
 from dataclasses import FrozenInstanceError, replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from queue import Queue
 from threading import Event, Thread
@@ -55,6 +55,8 @@ from threatfusion.api.producer_tls_transport import (
 from threatfusion.db.alert_repository import AlertCandidateRepository
 from threatfusion.db.producer_replay_journal import ProducerReplayJournal
 from threatfusion.db.producer_security_audit import ProducerSecurityAuditRepository
+
+UTC = timezone.utc
 
 
 @pytest.fixture(autouse=True)

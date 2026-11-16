@@ -14,7 +14,7 @@ import struct
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -34,6 +34,9 @@ from threatfusion.features.network_behavior import (
 from threatfusion.schemas.dataset_manifest import DatasetFile
 from threatfusion.schemas.flow import NetworkFlow
 from threatfusion.utils.checksum import sha256_file
+
+UTC = timezone.utc
+
 
 PREFLIGHT_SCHEMA_VERSION = "unsw_split_preflight_v1"
 FEATURE_CONTRACT_NAME = "network_behavior_v1"

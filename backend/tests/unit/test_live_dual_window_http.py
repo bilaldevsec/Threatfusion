@@ -7,7 +7,7 @@ engine or the guard helper as the thing under test.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 import threading
@@ -23,6 +23,9 @@ from scripts.run_misp_and_callback_contract_server import (
 from threatfusion.api.live_soc_console import score_canonical_flow
 from threatfusion.evaluation.study_runner import STUDY_TRIAGE_CASES
 from threatfusion.models.drift_and_supply_chain import CANONICAL_14_FEATURES
+
+UTC = timezone.utc
+
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MISP_KEY = "threatfusion_soc_test_misp_key_2026_secure"

@@ -1,62 +1,71 @@
 """ThreatFusion machine learning and deep learning models subpackage."""
 
-from threatfusion.models.canonical_evaluation import (
-    CANONICAL_EVALUATION_PACK_REV2,
-    CANONICAL_EVALUATION_SCHEMA_VERSION,
-    FYP_I_MODELS,
-    FYP_II_MODELS,
-    PROJECT_IDENTIFIER,
-    SECTION_8_FUSION_DISABLED_POLICY,
-    SPLIT_INVERSION_DISCLOSURE,
-    CanonicalEvaluationError,
-    CanonicalEvaluationPackRev2,
-    FusionDisabledError,
-    ModelEvaluationEntry,
-    assert_fusion_disabled_invariant,
-    execute_production_inference_guard,
-    get_canonical_evaluation_pack_rev2,
-    is_fusion_enabled,
-)
-from threatfusion.models.jury_traceability import (
-    JURY_DATASET_DISPOSITIONS,
-    JURY_MODEL_FAMILY_DISPOSITIONS,
-    JURY_TRACEABILITY_SCHEMA_VERSION,
-    JuryDatasetDisposition,
-    JuryModelFamilyDisposition,
-    JuryTraceabilityError,
-    JuryTraceabilityVerificationResult,
-    verify_jury_traceability_completeness,
-)
-from threatfusion.models.drift_and_supply_chain import (
-    CANONICAL_14_FEATURES,
-    DEFAULT_BASELINE_MEANS,
-    DEFAULT_BASELINE_STDS,
-    DRIFT_REPORT_SCHEMA_VERSION,
-    FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY,
-    FeatureDriftMetric,
-    FrozenModelSupplyChainEntry,
-    MODEL_SUPPLY_CHAIN_SCHEMA_VERSION,
-    ModelSupplyChainError,
-    TelemetryDriftError,
-    TelemetryDriftReport,
-    evaluate_14_feature_telemetry_drift,
-    verify_frozen_model_supply_chain,
-)
-from threatfusion.models.multi_signal_risk import (
-    CANONICAL_SIGNAL_SLOTS,
-    DEFAULT_SIGNAL_WEIGHTS,
-    DETECTOR_ABLATION_REPORT_SCHEMA_VERSION,
-    DYNAMIC_RISK_ASSESSMENT_SCHEMA_VERSION,
-    DetectorAblationReport,
-    DetectorMetrics,
-    DynamicRiskAssessment,
-    MultiSignalRiskError,
-    MultiSignalRiskResult,
-    SignalObservation,
-    compute_dynamic_risk_score,
-    evaluate_detector_ablation,
-    evaluate_multi_signal_risk,
-)
+from __future__ import annotations
+
+import importlib
+from typing import Any
+
+_EXPORTS: dict[str, str] = {
+    "CANONICAL_EVALUATION_PACK_REV2": "threatfusion.models.canonical_evaluation",
+    "CANONICAL_EVALUATION_SCHEMA_VERSION": "threatfusion.models.canonical_evaluation",
+    "FYP_I_MODELS": "threatfusion.models.canonical_evaluation",
+    "FYP_II_MODELS": "threatfusion.models.canonical_evaluation",
+    "PROJECT_IDENTIFIER": "threatfusion.models.canonical_evaluation",
+    "SECTION_8_FUSION_DISABLED_POLICY": "threatfusion.models.canonical_evaluation",
+    "SPLIT_INVERSION_DISCLOSURE": "threatfusion.models.canonical_evaluation",
+    "CanonicalEvaluationError": "threatfusion.models.canonical_evaluation",
+    "CanonicalEvaluationPackRev2": "threatfusion.models.canonical_evaluation",
+    "FusionDisabledError": "threatfusion.models.canonical_evaluation",
+    "ModelEvaluationEntry": "threatfusion.models.canonical_evaluation",
+    "assert_fusion_disabled_invariant": "threatfusion.models.canonical_evaluation",
+    "execute_production_inference_guard": "threatfusion.models.canonical_evaluation",
+    "get_canonical_evaluation_pack_rev2": "threatfusion.models.canonical_evaluation",
+    "is_fusion_enabled": "threatfusion.models.canonical_evaluation",
+    "JURY_DATASET_DISPOSITIONS": "threatfusion.models.jury_traceability",
+    "JURY_MODEL_FAMILY_DISPOSITIONS": "threatfusion.models.jury_traceability",
+    "JURY_TRACEABILITY_SCHEMA_VERSION": "threatfusion.models.jury_traceability",
+    "JuryDatasetDisposition": "threatfusion.models.jury_traceability",
+    "JuryModelFamilyDisposition": "threatfusion.models.jury_traceability",
+    "JuryTraceabilityError": "threatfusion.models.jury_traceability",
+    "JuryTraceabilityVerificationResult": "threatfusion.models.jury_traceability",
+    "verify_jury_traceability_completeness": "threatfusion.models.jury_traceability",
+    "CANONICAL_14_FEATURES": "threatfusion.models.drift_and_supply_chain",
+    "DEFAULT_BASELINE_MEANS": "threatfusion.models.drift_and_supply_chain",
+    "DEFAULT_BASELINE_STDS": "threatfusion.models.drift_and_supply_chain",
+    "DRIFT_REPORT_SCHEMA_VERSION": "threatfusion.models.drift_and_supply_chain",
+    "FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY": "threatfusion.models.drift_and_supply_chain",
+    "FeatureDriftMetric": "threatfusion.models.drift_and_supply_chain",
+    "FrozenModelSupplyChainEntry": "threatfusion.models.drift_and_supply_chain",
+    "MODEL_SUPPLY_CHAIN_SCHEMA_VERSION": "threatfusion.models.drift_and_supply_chain",
+    "ModelSupplyChainError": "threatfusion.models.drift_and_supply_chain",
+    "TelemetryDriftError": "threatfusion.models.drift_and_supply_chain",
+    "TelemetryDriftReport": "threatfusion.models.drift_and_supply_chain",
+    "evaluate_14_feature_telemetry_drift": "threatfusion.models.drift_and_supply_chain",
+    "verify_frozen_model_supply_chain": "threatfusion.models.drift_and_supply_chain",
+    "CANONICAL_SIGNAL_SLOTS": "threatfusion.models.multi_signal_risk",
+    "DEFAULT_SIGNAL_WEIGHTS": "threatfusion.models.multi_signal_risk",
+    "DETECTOR_ABLATION_REPORT_SCHEMA_VERSION": "threatfusion.models.multi_signal_risk",
+    "DYNAMIC_RISK_ASSESSMENT_SCHEMA_VERSION": "threatfusion.models.multi_signal_risk",
+    "DetectorAblationReport": "threatfusion.models.multi_signal_risk",
+    "DetectorMetrics": "threatfusion.models.multi_signal_risk",
+    "DynamicRiskAssessment": "threatfusion.models.multi_signal_risk",
+    "MultiSignalRiskError": "threatfusion.models.multi_signal_risk",
+    "MultiSignalRiskResult": "threatfusion.models.multi_signal_risk",
+    "SignalObservation": "threatfusion.models.multi_signal_risk",
+    "compute_dynamic_risk_score": "threatfusion.models.multi_signal_risk",
+    "evaluate_detector_ablation": "threatfusion.models.multi_signal_risk",
+    "evaluate_multi_signal_risk": "threatfusion.models.multi_signal_risk",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module(module_name), name)
+    globals()[name] = value
+    return value
+
 
 __all__ = [
     "CANONICAL_14_FEATURES",

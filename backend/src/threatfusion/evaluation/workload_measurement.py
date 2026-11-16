@@ -14,7 +14,7 @@ Quantifies:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -26,6 +26,9 @@ from typing import Any
 from threatfusion.models.canonical_evaluation import (
     CANONICAL_EVALUATION_PACK_REV2,
 )
+
+UTC = timezone.utc
+
 
 WORKLOAD_MEASUREMENT_SCHEMA_VERSION = "workload_measurement_v1"
 

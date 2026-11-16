@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, fields, replace
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import math
 from threading import Barrier
 
@@ -36,6 +36,9 @@ from threatfusion.api.producer_execution_gates import (
 )
 from threatfusion.db.alert_repository import AlertCandidateRepository
 from threatfusion.db.producer_replay_journal import ProducerReplayJournal
+
+UTC = timezone.utc
+
 
 FINGERPRINT = "a" * 64
 

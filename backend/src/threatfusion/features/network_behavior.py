@@ -1,12 +1,23 @@
 """Versioned network inputs and their narrowly scoped compatibility evidence."""
 
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import TypeAlias
 
 from threatfusion.features.common_network import FeatureSpec
 from threatfusion.schemas.flow import NetworkFlow
 from threatfusion.schemas.network_benchmark import NetworkBenchmarkRecord
+
+try:
+    from enum import StrEnum
+except ImportError:  # Python 3.10
+    from enum import Enum
+
+    class StrEnum(str, Enum):
+        """Value string enum for interpreters without enum.StrEnum."""
+
+        def __str__(self) -> str:
+            return str(self.value)
+
 
 NETWORK_BEHAVIOR_V1_FEATURES: tuple[FeatureSpec, ...] = (
     FeatureSpec("duration_ms", "float", "milliseconds", "Observed flow duration."),

@@ -14,11 +14,14 @@ import os
 import sqlite3
 import stat
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from threatfusion.schemas.analyst_state import valid_actor_id
+
+UTC = timezone.utc
+
 
 OFFLINE_RETRAINING_FEEDBACK_SCHEMA_IDENTITY = "offline_retraining_feedback_sqlite_v1"
 RETRAINING_FEEDBACK_REPOSITORY_SCHEMA_VERSION = 1

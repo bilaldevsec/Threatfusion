@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 import stat
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from threatfusion.db.alert_repository import (
@@ -29,6 +29,9 @@ from threatfusion.schemas.analyst_state import (
     is_utc,
     valid_rationale,
 )
+
+UTC = timezone.utc
+
 
 ANALYST_REPOSITORY_SCHEMA_VERSION = 1
 ANALYST_REPOSITORY_SCHEMA_IDENTITY = "analyst_state_sqlite_v1"

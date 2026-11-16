@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event
 from types import MethodType, SimpleNamespace
@@ -53,6 +53,9 @@ from threatfusion.models.network_inference import (
     UnswNetworkInferenceBoundary,
 )
 from threatfusion.schemas.alert_candidate import derive_source_event_id
+
+UTC = timezone.utc
+
 
 NOW = datetime(2026, 9, 13, 12, 0, tzinfo=UTC)
 FINGERPRINT = "a" * 64

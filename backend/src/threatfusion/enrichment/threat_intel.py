@@ -14,10 +14,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from threatfusion.alerts.correlation_engine import EntityProvenanceContract
+
+UTC = timezone.utc
 
 
 @dataclass(frozen=True, slots=True)

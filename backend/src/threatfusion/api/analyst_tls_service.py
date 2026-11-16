@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -30,6 +30,9 @@ from threatfusion.schemas.analyst_state import (
     is_utc,
     valid_actor_id,
 )
+
+UTC = timezone.utc
+
 
 ANALYST_HOST = "threatfusion-analyst-loopback"
 ANALYST_URI_PREFIX = "urn:threatfusion:human:"

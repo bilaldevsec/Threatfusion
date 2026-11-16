@@ -15,7 +15,7 @@ stability index (PSI) drift monitoring:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import hashlib
 import math
 import os
@@ -23,6 +23,9 @@ from pathlib import Path
 from collections.abc import Mapping, Sequence
 import statistics
 from typing import Any
+
+UTC = timezone.utc
+
 
 # =============================================================================
 # 1. Frozen Model Supply-Chain Registry & Verifier

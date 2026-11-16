@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import json
 from uuid import uuid4
 
@@ -31,6 +31,8 @@ from threatfusion.schemas.analyst_state import (
     AnalystRegistryEntry,
     AnalystStateError,
 )
+
+UTC = timezone.utc
 
 
 def _candidate(index: int) -> AlertCandidate:

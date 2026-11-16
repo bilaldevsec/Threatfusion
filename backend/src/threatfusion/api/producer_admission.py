@@ -14,8 +14,11 @@ import math
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import BinaryIO
+
+UTC = timezone.utc
+
 
 PRODUCER_INGEST_REQUEST_SCHEMA_VERSION = "producer_ingest_request_v1"
 PRODUCER_INGEST_RESPONSE_SCHEMA_VERSION = "producer_ingest_response_v1"

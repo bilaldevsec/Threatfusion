@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from typing import Any
 
@@ -12,6 +12,8 @@ from threatfusion.enrichment.threat_intel import (
     ThreatIntelFeedSnapshot,
     ThreatIntelIndicatorMatch,
 )
+
+UTC = timezone.utc
 
 
 class TestThreatIntelEnrichment:

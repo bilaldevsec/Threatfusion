@@ -26,9 +26,12 @@ import stat
 import sys
 import uuid
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator
+
+UTC = timezone.utc
+
 
 SNAPSHOT_MANIFEST_SCHEMA = "storage_snapshot_manifest_v1"
 MANIFEST_FILENAME = "manifest.json"

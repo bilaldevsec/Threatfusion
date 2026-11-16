@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 import socket
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import urllib.parse
 import uuid
@@ -66,6 +66,9 @@ from threatfusion.soar.playbook_ledger import (
     ApprovalGatedSoarEngine,
     SoarPlaybookSqliteRepository,
 )
+
+UTC = timezone.utc
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 

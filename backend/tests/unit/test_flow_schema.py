@@ -1,9 +1,11 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
 
 from threatfusion.schemas.flow import NetworkFlow
+
+UTC = timezone.utc
 
 
 def valid_flow() -> dict:

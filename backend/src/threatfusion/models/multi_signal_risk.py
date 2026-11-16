@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 from sklearn.metrics import auc, precision_recall_curve
+
+UTC = timezone.utc
+
 
 DYNAMIC_RISK_ASSESSMENT_SCHEMA_VERSION = "dynamic_risk_assessment_v1"
 DETECTOR_ABLATION_REPORT_SCHEMA_VERSION = "detector_ablation_report_v1"

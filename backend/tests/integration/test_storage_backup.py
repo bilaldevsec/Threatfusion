@@ -6,7 +6,7 @@ import fcntl
 import json
 import os
 import sqlite3
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -44,6 +44,8 @@ from threatfusion.schemas.analyst_state import (
     AnalystCapability,
     AnalystRegistryEntry,
 )
+
+UTC = timezone.utc
 
 
 def _authorization() -> AnalystAuthorizationRegistry:

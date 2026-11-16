@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
 
@@ -12,6 +12,8 @@ from threatfusion.evaluation.workload_measurement import (
     TriageTrialRecord,
     evaluate_alert_fatigue_compression,
 )
+
+UTC = timezone.utc
 
 
 def test_section_8_counterfactual_fusion_shield_exact_metrics() -> None:

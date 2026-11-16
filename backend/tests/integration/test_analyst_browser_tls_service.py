@@ -7,7 +7,7 @@ import re
 import socket
 import ssl
 import subprocess
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Thread
 import time
@@ -38,6 +38,8 @@ from threatfusion.schemas.analyst_state import (
 )
 
 from backend.tests.unit.test_analyst_view_model import _candidate
+
+UTC = timezone.utc
 
 
 def _openssl(*arguments: str) -> None:

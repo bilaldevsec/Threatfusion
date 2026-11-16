@@ -15,7 +15,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from queue import Queue
 from threading import Event, Thread
@@ -75,6 +75,9 @@ from threatfusion.models.network_inference import (
 )
 from threatfusion.preprocessing.network_behavior_v1 import NetworkBehaviorPreprocessor
 from threatfusion.schemas.alert_candidate import derive_source_event_id
+
+UTC = timezone.utc
+
 
 NOW = datetime(2026, 9, 13, 12, 0, tzinfo=UTC)
 MEMBER = "7d851bbeabd27894ce39c8e78835c73341fc946652fb7743b9eff193b55eb511"

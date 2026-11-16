@@ -252,7 +252,9 @@ def record_auth_event(
     if event_type not in _AUTH_EVENTS:
         raise ValueError("auth_event_invalid")
     ensure_auth_audit_schema(conn)
-    from datetime import UTC, datetime
+    from datetime import datetime, timezone
+
+    UTC = timezone.utc
 
     conn.execute(
         """

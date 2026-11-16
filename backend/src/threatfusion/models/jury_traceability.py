@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,9 @@ from threatfusion.db.retraining_feedback_ledger import (
     RetrainingFeedbackRecord,
     verify_frozen_models_unmodified,
 )
+
+UTC = timezone.utc
+
 
 JURY_TRACEABILITY_SCHEMA_VERSION = "jury_traceability_matrix_v1"
 

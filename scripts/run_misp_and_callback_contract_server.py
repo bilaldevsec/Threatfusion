@@ -24,7 +24,7 @@ Implements lightweight deterministic HTTP services for containerized SOC stacks:
 from __future__ import annotations
 
 import argparse
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import html
@@ -40,6 +40,9 @@ import sqlite3
 import sys
 import threading
 from typing import Any
+
+UTC = timezone.utc
+
 
 # Ensure backend/src is on sys.path for direct module imports
 REPO_ROOT = Path(__file__).resolve().parents[1]
