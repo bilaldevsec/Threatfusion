@@ -17,6 +17,20 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Bind checkout to the canonical product workspace
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: safe.directory
+          GIT_CONFIG_VALUE_0: /home/muhammad-bilal/projects/threatfusion-gemini
+        run: |
+          set -euo pipefail
+          canonical="/home/muhammad-bilal/projects/threatfusion-gemini"
+          sudo mkdir -p "$canonical"
+          sudo mount --bind "$GITHUB_WORKSPACE" "$canonical"
+          git -C "$canonical" checkout -B gemini/product-20260924
+          test "$(git -C "$canonical" rev-parse --abbrev-ref HEAD)" = "gemini/product-20260924"
+          test "$(git -C "$canonical" rev-parse HEAD)" = "$GITHUB_SHA"
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -28,13 +42,33 @@ jobs:
           version: "0.12.7"
 
       - name: Install locked dependencies
+        working-directory: /home/muhammad-bilal/projects/threatfusion-gemini
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: safe.directory
+          GIT_CONFIG_VALUE_0: /home/muhammad-bilal/projects/threatfusion-gemini
         run: uv sync --locked --dev
 
       - name: Run tests
+        working-directory: /home/muhammad-bilal/projects/threatfusion-gemini
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: safe.directory
+          GIT_CONFIG_VALUE_0: /home/muhammad-bilal/projects/threatfusion-gemini
         run: uv run --frozen pytest
 
       - name: Run Ruff
+        working-directory: /home/muhammad-bilal/projects/threatfusion-gemini
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: safe.directory
+          GIT_CONFIG_VALUE_0: /home/muhammad-bilal/projects/threatfusion-gemini
         run: uv run --frozen ruff check backend/src backend/tests
 
       - name: Run Black
+        working-directory: /home/muhammad-bilal/projects/threatfusion-gemini
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: safe.directory
+          GIT_CONFIG_VALUE_0: /home/muhammad-bilal/projects/threatfusion-gemini
         run: uv run --frozen black --check backend/src backend/tests
