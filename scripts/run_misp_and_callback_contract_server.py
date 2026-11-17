@@ -517,9 +517,19 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             self._send_json(200, console_posture())
             return
         if path == "/api/v1/live/queue":
-            from threatfusion.api.live_soc_console import list_live_flows
+            from threatfusion.api.live_soc_console import (
+                build_alert_fatigue_compression_funnel,
+                list_live_flows,
+            )
 
-            self._send_json(200, {"flows": list_live_flows(self._live_db_path())})
+            db_path = self._live_db_path()
+            self._send_json(
+                200,
+                {
+                    "flows": list_live_flows(db_path),
+                    "compression_funnel": build_alert_fatigue_compression_funnel(db_path),
+                },
+            )
             return
         if path == "/api/v1/live/drift":
             from threatfusion.api.live_soc_console import drift_for_stored_flows
@@ -527,7 +537,10 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             self._send_json(200, drift_for_stored_flows(self._live_db_path()))
             return
         if path == "/api/v1/live/workbench":
-            from threatfusion.api.live_soc_console import read_n8n_workbench
+            from threatfusion.api.live_soc_console import (
+                build_alert_fatigue_compression_funnel,
+                read_n8n_workbench,
+            )
 
             workflow = (
                 REPO_ROOT
@@ -536,7 +549,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 / "workflows"
                 / "threatfusion_live_console_playbook.json"
             )
-            self._send_json(200, read_n8n_workbench(workflow))
+            payload = read_n8n_workbench(workflow)
+            payload["compression_funnel"] = build_alert_fatigue_compression_funnel(
+                self._live_db_path()
+            )
+            self._send_json(200, payload)
             return
         if path == "/api/v1/live/campaigns":
             from threatfusion.api.live_soc_console import list_live_campaigns
@@ -692,6 +709,17 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 flow_id = 0
             result = preview_soar_playbook(self._live_db_path(), flow_id=flow_id)
             self._send_json(int(result.get("http_status") or 404), result)
+            return
+        if path == "/api/v1/live/hunter/guides":
+            from threatfusion.api.live_soc_console import list_recommended_hunting_guides
+
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            guide_id = (query.get("guide_id") or [""])[0]
+            result = list_recommended_hunting_guides(
+                self._live_db_path(),
+                guide_id=guide_id or None,
+            )
+            self._send_json(int(result.get("http_status") or 200), result)
             return
         if path == "/api/v1/live/advisory-trace":
             from threatfusion.api.live_soc_console import read_advisory_trace
@@ -1304,6 +1332,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 flow_id=flow_id,
                 query=str(req_data.get("query") or ""),
                 rule_format=str(req_data.get("format") or "both"),
+                guide_id=str(req_data.get("guide_id") or ""),
             )
             self._send_json(int(result.get("http_status") or 200), result)
             return

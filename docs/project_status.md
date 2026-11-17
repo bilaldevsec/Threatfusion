@@ -2167,3 +2167,10 @@ TF-008, TF-009, TF-010, and TF-011 remain **open**.
 - Frozen model digests, `production_fusion_enabled = False`, Gate G9, and `.git/threatfusion_fyp_baseline.state` are unchanged.
 
 TF-008, TF-009, TF-010, and TF-011 remain **open**.
+
+### Milestone #54: Alert-fatigue funnel, AI governance inspectability, and hunting guides (2026-11-17)
+
+- `GET /api/v1/live/queue` and `GET /api/v1/live/workbench` include `compression_funnel`. Raw events are the sum of `max(burst_count, 1)`. Distinct SimHash values are the middle stage. High-confidence incidents are frozen-RF Attack rows or rows with probability at least 0.5. `noise_reduction_pct` is the rounded reduction from raw events to that incident count. The investigations view shows the strip above the queue.
+- `GET /api/v1/live/advisory-trace` adds `ai_governance_controls` for ISO/IEC 42001, NIST AI RMF, and OWASP LLM01. The inspectable evidence is the sanitized telemetry envelope, its SHA-256, the ChromaDB document ids, and the ledger's verified versus ungrounded indicators. The detail view keeps those pills and a collapsed evidence toggle.
+- `GET /api/v1/live/hunter/guides` returns five read-only guides (T1046, T1110, T1190, T1498, INV-4) with live hit counts, match percent, matching flow ids, and Suricata / Sigma YAML badges. Inspecting a guide calls `POST /api/v1/live/hunter/draft-rule` and opens a four-section hunt summary (overview, key indicators, attack progression, recommended actions) whose ledger status is computed by `verify_advisory_against_ledger`. Rules stay `REVIEW_ONLY`. Containment is not executed from this path.
+- `production_fusion_enabled` stays false. Gate G9 is unchanged. TF-008, TF-009, TF-010, and TF-011 remain **open**.

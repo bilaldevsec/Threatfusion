@@ -618,6 +618,7 @@
     if (name === 'hunter') {
       renderHunterGauges();
       renderMitreCoverageMatrix();
+      refreshHuntingGuides();
     }
   }
 
@@ -1043,6 +1044,24 @@
     setInspectorText('funnelCampaigns', String(attackCampaigns));
     setInspectorText('telemetryReductionPct', reduction);
     paintFunnelSvg([flows, schemaValid, attacks, attackCampaigns]);
+  }
+
+  function renderCompressionFunnel(funnel) {
+    const node = document.getElementById('compressionFunnelLine');
+    if (!node || !funnel || typeof funnel !== 'object') return;
+    const raw = Number(funnel.raw_telemetry_events);
+    const clusters = Number(funnel.simhash_unique_clusters);
+    const high = Number(funnel.high_confidence_incidents);
+    const pct = Number(funnel.noise_reduction_pct);
+    const rawText = Number.isFinite(raw) ? String(raw) : '0';
+    const clusterText = Number.isFinite(clusters) ? String(clusters) : '0';
+    const highText = Number.isFinite(high) ? String(high) : '0';
+    const pctText = Number.isFinite(pct) ? String(Math.round(pct)) : '0';
+    node.textContent = 'Raw Telemetry Events (' + rawText
+      + ') \u2192 SimHash Deduplicated Clusters (' + clusterText
+      + ') \u2192 High-Confidence Incidents (' + highText
+      + ') \u00b7 ' + pctText + '% Noise Reduction';
+    node.setAttribute('data-evidence-state', 'verified');
   }
 
   function paintFunnelSvg(counts) {
@@ -1981,6 +2000,41 @@
     fence.setAttribute('data-ledger-status', 'pending');
   }
 
+  function renderAiGovernance(trace) {
+    const evidence = document.getElementById('aiReasoningEvidence');
+    const pills = document.getElementById('aiGovernancePills');
+    const controls = trace && trace.ai_governance_controls && typeof trace.ai_governance_controls === 'object'
+      ? trace.ai_governance_controls
+      : null;
+    if (pills) {
+      pills.setAttribute('data-evidence-state', controls ? 'verified' : 'unavailable');
+    }
+    if (!evidence) return;
+    const inspected = controls && controls.inspectable_evidence && typeof controls.inspectable_evidence === 'object'
+      ? controls.inspectable_evidence
+      : null;
+    if (!inspected) {
+      evidence.textContent = 'Select a stored flow to inspect the fenced envelope, RAG citations, and ledger proof.';
+      evidence.setAttribute('data-evidence-state', 'unavailable');
+      return;
+    }
+    const ledger = inspected.ledger_verification && typeof inspected.ledger_verification === 'object'
+      ? inspected.ledger_verification
+      : {};
+    const docs = Array.isArray(inspected.rag_doc_ids) ? inspected.rag_doc_ids.join(', ') : '';
+    const verified = Array.isArray(ledger.verified_indicators) ? ledger.verified_indicators.join(', ') : '';
+    const ungrounded = Array.isArray(ledger.ungrounded_indicators) ? ledger.ungrounded_indicators.join(', ') : '';
+    evidence.textContent = [
+      String(inspected.untrusted_telemetry_envelope || ''),
+      '',
+      'envelope_sha256: ' + String(inspected.envelope_sha256 || ''),
+      'rag_doc_ids: ' + docs,
+      'verified_indicators: ' + verified,
+      'ungrounded_indicators: ' + ungrounded
+    ].join('\n');
+    evidence.setAttribute('data-evidence-state', inspected.envelope_sha256 ? 'verified' : 'unavailable');
+  }
+
   function burstBadgeHtml(inc) {
     const count = Number(inc && (inc.burstCount != null ? inc.burstCount : inc.burst_count));
     if (!Number.isFinite(count) || count < 1) return '';
@@ -2002,6 +2056,7 @@
         pill.setAttribute('data-completeness', 'PENDING ADVISORY');
       }
       renderLedgerFencePill(null);
+      renderAiGovernance(null);
       if (bar) bar.textContent = 'Advisory authority loads with the selected flow.';
       body.innerHTML = '<tr><td colspan="5">Select a stored flow to read the advisory trace.</td></tr>';
       if (gaps) gaps.textContent = '';
@@ -2013,6 +2068,7 @@
       pill.setAttribute('data-completeness', badge);
     }
     renderLedgerFencePill(payload);
+    renderAiGovernance(payload);
     const authority = payload.authority && typeof payload.authority === 'object' ? payload.authority : {};
     const writes = authority.decision_writes_by_advisory_components;
     const verdict = authority.frozen_rf_verdict || 'withheld';
@@ -2631,6 +2687,14 @@
     if (draftRuleButton) {
       draftRuleButton.addEventListener('click', () => { draftHunterDetectionRule(); });
     }
+    const guidesBody = document.getElementById('huntingGuidesBody');
+    if (guidesBody) {
+      guidesBody.addEventListener('click', (event) => {
+        const target = event.target && event.target.closest ? event.target.closest('.btn-inspect-hunt') : null;
+        if (!target) return;
+        inspectHuntGuide(target.getAttribute('data-guide-id') || '');
+      });
+    }
     const copyRuleButton = document.getElementById('btnCopyHunterRule');
     if (copyRuleButton) {
       copyRuleButton.addEventListener('click', () => { copyHunterDetectionRule(); });
@@ -2648,6 +2712,7 @@
       driftButton.addEventListener('click', () => { refreshLiveDriftAndWorkbench(); });
     }
     refreshLiveQueue();
+    refreshHuntingGuides();
 
     // Top Header SOAR Action Button
     const topApproveBtn = document.getElementById('approvePlaybookBtn');
@@ -4588,6 +4653,7 @@
         return;
       }
       const data = await resp.json();
+      if (data && data.compression_funnel) renderCompressionFunnel(data.compression_funnel);
       const flows = Array.isArray(data.flows) ? data.flows : [];
       if (!flows.length) {
         if (liveCampaignIncidents.length) {
@@ -4672,12 +4738,136 @@
   }
 
   let lastHunterDraftText = '';
+  let latestHuntingGuides = [];
 
-  async function draftHunterDetectionRule() {
+  function renderNumberedHuntList(id, steps) {
+    const node = document.getElementById(id);
+    if (!node) return;
+    const items = Array.isArray(steps) ? steps : [];
+    node.innerHTML = items.map(function (step) {
+      return '<li>' + escapeHtml(String(step).replace(/^\s*\d+\.\s*/, '')) + '</li>';
+    }).join('');
+  }
+
+  function renderHuntAiSummary(summary) {
+    const card = document.getElementById('huntAiSummaryCard');
+    if (!card) return;
+    if (!summary || typeof summary !== 'object') {
+      card.hidden = true;
+      return;
+    }
+    card.hidden = false;
+    const overview = document.getElementById('huntSummaryOverview');
+    if (overview) overview.textContent = String(summary.overview || '');
+    const indicators = document.getElementById('huntSummaryIndicators');
+    const rows = Array.isArray(summary.key_indicators) ? summary.key_indicators : [];
+    if (indicators) {
+      indicators.innerHTML = rows.length ? rows.map(function (item) {
+        const scores = item && item.model_scores && typeof item.model_scores === 'object' ? item.model_scores : {};
+        return '<li>'
+          + escapeHtml(String(item.src_ip || 'unavailable'))
+          + ' \u2192 '
+          + escapeHtml(String(item.dst_ip || 'unavailable'))
+          + ' '
+          + escapeHtml(String(item.proto || ''))
+          + '/'
+          + escapeHtml(String(item.dst_port == null ? '' : item.dst_port))
+          + ' simhash '
+          + escapeHtml(String(item.simhash_signature || ''))
+          + ' Frozen RF '
+          + escapeHtml(String(scores['Frozen RF']))
+          + ' Autoencoder MSE '
+          + escapeHtml(String(scores['Autoencoder MSE']))
+          + ' 9-Class DNN '
+          + escapeHtml(String(scores['9-Class DNN']))
+          + '</li>';
+      }).join('') : '<li>No matched indicators in the current queue.</li>';
+    }
+    renderNumberedHuntList('huntSummaryProgression', summary.attack_progression);
+    renderNumberedHuntList('huntSummaryActions', summary.recommended_actions);
+    const stamp = document.getElementById('huntSummaryLedger');
+    const status = String(summary.ledger_verification_status || 'unavailable');
+    if (stamp) {
+      stamp.textContent = 'ledger_verification_status: ' + status;
+      stamp.setAttribute('data-evidence-state', status === 'VERIFIED' ? 'verified' : 'unavailable');
+    }
+  }
+
+  function renderHuntingGuideRow(guide) {
+    const pct = Math.max(0, Math.min(100, Number(guide.active_match_pct) || 0));
+    const width = String(Math.round(pct));
+    const count = Number(guide.results_found_count) || 0;
+    const formats = Array.isArray(guide.rule_formats) ? guide.rule_formats : [];
+    const formatHtml = formats.map(function (fmt) {
+      return '<span class="badge badge-format">' + escapeHtml(String(fmt)) + '</span>';
+    }).join(' ');
+    return '<tr>'
+      + '<td><strong>' + escapeHtml(guide.title || '') + '</strong>'
+      + '<div class="hunt-profile">' + escapeHtml(guide.adversary_profile || '') + '</div></td>'
+      + '<td>' + escapeHtml(guide.mitre_technique || '') + '</td>'
+      + '<td><div class="hunt-match" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="'
+      + width + '"><span style="width:' + width + '%"></span></div>'
+      + '<span class="hunt-match-label">' + width + '%</span></td>'
+      + '<td><span class="badge badge-results">' + String(count) + ' Results found</span></td>'
+      + '<td class="hunt-formats">' + formatHtml + '</td>'
+      + '<td><button type="button" class="btn btn-inspect-hunt" data-guide-id="'
+      + escapeHtml(guide.guide_id || '') + '">Inspect Hunt &amp; Draft Rules</button></td>'
+      + '</tr>';
+  }
+
+  async function refreshHuntingGuides() {
+    const body = document.getElementById('huntingGuidesBody');
+    if (!body) return;
+    try {
+      const resp = await fetch('/api/v1/live/hunter/guides');
+      if (!resp.ok) {
+        body.innerHTML = '<tr><td colspan="6">Hunting guides are unavailable.</td></tr>';
+        return;
+      }
+      const data = await resp.json();
+      const guides = Array.isArray(data.guides) ? data.guides : [];
+      latestHuntingGuides = guides;
+      if (!guides.length) {
+        body.innerHTML = '<tr><td colspan="6">No hunting guides are available.</td></tr>';
+        return;
+      }
+      body.innerHTML = guides.map(renderHuntingGuideRow).join('');
+    } catch (err) {
+      latestHuntingGuides = [];
+      body.innerHTML = '<tr><td colspan="6">Hunting guides are unavailable.</td></tr>';
+    }
+  }
+
+  async function inspectHuntGuide(guideId) {
+    const guide = latestHuntingGuides.find(function (item) {
+      return item && item.guide_id === guideId;
+    });
+    if (!guide) return;
+    const ids = Array.isArray(guide.matching_flow_ids) ? guide.matching_flow_ids : [];
+    const flowId = Number(ids[0]);
+    const selected = Number.isInteger(flowId) && flowId > 0 ? flowId : null;
+    if (selected) selectedFlowId = selected;
+    const query = 'Hunt ' + String(guide.mitre_technique || '') + ' ' + String(guide.title || '');
+    const queryNode = document.getElementById('hunterDraftRuleQuery');
+    if (queryNode) queryNode.value = query;
+    await draftHunterDetectionRule({ flowId: selected, query: query, guideId: guide.guide_id });
+    const card = document.getElementById('huntAiSummaryCard');
+    if (card && typeof card.scrollIntoView === 'function') {
+      card.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  async function draftHunterDetectionRule(options) {
+    const opts = options && typeof options === 'object' ? options : {};
     const preview = document.getElementById('hunterDraftRulePreview');
     const queryNode = document.getElementById('hunterDraftRuleQuery');
-    const flowId = copilotFlowIdForSelection();
-    const query = queryNode ? String(queryNode.value || '') : '';
+    const flowId = Object.prototype.hasOwnProperty.call(opts, 'flowId')
+      ? opts.flowId
+      : copilotFlowIdForSelection();
+    const query = Object.prototype.hasOwnProperty.call(opts, 'query')
+      ? String(opts.query || '')
+      : (queryNode ? String(queryNode.value || '') : '');
+    const guideId = opts.guideId ? String(opts.guideId) : '';
     if (preview) {
       preview.setAttribute('data-evidence-state', 'unavailable');
       preview.textContent = 'Drafting review-only Suricata and Sigma rules…';
@@ -4689,7 +4879,8 @@
         body: JSON.stringify({
           flow_id: Number.isInteger(flowId) && flowId > 0 ? flowId : null,
           query: query,
-          format: 'both'
+          format: 'both',
+          guide_id: guideId
         })
       });
       const data = await resp.json();
@@ -4715,6 +4906,7 @@
           resp.ok && (suricata || sigma) ? 'verified' : 'unavailable'
         );
       }
+      renderHuntAiSummary(data.hunt_ai_summary);
     } catch (err) {
       lastHunterDraftText = '';
       if (preview) {
@@ -4854,6 +5046,7 @@
       );
       const benchResp = await fetch('/api/v1/live/workbench');
       const bench = await benchResp.json();
+      if (bench && bench.compression_funnel) renderCompressionFunnel(bench.compression_funnel);
       setLiveText(
         'liveWorkbenchStatus',
         'n8n workbench nodes: ' + (bench.node_count || 0) + '. Dispatch stays unauthorized.',

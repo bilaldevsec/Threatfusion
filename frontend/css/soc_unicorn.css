@@ -2421,3 +2421,108 @@ button.tier3-only {
     display: grid;
   }
 }
+
+.compression-funnel {
+  background: #111827;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+  margin: 0 0 1rem;
+}
+
+.compression-funnel h2 {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+  color: #e6edf3;
+}
+
+.compression-funnel p {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  color: #d1d5db;
+}
+
+.governance-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.8rem;
+}
+
+.badge-governance {
+  background: #1f2937;
+  color: #93c5fd;
+  border: 1px solid #374151;
+}
+
+.ai-reasoning-toggle {
+  margin-top: 0.75rem;
+  background: #0b1220;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+}
+
+.ai-reasoning-toggle summary {
+  cursor: pointer;
+  color: #e6edf3;
+  font-weight: 600;
+}
+
+#aiReasoningEvidence {
+  margin: 0.6rem 0 0;
+  white-space: pre-wrap;
+  font-size: 0.75rem;
+  color: #d1d5db;
+}
+
+.hunt-match {
+  width: 120px;
+  height: 8px;
+  background: #1f2937;
+  border-radius: 999px;
+  overflow: hidden;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.hunt-match span {
+  display: block;
+  height: 100%;
+  background: #58a6ff;
+}
+
+.hunt-match-label,
+.hunt-profile {
+  color: #9ca3af;
+  font-size: 0.75rem;
+}
+
+.badge-format,
+.badge-results {
+  margin-right: 0.25rem;
+  background: #1f2937;
+  color: #d1d5db;
+  border: 1px solid #374151;
+}
+
+.hunt-formats {
+  white-space: nowrap;
+}
+
+#huntAiSummaryCard h4 {
+  margin: 0.8rem 0 0.3rem;
+  color: #e6edf3;
+}
+
+#huntAiSummaryCard ol,
+#huntAiSummaryCard ul {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: #d1d5db;
+}
+
+#recommendedHuntingGuides {
+  margin-bottom: 0.8rem;
+}

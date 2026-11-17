@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-import json
 import sqlite3
 from pathlib import Path
 
@@ -26,7 +25,10 @@ from threatfusion.api.live_soc_console import (
     _range_containers_running,
     _range_lab_active,
     _simulated_scenario_flow,
+    build_alert_fatigue_compression_funnel,
+    build_hunt_ai_summary,
     draft_live_hunter_rule,
+    list_recommended_hunting_guides,
     persist_scored_flow,
     read_advisory_trace,
 )
@@ -208,7 +210,7 @@ def test_draft_detection_rule_returns_suricata_and_sigma() -> None:
     assert drafted["deployment_mode"] == "REVIEW_ONLY_HUMAN_APPROVAL_REQUIRED"
     assert drafted["suricata_rule"].startswith("alert tcp ")
     assert "sid:9" in drafted["suricata_rule"]
-    assert "msg:\"THREATFUSION" in drafted["suricata_rule"]
+    assert 'msg:"THREATFUSION' in drafted["suricata_rule"]
     assert "title:" in drafted["sigma_rule"]
     assert "detection:" in drafted["sigma_rule"]
     assert "tags:" in drafted["sigma_rule"]
@@ -302,7 +304,9 @@ def _load_mcp_module():
     return module
 
 
-def test_mcp_tools_list_and_readonly_enforcement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_mcp_tools_list_and_readonly_enforcement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     live_db = tmp_path / "live.sqlite3"
     persist_scored_flow(
         live_db,
@@ -421,3 +425,221 @@ def test_frontend_has_burst_and_hunter_hooks_without_http_literals() -> None:
     assert "draftHunterDetectionRule" in js
     assert "burstBadgeHtml" in js
     assert "Ledger Verified · Fence Active" in js
+
+
+def _provenance(port: str) -> dict[str, object]:
+    return {
+        "entity_namespace_id": "lab:range",
+        "src_entity_id": "172.29.0.10",
+        "dst_entity_id": "172.29.0.20",
+        "protocol": "tcp",
+        "service_or_port": port,
+        "clock_synchronized": True,
+    }
+
+
+def test_compression_funnel_math_from_sqlite_bursts(tmp_path: Path) -> None:
+    reset_burst_deduplicator()
+    live_db = tmp_path / "live.sqlite3"
+    stored_ids: list[int] = []
+    for port, decision, probability in (
+        ("445", "Attack", 0.91),
+        ("22", "Benign", 0.5),
+        ("53", "Attack", 0.2),
+    ):
+        score = _score()
+        score["decision"] = decision
+        score["rf_attack_probability"] = probability
+        stored = persist_scored_flow(
+            live_db,
+            _features(),
+            score,
+            provenance=_provenance(port),
+            case_title=f"probe {port}",
+            technique_id="T1046",
+        )
+        stored_ids.append(int(stored["flow_id"]))
+    with sqlite3.connect(live_db) as conn:
+        conn.execute(
+            """
+            UPDATE live_flows
+            SET burst_count = 2, simhash_signature = ?
+            WHERE flow_id = ?
+            """,
+            ("aaaaaaaaaaaaaaaa", stored_ids[0]),
+        )
+        conn.execute(
+            """
+            UPDATE live_flows
+            SET burst_count = 2, simhash_signature = ?, decision = ?, rf_attack_probability = ?
+            WHERE flow_id = ?
+            """,
+            ("aaaaaaaaaaaaaaaa", "Benign", 0.5, stored_ids[1]),
+        )
+        conn.execute(
+            """
+            UPDATE live_flows
+            SET burst_count = 1, simhash_signature = ?, decision = ?, rf_attack_probability = ?
+            WHERE flow_id = ?
+            """,
+            ("bbbbbbbbbbbbbbbb", "Attack", 0.2, stored_ids[2]),
+        )
+    funnel = build_alert_fatigue_compression_funnel(live_db)
+    assert funnel["raw_telemetry_events"] == 5
+    assert funnel["synthetic_burst_weight"] == 2
+    assert funnel["raw_telemetry_events"] == 3 + funnel["synthetic_burst_weight"]
+    assert funnel["simhash_unique_clusters"] == 2
+    assert funnel["high_confidence_incidents"] == 3
+    assert funnel["noise_reduction_pct"] == int(round((5 - 3) * 100 / 5))
+    assert funnel["production_fusion_enabled"] is False
+    missing = build_alert_fatigue_compression_funnel(tmp_path / "absent.sqlite3")
+    assert missing["raw_telemetry_events"] == 0
+    assert missing["noise_reduction_pct"] == 0
+    assert not (tmp_path / "absent.sqlite3").exists()
+    server = (ROOT / "scripts" / "run_misp_and_callback_contract_server.py").read_text(
+        encoding="utf-8"
+    )
+    assert server.count("build_alert_fatigue_compression_funnel") >= 2
+    assert 'path == "/api/v1/live/queue"' in server
+    assert 'path == "/api/v1/live/workbench"' in server
+
+
+def test_advisory_trace_ai_governance_controls(tmp_path: Path) -> None:
+    live_db = tmp_path / "live.sqlite3"
+    stored = persist_scored_flow(
+        live_db,
+        _features(),
+        _score(),
+        provenance=_provenance("445"),
+        case_title="T1046 Network Service Discovery",
+        technique_id="T1046",
+    )
+    payload = read_advisory_trace(live_db, int(stored["flow_id"]))
+    controls = payload["ai_governance_controls"]
+    frameworks = " ".join(controls["frameworks"])
+    assert "ISO/IEC 42001" in frameworks
+    assert "NIST AI RMF" in frameworks
+    assert "OWASP LLM01" in frameworks
+    evidence = controls["inspectable_evidence"]
+    assert "<untrusted_telemetry_envelope" in evidence["untrusted_telemetry_envelope"]
+    assert evidence["envelope_sha256"] == payload["envelope_sha256"]
+    assert "mitre_doc_t1046" in evidence["rag_doc_ids"]
+    ledger = evidence["ledger_verification"]
+    assert "verified_indicators" in ledger
+    assert "ungrounded_indicators" in ledger
+    server = (ROOT / "scripts" / "run_misp_and_callback_contract_server.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'path == "/api/v1/live/advisory-trace"' in server
+
+
+def test_hunting_guides_live_hit_counts(tmp_path: Path) -> None:
+    reset_burst_deduplicator()
+    live_db = tmp_path / "live.sqlite3"
+    discovery = persist_scored_flow(
+        live_db,
+        _features(),
+        _score(),
+        provenance=_provenance("445"),
+        case_title="T1046 Network Service Discovery",
+        technique_id="T1046",
+    )
+    persist_scored_flow(
+        live_db,
+        _features(),
+        _score(),
+        provenance=_provenance("22"),
+        case_title="T1110 Credential Brute Force",
+        technique_id="T1110",
+    )
+    payload = list_recommended_hunting_guides(live_db)
+    assert payload["http_status"] == 200
+    assert len(payload["guides"]) == 5
+    by_id = {guide["guide_id"]: guide for guide in payload["guides"]}
+    discovery_guide = by_id["hunt-t1046"]
+    assert discovery_guide["mitre_technique"] == "T1046"
+    assert discovery_guide["results_found_count"] == 1
+    assert int(discovery["flow_id"]) in discovery_guide["matching_flow_ids"]
+    assert discovery_guide["active_match_pct"] == 50
+    assert discovery_guide["rule_formats"] == ["Suricata", "Sigma YAML"]
+    assert by_id["hunt-t1110"]["results_found_count"] == 1
+    assert by_id["hunt-inv4"]["results_found_count"] == 0
+    server = (ROOT / "scripts" / "run_misp_and_callback_contract_server.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'path == "/api/v1/live/hunter/guides"' in server
+
+
+def test_hunt_ai_summary_four_sections_are_ledger_verified(tmp_path: Path) -> None:
+    summary = build_hunt_ai_summary(
+        {
+            "src_entity_id": "172.29.0.10",
+            "dst_entity_id": "172.29.0.20",
+            "flow_protocol": "tcp",
+            "service_or_port": 445,
+            "simhash_signature": "aaaaaaaaaaaaaaaa",
+            "rf_attack_probability": 0.91,
+            "ae_loss": 0.02,
+            "dnn_attack_probability": 0.4,
+        },
+        technique_id="T1046",
+        matched_rows=[
+            {
+                "src_entity_id": "172.29.0.10",
+                "dst_entity_id": "172.29.0.20",
+                "flow_protocol": "tcp",
+                "service_or_port": 445,
+                "simhash_signature": "aaaaaaaaaaaaaaaa",
+                "rf_attack_probability": 0.91,
+                "ae_loss": 0.02,
+                "dnn_attack_probability": 0.4,
+            }
+        ],
+        query="Hunt T1046",
+    )
+    assert summary["overview"]
+    assert summary["key_indicators"][0]["src_ip"] == "172.29.0.10"
+    assert summary["key_indicators"][0]["model_scores"]["Frozen RF"] == 0.91
+    assert summary["key_indicators"][0]["model_scores"]["Autoencoder MSE"] == 0.02
+    assert summary["key_indicators"][0]["model_scores"]["9-Class DNN"] == 0.4
+    assert len(summary["attack_progression"]) == 4
+    assert len(summary["recommended_actions"]) == 4
+    assert "REVIEW_ONLY" in summary["recommended_actions"][0]
+    assert "Approve -> Dispatch -> Isolate -> Rollback" in summary["recommended_actions"][1]
+    assert summary["ledger_verification_status"] == "VERIFIED"
+    assert summary["production_fusion_enabled"] is False
+    drafted = draft_live_hunter_rule(
+        tmp_path / "missing.sqlite3",
+        query="Hunt T1110 credential brute force",
+        guide_id="hunt-t1110",
+    )
+    assert drafted["guide_id"] == "hunt-t1110"
+    assert drafted["hunt_ai_summary"]["ledger_verification_status"] == "VERIFIED"
+    assert len(drafted["hunt_ai_summary"]["attack_progression"]) == 4
+
+
+def test_frontend_renders_funnel_governance_and_hunt_summary() -> None:
+    index = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    js = (ROOT / "frontend" / "js" / "soc_dashboard.js").read_text(encoding="utf-8")
+    css = (ROOT / "frontend" / "css" / "soc_unicorn.css").read_text(encoding="utf-8")
+    assert "alertFatigueCompressionFunnel" in index
+    assert "Alert Fatigue Compression Funnel" in index
+    assert "aiGovernancePills" in index
+    assert "ISO/IEC 42001" in index
+    assert "NIST AI RMF" in index
+    assert "OWASP LLM01" in index
+    assert "Show AI Reasoning" in index
+    assert "recommendedHuntingGuides" in index
+    assert "huntAiSummaryCard" in index
+    assert "AI Summary of Hunt Results" in index
+    assert "http://" not in index
+    assert "https://" not in index
+    assert "renderCompressionFunnel" in js
+    assert "refreshHuntingGuides" in js
+    assert "inspectHuntGuide" in js
+    assert "Inspect Hunt" in js
+    assert "btn-inspect-hunt" in js
+    assert "renderHuntAiSummary" in js
+    assert "renderAiGovernance" in js
+    assert ".compression-funnel" in css
+    assert ".hunt-match" in css

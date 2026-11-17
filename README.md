@@ -211,7 +211,8 @@ The lab HMAC and MISP values are not production credentials. Replace them before
 | Assignment | `POST /api/v1/live/assignment` | Local assignee and `unassigned`, `in_review`, or `reviewed` |
 | Triage | `POST /api/v1/live/triage` | Acknowledge, escalate, or dismiss |
 | Handoff | `POST /api/v1/live/handoff` | Four blocks plus the verdict, assignee, and review status, only when the note stays inside stored evidence |
-| Hunter draft rule | `POST /api/v1/live/hunter/draft-rule` | Review-only Suricata and Sigma detection rules drafted from live telemetry or natural-language threat queries |
+| Hunter guides | `GET /api/v1/live/hunter/guides` | Five read-only hunting guides with live SQLite hit counts. `guide_id` adds the four-section hunt summary |
+| Hunter draft rule | `POST /api/v1/live/hunter/draft-rule` | Review-only Suricata and Sigma detection rules plus a ledger-checked four-section hunt summary |
 | Approve | `POST /api/v1/live/soar/approve` | Hash-chained approval. `containment_executed` stays false |
 | Dispatch | `POST /api/v1/live/soar/dispatch` | Signed callback. Uses live n8n when `THREATFUSION_N8N_WEBHOOK_URL` is set, otherwise `local_contract_fallback`. `containment_executed` stays false |
 | Contain | `POST /api/v1/live/soar/contain` | Drops `172.29.0.10` inside the victim container after an approved hash chain and a verified callback |

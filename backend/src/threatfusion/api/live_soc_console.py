@@ -9564,6 +9564,484 @@ def azure_portal_status(state_path: Path | None = None) -> dict[str, Any]:
     return payload
 
 
+_AI_GOVERNANCE_FRAMEWORKS: tuple[str, ...] = (
+    "ISO/IEC 42001:2023 (A.6.2.6 / A.9.3)",
+    "NIST AI RMF 1.0 (GOVERN 1.2 / MAP 2.3 / MEASURE 2.5)",
+    "OWASP LLM01:2025 Prompt Injection Shield",
+)
+
+_HUNTING_GUIDE_CATALOG: tuple[dict[str, str], ...] = (
+    {
+        "guide_id": "hunt-t1046",
+        "title": "T1046 Network Service Discovery",
+        "adversary_profile": "Reconnaissance scanner",
+        "mitre_technique": "T1046",
+        "category": "Discovery",
+    },
+    {
+        "guide_id": "hunt-t1110",
+        "title": "T1110 Credential Brute Force",
+        "adversary_profile": "Password-spraying operator",
+        "mitre_technique": "T1110",
+        "category": "Credential Access",
+    },
+    {
+        "guide_id": "hunt-t1190",
+        "title": "T1190 Public-Facing Exploit",
+        "adversary_profile": "Initial-access exploit operator",
+        "mitre_technique": "T1190",
+        "category": "Initial Access",
+    },
+    {
+        "guide_id": "hunt-t1498",
+        "title": "T1498 Network DoS",
+        "adversary_profile": "Volumetric network DoS operator",
+        "mitre_technique": "T1498",
+        "category": "Impact",
+    },
+    {
+        "guide_id": "hunt-inv4",
+        "title": "INV-4 Baseline Verification",
+        "adversary_profile": "INV-4 Baseline Verification",
+        "mitre_technique": "INV-4",
+        "category": "Baseline",
+    },
+)
+
+_HUNT_DEFAULT_PORTS: dict[str, int] = {
+    "T1046": 445,
+    "T1110": 22,
+    "T1190": 80,
+    "T1498": 53,
+    "INV-4": 443,
+}
+
+_HUNT_PROGRESSION: dict[str, tuple[str, str, str, str]] = {
+    "T1046": (
+        "1. Reconnaissance uses T1046 Network Service Discovery on the stored destination.",
+        "2. Repeated probes collapse into one SimHash cluster inside the 60-second burst window.",
+        "3. The frozen Random Forest stays the alert authority. Autoencoder MSE and the 9-class DNN stay unfused.",
+        "4. ChromaDB document mitre_doc_t1046 supplies the discovery playbook. Fusion stays disabled.",
+    ),
+    "T1110": (
+        "1. Credential access uses T1110 brute force against the stored authentication service.",
+        "2. Short repeated sessions share one SimHash cluster before the analyst opens a case.",
+        "3. The frozen Random Forest stays the alert authority. Secondary scores do not change the verdict.",
+        "4. ChromaDB document mitre_doc_t1110 supplies the brute-force playbook. Fusion stays disabled.",
+    ),
+    "T1190": (
+        "1. Initial access uses T1190 against the stored public-facing service.",
+        "2. Exploit attempts that share a SimHash signature stay one cluster in the queue.",
+        "3. The frozen Random Forest stays the alert authority. The 9-class DNN remains a secondary label.",
+        "4. ChromaDB document mitre_doc_t1190 supplies the exploit playbook. Fusion stays disabled.",
+    ),
+    "T1498": (
+        "1. Impact uses T1498 network denial of service against the stored destination service.",
+        "2. Volumetric repeats collapse under one SimHash cluster so the queue is not flooded.",
+        "3. The frozen Random Forest stays the alert authority. Autoencoder MSE stays a rank signal only.",
+        "4. ChromaDB document mitre_doc_t1498 supplies the DoS playbook. Fusion stays disabled.",
+    ),
+    "INV-4": (
+        "1. Baseline verification compares the stored flow with the expected benign profile.",
+        "2. Identical benign observations share a SimHash cluster so the queue does not repeat them.",
+        "3. The frozen Random Forest verdict remains the authority. Secondary scores do not flip it.",
+        "4. No containment playbook is staged from a baseline row. Fusion stays disabled.",
+    ),
+}
+
+_HUNT_ACTIONS: tuple[str, str, str, str] = (
+    "1. Stage the Suricata and Sigma YAML drafts as REVIEW_ONLY. A human must approve deployment.",
+    "2. Tier-3 SOAR runs Approve -> Dispatch -> Isolate -> Rollback only after the hash chain verifies.",
+    "3. Dispatch, then Isolate, only an allowlisted lab target named on the stored flow.",
+    "4. Rollback restores that target from the same ledger entry. Containment stays reversible.",
+)
+
+_TITLE_TECHNIQUE_RE = re.compile(r"\bT\d{4}(?:\.\d{3})?\b", re.IGNORECASE)
+
+
+def _compression_funnel_empty() -> dict[str, Any]:
+    return {
+        "schema_version": "alert_fatigue_compression_funnel_v1",
+        "raw_telemetry_events": 0,
+        "simhash_unique_clusters": 0,
+        "high_confidence_incidents": 0,
+        "noise_reduction_pct": 0,
+        "synthetic_burst_weight": 0,
+        "production_fusion_enabled": False,
+    }
+
+
+def build_alert_fatigue_compression_funnel(db_path: Path) -> dict[str, Any]:
+    """Compress stored bursts into the executive alert-fatigue funnel.
+
+    ``raw_telemetry_events`` is the sum of ``max(burst_count, 1)`` across every
+    stored flow. ``burst_count`` already includes the synthetic weight of a
+    repeated burst, so that surplus is reported as ``synthetic_burst_weight``
+    and is not added a second time. Blank SimHash values stay per-flow clusters.
+    A flow is high-confidence when the frozen forest said Attack or its
+    probability is at least 0.5. ``noise_reduction_pct`` is the rounded
+    reduction from raw events to that high-confidence count.
+    """
+    if not Path(db_path).is_file():
+        return _compression_funnel_empty()
+    try:
+        with _connect(Path(db_path)) as conn:
+            rows = conn.execute("""
+                SELECT flow_id, burst_count, simhash_signature, decision,
+                       rf_attack_probability
+                FROM live_flows
+                """).fetchall()
+    except sqlite3.Error:
+        return _compression_funnel_empty()
+    raw = 0
+    synthetic = 0
+    signatures: set[str] = set()
+    high = 0
+    for row in rows:
+        try:
+            weight = int(row["burst_count"]) if row["burst_count"] is not None else 1
+        except (TypeError, ValueError):
+            weight = 1
+        if weight < 1:
+            weight = 1
+        raw += weight
+        if weight > 1:
+            synthetic += weight - 1
+        signature = str(row["simhash_signature"] or "").strip()
+        if signature:
+            signatures.add(signature)
+        else:
+            signatures.add(f"flow:{int(row['flow_id'])}")
+        probability = _finite_number(row["rf_attack_probability"])
+        if str(row["decision"] or "") == "Attack" or (
+            probability is not None and probability >= 0.5
+        ):
+            high += 1
+    if raw <= 0:
+        percent = 0
+    else:
+        percent = int(round((raw - high) * 100.0 / float(raw)))
+        percent = min(100, max(0, percent))
+    return {
+        "schema_version": "alert_fatigue_compression_funnel_v1",
+        "raw_telemetry_events": raw,
+        "simhash_unique_clusters": len(signatures),
+        "high_confidence_incidents": high,
+        "noise_reduction_pct": percent,
+        "synthetic_burst_weight": synthetic,
+        "production_fusion_enabled": False,
+    }
+
+
+def _rag_doc_ids_for_flow(row: Mapping[str, Any]) -> list[str]:
+    found: list[str] = []
+    hits = row.get("chroma_rag_hits")
+    techniques: list[str] = []
+    if isinstance(hits, list):
+        for hit in hits:
+            if not isinstance(hit, Mapping):
+                continue
+            doc_id = str(hit.get("doc_id") or "").strip()
+            if doc_id and doc_id not in found:
+                found.append(doc_id)
+            technique = str(hit.get("technique_id") or "").strip()
+            if technique and technique not in techniques:
+                techniques.append(technique)
+    if not techniques:
+        mapped = _attack_technique_id(row) or ""
+        if mapped:
+            techniques.append(mapped)
+    for technique in techniques:
+        for doc in CANONICAL_MITRE_AND_PLAYBOOK_CORPUS:
+            if doc.technique_id == technique and doc.doc_id not in found:
+                found.append(doc.doc_id)
+    return found
+
+
+def _ai_governance_controls(
+    row: Mapping[str, Any],
+    *,
+    envelope_text: str,
+    envelope_sha256: str,
+    ledger: Mapping[str, Any],
+) -> dict[str, Any]:
+    breakdown = ledger if isinstance(ledger, Mapping) else {}
+    return {
+        "frameworks": list(_AI_GOVERNANCE_FRAMEWORKS),
+        "inspectable_evidence": {
+            "untrusted_telemetry_envelope": envelope_text,
+            "envelope_sha256": envelope_sha256,
+            "rag_doc_ids": _rag_doc_ids_for_flow(row),
+            "ledger_verification": {
+                "verified_indicators": list(breakdown.get("verified_indicators") or []),
+                "ungrounded_indicators": list(breakdown.get("ungrounded_indicators") or []),
+            },
+        },
+    }
+
+
+def _hunting_guide_spec(guide_id: str | None) -> dict[str, str] | None:
+    token = str(guide_id or "").strip()
+    if not token:
+        return None
+    for spec in _HUNTING_GUIDE_CATALOG:
+        if spec["guide_id"] == token:
+            return spec
+    return None
+
+
+def _title_technique_token(title: str) -> str | None:
+    match = _TITLE_TECHNIQUE_RE.search(title)
+    if match:
+        return match.group(0).upper()
+    lowered = title.lower()
+    if "inv-4" in lowered or "baseline" in lowered:
+        return "INV-4"
+    return None
+
+
+def _flow_matches_hunting_guide(row: Mapping[str, Any], technique: str) -> bool:
+    token = _title_technique_token(str(row.get("case_title") or ""))
+    mapped = _attack_technique_id(row)
+    if technique == "INV-4":
+        if token == "INV-4":
+            return True
+        if token or mapped:
+            return False
+        return str(row.get("decision") or "") == "Benign"
+    if token:
+        return token.split(".", 1)[0] == technique
+    return mapped == technique
+
+
+def _hunt_queue_rows(db_path: Path) -> list[dict[str, Any]]:
+    if not Path(db_path).is_file():
+        return []
+    try:
+        with _connect(Path(db_path)) as conn:
+            rows = conn.execute("""
+                SELECT flow_id, decision, rf_attack_probability, case_title,
+                       service_or_port, flow_protocol, src_entity_id, dst_entity_id,
+                       simhash_signature, burst_count
+                FROM live_flows
+                ORDER BY flow_id DESC
+                """).fetchall()
+    except sqlite3.Error:
+        return []
+    return [dict(row) for row in rows]
+
+
+def _match_percent(found: int, total: int) -> int:
+    if total <= 0 or found <= 0:
+        return 0
+    percent = int(round((found * 100.0) / float(total)))
+    return min(100, max(0, percent))
+
+
+def _hunt_indicator(row: Mapping[str, Any]) -> dict[str, Any]:
+    port = row.get("service_or_port")
+    if port in (None, ""):
+        port = row.get("dst_port")
+    return {
+        "src_ip": str(row.get("src_entity_id") or row.get("src_ip") or ""),
+        "dst_ip": str(row.get("dst_entity_id") or row.get("dst_ip") or ""),
+        "dst_port": port if port not in (None, "") else 0,
+        "proto": str(row.get("flow_protocol") or row.get("proto") or ""),
+        "simhash_signature": str(row.get("simhash_signature") or ""),
+        "model_scores": {
+            "Frozen RF": _finite_number(row.get("rf_attack_probability")),
+            "Autoencoder MSE": _finite_number(row.get("ae_loss")),
+            "9-Class DNN": _finite_number(row.get("dnn_attack_probability")),
+        },
+    }
+
+
+def _technique_from_hunt_query(query: str) -> str:
+    upper = str(query or "").upper()
+    for technique in ("T1046", "T1110", "T1190", "T1498", "INV-4"):
+        if technique in upper:
+            return technique
+    lowered = str(query or "").lower()
+    if "brute" in lowered or "credential" in lowered:
+        return "T1110"
+    if "dos" in lowered or "denial" in lowered:
+        return "T1498"
+    if "exploit" in lowered:
+        return "T1190"
+    if "baseline" in lowered or "benign" in lowered:
+        return "INV-4"
+    return "T1046"
+
+
+def _corpus_doc_id(technique_id: str) -> str:
+    for doc in CANONICAL_MITRE_AND_PLAYBOOK_CORPUS:
+        if doc.technique_id == technique_id:
+            return doc.doc_id
+    return ""
+
+
+def build_hunt_ai_summary(
+    flow: Mapping[str, Any] | None,
+    *,
+    technique_id: str,
+    matched_rows: Sequence[Mapping[str, Any]] | None = None,
+    query: str = "",
+) -> dict[str, Any]:
+    """Deterministic four-section hunt brief. Citations stay inside the ledger."""
+    from threatfusion.advisory.telemetry_shield import verify_advisory_against_ledger
+
+    technique = technique_id or _technique_from_hunt_query(query)
+    spec = next(
+        (item for item in _HUNTING_GUIDE_CATALOG if item["mitre_technique"] == technique),
+        None,
+    )
+    title = spec["title"] if spec else technique
+    profile = spec["adversary_profile"] if spec else technique
+    source = dict(flow or {})
+    rows = [dict(item) for item in (matched_rows or ()) if isinstance(item, Mapping)]
+    if not rows and source:
+        rows = [source]
+    primary = dict(rows[0]) if rows else source
+    src = str(primary.get("src_entity_id") or primary.get("src_ip") or "").strip() or "unavailable"
+    dst = str(primary.get("dst_entity_id") or primary.get("dst_ip") or "").strip() or "unavailable"
+    proto = str(primary.get("flow_protocol") or primary.get("proto") or "tcp").strip() or "tcp"
+    raw_port = primary.get("service_or_port")
+    if raw_port in (None, ""):
+        raw_port = primary.get("dst_port")
+    try:
+        port = int(float(raw_port))
+    except (TypeError, ValueError):
+        port = 0
+    count = len(rows)
+    doc_id = _corpus_doc_id(technique)
+    if doc_id:
+        retrieval = f"ChromaDB document {doc_id} grounds this hunt."
+    else:
+        retrieval = "No ChromaDB technique document is retrieved for this baseline profile."
+    overview = (
+        f"{count} stored flow(s) match {title}. "
+        f"Observed {proto} from {src} to {dst} with dst_port {port}. "
+        f"Actor profile: {profile}. {retrieval}"
+    )
+    progression = list(
+        _HUNT_PROGRESSION.get(
+            technique,
+            _HUNT_PROGRESSION["T1046"],
+        )
+    )
+    actions = list(_HUNT_ACTIONS)
+    indicators = [_hunt_indicator(row) for row in rows[:8]]
+    ledger_flow: dict[str, Any] = {
+        "src_ip": "" if src == "unavailable" else src,
+        "dst_ip": "" if dst == "unavailable" else dst,
+        "dst_port": port,
+        "technique_id": technique if technique.startswith("T") else "",
+        "cve_ids": [],
+    }
+    rag_docs = [{"technique_id": technique, "doc_id": doc_id}] if doc_id else []
+    prose = "\n".join([overview, *progression, *actions])
+    ledger = verify_advisory_against_ledger(prose, ledger_flow, rag_docs)
+    return {
+        "overview": overview,
+        "key_indicators": indicators,
+        "attack_progression": progression,
+        "recommended_actions": actions,
+        "ledger_verification_status": str(ledger.get("status") or "FLAGGED_UNGROUNDED"),
+        "ledger_verification": {
+            "verified_indicators": list(ledger.get("verified_indicators") or []),
+            "ungrounded_indicators": list(ledger.get("ungrounded_indicators") or []),
+        },
+        "production_fusion_enabled": False,
+    }
+
+
+def _published_hunting_guide(
+    spec: Mapping[str, str],
+    *,
+    flow_ids: list[int],
+    total: int,
+) -> dict[str, Any]:
+    found = len(flow_ids)
+    return {
+        "guide_id": spec["guide_id"],
+        "title": spec["title"],
+        "adversary_profile": spec["adversary_profile"],
+        "mitre_technique": spec["mitre_technique"],
+        "category": spec["category"],
+        "active_match_pct": _match_percent(found, total),
+        "results_found_count": found,
+        "matching_flow_ids": list(flow_ids),
+        "rule_formats": ["Suricata", "Sigma YAML"],
+    }
+
+
+def list_recommended_hunting_guides(
+    db_path: Path, *, guide_id: str | None = None
+) -> dict[str, Any]:
+    """Read-only hunting guides with live queue hit counts."""
+    rows = _hunt_queue_rows(Path(db_path))
+    total = len(rows)
+    guides: list[dict[str, Any]] = []
+    for spec in _HUNTING_GUIDE_CATALOG:
+        matched = [row for row in rows if _flow_matches_hunting_guide(row, spec["mitre_technique"])]
+        guides.append(
+            _published_hunting_guide(
+                spec,
+                flow_ids=[int(row["flow_id"]) for row in matched],
+                total=total,
+            )
+        )
+    selected_id = str(guide_id or "").strip()
+    if selected_id:
+        selected = next((item for item in guides if item["guide_id"] == selected_id), None)
+        if selected is None:
+            return {
+                "schema_version": "recommended_hunting_guides_v1",
+                "evidence_state": "unavailable",
+                "reason": "guide_not_found",
+                "guides": [],
+                "production_fusion_enabled": False,
+                "http_status": 404,
+            }
+        matched_rows = [
+            row for row in rows if int(row["flow_id"]) in set(selected["matching_flow_ids"])
+        ]
+        scored: dict[str, Any] | None = None
+        if selected["matching_flow_ids"] and Path(db_path).is_file():
+            loaded = _flow_rows(
+                Path(db_path), limit=1, flow_id=int(selected["matching_flow_ids"][0])
+            )
+            if loaded:
+                scored = loaded[0]
+                matched_rows = [
+                    scored if int(row["flow_id"]) == int(scored["flow_id"]) else row
+                    for row in matched_rows
+                ]
+        summary = build_hunt_ai_summary(
+            scored or (matched_rows[0] if matched_rows else None),
+            technique_id=str(selected["mitre_technique"]),
+            matched_rows=matched_rows,
+            query=str(selected["title"]),
+        )
+        chosen = dict(selected)
+        chosen["hunt_ai_summary"] = summary
+        return {
+            "schema_version": "recommended_hunting_guides_v1",
+            "evidence_state": "verified",
+            "guides": [chosen],
+            "hunt_ai_summary": summary,
+            "production_fusion_enabled": False,
+            "http_status": 200,
+        }
+    return {
+        "schema_version": "recommended_hunting_guides_v1",
+        "evidence_state": "verified",
+        "guides": guides,
+        "production_fusion_enabled": False,
+        "http_status": 200,
+    }
+
+
 def read_advisory_trace(db_path: Path, flow_id: int) -> dict[str, Any]:
     """Read one flow's advisory trace. A missing flow does not create a database."""
     from threatfusion.advisory.advisory_trace import (
@@ -9573,6 +10051,7 @@ def read_advisory_trace(db_path: Path, flow_id: int) -> dict[str, Any]:
     from threatfusion.advisory.telemetry_shield import (
         build_fenced_advisory_prompt,
         verify_advisory_against_ledger,
+        wrap_untrusted_telemetry_envelope,
     )
 
     number = _positive_flow_id(flow_id)
@@ -9604,16 +10083,18 @@ def read_advisory_trace(db_path: Path, flow_id: int) -> dict[str, Any]:
         narrative_recorded_at=cached.get("recorded_at_utc") or None,
     )
     technique = _attack_technique_id(row) or ""
+    untrusted_fields = {
+        "src_ip": str(row.get("src_entity_id") or ""),
+        "dst_ip": str(row.get("dst_entity_id") or ""),
+        "alert_signature": str(row.get("case_title") or ""),
+        "payload_excerpt": "",
+        "dns_query": "",
+        "http_uri": "",
+    }
+    wrapped = wrap_untrusted_telemetry_envelope(untrusted_fields)
     fence = build_fenced_advisory_prompt(
         trusted_preamble="ThreatFusion Stage-5 advisory trace.",
-        untrusted_fields={
-            "src_ip": str(row.get("src_entity_id") or ""),
-            "dst_ip": str(row.get("dst_entity_id") or ""),
-            "alert_signature": str(row.get("case_title") or ""),
-            "payload_excerpt": "",
-            "dns_query": "",
-            "http_uri": "",
-        },
+        untrusted_fields=untrusted_fields,
     )
     ledger = verify_advisory_against_ledger(
         str(narrative or ""),
@@ -9638,6 +10119,12 @@ def read_advisory_trace(db_path: Path, flow_id: int) -> dict[str, Any]:
     payload["prompt_injection_filtered"] = fence["prompt_injection_filtered"]
     payload["envelope_sha256"] = fence["envelope_sha256"]
     payload["ledger_verification"] = ledger
+    payload["ai_governance_controls"] = _ai_governance_controls(
+        row,
+        envelope_text=str(wrapped.get("envelope_text") or ""),
+        envelope_sha256=str(fence.get("envelope_sha256") or ""),
+        ledger=ledger,
+    )
     return payload
 
 
@@ -9647,36 +10134,70 @@ def draft_live_hunter_rule(
     flow_id: int | None = None,
     query: str = "",
     rule_format: str = "both",
+    guide_id: str | None = None,
 ) -> dict[str, Any]:
     """Draft a review-only Suricata/Sigma rule grounded in a stored flow when present."""
     from threatfusion.advisory.telemetry_shield import draft_detection_rule
 
+    guide = _hunting_guide_spec(guide_id)
     flow_record: dict[str, Any] = {}
+    scored_row: dict[str, Any] | None = None
     number = _positive_flow_id(flow_id) if flow_id is not None else None
     if number is not None and Path(db_path).is_file():
         rows = _flow_rows(db_path, limit=1, flow_id=number)
         if rows:
-            row = rows[0]
-            technique = _attack_technique_id(row) or ""
+            scored_row = rows[0]
+            technique = _attack_technique_id(scored_row) or ""
             flow_record = {
                 "flow_id": number,
-                "proto": row.get("flow_protocol") or "tcp",
-                "flow_protocol": row.get("flow_protocol") or "tcp",
-                "src_ip": row.get("src_entity_id") or "",
-                "src_entity_id": row.get("src_entity_id") or "",
-                "dst_port": row.get("service_or_port") or 0,
-                "service_or_port": row.get("service_or_port") or 0,
+                "proto": scored_row.get("flow_protocol") or "tcp",
+                "flow_protocol": scored_row.get("flow_protocol") or "tcp",
+                "src_ip": scored_row.get("src_entity_id") or "",
+                "src_entity_id": scored_row.get("src_entity_id") or "",
+                "dst_ip": scored_row.get("dst_entity_id") or "",
+                "dst_entity_id": scored_row.get("dst_entity_id") or "",
+                "dst_port": scored_row.get("service_or_port") or 0,
+                "service_or_port": scored_row.get("service_or_port") or 0,
                 "technique_id": technique,
-                "vector": row.get("case_title") or technique,
+                "vector": scored_row.get("case_title") or technique,
                 "vector_id": technique,
+                "simhash_signature": scored_row.get("simhash_signature") or "",
+                "rf_attack_probability": scored_row.get("rf_attack_probability"),
+                "ae_loss": scored_row.get("ae_loss"),
+                "dnn_attack_probability": scored_row.get("dnn_attack_probability"),
             }
+    if guide is not None:
+        technique_id = guide["mitre_technique"]
+    elif flow_record.get("technique_id"):
+        technique_id = str(flow_record["technique_id"])
+    else:
+        technique_id = _technique_from_hunt_query(query)
+    flow_record["technique_id"] = technique_id or str(flow_record.get("technique_id") or "T1046")
+    if guide is not None:
+        flow_record["vector"] = guide["title"]
+    if "proto" not in flow_record:
+        flow_record["proto"] = "tcp"
+        flow_record["dst_port"] = _HUNT_DEFAULT_PORTS.get(technique_id, 80)
     drafted = draft_detection_rule(
         query=query,
-        flow_record=flow_record or None,
+        flow_record=flow_record,
         rule_format=rule_format,
     )
+    summary_source = dict(scored_row or flow_record)
+    summary_source.setdefault("src_entity_id", flow_record.get("src_ip") or "")
+    summary_source.setdefault("dst_entity_id", flow_record.get("dst_ip") or "")
+    summary_source.setdefault("flow_protocol", flow_record.get("proto") or "tcp")
+    summary_source.setdefault("service_or_port", flow_record.get("dst_port") or 0)
     drafted["flow_id"] = number
+    drafted["guide_id"] = guide["guide_id"] if guide else ""
+    drafted["hunt_ai_summary"] = build_hunt_ai_summary(
+        summary_source,
+        technique_id=technique_id,
+        matched_rows=[summary_source],
+        query=query,
+    )
     drafted["http_status"] = 200
+    drafted["production_fusion_enabled"] = False
     return drafted
 
 

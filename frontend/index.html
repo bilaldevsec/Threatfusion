@@ -255,6 +255,10 @@
           </div>
           <p class="badge badge-neutral" id="section8ReferencePill">Jan Benchmark: 216,568 flows -> 4,246 RF alerts | 98.0% volume reduction | 0.095% FPR</p>
         </section>
+        <section class="compression-funnel" id="alertFatigueCompressionFunnel" aria-label="Alert Fatigue Compression Funnel">
+          <h2>Alert Fatigue Compression Funnel</h2>
+          <p id="compressionFunnelLine" data-evidence-state="unavailable">Raw Telemetry Events (0) &rarr; SimHash Deduplicated Clusters (0) &rarr; High-Confidence Incidents (0) &middot; 0% Noise Reduction</p>
+        </section>
         <div class="inv-toolbar">
           <div class="queue-filter-bar">
             <button class="filter-btn active" id="pillAll" data-filter="all" type="button">All <span id="pillCountAll">0</span></button>
@@ -417,6 +421,15 @@
                       </table>
                     </div>
                     <div id="advisoryTraceGaps" class="trace-gaps"></div>
+                    <div class="governance-pills" id="aiGovernancePills" aria-label="AI governance frameworks">
+                      <span class="badge badge-governance">ISO/IEC 42001</span>
+                      <span class="badge badge-governance">NIST AI RMF</span>
+                      <span class="badge badge-governance">OWASP LLM01</span>
+                    </div>
+                    <details class="ai-reasoning-toggle" id="aiReasoningToggle">
+                      <summary>Show AI Reasoning &amp; Evidence Inputs</summary>
+                      <pre id="aiReasoningEvidence" data-evidence-state="unavailable">Select a stored flow to inspect the fenced envelope, RAG citations, and ledger proof.</pre>
+                    </details>
                   </article>
                   <article class="card" data-anatomy-block="1" style="background: #111827;">
                     <h3>Alert Summary</h3>
@@ -657,6 +670,26 @@
       </section>
 
       <section class="soc-view" data-soc-view="hunter" aria-label="AI Threat Hunter">
+        <article class="card" id="recommendedHuntingGuides" style="background: #111827;" aria-label="Recommended Hunting Guides">
+          <h3>Recommended Hunting Guides (Continuous Background Hunt)</h3>
+          <div class="inv-table-wrap">
+            <table class="inv-table" id="huntingGuidesTable">
+              <thead>
+                <tr>
+                  <th>Guide</th>
+                  <th>MITRE</th>
+                  <th>Match</th>
+                  <th>Results</th>
+                  <th>Formats</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="huntingGuidesBody">
+                <tr><td colspan="6">Hunting guides have not been loaded.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
         <div class="hunter-strip">
           <span class="badge" data-evidence-state="verified">COMPLETED</span>
           <span>LIVE BRIDGE FLOWS <strong id="liveHeroBridgeCount">Live bridge rows: 0</strong></span>
@@ -673,6 +706,26 @@
             <button id="btnCopyHunterRule" type="button">Copy Draft</button>
           </div>
           <pre id="hunterDraftRulePreview" class="hunter-draft-preview" data-evidence-state="unavailable">No draft yet. Select a stored flow, then draft a Suricata or Sigma rule.</pre>
+        </article>
+        <article class="card" id="huntAiSummaryCard" style="background: #111827;" aria-label="AI Summary of Hunt Results" hidden>
+          <h3>AI Summary of Hunt Results</h3>
+          <p id="huntSummaryLedger" data-evidence-state="unavailable">ledger_verification_status: unavailable</p>
+          <section>
+            <h4>Overview</h4>
+            <p id="huntSummaryOverview">No hunt summary yet.</p>
+          </section>
+          <section>
+            <h4>Key Indicators</h4>
+            <ul id="huntSummaryIndicators"><li>No matched indicators in the current queue.</li></ul>
+          </section>
+          <section>
+            <h4>Attack Progression</h4>
+            <ol id="huntSummaryProgression"></ol>
+          </section>
+          <section>
+            <h4>Recommended Actions</h4>
+            <ol id="huntSummaryActions"></ol>
+          </section>
         </article>
         <article class="card" id="mitreCoverageMatrix" style="background: #111827;">
           <h3>Read-only MITRE and CVE coverage</h3>
