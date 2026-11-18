@@ -229,11 +229,16 @@ def test_evaluate_14_feature_telemetry_drift_classifies_moderate_drift() -> None
 
 
 def test_evaluate_14_feature_telemetry_drift_classifies_severe_drift() -> None:
-    """Extreme out-of-distribution values trigger severe_out_of_distribution_drift_retraining_review_required."""
+    """Two extreme records can be labeled severe. One record cannot."""
     extreme_rec = {
         k: DEFAULT_BASELINE_MEANS[k] + 3.0 * DEFAULT_BASELINE_STDS[k] for k in CANONICAL_14_FEATURES
     }
-    report = evaluate_14_feature_telemetry_drift([extreme_rec])
+    shifted = {
+        k: DEFAULT_BASELINE_MEANS[k] + 3.4 * DEFAULT_BASELINE_STDS[k] for k in CANONICAL_14_FEATURES
+    }
+    single = evaluate_14_feature_telemetry_drift([extreme_rec])
+    assert single.drift_status != "severe_out_of_distribution_drift_retraining_review_required"
+    report = evaluate_14_feature_telemetry_drift([extreme_rec, shifted])
 
     assert report.drift_status == "severe_out_of_distribution_drift_retraining_review_required"
     assert report.max_psi >= 0.25

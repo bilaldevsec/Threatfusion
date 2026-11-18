@@ -5231,6 +5231,7 @@ def _store_callback_receipt(
     case_id: str,
     mttr_seconds: float,
     execution_path: str,
+    soar_receipt_status: str = "verified",
 ) -> None:
     with _connect(db_path) as conn:
         conn.execute(
@@ -5246,7 +5247,7 @@ def _store_callback_receipt(
         flow_id,
         db_path,
         execution_authorized=True,
-        soar_receipt_status="verified",
+        soar_receipt_status=soar_receipt_status,
     )
 
 
@@ -5647,7 +5648,12 @@ def _record_console_callback_receipt(
     candidate_id: str,
     secret: str,
 ) -> dict[str, Any]:
-    """Record a signed local callback when the console n8n workflow is not active."""
+    """Record a local callback without inventing MTTR or a verified receipt.
+
+    Evidence stays unavailable until a measured positive MTTR and a server
+    signature over the stored callback bytes both exist. This path has neither.
+    """
+    del flow
     receipt = _signed_callback_receipt(
         playbook_id=approved.playbook_id,
         candidate_id=candidate_id,
@@ -5662,29 +5668,31 @@ def _record_console_callback_receipt(
         flow_id,
         signature=signature,
         case_id=f"case_{candidate_id}",
-        mttr_seconds=0.42,
+        mttr_seconds=0.0,
         execution_path=LOCAL_CONTRACT_FALLBACK,
+        soar_receipt_status="unavailable",
     )
     return disclose_offline_fallback(
         {
             "schema_version": "live_soar_callback_v1",
-            "evidence_state": "verified",
-            "reason": "signed_callback_recorded",
+            "evidence_state": "unavailable",
+            "reason": "mttr_not_measured",
             "execution_authorized": False,
             "containment_executed": False,
             "production_fusion_enabled": False,
             "callback_recorded": True,
-            "callback_verified": True,
+            "callback_verified": False,
             "soar_state": "callback_recorded",
             "signature_sha256": signature,
             "thehive_case_id": f"case_{candidate_id}",
-            "mttr_seconds": 0.42,
+            "mttr_seconds": 0.0,
             "flow_id": flow_id,
             "playbook_id": approved.playbook_id,
             "candidate_id": candidate_id,
-            "verify_state": True,
+            "verify_state": False,
             "execution_path": LOCAL_CONTRACT_FALLBACK,
             "callback_receipt": receipt,
+            "receipt_covers_stored_bytes": False,
         }
     )
 
@@ -5794,24 +5802,6 @@ def dispatch_approved_callback(
         refused["reason"] = "playbook_not_approved"
         return refused
     if not chain_ok:
-        if webhook:
-            try:
-                _dispatch_through_live_n8n(
-                    live_db_path,
-                    flow,
-                    approved,
-                    repository,
-                    dict(refused),
-                    flow_id=flow_id,
-                    candidate_id=candidate_id,
-                    secret=secret,
-                    thehive_url=thehive_url,
-                    outbox_db_path=outbox_db_path,
-                    webhook_url=webhook,
-                    contract_base_url=_n8n_contract_base(base, n8n_contract_base_url),
-                )
-            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError):
-                pass
         refused["reason"] = "audit_chain_invalid"
         refused["callback_recorded"] = False
         refused["evidence_state"] = "unavailable"
@@ -10884,6 +10874,9 @@ def assemble_live_workbench(
     """Workbench payload plus the portable shift handoff brief."""
     payload = read_n8n_workbench(workflow_path)
     rows = _readonly_flow_rows(db_path)
+    if not rows:
+        payload["evidence_state"] = "unavailable"
+        payload["flow_count"] = 0
     scope = build_forensic_scope(rows)
     funnel_payload = dict(funnel)
     payload["compression_funnel"] = funnel_payload

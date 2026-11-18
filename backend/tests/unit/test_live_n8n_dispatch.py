@@ -324,11 +324,13 @@ def test_tampered_chain_returns_no_callback(tmp_path: Path, monkeypatch) -> None
             n8n_contract_base_url=contract_base,
             outbox_db_path=tmp_path / "thehive.sqlite3",
         )
+        assert result["reason"] == "audit_chain_invalid"
+        assert result["evidence_state"] == "unavailable"
         assert result["callback_recorded"] is False
         assert result["execution_path"] == "n8n_live_container"
         assert result["containment_executed"] is False
         assert _stored_callback(live_db, flow_id)["callback_recorded"] in (0, None)
-        assert _FakeN8n.calls == 1
+        assert _FakeN8n.calls == 0
         assert _FakeN8n.callback_posts == 0
     finally:
         contract.shutdown()

@@ -825,6 +825,64 @@
     return { key: 'info', label: 'Informational' };
   }
 
+  function isSoarApprovalReceiptRow(inc) {
+    if (!inc || typeof inc !== 'object') return false;
+    if (inc.soarApprovalReceipt === true) return true;
+    const kind = String(inc.rowKind || inc.row_kind || inc.record_kind || '');
+    if (kind === 'soar_approval_receipt') return true;
+    const schema = String(inc.schema_version || '');
+    if (schema === 'live_soar_approval_v1' || schema === 'live_soar_callback_v1') return true;
+    const id = String(inc.id || '');
+    if (id.indexOf('soar_approval:') === 0 || id.indexOf('callback_receipt:') === 0) return true;
+    return false;
+  }
+
+  function isUrgentRfAttackFlow(inc) {
+    if (!inc || inc.decision !== 'Attack') return false;
+    if (isSoarApprovalReceiptRow(inc)) return false;
+    if (inc.sourceLabel === 'incident_store') return false;
+    return true;
+  }
+
+  function countUrgentRfAttackFlows(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    return list.filter(isUrgentRfAttackFlow).length;
+  }
+
+  function isStoredIpToken(value) {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    const lower = text.toLowerCase();
+    if (
+      lower === 'none'
+      || lower === 'unavailable'
+      || lower === 'unknown'
+      || lower === 'unknown host'
+      || lower === 'null'
+      || lower === 'any'
+      || lower === 'stored-incident'
+      || lower === 'not recorded'
+      || lower === 'not-recorded'
+      || lower === 'waiting'
+    ) return false;
+    if (lower.indexOf('dataset_flow') === 0) return false;
+    return true;
+  }
+
+  function ctiPresentation(cti) {
+    const body = cti && typeof cti === 'object' ? cti : {};
+    const iocs = body.operational_iocs && typeof body.operational_iocs === 'object'
+      ? body.operational_iocs
+      : {};
+    const ips = Array.isArray(iocs.ips) ? iocs.ips : [];
+    const hasStoredIp = ips.some(isStoredIpToken);
+    const ttps = Array.isArray(body.tactical_ttps) ? body.tactical_ttps.filter(Boolean) : [];
+    return {
+      cvss_source: 'static_table',
+      evidence_state: hasStoredIp && ttps.length ? 'verified' : 'unavailable'
+    };
+  }
+
   const UNSW_ENDPOINT_CHIP = 'Dataset flow (UNSW-NB15) · endpoints not recorded';
   const CONTAINMENT_DISABLED_TITLE = 'Containment disabled: Flow scored Benign by Frozen RF';
 
@@ -921,8 +979,13 @@
   }
 
   function updatePriorityCounts(rows) {
-    const counts = { all: rows.length, urgent: 0, notable: 0, info: 0 };
-    rows.forEach(inc => { counts[priorityFor(inc).key] += 1; });
+    const list = Array.isArray(rows) ? rows : [];
+    const counts = { all: list.length, urgent: countUrgentRfAttackFlows(list), notable: 0, info: 0 };
+    list.forEach(inc => {
+      if (inc && inc.decision === 'Attack') return;
+      const key = priorityFor(inc).key;
+      if (key === 'notable' || key === 'info') counts[key] += 1;
+    });
     const map = { pillCountAll: counts.all, pillCountUrgent: counts.urgent, pillCountNotable: counts.notable, pillCountInfo: counts.info };
     Object.keys(map).forEach(id => {
       const node = document.getElementById(id);
@@ -940,7 +1003,7 @@
 
   function renderHunterGauges() {
     const rows = activeIncidents();
-    const urgent = rows.filter(inc => inc.decision === 'Attack').length;
+    const urgent = countUrgentRfAttackFlows(rows);
     const notable = rows.filter(inc => inc.sourceLabel === 'suricata_bridge' && inc.decision !== 'Attack').length;
     const info = rows.filter(inc => inc.decision === 'Benign').length;
     const total = Math.max(rows.length, 1);
@@ -1129,11 +1192,14 @@
     const ips = Array.isArray(iocs.ips) ? iocs.ips.join(', ') : '';
     const ports = Array.isArray(iocs.ports) ? iocs.ports.join(', ') : '';
     if (ctiNode) {
+      const presented = ctiPresentation(cti);
       ctiNode.textContent = 'Decomposed CTI & CVSS tactics ' + (ttps || 'none')
         + ' ips ' + (ips || 'none')
         + ' ports ' + (ports || 'none')
-        + ' max_cvss_score ' + String(cti.max_cvss_score == null ? 0 : cti.max_cvss_score);
-      ctiNode.setAttribute('data-evidence-state', ttps ? 'verified' : 'unavailable');
+        + ' max_cvss_score ' + String(cti.max_cvss_score == null ? 0 : cti.max_cvss_score)
+        + ' cvss_source ' + presented.cvss_source;
+      ctiNode.setAttribute('data-cvss-source', presented.cvss_source);
+      ctiNode.setAttribute('data-evidence-state', presented.evidence_state);
     }
   }
 
@@ -3484,6 +3550,16 @@
       soarAuditChainVerified: chainOk && SHA256_HEX_REGEX.test(entry),
       soarAuditChainHeadSha256: entry,
       callbackRecorded: row.callback_recorded === 1 || row.callback_recorded === true,
+      rowKind: (
+        row.callback_recorded === 1
+        || row.callback_recorded === true
+        || ['approved', 'executed_simulated', 'callback_recorded'].indexOf(String(row.ledger_state || row.soar_state || '')) !== -1
+      ) ? 'soar_approval_receipt' : 'incident_store',
+      soarApprovalReceipt: (
+        row.callback_recorded === 1
+        || row.callback_recorded === true
+        || ['approved', 'executed_simulated', 'callback_recorded'].indexOf(String(row.ledger_state || row.soar_state || '')) !== -1
+      ),
       callbackSignature: typeof row.callback_signature === 'string' ? row.callback_signature : '',
       containmentState: row.containment_state || '',
       executionPath: row.execution_path || '',
@@ -6285,6 +6361,9 @@
     verifyHiveAndN8nReceipt,
     SAMPLE_INCIDENTS,
     WALKTHROUGH_STAGES,
+    countUrgentRfAttackFlows,
+    isSoarApprovalReceiptRow,
+    ctiPresentation,
     groupConsecutiveTimelineByActor,
     initApp
   };

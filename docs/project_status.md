@@ -45,8 +45,13 @@ attack probability below 0.5 is labeled Normal, with the top attack class
 reported separately. The default advisory model is `gemini-4-hydrogen`, with a
 quota cascade through `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, and
 `gemma-4-31b-it`. Production admin login accepts `muhammad.bilal@nu.edu.pk`
-and `TF_ADMIN_EMAIL` when `TF_ADMIN_SECRET` is set. `TF-008` through `TF-011`
-stay open.
+and `TF_ADMIN_EMAIL` when `TF_ADMIN_SECRET` is set. A later pass on the
+same date stops an invalid SOAR hash chain from calling the n8n webhook,
+leaves a console callback unverified until MTTR is measured, keeps an empty
+workbench at `evidence_state=unavailable`, refuses a zero-baseline PSI floor
+and a one-row severe label, counts the Urgent chip from Attack flow rows
+only, and rejects a symlinked HMAC secret before `chmod`. `TF-008` through
+`TF-011` stay open.
 RFC W46-01 adds a lab-only hunt pack runner, a read-only ATT&CK/CVE coverage
 heatmap, and a journal/table timeline toggle. Hunt rows are labeled
 `LAB HYPOTHESIS — NOT AN ALERT` and are hashed into a separate chain file.

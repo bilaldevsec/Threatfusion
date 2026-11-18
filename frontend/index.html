@@ -177,6 +177,53 @@
       visibility: hidden;
       pointer-events: none;
     }
+    @media (max-width: 768px) {
+      .soc-app {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr);
+        min-height: 100vh;
+      }
+      .soc-rail {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        width: 100%;
+        position: static;
+        overflow-x: auto;
+        border-right: 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        padding: 0.45rem 0.5rem;
+      }
+      .rail-btn {
+        flex: 1 1 0;
+        min-width: 3.2rem;
+      }
+      .soc-stage {
+        height: auto;
+        min-height: 0;
+      }
+      .header-telemetry {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        width: 100%;
+        gap: 0.4rem 0.5rem;
+      }
+      #posturePill,
+      .posture-pill {
+        position: static;
+        flex: 0 0 auto;
+      }
+      #operatorAuthBadge {
+        flex: 1 0 100%;
+        position: static;
+        max-width: 100%;
+        margin: 0;
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+    }
   </style>
 </head>
 <body style="background-color: #090D16;">
@@ -412,7 +459,7 @@
                     </article>
                     <article class="card forensic-card" id="decomposedCtiCard">
                       <h3>Decomposed CTI &amp; CVSS</h3>
-                      <div id="decomposedCti" data-evidence-state="unavailable">Decomposed CTI &amp; CVSS</div>
+                      <div id="decomposedCti" data-evidence-state="unavailable" data-cvss-source="static_table">Decomposed CTI &amp; CVSS</div>
                     </article>
                   </section>
                   <article class="card advisory-trace-card" id="advisoryTraceCard" aria-label="Advisory Trace: Assigned vs. Actual" style="background: #111827;">

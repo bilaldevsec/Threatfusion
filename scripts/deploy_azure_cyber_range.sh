@@ -254,6 +254,25 @@ setup_entra_app() {
     --app-roles "$roles"
 }
 
+render_forwarder_env() {
+  local console_url="$1"
+  local sensor_token="$2"
+  local hmac_secret="$3"
+  local text
+  text=$(cat <<'ENV'
+THREATFUSION_CONSOLE_URL=TFQ0CONSOLE
+THREATFUSION_SENSOR_TOKEN=TFQ0SENSOR
+THREATFUSION_SOAR_HMAC_SECRET=TFQ0HMAC
+THREATFUSION_CLIENT_CERT=/etc/threatfusion/client.crt
+THREATFUSION_CLIENT_KEY=/etc/threatfusion/client.key
+ENV
+)
+  text=${text//TFQ0CONSOLE/$console_url}
+  text=${text//TFQ0SENSOR/$sensor_token}
+  text=${text//TFQ0HMAC/$hmac_secret}
+  printf '%s\n' "$text"
+}
+
 pair_forwarder() {
   require_az
   local console_url="${THREATFUSION_CONSOLE_URL:-}"
@@ -332,15 +351,12 @@ EOF
     exit 1
   fi
   # Secrets go over ssh stdin. Azure run-command history never stores them.
-  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+  # The heredoc delimiter is quoted so shellcheck SC2087 does not treat this
+  # body as a remote script. Placeholders expand on the client before ssh.
+  forwarder_env_body=$(render_forwarder_env "$console_url" "$sensor_token" "$hmac_secret")
+  printf '%s\n' "$forwarder_env_body" | ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
     "${LIVE_ADMIN_USER}@${public_ip}" \
-    "sudo sh -c 'umask 077; cat > /etc/threatfusion/forwarder.env'" <<ENV
-THREATFUSION_CONSOLE_URL=${console_url}
-THREATFUSION_SENSOR_TOKEN=${sensor_token}
-THREATFUSION_SOAR_HMAC_SECRET=${hmac_secret}
-THREATFUSION_CLIENT_CERT=/etc/threatfusion/client.crt
-THREATFUSION_CLIENT_KEY=/etc/threatfusion/client.key
-ENV
+    "sudo sh -c 'umask 077; cat > /etc/threatfusion/forwarder.env'"
   ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
     "${LIVE_ADMIN_USER}@${public_ip}" \
     "sudo chmod 0600 /etc/threatfusion/forwarder.env"

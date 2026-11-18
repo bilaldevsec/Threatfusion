@@ -136,13 +136,21 @@ def resolve_data_dir() -> Path:
     return path
 
 
+def _reject_hmac_symlink(path: Path) -> None:
+    """Refuse to chmod or rewrite an HMAC secret that is a symlink."""
+    if path.is_symlink():
+        raise OSError(f"refusing symlink for HMAC secret: {path}")
+
+
 def _write_mode_0600(path: Path, text: str) -> None:
+    _reject_hmac_symlink(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    fd = os.open(str(path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     try:
         os.write(fd, text.encode("utf-8"))
     finally:
         os.close(fd)
+    _reject_hmac_symlink(path)
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
 
 
@@ -151,11 +159,13 @@ def ensure_hmac_secret(data_dir: Path | None = None) -> Path:
     directory = data_dir or resolve_data_dir()
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / ".hmac_secret"
+    _reject_hmac_symlink(path)
     existing = os.environ.get("THREATFUSION_SOAR_HMAC_SECRET", "").strip()
     if existing:
         if not path.is_file():
             _write_mode_0600(path, existing + "\n")
         else:
+            _reject_hmac_symlink(path)
             try:
                 os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
             except OSError:
@@ -165,6 +175,7 @@ def ensure_hmac_secret(data_dir: Path | None = None) -> Path:
         stored = path.read_text(encoding="utf-8").strip()
         if stored:
             os.environ["THREATFUSION_SOAR_HMAC_SECRET"] = stored
+            _reject_hmac_symlink(path)
             try:
                 os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
             except OSError:

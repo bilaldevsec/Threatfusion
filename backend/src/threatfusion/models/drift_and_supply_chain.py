@@ -351,9 +351,9 @@ class FeatureDriftMetric:
     baseline_std: float
     sample_mean: float
     sample_std: float
-    mean_shift_zscore: float
-    psi: float
-    drift_category: str  # "stable", "moderate_drift", "severe_drift"
+    mean_shift_zscore: float | None
+    psi: float | None
+    drift_category: str  # "stable", "moderate_drift", "severe_drift", "undefined_baseline"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -415,8 +415,10 @@ def _compute_decile_psi(
     n = len(values)
     if n == 0:
         return 0.0
+    if not math.isfinite(baseline_std) or baseline_std <= 0.0:
+        raise TelemetryDriftError("baseline standard deviation must be positive")
 
-    b_std = max(baseline_std, 1e-6)
+    b_std = baseline_std
     s_mean = statistics.mean(values)
     s_std = statistics.stdev(values) if n > 1 else b_std
     scale_ratio = max(s_std / b_std, 0.1)
@@ -464,7 +466,11 @@ def evaluate_14_feature_telemetry_drift(
     Classifies overall drift_status into:
     - "stable_in_distribution" (max_psi < 0.10)
     - "moderate_feature_drift_monitor" (0.10 <= max_psi < 0.25)
-    - "severe_out_of_distribution_drift_retraining_review_required" (max_psi >= 0.25)
+    - "severe_out_of_distribution_drift_retraining_review_required"
+      (max_psi >= 0.25 and at least two records)
+    - "undefined_baseline" when a baseline standard deviation is 0
+    A single record is never labeled severe, and a zero baseline standard
+    deviation is not floored to 1e-6.
     """
     if not records:
         raise TelemetryDriftError("records sequence must not be empty")
@@ -505,12 +511,30 @@ def evaluate_14_feature_telemetry_drift(
 
     for fname in CANONICAL_14_FEATURES:
         vals = feature_vals[fname]
-        b_mean = b_means.get(fname, 0.0)
-        b_std = max(b_stds.get(fname, 1.0), 1e-6)
+        b_mean = float(b_means.get(fname, 0.0))
+        try:
+            raw_std = float(b_stds.get(fname, 1.0))
+        except (TypeError, ValueError):
+            raw_std = 1.0
 
         s_mean = statistics.mean(vals)
         s_std = statistics.stdev(vals) if len(vals) > 1 else 0.0
 
+        if not math.isfinite(raw_std) or raw_std <= 0.0:
+            metric = FeatureDriftMetric(
+                feature_name=fname,
+                baseline_mean=b_mean,
+                baseline_std=0.0 if raw_std == 0.0 else raw_std,
+                sample_mean=s_mean,
+                sample_std=s_std,
+                mean_shift_zscore=None,
+                psi=None,
+                drift_category="undefined_baseline",
+            )
+            feature_metrics[fname] = metric
+            continue
+
+        b_std = raw_std
         zscore = (s_mean - b_mean) / b_std
         psi = _compute_decile_psi(vals, b_mean, b_std)
 
@@ -518,8 +542,10 @@ def evaluate_14_feature_telemetry_drift(
             category = "stable"
         elif psi < 0.25:
             category = "moderate_drift"
-        else:
+        elif len(records) >= 2:
             category = "severe_drift"
+        else:
+            category = "insufficient_sample"
 
         metric = FeatureDriftMetric(
             feature_name=fname,
@@ -540,12 +566,16 @@ def evaluate_14_feature_telemetry_drift(
     max_zscore = max(zscore_values) if zscore_values else 0.0
 
     # 3. Overall Drift Status Classification
-    if max_psi < 0.10:
+    if not psi_values:
+        overall_status = "undefined_baseline"
+    elif max_psi < 0.10:
         overall_status = "stable_in_distribution"
     elif max_psi < 0.25:
         overall_status = "moderate_feature_drift_monitor"
-    else:
+    elif len(records) >= 2:
         overall_status = "severe_out_of_distribution_drift_retraining_review_required"
+    else:
+        overall_status = "insufficient_records_for_severe_drift_label"
 
     return TelemetryDriftReport(
         schema_version=DRIFT_REPORT_SCHEMA_VERSION,
