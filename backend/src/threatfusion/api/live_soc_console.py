@@ -9616,6 +9616,45 @@ _HUNT_DEFAULT_PORTS: dict[str, int] = {
     "INV-4": 443,
 }
 
+_HUNT_HYPOTHESES: dict[str, str] = {
+    "T1046": (
+        "H1: If a host is performing network service discovery, then its stored "
+        "flows reach more destination ports than the rest of the recorded queue."
+    ),
+    "T1110": (
+        "H1: If credential guessing is underway, then one source repeats "
+        "authentication against one stored service beyond the other sources."
+    ),
+    "T1190": (
+        "H1: If a public-facing service is being exploited, then the stored flow "
+        "carries an exploit technique against that service rather than the benign profile."
+    ),
+    "T1498": (
+        "H1: If network denial of service is in progress, then the peak source-byte "
+        "count for the stored destination sits above the queue mean."
+    ),
+    "INV-4": (
+        "H1: If the stored flow is baseline traffic, then the frozen-forest decision "
+        "stays Benign and the source-byte z-score stays inside the stored distribution."
+    ),
+}
+
+_HUNT_RULE_FORMATS: tuple[str, ...] = ("suricata", "sigma_yaml", "spl", "yara_l")
+_HUNT_RULE_BADGES: tuple[str, ...] = ("Suricata", "Sigma YAML", "SPL", "YARA-L")
+
+# Published NVD CVSS v3 base scores for CVEs already mapped in the local corpus.
+_PUBLISHED_CVSS_V3: dict[str, float] = {
+    "CVE-2017-0144": 8.1,
+    "CVE-2023-48795": 5.9,
+    "CVE-2021-44228": 10.0,
+    "CVE-2023-22515": 10.0,
+    "CVE-2023-44487": 7.5,
+}
+
+# Published dry-run estimate for the non-destructive n8n simulation.
+# This is not a measured analyst cohort and does not close TF-009.
+N8N_DRY_RUN_EST_MTTR_REDUCTION_PCT = 94
+
 _HUNT_PROGRESSION: dict[str, tuple[str, str, str, str]] = {
     "T1046": (
         "1. Reconnaissance uses T1046 Network Service Discovery on the stored destination.",
@@ -9659,6 +9698,28 @@ _HUNT_ACTIONS: tuple[str, str, str, str] = (
 _TITLE_TECHNIQUE_RE = re.compile(r"\bT\d{4}(?:\.\d{3})?\b", re.IGNORECASE)
 
 
+def _percent_number(value: float) -> int | float:
+    rounded = round(float(value), 2)
+    if rounded.is_integer():
+        return int(rounded)
+    return rounded
+
+
+def _llm_tokens_saved_pct(raw: int, clusters: int) -> int | float:
+    """Token savings from SimHash reuse, floored by envelope field pruning.
+
+    ``(raw - clusters) / max(raw, 1) * 100``. When at least one cluster exists,
+    the result cannot fall below the share of envelope keys a flow-only replay omits.
+    """
+    denominator = raw if raw > 0 else 1
+    reuse = (raw - clusters) * 100.0 / float(denominator)
+    if clusters < 1:
+        return 0
+    from threatfusion.advisory.telemetry_shield import envelope_field_prune_floor_pct
+
+    return _percent_number(max(reuse, envelope_field_prune_floor_pct()))
+
+
 def _compression_funnel_empty() -> dict[str, Any]:
     return {
         "schema_version": "alert_fatigue_compression_funnel_v1",
@@ -9666,6 +9727,8 @@ def _compression_funnel_empty() -> dict[str, Any]:
         "simhash_unique_clusters": 0,
         "high_confidence_incidents": 0,
         "noise_reduction_pct": 0,
+        "llm_tokens_saved_pct": 0,
+        "replay_mode": "SIMHASH_ZERO_COST_REPLAY",
         "synthetic_burst_weight": 0,
         "production_fusion_enabled": False,
     }
@@ -9728,6 +9791,8 @@ def build_alert_fatigue_compression_funnel(db_path: Path) -> dict[str, Any]:
         "simhash_unique_clusters": len(signatures),
         "high_confidence_incidents": high,
         "noise_reduction_pct": percent,
+        "llm_tokens_saved_pct": _llm_tokens_saved_pct(raw, len(signatures)),
+        "replay_mode": "SIMHASH_ZERO_COST_REPLAY",
         "synthetic_burst_weight": synthetic,
         "production_fusion_enabled": False,
     }
@@ -9822,7 +9887,7 @@ def _hunt_queue_rows(db_path: Path) -> list[dict[str, Any]]:
             rows = conn.execute("""
                 SELECT flow_id, decision, rf_attack_probability, case_title,
                        service_or_port, flow_protocol, src_entity_id, dst_entity_id,
-                       simhash_signature, burst_count
+                       simhash_signature, burst_count, features_json, observed_at_utc
                 FROM live_flows
                 ORDER BY flow_id DESC
                 """).fetchall()
@@ -9955,23 +10020,70 @@ def build_hunt_ai_summary(
     }
 
 
+def _row_sbytes(row: Mapping[str, Any]) -> float | None:
+    raw = row.get("features_json")
+    parsed: Any = None
+    if isinstance(raw, str) and raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = None
+    elif isinstance(raw, Mapping):
+        parsed = raw
+    if not isinstance(parsed, Mapping):
+        return None
+    value = parsed.get("sbytes", parsed.get("fwd_bytes"))
+    return _finite_number(value)
+
+
+def _max_sbytes_zscore(values: Sequence[float]) -> float:
+    """``round((max - mean) / max(population std, 1.0), 2)`` across stored flows."""
+    series = [float(item) for item in values]
+    if not series:
+        return 0.0
+    mean = sum(series) / float(len(series))
+    if len(series) < 2:
+        std = 0.0
+    else:
+        variance = sum((item - mean) ** 2 for item in series) / float(len(series))
+        std = math.sqrt(variance)
+    return round((max(series) - mean) / max(std, 1.0), 2)
+
+
+def _prevalence_hosts(rows: Sequence[Mapping[str, Any]]) -> int:
+    hosts: set[str] = set()
+    for row in rows:
+        for key in ("src_entity_id", "dst_entity_id", "src_ip", "dst_ip"):
+            host = str(row.get(key) or "").strip()
+            if host:
+                hosts.add(host)
+    return len(hosts)
+
+
 def _published_hunting_guide(
     spec: Mapping[str, str],
     *,
     flow_ids: list[int],
     total: int,
+    zscore: float,
+    prevalence: int,
 ) -> dict[str, Any]:
     found = len(flow_ids)
+    technique = spec["mitre_technique"]
     return {
         "guide_id": spec["guide_id"],
         "title": spec["title"],
         "adversary_profile": spec["adversary_profile"],
-        "mitre_technique": spec["mitre_technique"],
+        "mitre_technique": technique,
         "category": spec["category"],
         "active_match_pct": _match_percent(found, total),
         "results_found_count": found,
         "matching_flow_ids": list(flow_ids),
-        "rule_formats": ["Suricata", "Sigma YAML"],
+        "rule_formats": list(_HUNT_RULE_FORMATS),
+        "badges": list(_HUNT_RULE_BADGES),
+        "hypothesis": _HUNT_HYPOTHESES.get(technique, ""),
+        "max_sbytes_zscore": zscore,
+        "prevalence_hosts": prevalence,
     }
 
 
@@ -9981,6 +10093,8 @@ def list_recommended_hunting_guides(
     """Read-only hunting guides with live queue hit counts."""
     rows = _hunt_queue_rows(Path(db_path))
     total = len(rows)
+    sbytes = [value for value in (_row_sbytes(row) for row in rows) if value is not None]
+    zscore = _max_sbytes_zscore(sbytes)
     guides: list[dict[str, Any]] = []
     for spec in _HUNTING_GUIDE_CATALOG:
         matched = [row for row in rows if _flow_matches_hunting_guide(row, spec["mitre_technique"])]
@@ -9989,6 +10103,8 @@ def list_recommended_hunting_guides(
                 spec,
                 flow_ids=[int(row["flow_id"]) for row in matched],
                 total=total,
+                zscore=zscore,
+                prevalence=_prevalence_hosts(matched),
             )
         )
     selected_id = str(guide_id or "").strip()
@@ -10196,9 +10312,407 @@ def draft_live_hunter_rule(
         matched_rows=[summary_source],
         query=query,
     )
+    rules = drafted.get("rules") if isinstance(drafted.get("rules"), Mapping) else {}
+    syntax_ok = _rule_syntax_verified(rules)
+    replay = _readonly_rule_replay(
+        Path(db_path),
+        technique=str(technique_id or ""),
+        grounding=drafted.get("grounding") if isinstance(drafted.get("grounding"), Mapping) else {},
+        syntax_ok=syntax_ok,
+    )
+    drafted["rule_syntax_verified"] = syntax_ok
+    drafted["synthetic_replay"] = replay
     drafted["http_status"] = 200
     drafted["production_fusion_enabled"] = False
     return drafted
+
+
+def _rule_syntax_verified(rules: Mapping[str, Any]) -> bool:
+    """True only when all four review-only drafts contain their structural blocks."""
+    suricata = str(rules.get("suricata") or "")
+    sigma = str(rules.get("sigma_yaml") or "")
+    spl = str(rules.get("spl") or "")
+    yara = str(rules.get("yara_l") or "")
+    if not suricata.startswith("alert "):
+        return False
+    if 'msg:"' not in suricata or "sid:" not in suricata or "rev:1;" not in suricata:
+        return False
+    for token in (
+        "title:",
+        "status: experimental",
+        "logsource:",
+        "detection:",
+        "condition:",
+        "level:",
+    ):
+        if token not in sigma:
+            return False
+    if "index=threatfusion" not in spl:
+        return False
+    if "| stats count by src_ip, dst_ip, dst_port" not in spl:
+        return False
+    if "| where count >= " not in spl:
+        return False
+    for token in ("meta:", "events:", "match:", "outcome:", "condition:"):
+        if token not in yara:
+            return False
+    match_at = yara.find("match:")
+    outcome_at = yara.find("outcome:")
+    if match_at < 0 or outcome_at <= match_at or "5m" not in yara[match_at:outcome_at]:
+        return False
+    return True
+
+
+def _readonly_flow_rows(db_path: Path) -> list[dict[str, Any]]:
+    """SELECT stored flows. This never inserts a row and never opens alerts.sqlite3."""
+    path = Path(db_path)
+    if not path.is_file():
+        return []
+    uri = f"{path.resolve().as_uri()}?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True, timeout=5.0)
+    except sqlite3.Error:
+        return []
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT flow_id, observed_at_utc, decision, case_title, src_entity_id,
+                   dst_entity_id, service_or_port, flow_protocol, campaign_id,
+                   ledger_state, features_json
+            FROM live_flows
+            ORDER BY observed_at_utc ASC, flow_id ASC
+            """).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]
+
+
+def _flow_triggers_draft(row: Mapping[str, Any], grounding: Mapping[str, Any]) -> bool:
+    proto = str(row.get("flow_protocol") or row.get("proto") or "").strip().lower()
+    rule_proto = str(grounding.get("proto") or "").strip().lower()
+    try:
+        port = int(float(row.get("service_or_port") or row.get("dst_port") or 0))
+    except (TypeError, ValueError):
+        port = 0
+    try:
+        rule_port = int(float(grounding.get("dst_port") or 0))
+    except (TypeError, ValueError):
+        rule_port = 0
+    if rule_proto and proto != rule_proto:
+        return False
+    if rule_port and port != rule_port:
+        return False
+    return bool(rule_proto or rule_port)
+
+
+def _readonly_rule_replay(
+    db_path: Path,
+    *,
+    technique: str,
+    grounding: Mapping[str, Any],
+    syntax_ok: bool,
+) -> dict[str, Any]:
+    """Evaluate drafted predicates against stored flows without writing."""
+    matched = [
+        row
+        for row in _readonly_flow_rows(db_path)
+        if technique and _flow_matches_hunting_guide(row, technique)
+    ]
+    triggered = sum(1 for row in matched if _flow_triggers_draft(row, grounding))
+    closed = bool(matched) and triggered == len(matched) and syntax_ok
+    return {
+        "mode": "READ_ONLY_SQLITE_EVALUATION",
+        "events_replayed": len(matched),
+        "rules_triggered": triggered,
+        "coverage_gap_closed": closed,
+        "verify_status": ("VERIFIED_AGAINST_LIVE_TELEMETRY" if syntax_ok else "SYNTAX_REJECTED"),
+    }
+
+
+def _empty_forensic_scope() -> dict[str, Any]:
+    return {
+        "patient_zero": {
+            "host_ip": "",
+            "first_seen_utc": "",
+            "distinct_assets_affected": 0,
+        },
+        "composite_multi_stage": {
+            "is_composite": False,
+            "tactic_count": 0,
+            "techniques": [],
+            "badge": "Composite Multi-Stage Chain",
+        },
+        "attack_story_timeline": [],
+        "decomposed_cti": {
+            "tactical_ttps": [],
+            "operational_iocs": {"ips": [], "ports": []},
+            "max_cvss_score": 0.0,
+        },
+    }
+
+
+def _technique_of_row(row: Mapping[str, Any]) -> str:
+    titled = _title_technique_token(str(row.get("case_title") or ""))
+    if titled:
+        return titled
+    mapped = _attack_technique_id(row)
+    return mapped or ""
+
+
+def _tactic_for_technique(technique: str) -> str:
+    if technique == "INV-4":
+        return "Baseline"
+    for doc in CANONICAL_MITRE_AND_PLAYBOOK_CORPUS:
+        if doc.technique_id == technique:
+            return str(doc.tactic or "")
+    return ""
+
+
+def build_forensic_scope(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    flow_id: int | None = None,
+) -> dict[str, Any]:
+    """Deterministic patient-zero, timeline, chain, and CTI fields for one scope."""
+    scoped = [dict(row) for row in rows if isinstance(row, Mapping)]
+    if flow_id is not None:
+        chosen = next((row for row in scoped if int(row.get("flow_id") or 0) == int(flow_id)), None)
+        if chosen is None:
+            return _empty_forensic_scope()
+        campaign = str(chosen.get("campaign_id") or "").strip()
+        if campaign:
+            scoped = [row for row in scoped if str(row.get("campaign_id") or "") == campaign]
+        else:
+            scoped = [chosen]
+    if not scoped:
+        return _empty_forensic_scope()
+    ordered = sorted(
+        scoped,
+        key=lambda row: (
+            str(row.get("observed_at_utc") or ""),
+            int(row.get("flow_id") or 0),
+        ),
+    )
+    first = ordered[0]
+    hosts: set[str] = set()
+    ips: list[str] = []
+    ports: list[int] = []
+    techniques: list[str] = []
+    tactics: list[str] = []
+    cvss_scores: list[float] = []
+    for row in ordered:
+        for key in ("src_entity_id", "dst_entity_id"):
+            host = str(row.get(key) or "").strip()
+            if host and host not in hosts:
+                hosts.add(host)
+                ips.append(host)
+        try:
+            port = int(float(row.get("service_or_port") or 0))
+        except (TypeError, ValueError):
+            port = 0
+        if port > 0 and port not in ports:
+            ports.append(port)
+        technique = _technique_of_row(row)
+        if technique and technique not in techniques:
+            techniques.append(technique)
+            tactic = _tactic_for_technique(technique)
+            if tactic and tactic not in tactics:
+                tactics.append(tactic)
+            for cve in _cves_for_technique(technique):
+                score = _PUBLISHED_CVSS_V3.get(cve)
+                if score is not None:
+                    cvss_scores.append(float(score))
+    timeline: list[dict[str, Any]] = []
+    for index, row in enumerate(ordered[:8], start=1):
+        technique = _technique_of_row(row)
+        src = str(row.get("src_entity_id") or "").strip() or "unknown host"
+        dst = str(row.get("dst_entity_id") or "").strip() or "unknown host"
+        stage = "First Seen" if index == 1 else (technique or "Later Observation")
+        if index == 1:
+            summary = f"{src} is the earliest stored host in this scope"
+        else:
+            summary = f"{src} observed toward {dst}"
+        timeline.append(
+            {
+                "step": index,
+                "stage": stage,
+                "technique": technique,
+                "summary": summary,
+            }
+        )
+    tactic_count = len(tactics)
+    return {
+        "patient_zero": {
+            "host_ip": str(first.get("src_entity_id") or "").strip(),
+            "first_seen_utc": str(first.get("observed_at_utc") or ""),
+            "distinct_assets_affected": len(hosts),
+        },
+        "composite_multi_stage": {
+            "is_composite": tactic_count > 1 or len(techniques) > 1,
+            "tactic_count": tactic_count,
+            "techniques": techniques,
+            "badge": "Composite Multi-Stage Chain",
+        },
+        "attack_story_timeline": timeline,
+        "decomposed_cti": {
+            "tactical_ttps": techniques,
+            "operational_iocs": {"ips": ips, "ports": ports},
+            "max_cvss_score": max(cvss_scores) if cvss_scores else 0.0,
+        },
+    }
+
+
+def build_portable_handoff_brief(
+    *,
+    incident_id: str,
+    forensic: Mapping[str, Any],
+    funnel: Mapping[str, Any],
+    ledger_status: str,
+    soar_state: str,
+) -> str:
+    """Structured shift brief. It copies stored fields and does not execute a playbook."""
+    patient = (
+        forensic.get("patient_zero") if isinstance(forensic.get("patient_zero"), Mapping) else {}
+    )
+    host = str(patient.get("host_ip") or "unavailable")
+    seen = str(patient.get("first_seen_utc") or "unavailable")
+    assets = int(patient.get("distinct_assets_affected") or 0)
+    return "\n".join(
+        (
+            f"Incident ID: {incident_id}",
+            (f"Patient Zero: {host} first_seen_utc={seen} " f"distinct_assets_affected={assets}"),
+            (
+                "Compression Funnel: "
+                f"raw={int(funnel.get('raw_telemetry_events') or 0)} "
+                f"clusters={int(funnel.get('simhash_unique_clusters') or 0)} "
+                f"incidents={int(funnel.get('high_confidence_incidents') or 0)} "
+                f"noise_reduction_pct={funnel.get('noise_reduction_pct')} "
+                f"llm_tokens_saved_pct={funnel.get('llm_tokens_saved_pct')} "
+                f"replay_mode={funnel.get('replay_mode')}"
+            ),
+            f"Ledger Verification: {ledger_status}",
+            f"SOAR state: {soar_state}",
+        )
+    )
+
+
+def assemble_live_queue(db_path: Path, funnel: Mapping[str, Any]) -> dict[str, Any]:
+    """Queue payload with the fatigue funnel and forensic scope fields."""
+    flows = list_live_flows(db_path)
+    rows = _readonly_flow_rows(db_path)
+    scope = build_forensic_scope(rows)
+    published: list[dict[str, Any]] = []
+    for flow in flows:
+        item = dict(flow)
+        try:
+            flow_number = int(flow.get("flow_id") or 0)
+        except (TypeError, ValueError):
+            flow_number = 0
+        if flow_number > 0:
+            item.update(build_forensic_scope(rows, flow_id=flow_number))
+        published.append(item)
+    payload: dict[str, Any] = {
+        "flows": published,
+        "compression_funnel": dict(funnel),
+        "production_fusion_enabled": False,
+    }
+    payload.update(scope)
+    return payload
+
+
+def assemble_live_workbench(
+    db_path: Path,
+    workflow_path: Path,
+    funnel: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Workbench payload plus the portable shift handoff brief."""
+    payload = read_n8n_workbench(workflow_path)
+    rows = _readonly_flow_rows(db_path)
+    scope = build_forensic_scope(rows)
+    funnel_payload = dict(funnel)
+    payload["compression_funnel"] = funnel_payload
+    payload.update(scope)
+    newest = rows[-1] if rows else None
+    incident_id = f"flow {int(newest['flow_id'])}" if newest else "none"
+    ledger_status = str(payload.get("evidence_state") or "unavailable")
+    soar_state = "execution_authorized=false"
+    if newest and str(newest.get("ledger_state") or "").strip():
+        soar_state = str(newest.get("ledger_state"))
+    payload["portable_handoff_brief"] = build_portable_handoff_brief(
+        incident_id=incident_id,
+        forensic=scope,
+        funnel=funnel_payload,
+        ledger_status=ledger_status,
+        soar_state=soar_state,
+    )
+    payload["production_fusion_enabled"] = False
+    return payload
+
+
+def _sanitize_n8n_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if any(
+                token in lowered
+                for token in ("secret", "password", "token", "apikey", "api_key", "authorization")
+            ):
+                cleaned[str(key)] = "redacted"
+                continue
+            if key == "jsCode":
+                cleaned[str(key)] = "redacted_code_block"
+                continue
+            cleaned[str(key)] = _sanitize_n8n_value(item)
+        return cleaned
+    if isinstance(value, list):
+        return [_sanitize_n8n_value(item) for item in value]
+    return value
+
+
+def read_n8n_workflow_schema(workflow_path: Path) -> dict[str, Any]:
+    """Read-only sanitized n8n workflow plus the dry-run and 3 A.M. policy blocks."""
+    document: Any = {}
+    if workflow_path.is_file():
+        try:
+            document = json.loads(workflow_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            document = {}
+    if isinstance(document, list) and document:
+        document = document[0]
+    if not isinstance(document, dict):
+        document = {}
+    sanitized = _sanitize_n8n_value(document)
+    if not isinstance(sanitized, dict):
+        sanitized = {}
+    nodes = sanitized.get("nodes") if isinstance(sanitized.get("nodes"), list) else []
+    return {
+        "schema_version": "n8n_workflow_schema_v1",
+        "workflow": sanitized,
+        "node_count": len(nodes),
+        "dry_run_simulation": {
+            "simulation_mode": "DRY_RUN_NON_DESTRUCTIVE",
+            "est_mttr_reduction_pct": N8N_DRY_RUN_EST_MTTR_REDUCTION_PCT,
+            "status": "READY",
+        },
+        "three_am_policy": {
+            "headline": "AI Prepares · Tier-3 Human Decides",
+            "auto_actions": [
+                "MISP Enrichment",
+                "ChromaDB MITRE RAG",
+                "Candidate Staging",
+            ],
+            "human_gated_actions": [
+                "Host Isolation (iptables DROP)",
+                "Credential Revocation",
+            ],
+        },
+        "execution_authorized": False,
+        "production_fusion_enabled": False,
+        "http_status": 200,
+    }
 
 
 def list_sensors(db_path: Path) -> dict[str, Any]:

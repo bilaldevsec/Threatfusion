@@ -518,18 +518,13 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/v1/live/queue":
             from threatfusion.api.live_soc_console import (
+                assemble_live_queue,
                 build_alert_fatigue_compression_funnel,
-                list_live_flows,
             )
 
             db_path = self._live_db_path()
-            self._send_json(
-                200,
-                {
-                    "flows": list_live_flows(db_path),
-                    "compression_funnel": build_alert_fatigue_compression_funnel(db_path),
-                },
-            )
+            funnel = build_alert_fatigue_compression_funnel(db_path)
+            self._send_json(200, assemble_live_queue(db_path, funnel))
             return
         if path == "/api/v1/live/drift":
             from threatfusion.api.live_soc_console import drift_for_stored_flows
@@ -538,8 +533,8 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/v1/live/workbench":
             from threatfusion.api.live_soc_console import (
+                assemble_live_workbench,
                 build_alert_fatigue_compression_funnel,
-                read_n8n_workbench,
             )
 
             workflow = (
@@ -549,11 +544,18 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 / "workflows"
                 / "threatfusion_live_console_playbook.json"
             )
-            payload = read_n8n_workbench(workflow)
-            payload["compression_funnel"] = build_alert_fatigue_compression_funnel(
-                self._live_db_path()
+            db_path = self._live_db_path()
+            funnel = build_alert_fatigue_compression_funnel(db_path)
+            self._send_json(200, assemble_live_workbench(db_path, workflow, funnel))
+            return
+        if path == "/api/v1/live/soar/n8n-schema":
+            from threatfusion.api.live_soc_console import read_n8n_workflow_schema
+
+            workflow = (
+                REPO_ROOT / "docker" / "n8n" / "workflows" / "threatfusion_soar_playbook.json"
             )
-            self._send_json(200, payload)
+            result = read_n8n_workflow_schema(workflow)
+            self._send_json(int(result.get("http_status") or 200), result)
             return
         if path == "/api/v1/live/campaigns":
             from threatfusion.api.live_soc_console import list_live_campaigns
@@ -730,6 +732,12 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 flow_id = int(raw_flow)
             except ValueError:
                 flow_id = 0
+            if flow_id <= 0:
+                from threatfusion.api.live_soc_console import list_live_flows
+
+                latest = list_live_flows(self._live_db_path(), limit=1)
+                if latest:
+                    flow_id = int(latest[0]["flow_id"])
             result = read_advisory_trace(self._live_db_path(), flow_id)
             self._send_json(int(result.get("http_status") or 200), result)
             return

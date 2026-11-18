@@ -1035,19 +1035,43 @@ case "$PROVIDER" in
     ;;
 esac
 
+victim_public_recorded() {
+  if [[ -n "${VICTIM_HOST:-}" ]]; then
+    return 0
+  fi
+  load_existing_public_ips
+  if [[ -n "${VICTIM_PUBLIC:-}" && "${VICTIM_PUBLIC}" != "None" ]]; then
+    return 0
+  fi
+  return 1
+}
+
+provision_selected_range() {
+  case "$PROVIDER" in
+    azure)
+      require_ssh_cidr >/dev/null
+      azure_delegate --provision-live-azure
+      ;;
+    aws) provision_aws ;;
+    gcp) provision_gcp ;;
+    generic) provision_generic ;;
+  esac
+}
+
 case "$ACTION" in
   provision-range)
-    case "$PROVIDER" in
-      azure)
-        require_ssh_cidr >/dev/null
-        azure_delegate --provision-live-azure
-        ;;
-      aws) provision_aws ;;
-      gcp) provision_gcp ;;
-      generic) provision_generic ;;
-    esac
+    provision_selected_range
     ;;
   deploy-full-stack)
+    if ! victim_public_recorded; then
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        echo "dry-run: no victim public address in cloud_state.json; provision-range is not called"
+      else
+        echo "No victim public address is recorded. Provisioning the range before deploy-full-stack."
+        provision_selected_range
+        load_existing_public_ips
+      fi
+    fi
     deploy_full_stack
     ;;
   teardown)

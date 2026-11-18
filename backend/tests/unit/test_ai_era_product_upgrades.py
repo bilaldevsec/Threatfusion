@@ -244,6 +244,15 @@ def test_draft_live_hunter_rule_endpoint_shape(tmp_path: Path) -> None:
     assert drafted["suricata_rule"]
     assert drafted["sigma_rule"]
     assert drafted["deployment_mode"] == "REVIEW_ONLY_HUMAN_APPROVAL_REQUIRED"
+    assert drafted["rule_syntax_verified"] is True
+    for key in ("suricata", "sigma_yaml", "spl", "yara_l"):
+        assert drafted["rules"][key]
+    replay = drafted["synthetic_replay"]
+    assert replay["mode"] == "READ_ONLY_SQLITE_EVALUATION"
+    assert replay["events_replayed"] == 1
+    assert replay["rules_triggered"] == 1
+    assert replay["coverage_gap_closed"] is True
+    assert replay["verify_status"] == "VERIFIED_AGAINST_LIVE_TELEMETRY"
 
 
 def test_advisory_trace_includes_fence_and_ledger(tmp_path: Path) -> None:
@@ -491,10 +500,14 @@ def test_compression_funnel_math_from_sqlite_bursts(tmp_path: Path) -> None:
     assert funnel["simhash_unique_clusters"] == 2
     assert funnel["high_confidence_incidents"] == 3
     assert funnel["noise_reduction_pct"] == int(round((5 - 3) * 100 / 5))
+    assert funnel["llm_tokens_saved_pct"] == 60
+    assert funnel["replay_mode"] == "SIMHASH_ZERO_COST_REPLAY"
     assert funnel["production_fusion_enabled"] is False
     missing = build_alert_fatigue_compression_funnel(tmp_path / "absent.sqlite3")
     assert missing["raw_telemetry_events"] == 0
     assert missing["noise_reduction_pct"] == 0
+    assert missing["llm_tokens_saved_pct"] == 0
+    assert missing["replay_mode"] == "SIMHASH_ZERO_COST_REPLAY"
     assert not (tmp_path / "absent.sqlite3").exists()
     server = (ROOT / "scripts" / "run_misp_and_callback_contract_server.py").read_text(
         encoding="utf-8"
@@ -561,7 +574,11 @@ def test_hunting_guides_live_hit_counts(tmp_path: Path) -> None:
     assert discovery_guide["results_found_count"] == 1
     assert int(discovery["flow_id"]) in discovery_guide["matching_flow_ids"]
     assert discovery_guide["active_match_pct"] == 50
-    assert discovery_guide["rule_formats"] == ["Suricata", "Sigma YAML"]
+    assert discovery_guide["rule_formats"] == ["suricata", "sigma_yaml", "spl", "yara_l"]
+    assert discovery_guide["badges"] == ["Suricata", "Sigma YAML", "SPL", "YARA-L"]
+    assert str(discovery_guide["hypothesis"]).startswith("H1:")
+    assert discovery_guide["max_sbytes_zscore"] == 0.0
+    assert discovery_guide["prevalence_hosts"] == 2
     assert by_id["hunt-t1110"]["results_found_count"] == 1
     assert by_id["hunt-inv4"]["results_found_count"] == 0
     server = (ROOT / "scripts" / "run_misp_and_callback_contract_server.py").read_text(
@@ -643,3 +660,200 @@ def test_frontend_renders_funnel_governance_and_hunt_summary() -> None:
     assert "renderAiGovernance" in js
     assert ".compression-funnel" in css
     assert ".hunt-match" in css
+    assert "LLM Tokens Saved" in index
+    assert "VERIFY RULE" in index
+    assert "Copy Portable Shift Handoff Brief" in index
+    assert "3 A.M. Policy" in index
+    assert "Patient Zero" in index
+    assert "renderForensicScope" in js
+    assert "/api/v1/live/soar/n8n-schema" in js
+
+
+def test_token_floor_when_each_event_is_its_own_cluster(tmp_path: Path) -> None:
+    live_db = tmp_path / "live.sqlite3"
+    persist_scored_flow(
+        live_db,
+        _features(),
+        _score(),
+        provenance=_provenance("443"),
+        case_title="single",
+        technique_id="T1046",
+    )
+    funnel = build_alert_fatigue_compression_funnel(live_db)
+    assert funnel["raw_telemetry_events"] == 1
+    assert funnel["simhash_unique_clusters"] == 1
+    assert funnel["llm_tokens_saved_pct"] == 50
+
+
+def test_queue_workbench_and_n8n_schema_contracts(tmp_path: Path) -> None:
+    from threatfusion.api.live_soc_console import (
+        assemble_live_queue,
+        assemble_live_workbench,
+        build_alert_fatigue_compression_funnel,
+        read_n8n_workflow_schema,
+    )
+
+    live_db = tmp_path / "live.sqlite3"
+    stored = persist_scored_flow(
+        live_db,
+        _features(),
+        _score(),
+        provenance=_provenance("445"),
+        case_title="T1046 Network Service Discovery",
+        technique_id="T1046",
+    )
+    funnel = build_alert_fatigue_compression_funnel(live_db)
+    queue = assemble_live_queue(live_db, funnel)
+    assert queue["compression_funnel"]["replay_mode"] == "SIMHASH_ZERO_COST_REPLAY"
+    assert queue["patient_zero"]["host_ip"] == "172.29.0.10"
+    assert queue["patient_zero"]["distinct_assets_affected"] == 2
+    assert queue["attack_story_timeline"][0]["stage"] == "First Seen"
+    assert queue["decomposed_cti"]["operational_iocs"]["ips"]
+    assert "max_cvss_score" in queue["decomposed_cti"]
+    assert queue["flows"][0]["flow_id"] == int(stored["flow_id"])
+    assert queue["flows"][0]["patient_zero"]["host_ip"] == "172.29.0.10"
+    workflow = ROOT / "docker" / "n8n" / "workflows" / "threatfusion_live_console_playbook.json"
+    workbench = assemble_live_workbench(live_db, workflow, funnel)
+    brief = workbench["portable_handoff_brief"]
+    assert "Incident ID:" in brief
+    assert "Patient Zero:" in brief
+    assert "llm_tokens_saved_pct=" in brief
+    assert "Ledger Verification:" in brief
+    assert "SOAR state:" in brief
+    schema = read_n8n_workflow_schema(
+        ROOT / "docker" / "n8n" / "workflows" / "threatfusion_soar_playbook.json"
+    )
+    assert schema["http_status"] == 200
+    assert schema["node_count"] >= 1
+    assert schema["dry_run_simulation"]["simulation_mode"] == "DRY_RUN_NON_DESTRUCTIVE"
+    assert schema["dry_run_simulation"]["est_mttr_reduction_pct"] == 94
+    assert schema["dry_run_simulation"]["status"] == "READY"
+    assert schema["three_am_policy"]["headline"] == "AI Prepares · Tier-3 Human Decides"
+    assert schema["execution_authorized"] is False
+    rendered = str(schema["workflow"])
+    assert "redacted_code_block" in rendered
+    server = (ROOT / "scripts" / "run_misp_and_callback_contract_server.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'path == "/api/v1/live/soar/n8n-schema"' in server
+
+
+def test_mcp_prompts_are_read_only() -> None:
+    mcp = _load_mcp_module()
+    listed = mcp.handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "prompts/list"})
+    assert listed is not None
+    names = [item["name"] for item in listed["result"]["prompts"]]
+    assert names == [
+        "ioc_enrichment_runbook",
+        "alert_triage_runbook",
+        "statistical_hunt_runbook",
+    ]
+    fetched = mcp.handle_rpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "prompts/get",
+            "params": {"name": "ioc_enrichment_runbook"},
+        }
+    )
+    assert fetched is not None
+    text = fetched["result"]["messages"][0]["content"]["text"]
+    blob = str(listed) + str(fetched)
+    for verb in ("Approve", "Dispatch", "Isolate", "Rollback"):
+        assert verb not in blob
+        assert verb.lower() not in text.lower()
+    tools = mcp.handle_rpc({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
+    assert tools is not None
+    assert len(tools["result"]["tools"]) == 4
+    tool_blob = str(tools)
+    for verb in ("Approve", "Dispatch", "Isolate", "Rollback"):
+        assert verb not in tool_blob
+
+
+def test_deploy_full_stack_provisions_only_when_live(tmp_path: Path) -> None:
+    cloud = (ROOT / "scripts" / "deploy_cloud_range.sh").read_text(encoding="utf-8")
+    assert "victim_public_recorded" in cloud
+    assert "provision_selected_range" in cloud
+    assert "provision-range is not called" in cloud
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert (
+        "AZURE_VM_SIZE=Standard_B2pls_v2 ./scripts/deploy_cloud_range.sh --auto-ip --deploy-full-stack"
+        in readme
+    )
+    assert "v1.2 operator surface" in readme
+
+
+def test_quad_format_blocks_and_envelope_floor() -> None:
+    from threatfusion.advisory.telemetry_shield import envelope_field_prune_floor_pct
+
+    assert envelope_field_prune_floor_pct() == 50.0
+    drafted = draft_detection_rule(
+        query="Hunt T1498",
+        flow_record={"proto": "udp", "dst_port": 53, "technique_id": "T1498"},
+    )
+    yara = drafted["yara_l"]
+    assert drafted["suricata"].startswith("alert udp ")
+    assert "rev:1;" in drafted["suricata"]
+    assert "status: experimental" in drafted["sigma_yaml"]
+    assert "index=threatfusion" in drafted["spl"]
+    assert "| where count >= " in drafted["spl"]
+    for token in ("meta:", "events:", "match:", "outcome:", "condition:"):
+        assert token in yara
+    assert "5m" in yara.split("match:", 1)[1].split("outcome:", 1)[0]
+
+
+def test_readonly_replay_does_not_write_alerts_or_funnel(tmp_path: Path) -> None:
+    live_db = tmp_path / "live.sqlite3"
+    alerts = tmp_path / "alerts.sqlite3"
+    persist_scored_flow(
+        live_db,
+        _features(),
+        _score(),
+        provenance=_provenance("445"),
+        case_title="T1046 Network Service Discovery",
+        technique_id="T1046",
+    )
+    funnel_before = build_alert_fatigue_compression_funnel(live_db)
+
+    def _row_count() -> int:
+        uri = f"{live_db.resolve().as_uri()}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM live_flows").fetchone()[0])
+
+    rows_before = _row_count()
+    drafted = draft_live_hunter_rule(live_db, query="Hunt T1046", guide_id="hunt-t1046")
+    assert drafted["synthetic_replay"]["events_replayed"] == 1
+    assert _row_count() == rows_before
+    assert build_alert_fatigue_compression_funnel(live_db) == funnel_before
+    assert not alerts.exists()
+
+
+def test_forensic_scope_marks_a_multi_technique_chain(tmp_path: Path) -> None:
+    from threatfusion.api.live_soc_console import build_forensic_scope
+
+    live_db = tmp_path / "live.sqlite3"
+    persist_scored_flow(
+        live_db,
+        _features(),
+        _score(),
+        provenance=_provenance("445"),
+        case_title="T1046 Network Service Discovery",
+        technique_id="T1046",
+    )
+    persist_scored_flow(
+        live_db,
+        _features(),
+        _score(),
+        provenance=_provenance("80"),
+        case_title="T1190 Public-Facing Exploit",
+        technique_id="T1190",
+    )
+    from threatfusion.api.live_soc_console import _readonly_flow_rows
+
+    scope = build_forensic_scope(_readonly_flow_rows(live_db))
+    assert scope["composite_multi_stage"]["is_composite"] is True
+    assert scope["composite_multi_stage"]["badge"] == "Composite Multi-Stage Chain"
+    assert "T1046" in scope["composite_multi_stage"]["techniques"]
+    assert "T1190" in scope["composite_multi_stage"]["techniques"]
+    assert scope["decomposed_cti"]["max_cvss_score"] >= 8.1
+    assert len(scope["attack_story_timeline"]) == 2

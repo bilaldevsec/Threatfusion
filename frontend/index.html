@@ -257,7 +257,13 @@
         </section>
         <section class="compression-funnel" id="alertFatigueCompressionFunnel" aria-label="Alert Fatigue Compression Funnel">
           <h2>Alert Fatigue Compression Funnel</h2>
-          <p id="compressionFunnelLine" data-evidence-state="unavailable">Raw Telemetry Events (0) &rarr; SimHash Deduplicated Clusters (0) &rarr; High-Confidence Incidents (0) &middot; 0% Noise Reduction</p>
+          <p id="compressionFunnelLine" data-evidence-state="unavailable">Raw Telemetry Events (0) &rarr; SimHash Deduplicated Clusters (0) &rarr; High-Confidence Incidents (0) &middot; 0% Noise Reduction &middot; 0% LLM Tokens Saved</p>
+        </section>
+        <section id="forensicScopePanel" aria-label="Patient Zero and attack story">
+          <p id="patientZeroBadge" class="badge" data-evidence-state="unavailable">Patient Zero · Asset Scope</p>
+          <p id="compositeChainPill" class="badge" hidden>Composite Multi-Stage Chain</p>
+          <ol id="attackStoryTimeline"></ol>
+          <div id="decomposedCti" data-evidence-state="unavailable">Decomposed CTI &amp; CVSS</div>
         </section>
         <div class="inv-toolbar">
           <div class="queue-filter-bar">
@@ -588,6 +594,7 @@
                 <label for="shiftHandoffNote">Shift note</label>
                 <textarea id="shiftHandoffNote" rows="2" placeholder="Optional. An address must already be stored on this flow."></textarea>
                 <button id="btnExportHandoff" type="button">Export Shift Handoff / 4-Block Incident Report</button>
+                <button id="btnCopyPortableHandoff" type="button">Copy Portable Shift Handoff Brief</button>
                 <pre id="shiftHandoffReport" data-evidence-state="unavailable">No shift handoff exported yet.</pre>
               </div>
             </div>
@@ -603,6 +610,11 @@
       </section>
 
       <section class="soc-view" data-soc-view="graph" aria-label="AI Action Graph">
+        <p id="threeAmPolicyBanner" class="badge" data-evidence-state="verified">AI Prepares · Tier-3 Human Decides (3 A.M. Policy)</p>
+        <div class="hunter-draft-actions">
+          <button id="btnN8nDryRun" type="button">Dry-Run Simulation (94% Est. MTTR Cut)</button>
+          <button id="btnInspectN8nSchema" type="button">Official n8n v1.x Workflow Schema</button>
+        </div>
         <svg id="entityTopologyGraph" viewBox="0 0 980 150" role="img" aria-label="Attack topology for the selected stored incident"></svg>
         <div class="graph-layout">
           <div class="graph-board" id="actionGraphBoard">
@@ -697,15 +709,30 @@
           <span data-kpi-basis="reference_benchmark_not_measured">NOISE REDUCTION: 99.9889% reference_benchmark_not_measured</span>
         </div>
         <article class="card" id="hunterDraftRuleCard" style="background: #111827;" aria-label="Draft Detection Rule">
-          <h3>Draft Detection Rule (Suricata / Sigma)</h3>
-          <p>Grounds a review-only detection rule in the active flow protocol, destination port, and technique. Human approval is required before deployment.</p>
+          <h3>Draft Detection Rule (Suricata / Sigma / SPL / YARA-L)</h3>
+          <p>Grounds four review-only detection rules in the active flow protocol, destination port, and technique. Human approval is required before deployment.</p>
+          <div id="hunterRuleBadges" class="hunt-formats"></div>
           <label for="hunterDraftRuleQuery">Custom hunt intent</label>
           <input id="hunterDraftRuleQuery" type="text" value="Detect lateral movement toward the active destination port" maxlength="240">
           <div class="hunter-draft-actions">
             <button id="btnDraftHunterRule" type="button">Draft Rule from Active Flow</button>
+            <button id="btnVerifyHunterRule" type="button">VERIFY RULE</button>
             <button id="btnCopyHunterRule" type="button">Copy Draft</button>
           </div>
+          <p id="hunterVerifyBadge" class="badge" data-evidence-state="unavailable">VERIFY RULE · 0/0 Live Flows Matched</p>
           <pre id="hunterDraftRulePreview" class="hunter-draft-preview" data-evidence-state="unavailable">No draft yet. Select a stored flow, then draft a Suricata or Sigma rule.</pre>
+          <label for="hunterRuleSuricata">Suricata</label>
+          <pre id="hunterRuleSuricata" class="hunter-draft-preview" data-rule-format="suricata" data-evidence-state="unavailable"></pre>
+          <button id="btnCopySuricata" type="button" data-copy-target="hunterRuleSuricata">Copy Suricata</button>
+          <label for="hunterRuleSigma">Sigma YAML</label>
+          <pre id="hunterRuleSigma" class="hunter-draft-preview" data-rule-format="sigma_yaml" data-evidence-state="unavailable"></pre>
+          <button id="btnCopySigma" type="button" data-copy-target="hunterRuleSigma">Copy Sigma YAML</button>
+          <label for="hunterRuleSpl">SPL</label>
+          <pre id="hunterRuleSpl" class="hunter-draft-preview" data-rule-format="spl" data-evidence-state="unavailable"></pre>
+          <button id="btnCopySpl" type="button" data-copy-target="hunterRuleSpl">Copy SPL</button>
+          <label for="hunterRuleYara">YARA-L</label>
+          <pre id="hunterRuleYara" class="hunter-draft-preview" data-rule-format="yara_l" data-evidence-state="unavailable"></pre>
+          <button id="btnCopyYara" type="button" data-copy-target="hunterRuleYara">Copy YARA-L</button>
         </article>
         <article class="card" id="huntAiSummaryCard" style="background: #111827;" aria-label="AI Summary of Hunt Results" hidden>
           <h3>AI Summary of Hunt Results</h3>
@@ -1129,6 +1156,14 @@
     </div>
   </div>
   <div id="socToast" class="soc-toast" role="status" aria-live="polite" hidden></div>
+  <div id="n8nSchemaModal" class="identity-modal" hidden>
+    <div class="identity-modal-card" role="dialog" aria-modal="true" aria-labelledby="n8nSchemaTitle">
+      <h3 id="n8nSchemaTitle">Official n8n v1.x Workflow Schema</h3>
+      <pre id="n8nSchemaPreview" data-evidence-state="unavailable">Schema has not been loaded.</pre>
+      <button id="btnCopyN8nSchema" type="button">Copy schema</button>
+      <button id="btnCloseN8nSchema" type="button">Close</button>
+    </div>
+  </div>
   <script src="js/soc_dashboard.js"></script>
 </body>
 </html>

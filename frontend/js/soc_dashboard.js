@@ -1053,15 +1053,64 @@
     const clusters = Number(funnel.simhash_unique_clusters);
     const high = Number(funnel.high_confidence_incidents);
     const pct = Number(funnel.noise_reduction_pct);
+    const saved = Number(funnel.llm_tokens_saved_pct);
     const rawText = Number.isFinite(raw) ? String(raw) : '0';
     const clusterText = Number.isFinite(clusters) ? String(clusters) : '0';
     const highText = Number.isFinite(high) ? String(high) : '0';
     const pctText = Number.isFinite(pct) ? String(Math.round(pct)) : '0';
+    const savedText = Number.isFinite(saved) ? String(Math.round(saved)) : '0';
     node.textContent = 'Raw Telemetry Events (' + rawText
       + ') \u2192 SimHash Deduplicated Clusters (' + clusterText
       + ') \u2192 High-Confidence Incidents (' + highText
-      + ') \u00b7 ' + pctText + '% Noise Reduction';
+      + ') \u00b7 ' + pctText + '% Noise Reduction'
+      + ' \u00b7 ' + savedText + '% LLM Tokens Saved';
     node.setAttribute('data-evidence-state', 'verified');
+  }
+
+  function renderForensicScope(scope) {
+    const patientNode = document.getElementById('patientZeroBadge');
+    const chainNode = document.getElementById('compositeChainPill');
+    const storyNode = document.getElementById('attackStoryTimeline');
+    const ctiNode = document.getElementById('decomposedCti');
+    if (!patientNode || !scope || typeof scope !== 'object') return;
+    const patient = scope.patient_zero && typeof scope.patient_zero === 'object' ? scope.patient_zero : {};
+    const host = patient.host_ip ? String(patient.host_ip) : 'unavailable';
+    const seen = patient.first_seen_utc ? String(patient.first_seen_utc) : 'unavailable';
+    const assets = Number(patient.distinct_assets_affected);
+    const assetText = Number.isFinite(assets) ? String(assets) : '0';
+    patientNode.textContent = 'Patient Zero \u00b7 Asset Scope ' + host
+      + ' \u00b7 first seen ' + seen
+      + ' \u00b7 ' + assetText + ' assets';
+    patientNode.setAttribute('data-evidence-state', patient.host_ip ? 'verified' : 'unavailable');
+    const chain = scope.composite_multi_stage && typeof scope.composite_multi_stage === 'object'
+      ? scope.composite_multi_stage
+      : {};
+    if (chainNode) {
+      chainNode.hidden = chain.is_composite !== true;
+      chainNode.textContent = chain.badge ? String(chain.badge) : 'Composite Multi-Stage Chain';
+    }
+    const steps = Array.isArray(scope.attack_story_timeline) ? scope.attack_story_timeline : [];
+    if (storyNode) {
+      storyNode.innerHTML = steps.length ? steps.map(function (step) {
+        return '<li>Attack Story Timeline ' + escapeHtml(String(step.step || ''))
+          + ' ' + escapeHtml(String(step.stage || ''))
+          + ' ' + escapeHtml(String(step.technique || ''))
+          + ' ' + escapeHtml(String(step.summary || ''))
+          + '</li>';
+      }).join('') : '<li>Attack Story Timeline unavailable</li>';
+    }
+    const cti = scope.decomposed_cti && typeof scope.decomposed_cti === 'object' ? scope.decomposed_cti : {};
+    const iocs = cti.operational_iocs && typeof cti.operational_iocs === 'object' ? cti.operational_iocs : {};
+    const ttps = Array.isArray(cti.tactical_ttps) ? cti.tactical_ttps.join(', ') : '';
+    const ips = Array.isArray(iocs.ips) ? iocs.ips.join(', ') : '';
+    const ports = Array.isArray(iocs.ports) ? iocs.ports.join(', ') : '';
+    if (ctiNode) {
+      ctiNode.textContent = 'Decomposed CTI & CVSS tactics ' + (ttps || 'none')
+        + ' ips ' + (ips || 'none')
+        + ' ports ' + (ports || 'none')
+        + ' max_cvss_score ' + String(cti.max_cvss_score == null ? 0 : cti.max_cvss_score);
+      ctiNode.setAttribute('data-evidence-state', ttps ? 'verified' : 'unavailable');
+    }
   }
 
   function paintFunnelSvg(counts) {
@@ -2699,6 +2748,38 @@
     if (copyRuleButton) {
       copyRuleButton.addEventListener('click', () => { copyHunterDetectionRule(); });
     }
+    const verifyRuleButton = document.getElementById('btnVerifyHunterRule');
+    if (verifyRuleButton) {
+      verifyRuleButton.addEventListener('click', () => { draftHunterDetectionRule(); });
+    }
+    document.querySelectorAll('[data-copy-target]').forEach((button) => {
+      button.addEventListener('click', () => {
+        copyNamedRuleBlock(button.getAttribute('data-copy-target') || '');
+      });
+    });
+    const portableButton = document.getElementById('btnCopyPortableHandoff');
+    if (portableButton) {
+      portableButton.addEventListener('click', () => { copyPortableHandoffBrief(); });
+    }
+    const dryRunButton = document.getElementById('btnN8nDryRun');
+    if (dryRunButton) {
+      dryRunButton.addEventListener('click', () => { refreshN8nSchema(false); });
+    }
+    const inspectSchemaButton = document.getElementById('btnInspectN8nSchema');
+    if (inspectSchemaButton) {
+      inspectSchemaButton.addEventListener('click', () => { refreshN8nSchema(true); });
+    }
+    const copySchemaButton = document.getElementById('btnCopyN8nSchema');
+    if (copySchemaButton) {
+      copySchemaButton.addEventListener('click', () => { copyTextBlock(latestN8nSchemaText); });
+    }
+    const closeSchemaButton = document.getElementById('btnCloseN8nSchema');
+    if (closeSchemaButton) {
+      closeSchemaButton.addEventListener('click', () => {
+        const modal = document.getElementById('n8nSchemaModal');
+        if (modal) modal.hidden = true;
+      });
+    }
     const noteButton = document.getElementById('btnSaveAnalystNote');
     if (noteButton) {
       noteButton.addEventListener('click', () => { saveLiveAnalystNote(); });
@@ -2713,6 +2794,7 @@
     }
     refreshLiveQueue();
     refreshHuntingGuides();
+    refreshN8nSchema(false);
 
     // Top Header SOAR Action Button
     const topApproveBtn = document.getElementById('approvePlaybookBtn');
@@ -4654,6 +4736,7 @@
       }
       const data = await resp.json();
       if (data && data.compression_funnel) renderCompressionFunnel(data.compression_funnel);
+      renderForensicScope(data);
       const flows = Array.isArray(data.flows) ? data.flows : [];
       if (!flows.length) {
         if (liveCampaignIncidents.length) {
@@ -4738,6 +4821,8 @@
   }
 
   let lastHunterDraftText = '';
+  let latestPortableHandoffBrief = '';
+  let latestN8nSchemaText = '';
   let latestHuntingGuides = [];
 
   function renderNumberedHuntList(id, steps) {
@@ -4797,13 +4882,19 @@
     const pct = Math.max(0, Math.min(100, Number(guide.active_match_pct) || 0));
     const width = String(Math.round(pct));
     const count = Number(guide.results_found_count) || 0;
-    const formats = Array.isArray(guide.rule_formats) ? guide.rule_formats : [];
+    const formats = Array.isArray(guide.badges) && guide.badges.length
+      ? guide.badges
+      : (Array.isArray(guide.rule_formats) ? guide.rule_formats : []);
     const formatHtml = formats.map(function (fmt) {
       return '<span class="badge badge-format">' + escapeHtml(String(fmt)) + '</span>';
     }).join(' ');
+    const zscore = guide.max_sbytes_zscore == null ? '0' : String(guide.max_sbytes_zscore);
     return '<tr>'
       + '<td><strong>' + escapeHtml(guide.title || '') + '</strong>'
-      + '<div class="hunt-profile">' + escapeHtml(guide.adversary_profile || '') + '</div></td>'
+      + '<div class="hunt-profile">' + escapeHtml(guide.adversary_profile || '') + '</div>'
+      + '<div class="hunt-hypothesis">Testable Hypothesis (H1): '
+      + escapeHtml(String(guide.hypothesis || '')) + '</div>'
+      + '<span class="badge">Outlier Z-Score ' + escapeHtml(zscore) + '</span></td>'
       + '<td>' + escapeHtml(guide.mitre_technique || '') + '</td>'
       + '<td><div class="hunt-match" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="'
       + width + '"><span style="width:' + width + '%"></span></div>'
@@ -4884,10 +4975,24 @@
         })
       });
       const data = await resp.json();
-      const suricata = typeof data.suricata_rule === 'string' ? data.suricata_rule : '';
-      const sigma = typeof data.sigma_rule === 'string' ? data.sigma_rule : '';
+      const rules = data.rules && typeof data.rules === 'object' ? data.rules : {};
+      const suricata = typeof (rules.suricata || data.suricata || data.suricata_rule) === 'string'
+        ? (rules.suricata || data.suricata || data.suricata_rule)
+        : '';
+      const sigma = typeof (rules.sigma_yaml || data.sigma_yaml || data.sigma_rule) === 'string'
+        ? (rules.sigma_yaml || data.sigma_yaml || data.sigma_rule)
+        : '';
+      const spl = typeof (rules.spl || data.spl) === 'string' ? (rules.spl || data.spl) : '';
+      const yara = typeof (rules.yara_l || data.yara_l) === 'string' ? (rules.yara_l || data.yara_l) : '';
       const explanation = typeof data.explanation === 'string' ? data.explanation : '';
       const mode = data.deployment_mode || 'REVIEW_ONLY_HUMAN_APPROVAL_REQUIRED';
+      const badges = Array.isArray(data.badges) ? data.badges : (Array.isArray(data.rule_formats) ? data.rule_formats : []);
+      const badgeNode = document.getElementById('hunterRuleBadges');
+      if (badgeNode) {
+        badgeNode.innerHTML = badges.map(function (fmt) {
+          return '<span class="badge badge-format">' + escapeHtml(String(fmt)) + '</span>';
+        }).join(' ');
+      }
       const text = [
         '# deployment_mode: ' + mode,
         '# ' + explanation,
@@ -4895,10 +5000,35 @@
         '# Suricata',
         suricata,
         '',
-        '# Sigma',
-        sigma
+        '# Sigma YAML',
+        sigma,
+        '',
+        '# SPL',
+        spl,
+        '',
+        '# YARA-L',
+        yara
       ].join('\n');
       lastHunterDraftText = text;
+      fillHunterRuleBlock('hunterRuleSuricata', suricata);
+      fillHunterRuleBlock('hunterRuleSigma', sigma);
+      fillHunterRuleBlock('hunterRuleSpl', spl);
+      fillHunterRuleBlock('hunterRuleYara', yara);
+      const replay = data.synthetic_replay && typeof data.synthetic_replay === 'object'
+        ? data.synthetic_replay
+        : {};
+      const matched = Number(replay.rules_triggered);
+      const total = Number(replay.events_replayed);
+      const verifyNode = document.getElementById('hunterVerifyBadge');
+      if (verifyNode) {
+        const matchedText = Number.isFinite(matched) ? String(matched) : '0';
+        const totalText = Number.isFinite(total) ? String(total) : '0';
+        verifyNode.textContent = 'VERIFY RULE \u00b7 ' + matchedText + '/' + totalText + ' Live Flows Matched';
+        verifyNode.setAttribute(
+          'data-evidence-state',
+          data.rule_syntax_verified === true ? 'verified' : 'unavailable'
+        );
+      }
       if (preview) {
         preview.textContent = text;
         preview.setAttribute(
@@ -4916,11 +5046,76 @@
     }
   }
 
+  function fillHunterRuleBlock(id, text) {
+    const node = document.getElementById(id);
+    if (!node) return;
+    node.textContent = text || '';
+    node.setAttribute('data-evidence-state', text ? 'verified' : 'unavailable');
+  }
+
+  function copyTextBlock(text) {
+    if (!text || !navigator.clipboard || !navigator.clipboard.writeText) return;
+    navigator.clipboard.writeText(text);
+  }
+
   function copyHunterDetectionRule() {
     const preview = document.getElementById('hunterDraftRulePreview');
     const text = lastHunterDraftText || (preview ? preview.textContent : '');
-    if (!text || !navigator.clipboard || !navigator.clipboard.writeText) return;
-    navigator.clipboard.writeText(text);
+    copyTextBlock(text);
+  }
+
+  function copyNamedRuleBlock(targetId) {
+    const node = document.getElementById(targetId);
+    copyTextBlock(node ? node.textContent : '');
+  }
+
+  async function copyPortableHandoffBrief() {
+    let brief = latestPortableHandoffBrief;
+    if (!brief) {
+      try {
+        const resp = await fetch('/api/v1/live/workbench');
+        const data = await resp.json();
+        brief = typeof data.portable_handoff_brief === 'string' ? data.portable_handoff_brief : '';
+        latestPortableHandoffBrief = brief;
+      } catch (err) {
+        brief = '';
+      }
+    }
+    copyTextBlock(brief);
+    showHandoffReport(brief || 'Portable handoff brief is unavailable.', brief ? 'verified' : 'unavailable');
+  }
+
+  async function refreshN8nSchema(openModal) {
+    const banner = document.getElementById('threeAmPolicyBanner');
+    const dryButton = document.getElementById('btnN8nDryRun');
+    const preview = document.getElementById('n8nSchemaPreview');
+    const modal = document.getElementById('n8nSchemaModal');
+    try {
+      const resp = await fetch('/api/v1/live/soar/n8n-schema');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const policy = data.three_am_policy && typeof data.three_am_policy === 'object'
+        ? data.three_am_policy
+        : {};
+      if (banner && policy.headline) {
+        banner.textContent = String(policy.headline) + ' (3 A.M. Policy)';
+        banner.setAttribute('data-evidence-state', 'verified');
+      }
+      const dry = data.dry_run_simulation && typeof data.dry_run_simulation === 'object'
+        ? data.dry_run_simulation
+        : {};
+      if (dryButton && dry.est_mttr_reduction_pct != null) {
+        dryButton.textContent = 'Dry-Run Simulation (' + String(dry.est_mttr_reduction_pct) + '% Est. MTTR Cut)';
+      }
+      latestN8nSchemaText = JSON.stringify(data.workflow || {}, null, 2);
+      if (preview) {
+        preview.textContent = latestN8nSchemaText;
+        preview.setAttribute('data-evidence-state', data.node_count ? 'verified' : 'unavailable');
+      }
+      if (openModal && modal) modal.hidden = false;
+    } catch (err) {
+      if (preview) preview.setAttribute('data-evidence-state', 'unavailable');
+    }
   }
 
   async function askLiveCopilot(flowIdOverride) {
@@ -5047,6 +5242,10 @@
       const benchResp = await fetch('/api/v1/live/workbench');
       const bench = await benchResp.json();
       if (bench && bench.compression_funnel) renderCompressionFunnel(bench.compression_funnel);
+      if (bench && typeof bench.portable_handoff_brief === 'string') {
+        latestPortableHandoffBrief = bench.portable_handoff_brief;
+      }
+      renderForensicScope(bench);
       setLiveText(
         'liveWorkbenchStatus',
         'n8n workbench nodes: ' + (bench.node_count || 0) + '. Dispatch stays unauthorized.',

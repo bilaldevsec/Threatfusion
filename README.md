@@ -199,6 +199,27 @@ The lab HMAC and MISP values are not production credentials. Replace them before
 
 `--up` starts the console, `docker/docker-compose.n8n.yml`, the private `172.29.0.0/24` range, and the eve follower. It waits until Suricata logs `Engine started`. The process listens beyond loopback so the n8n container can call `http://host.docker.internal:8766`. `--scan` runs non-interactive `curl` and `ssh -o BatchMode=yes` from `172.29.0.10` and waits until a new `172.29.0.10 -> 172.29.0.20` row is stored. Multicast, link-local, broadcast, and port 5353 are not ingested. `--down` stops the follower, the console, n8n, and the range. The host firewall is not changed. No Azure resources are created.
 
+### Cloud range, one command
+
+```bash
+AZURE_VM_SIZE=Standard_B2pls_v2 ./scripts/deploy_cloud_range.sh --auto-ip --deploy-full-stack
+```
+
+When `cloud_state.json` has no victim public address and `--victim-host` was not passed, a real run provisions the range, records `cloud_state.json`, and then deploys the console, ML engine, Suricata, and n8n. `--dry-run` prints the plan and does not provision or call a cloud API. `--provision-range`, `--teardown`, `--status`, and `--deallocate` keep their existing meanings.
+
+### v1.2 operator surface
+
+These paths stay on the existing console routes. `production_fusion_enabled` stays false. TF-008, TF-009, TF-010, and TF-011 stay open.
+
+| Surface | What the operator sees |
+|---|---|
+| Queue and workbench | Alert-fatigue strip: raw events, SimHash clusters, high-confidence incidents, noise reduction, and LLM token savings from burst reuse plus envelope pruning. Replay mode is `SIMHASH_ZERO_COST_REPLAY`. |
+| Investigations | Patient Zero asset scope, attack-story timeline, composite multi-stage chain pill, and decomposed CTI with a published CVSS ceiling. |
+| AI Threat Hunter | Five guides (T1046, T1110, T1190, T1498, INV-4), each with a falsifiable H1 hypothesis, source-byte z-score, and host prevalence. Drafts are review-only Suricata, Sigma YAML, SPL, and YARA-L. VERIFY RULE evaluates those predicates against stored flows and does not insert rows. |
+| SOAR / action graph | 3 A.M. policy: AI prepares enrichment and staging; a person decides host containment and credential revocation. Dry-run reports a non-destructive 94% estimated MTTR cut. The n8n v1.x schema is inspectable and copyable. |
+| Notes and handoff | Copy Portable Shift Handoff Brief copies incident id, patient zero, funnel and token savings, ledger status, and SOAR state. |
+| MCP | `prompts/list` and `prompts/get` expose `ioc_enrichment_runbook`, `alert_triage_runbook`, and `statistical_hunt_runbook`. Approve, Dispatch, Isolate, and Rollback stay blocked. |
+
 ## Analyst workflow
 
 | Action | Route | What is stored |

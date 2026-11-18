@@ -74,8 +74,7 @@ def _tool_schemas() -> list[dict[str, Any]]:
         {
             "name": "threatfusion_get_incident",
             "description": (
-                "Return full forensic evidence and CVE/MITRE context for one flow_id. "
-                "Read-only."
+                "Return full forensic evidence and CVE/MITRE context for one flow_id. " "Read-only."
             ),
             "inputSchema": {
                 "type": "object",
@@ -216,6 +215,45 @@ _HANDLERS = {
     "threatfusion_draft_detection_rule": _draft_rule,
 }
 
+_RUNBOOKS: dict[str, dict[str, str]] = {
+    "ioc_enrichment_runbook": {
+        "description": (
+            "Read-only steps to compare stored addresses and ports with the local "
+            "indicator snapshot."
+        ),
+        "text": (
+            "1. Read the stored source and destination addresses for the selected flow.\n"
+            "2. Compare those addresses and ports with the local indicator snapshot.\n"
+            "3. Keep private, loopback, and link-local addresses on this host.\n"
+            "4. Record only indicator tags that already exist on the stored flow.\n"
+            "5. Leave the frozen-forest decision unchanged."
+        ),
+    },
+    "alert_triage_runbook": {
+        "description": (
+            "Read-only steps to compare a stored forest probability with the 0.5 threshold."
+        ),
+        "text": (
+            "1. Read the live queue and the selected flow id.\n"
+            "2. Compare the frozen-forest probability with the 0.5 threshold.\n"
+            "3. Record the decision, the evidence state, and an analyst note that cites "
+            "only stored fields.\n"
+            "4. Leave the forest score and the evidence row unchanged."
+        ),
+    },
+    "statistical_hunt_runbook": {
+        "description": (
+            "Read-only steps to compare a hunting hypothesis with the stored source-byte z-score."
+        ),
+        "text": (
+            "1. Read the five hunting guides and their hypothesis H1 strings.\n"
+            "2. Compare max_sbytes_zscore with the stored source-byte distribution.\n"
+            "3. Draft review-only detection text for the selected guide.\n"
+            "4. Do not insert a row into the live database."
+        ),
+    },
+}
+
 
 def _rpc_result(request_id: Any, result: Any) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "result": result}
@@ -241,7 +279,7 @@ def handle_rpc(message: dict[str, Any]) -> dict[str, Any] | None:
             request_id,
             {
                 "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {"tools": {}},
+                "capabilities": {"tools": {}, "prompts": {}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                 "instructions": (
                     "ThreatFusion read-only MCP. Approve/Dispatch/Isolate/Rollback "
@@ -253,6 +291,29 @@ def handle_rpc(message: dict[str, Any]) -> dict[str, Any] | None:
         return None
     if method == "tools/list":
         return _rpc_result(request_id, {"tools": _tool_schemas()})
+    if method == "prompts/list":
+        prompts = [
+            {"name": name, "description": spec["description"], "arguments": []}
+            for name, spec in _RUNBOOKS.items()
+        ]
+        return _rpc_result(request_id, {"prompts": prompts})
+    if method == "prompts/get":
+        name = str(params.get("name") or "")
+        spec = _RUNBOOKS.get(name)
+        if spec is None:
+            return _rpc_error(request_id, -32602, f"Unknown prompt: {name}")
+        return _rpc_result(
+            request_id,
+            {
+                "description": spec["description"],
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": {"type": "text", "text": spec["text"]},
+                    }
+                ],
+            },
+        )
     if method == "tools/call":
         name = str(params.get("name") or "")
         arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}

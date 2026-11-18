@@ -47,6 +47,21 @@ _UNTRUSTED_KEYS = (
     "dns_query",
     "http_uri",
 )
+# Flow-only replays have no payload, DNS, or URI, so those envelope keys are omitted.
+_FLOW_ENVELOPE_OMITTED_KEYS = ("payload_excerpt", "dns_query", "http_uri")
+
+
+def envelope_field_prune_floor_pct() -> float:
+    """Share of untrusted envelope keys omitted when a flow has no payload text.
+
+    The floor is ``omitted / len(_UNTRUSTED_KEYS) * 100``. It is derived from the
+    envelope key tuple, not from a measured token bill.
+    """
+    total = len(_UNTRUSTED_KEYS)
+    if total <= 0:
+        return 0.0
+    omitted = sum(1 for key in _FLOW_ENVELOPE_OMITTED_KEYS if key in _UNTRUSTED_KEYS)
+    return omitted * 100.0 / float(total)
 
 
 def _normalize_token(value: Any) -> str:
@@ -55,18 +70,10 @@ def _normalize_token(value: Any) -> str:
 
 
 def _feature_tokens(flow_dict: Mapping[str, Any]) -> tuple[str, ...]:
-    src = _normalize_token(
-        flow_dict.get("src_ip") or flow_dict.get("src_entity_id") or ""
-    )
-    dst = _normalize_token(
-        flow_dict.get("dst_ip") or flow_dict.get("dst_entity_id") or ""
-    )
-    port = _normalize_token(
-        flow_dict.get("dst_port") or flow_dict.get("service_or_port") or "0"
-    )
-    proto = _normalize_token(
-        flow_dict.get("proto") or flow_dict.get("flow_protocol") or "tcp"
-    )
+    src = _normalize_token(flow_dict.get("src_ip") or flow_dict.get("src_entity_id") or "")
+    dst = _normalize_token(flow_dict.get("dst_ip") or flow_dict.get("dst_entity_id") or "")
+    port = _normalize_token(flow_dict.get("dst_port") or flow_dict.get("service_or_port") or "0")
+    proto = _normalize_token(flow_dict.get("proto") or flow_dict.get("flow_protocol") or "tcp")
     technique = _normalize_token(
         flow_dict.get("technique_id")
         or flow_dict.get("mitre_technique_id")
@@ -241,9 +248,7 @@ def wrap_untrusted_telemetry_envelope(
         "prompt_injection_filtered": filtered,
         "sanitized_fields": sanitized,
         "system_instruction": EVIDENCE_FENCE_INSTRUCTION,
-        "fenced_prompt_prefix": (
-            f"{EVIDENCE_FENCE_INSTRUCTION}\n\n{envelope}"
-        ),
+        "fenced_prompt_prefix": (f"{EVIDENCE_FENCE_INSTRUCTION}\n\n{envelope}"),
     }
 
 
@@ -254,10 +259,7 @@ def build_fenced_advisory_prompt(
 ) -> dict[str, Any]:
     """Compose a Stage-5 prompt with an explicit evidence fence around telemetry."""
     fence = wrap_untrusted_telemetry_envelope(untrusted_fields)
-    prompt = (
-        f"{trusted_preamble.rstrip()}\n\n"
-        f"{fence['fenced_prompt_prefix']}"
-    )
+    prompt = f"{trusted_preamble.rstrip()}\n\n" f"{fence['fenced_prompt_prefix']}"
     return {
         "prompt": prompt,
         "evidence_envelope": {
@@ -294,12 +296,16 @@ def _allowed_indicator_set(
             continue
         if 0 <= port <= 65535:
             allowed.add(str(port))
-    technique = str(
-        flow_record.get("technique_id")
-        or flow_record.get("mitre_technique_id")
-        or flow_record.get("scenario_label")
-        or ""
-    ).strip().upper()
+    technique = (
+        str(
+            flow_record.get("technique_id")
+            or flow_record.get("mitre_technique_id")
+            or flow_record.get("scenario_label")
+            or ""
+        )
+        .strip()
+        .upper()
+    )
     if technique:
         allowed.add(technique)
         allowed.add(technique.split(".", 1)[0])
@@ -350,7 +356,9 @@ def verify_advisory_against_ledger(
         if key in seen:
             continue
         seen.add(key)
-        needle = indicator.lower() if "." in indicator and indicator[0].isdigit() else indicator.upper()
+        needle = (
+            indicator.lower() if "." in indicator and indicator[0].isdigit() else indicator.upper()
+        )
         if needle in allowed or indicator.lower() in allowed or indicator in allowed:
             verified.append(indicator)
         else:
@@ -359,9 +367,7 @@ def verify_advisory_against_ledger(
     status = "VERIFIED" if not ungrounded else "FLAGGED_UNGROUNDED"
     annotated = text
     for fake in ungrounded:
-        annotated = annotated.replace(
-            fake, f"{fake} [UNGROUNDED — stripped from ledger]"
-        )
+        annotated = annotated.replace(fake, f"{fake} [UNGROUNDED — stripped from ledger]")
     return {
         "status": status,
         "verified_indicators": verified,
@@ -395,12 +401,17 @@ def draft_detection_rule(
         dst_port = 0
     if dst_port <= 0 or dst_port > 65535:
         dst_port = 80
-    technique = str(
-        flow.get("technique_id")
-        or flow.get("mitre_technique_id")
-        or flow.get("scenario_label")
+    technique = (
+        str(
+            flow.get("technique_id")
+            or flow.get("mitre_technique_id")
+            or flow.get("scenario_label")
+            or "T1046"
+        )
+        .strip()
+        .upper()
         or "T1046"
-    ).strip().upper() or "T1046"
+    )
     technique_tag = technique.lower().replace(".", ".")
     src_ip = str(flow.get("src_ip") or flow.get("src_entity_id") or "any").strip() or "any"
     vector = str(flow.get("vector") or flow.get("vector_id") or query or technique).strip()
@@ -408,9 +419,9 @@ def draft_detection_rule(
     sid = _sid_for_flow(flow if flow else {"technique_id": technique, "dst_port": dst_port})
     msg = f"THREATFUSION {technique} {vector or 'hunt'}".replace('"', "")[:120]
     suricata = (
-        f'alert {proto} any any -> $HOME_NET {dst_port} '
+        f"alert {proto} any any -> $HOME_NET {dst_port} "
         f'(msg:"{msg}"; flow:to_server,established; '
-        f'classtype:trojan-activity; sid:{sid}; rev:1;)'
+        f"classtype:trojan-activity; sid:{sid}; rev:1;)"
     )
     sigma = (
         f"title: ThreatFusion Hunt {technique}\n"
@@ -431,6 +442,30 @@ def draft_detection_rule(
         f"falsepositives:\n"
         f"  - Legitimate service scans require analyst review\n"
     )
+    rule_name = "threatfusion_" + re.sub(r"[^a-z0-9_]", "_", technique.lower())
+    spl = (
+        f"index=threatfusion technique_id={technique} proto={proto} dst_port={dst_port}\n"
+        "| stats count by src_ip, dst_ip, dst_port\n"
+        "| where count >= 1"
+    )
+    yara_l = (
+        f"rule {rule_name} {{\n"
+        "  meta:\n"
+        '    author = "ThreatFusion"\n'
+        f'    technique = "{technique}"\n'
+        '    deployment = "REVIEW_ONLY"\n'
+        "  events:\n"
+        '    $e.metadata.event_type = "NETWORK_CONNECTION"\n'
+        f"    $e.target.port = {dst_port}\n"
+        f'    $e.network.ip_protocol = "{proto.upper()}"\n'
+        "  match:\n"
+        "    $e over 5m\n"
+        "  outcome:\n"
+        "    $risk_score = max($e.target.port)\n"
+        "  condition:\n"
+        "    $e\n"
+        "}\n"
+    )
     wanted = str(rule_format or "both").strip().lower()
     body: dict[str, Any] = {
         "schema_version": "threatfusion_hunter_draft_rule_v1",
@@ -450,6 +485,18 @@ def draft_detection_rule(
             "query": intent,
         },
         "production_fusion_enabled": False,
+        "suricata": suricata,
+        "sigma_yaml": sigma,
+        "spl": spl,
+        "yara_l": yara_l,
+        "rules": {
+            "suricata": suricata,
+            "sigma_yaml": sigma,
+            "spl": spl,
+            "yara_l": yara_l,
+        },
+        "rule_formats": ["suricata", "sigma_yaml", "spl", "yara_l"],
+        "badges": ["Suricata", "Sigma YAML", "SPL", "YARA-L"],
     }
     if wanted in {"suricata", "both"}:
         body["suricata_rule"] = suricata
