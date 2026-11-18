@@ -1058,13 +1058,28 @@
     const clusterText = Number.isFinite(clusters) ? String(clusters) : '0';
     const highText = Number.isFinite(high) ? String(high) : '0';
     const pctText = Number.isFinite(pct) ? String(Math.round(pct)) : '0';
-    const savedText = Number.isFinite(saved) ? String(Math.round(saved)) : '0';
+    const savedText = Number.isFinite(saved) ? String(Math.round(saved * 10) / 10) : '0';
+    const compact = Number(funnel.envelope_field_compaction_pct);
+    const compactText = Number.isFinite(compact) ? String(compact) : '0';
     node.textContent = 'Raw Telemetry Events (' + rawText
       + ') \u2192 SimHash Deduplicated Clusters (' + clusterText
       + ') \u2192 High-Confidence Incidents (' + highText
       + ') \u00b7 ' + pctText + '% Noise Reduction'
-      + ' \u00b7 ' + savedText + '% LLM Tokens Saved';
+      + ' \u00b7 ' + savedText + '% LLM Tokens Saved'
+      + ' \u00b7 ' + compactText + '% Envelope Field Compaction';
     node.setAttribute('data-evidence-state', 'verified');
+  }
+
+  function dedupeTechniqueTokens(text) {
+    const seen = {};
+    return String(text || '').split(/\s+/).filter(function (part) {
+      if (!part) return false;
+      if (!/^T\d{4}(?:\.\d{3})?$/i.test(part)) return true;
+      const key = part.toUpperCase();
+      if (seen[key]) return false;
+      seen[key] = true;
+      return true;
+    }).join(' ');
   }
 
   function renderForensicScope(scope) {
@@ -1074,34 +1089,50 @@
     const ctiNode = document.getElementById('decomposedCti');
     if (!patientNode || !scope || typeof scope !== 'object') return;
     const patient = scope.patient_zero && typeof scope.patient_zero === 'object' ? scope.patient_zero : {};
-    const host = patient.host_ip ? String(patient.host_ip) : 'unavailable';
-    const seen = patient.first_seen_utc ? String(patient.first_seen_utc) : 'unavailable';
+    const steps = Array.isArray(scope.attack_story_timeline) ? scope.attack_story_timeline : [];
+    const hasScope = steps.length > 0 || Boolean(patient.host_ip);
+    const host = patient.host_ip ? String(patient.host_ip) : (hasScope ? 'stored dataset flow' : 'unavailable');
+    const seen = patient.first_seen_utc ? String(patient.first_seen_utc) : (hasScope ? 'stored' : 'unavailable');
     const assets = Number(patient.distinct_assets_affected);
-    const assetText = Number.isFinite(assets) ? String(assets) : '0';
-    patientNode.textContent = 'Patient Zero \u00b7 Asset Scope ' + host
-      + ' \u00b7 first seen ' + seen
-      + ' \u00b7 ' + assetText + ' assets';
-    patientNode.setAttribute('data-evidence-state', patient.host_ip ? 'verified' : 'unavailable');
+    const assetText = Number.isFinite(assets) && assets > 0 ? String(assets) : (hasScope ? '1' : '0');
+    const assetPhrase = hasScope
+      ? ('Patient Zero \u00b7 Asset Scope ' + host + ' \u00b7 first seen ' + seen + ' \u00b7 ' + assetText + ' assets')
+      : 'Patient Zero \u00b7 Asset Scope';
+    patientNode.textContent = assetPhrase.indexOf('unknown host') === -1
+      ? assetPhrase
+      : 'Patient Zero \u00b7 Asset Scope ' + (hasScope ? 'stored dataset flow' : 'unavailable');
+    patientNode.setAttribute('data-evidence-state', hasScope ? 'verified' : 'unavailable');
     const chain = scope.composite_multi_stage && typeof scope.composite_multi_stage === 'object'
       ? scope.composite_multi_stage
       : {};
     if (chainNode) {
-      chainNode.hidden = chain.is_composite !== true;
-      chainNode.textContent = chain.badge ? String(chain.badge) : 'Composite Multi-Stage Chain';
+      chainNode.hidden = false;
+      const techniques = Array.isArray(chain.techniques) ? chain.techniques.map(dedupeTechniqueTokens) : [];
+      const unique = [];
+      techniques.forEach(function (item) {
+        if (item && unique.indexOf(item) === -1) unique.push(item);
+      });
+      chainNode.textContent = (chain.badge ? String(chain.badge) : 'Composite Multi-Stage Chain')
+        + (unique.length ? ' \u00b7 ' + unique.join(' \u00b7 ') : '');
     }
-    const steps = Array.isArray(scope.attack_story_timeline) ? scope.attack_story_timeline : [];
     if (storyNode) {
       storyNode.innerHTML = steps.length ? steps.map(function (step) {
-        return '<li>Attack Story Timeline ' + escapeHtml(String(step.step || ''))
-          + ' ' + escapeHtml(String(step.stage || ''))
-          + ' ' + escapeHtml(String(step.technique || ''))
-          + ' ' + escapeHtml(String(step.summary || ''))
-          + '</li>';
-      }).join('') : '<li>Attack Story Timeline unavailable</li>';
+        const stage = dedupeTechniqueTokens(step.stage || '');
+        const technique = dedupeTechniqueTokens(step.technique || '');
+        const summary = dedupeTechniqueTokens(step.summary || '');
+        const parts = [];
+        if (stage && stage !== technique) parts.push(stage);
+        if (technique && summary.indexOf(technique) === -1) parts.push(technique);
+        if (summary) parts.push(summary);
+        return '<span class="forensic-pill">' + escapeHtml(parts.join(' \u00b7 ')) + '</span>';
+      }).join('') : '<span class="forensic-pill">Attack story waiting for a stored flow</span>';
     }
     const cti = scope.decomposed_cti && typeof scope.decomposed_cti === 'object' ? scope.decomposed_cti : {};
     const iocs = cti.operational_iocs && typeof cti.operational_iocs === 'object' ? cti.operational_iocs : {};
-    const ttps = Array.isArray(cti.tactical_ttps) ? cti.tactical_ttps.join(', ') : '';
+    const tacticList = Array.isArray(cti.tactical_ttps) ? cti.tactical_ttps.map(dedupeTechniqueTokens) : [];
+    const ttps = tacticList.filter(function (item, index) {
+      return item && tacticList.indexOf(item) === index;
+    }).join(', ');
     const ips = Array.isArray(iocs.ips) ? iocs.ips.join(', ') : '';
     const ports = Array.isArray(iocs.ports) ? iocs.ports.join(', ') : '';
     if (ctiNode) {
@@ -1109,7 +1140,7 @@
         + ' ips ' + (ips || 'none')
         + ' ports ' + (ports || 'none')
         + ' max_cvss_score ' + String(cti.max_cvss_score == null ? 0 : cti.max_cvss_score);
-      ctiNode.setAttribute('data-evidence-state', ttps ? 'verified' : 'unavailable');
+      ctiNode.setAttribute('data-evidence-state', (ttps || ips) ? 'verified' : 'unavailable');
     }
   }
 
@@ -3734,20 +3765,30 @@
     return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value) ? value : 'analyst_a';
   }
 
-  function paintOperatorBadge(text, verified) {
+  const SESSION_AUTH_PILL = 'Session Auth (Tier-3 RBAC · Lab HTTP)';
+  const BILAL_SESSION_HEADER = 'Muhammad Bilal (21K-3551) · Tier-3 Approver | ' + SESSION_AUTH_PILL;
+  const BILAL_MTLS_HEADER = 'Muhammad Bilal (21K-3551) · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)';
+
+  function paintOperatorBadge(text, verified, evidenceState) {
     const node = document.getElementById('operatorAuthBadge');
     if (!node) return;
     node.textContent = text;
     node.classList.toggle('badge-neutral', !verified);
-    node.setAttribute('data-evidence-state', verified ? 'verified' : 'unavailable');
+    const state = evidenceState || (verified ? 'verified' : 'unavailable');
+    node.setAttribute('data-evidence-state', state);
   }
 
   function headerLineForSession(session) {
     if (!session) return 'unverified local label';
     const actor = String(session.actor_id || '');
     let line = String(session.header_identity || '');
-    if (actor === 'lab_operator' && session.identity_verified === true) {
-      return 'Muhammad Bilal (21K-3551) · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)';
+    const mtls = session.mtls_verified === true && session.identity_verified === true;
+    if (actor === 'lab_operator' && mtls) return BILAL_MTLS_HEADER;
+    if (actor === 'lab_operator') {
+      if (!line || line.indexOf('verified mTLS') !== -1 || line === 'unverified local label') {
+        return BILAL_SESSION_HEADER;
+      }
+      return line;
     }
     if (actor === 'tier1_analyst' || (line.indexOf('/CN=lab_operator') !== -1 && actor !== 'lab_operator' && actor !== 'compliance_auditor')) {
       return 'Muhammad Suhaib (22K-4302) · Tier-1 Triage | No SOAR Cert (Triage Only)';
@@ -3755,7 +3796,9 @@
     if (actor === 'compliance_auditor') {
       return 'Muhammad Hasnain (22K-4718) · Auditor | Read-Only Compliance Token';
     }
-    if (line.indexOf('/CN=lab_operator') !== -1) return 'unverified local label';
+    if (line.indexOf('/CN=lab_operator') !== -1 || line.indexOf('verified mTLS') !== -1) {
+      return 'unverified local label';
+    }
     return line || 'unverified local label';
   }
 
@@ -3766,9 +3809,13 @@
       return;
     }
     const line = headerLineForSession(session);
-    const verified = session.actor_id === 'lab_operator' && session.identity_verified === true
+    const verified = session.actor_id === 'lab_operator' && session.mtls_verified === true
+      && session.identity_verified === true
       && line.indexOf('/CN=lab_operator') !== -1;
-    paintOperatorBadge(line, verified);
+    const evidenceState = verified
+      ? 'verified'
+      : (line.indexOf(SESSION_AUTH_PILL) !== -1 ? 'session_authenticated' : 'unavailable');
+    paintOperatorBadge(line, verified, evidenceState);
     const node = document.getElementById('operatorAuthBadge');
     if (node) {
       if (verified) node.setAttribute('title', 'verified operator certificate');
@@ -3792,9 +3839,11 @@
     const label = stamp.identity_label || stamp.identityLabel || '';
     const prefix = stamp.cert_sha256_prefix || stamp.certSha256Prefix || '';
     const subject = stamp.certificate_subject || stamp.certificateSubject || '';
-    if (verified && label !== 'unverified_local_label' && prefix && subject === '/CN=lab_operator') {
+    const mtls = stamp.mtls_verified === true && verified && label !== 'unverified_local_label'
+      && prefix && subject === '/CN=lab_operator';
+    if (mtls) {
       node.setAttribute('title', 'verified operator certificate');
-      paintOperatorBadge('Muhammad Bilal (21K-3551) · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)', true);
+      paintOperatorBadge(BILAL_MTLS_HEADER, true, 'verified');
       return;
     }
     paintOperatorBadge('unverified local label', false);
@@ -3823,13 +3872,22 @@
         body: JSON.stringify({ actor_id: operatorActorId() })
       });
       const data = await resp.json();
-      if (sessionIdentity && sessionIdentity.actor_id === 'lab_operator' && data.identity_verified === true) {
+      const mtls = data.mtls_verified === true && data.evidence_state === 'verified';
+      if (sessionIdentity && sessionIdentity.actor_id === 'lab_operator' && mtls) {
         sessionIdentity.identity_verified = true;
-        sessionIdentity.header_identity = 'Muhammad Bilal (21K-3551) · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)';
+        sessionIdentity.mtls_verified = true;
+        sessionIdentity.header_identity = BILAL_MTLS_HEADER;
         sessionIdentity.certificate_subject = '/CN=lab_operator';
         paintSessionIdentity(sessionIdentity);
-      } else if (!(sessionIdentity && sessionIdentity.authenticated)) {
-        showOperatorStamp({ identity_verified: false, identity_label: 'unverified_local_label' });
+      } else if (sessionIdentity && sessionIdentity.authenticated) {
+        sessionIdentity.identity_verified = false;
+        sessionIdentity.mtls_verified = false;
+        sessionIdentity.header_identity = BILAL_SESSION_HEADER;
+        sessionIdentity.operator_auth_label = SESSION_AUTH_PILL;
+        sessionIdentity.certificate_subject = '';
+        paintSessionIdentity(sessionIdentity);
+      } else {
+        paintOperatorBadge(SESSION_AUTH_PILL, false, 'session_authenticated');
       }
       setLiveText(
         'campaignQueueStatus',
@@ -4289,8 +4347,13 @@
       return;
     }
     const probability = Number(inc.dnnAttackProbability);
-    if (inc.decision === 'Benign' || (Number.isFinite(probability) && probability < 0.5)) {
-      const percent = Number.isFinite(probability) ? ' (' + (probability * 100).toFixed(1) + '%)' : '';
+    const predicted = String(inc.predictedClass || inc.dnnClass || '');
+    const normalConfidence = Number(inc.predictedClassProbability);
+    if (predicted === 'Normal' || inc.decision === 'Benign' || (Number.isFinite(probability) && probability < 0.5)) {
+      const shown = Number.isFinite(normalConfidence)
+        ? normalConfidence
+        : (Number.isFinite(probability) ? Math.max(0, 1 - probability) : NaN);
+      const percent = Number.isFinite(shown) ? ' (' + (shown * 100).toFixed(1) + '%)' : '';
       node.textContent = 'PyTorch DNN (9-Class): Normal' + percent;
       return;
     }
@@ -5445,13 +5508,25 @@
         + ' / threshold ' + (Number.isFinite(aeThreshold) ? aeThreshold.toFixed(6) : 'unavailable')
         + (block.ae_anomaly_flag ? ' / anomaly' : ' / within threshold')
     );
-    const alertDecision = String(
-      (data && data.decision) || block.rf_decision || block.dnn_binary_decision || ''
+    const predictedClass = String(block.predicted_class || block.dnn_class || data.predicted_class || data.dnn_class || '');
+    const normalConfidence = Number(
+      block.predicted_class_probability != null
+        ? block.predicted_class_probability
+        : data.predicted_class_probability
     );
-    const dnnShown = Number.isFinite(dnn) ? dnn.toFixed(4) : 'unavailable';
-    const dnnGaugeText = alertDecision === 'Benign' || alertDecision === 'Normal'
-      ? ('9-class DNN: ' + dnnShown + ' / Normal (Benign)')
-      : ('9-class DNN: ' + dnnShown + ' / ' + String(block.unsw_attack_category || block.dnn_binary_decision || 'unavailable'));
+    const benignLabel = predictedClass === 'Normal' || (Number.isFinite(dnn) && dnn < 0.5);
+    const dnnShown = benignLabel
+      ? (Number.isFinite(normalConfidence) ? normalConfidence.toFixed(4) : (Number.isFinite(dnn) ? (1 - dnn).toFixed(4) : 'unavailable'))
+      : (Number.isFinite(dnn) ? dnn.toFixed(4) : 'unavailable');
+    const attackName = String(block.top_attack_class || data.top_attack_class || '');
+    const topAttackProbability = Number(block.top_attack_probability != null ? block.top_attack_probability : dnn);
+    const attackNote = benignLabel && attackName
+      ? (' · top attack ' + attackName + ' (' + (Number.isFinite(topAttackProbability) ? topAttackProbability.toFixed(4) : 'unavailable') + ')')
+      : '';
+    const dnnGaugeText = benignLabel
+      ? ('9-class DNN: Normal (' + dnnShown + ')' + attackNote)
+      : ('9-class DNN: ' + (predictedClass || block.unsw_attack_category || block.dnn_binary_decision || 'unavailable')
+        + ' (' + dnnShown + ')');
     setGauge(
       'gaugeDnnFill',
       'gaugeDnnThreshold',

@@ -3,7 +3,14 @@
 ## Snapshot
 
 The following baseline snapshot is dated 2026-09-24 on `main`; later Gemini-branch milestones appear
-below. On 2026-11-14 the console gained a lab/production posture, login rate limiting,
+below. The red-team rectification on top of `f9f284b` strips ANSI and control bytes before the
+telemetry fence, annotates lowercase ungrounded indicators, refuses a verified mTLS claim for a
+bare HTTP enrollment or password session, reports SimHash token reuse separately from the 50%
+envelope-field compaction floor, keeps the forensic cards in the investigation detail panel, quotes
+hunt-rule YAML, labels a benign DNN row as Normal, resolves the protected sibling path in the
+boundary tests, and plans the student-free-tier Azure range without an extra environment variable.
+`TF-008`, `TF-009`, `TF-010`, and `TF-011` stay open. `production_fusion_enabled` stays false.
+On 2026-11-14 the console gained a lab/production posture, login rate limiting,
 immutable auth audit events, isolation IP guards, a cold-boot data directory, and `GET /readyz`.
 `TF-008`, `TF-009`, `TF-010`, and `TF-011` stay open. `production_fusion_enabled` stays false. The corrected v2 experiment is checkpointed and pushed at
 `8aa26ba250e4a63f95d90960ec87e224325b6d2f`; Backend quality run `35438412921` passed. The FYP-II

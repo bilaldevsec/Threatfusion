@@ -40,6 +40,18 @@ from threatfusion.soar.playbook_ledger import (
 )
 
 
+def _guarded_protected_roots() -> tuple[Path, ...]:
+    """Sibling protected tree and the canonical constant, without a laptop path."""
+    repo_root = Path(__file__).resolve().parents[3]
+    sibling = (repo_root.parent / "threatfusion").resolve()
+    canonical = CANONICAL_PROTECTED_WORKSPACE.resolve()
+    roots: list[Path] = []
+    for candidate in (sibling, canonical):
+        if candidate not in roots:
+            roots.append(candidate)
+    return tuple(roots)
+
+
 class TestBoundaryPreflight:
     """Test deterministic boundary preflight B0-B5 checks."""
 
@@ -92,58 +104,63 @@ class TestBoundaryPreflight:
             assert len(findings) == 0
 
     def test_preflight_fails_on_forbidden_literal_leak(self) -> None:
-        """Check B5 triggers when code references protected workspace path."""
-        with tempfile.TemporaryDirectory() as td:
-            temp_dir = Path(td)
-            code_file = temp_dir / "leaky_code.py"
-            operator_home = "".join(["/", "home", "/", "muhammad-bilal"])
-            forbidden_str = operator_home + "/projects/threat" + "fusion/backend"
-            code_file.write_text(f'REF = "{forbidden_str}"\n', encoding="utf-8")
-            passed, findings = check_b5_code_config(active_path=temp_dir)
-            assert passed is False
-            assert len(findings) == 1
-            assert "B5: Code/config file 'leaky_code.py' contains literal reference" in findings[0]
+        """Check B5 triggers for the sibling path and the canonical protected path."""
+        assert _guarded_protected_roots()
+        for protected in _guarded_protected_roots():
+            with tempfile.TemporaryDirectory() as td:
+                temp_dir = Path(td)
+                code_file = temp_dir / "leaky_code.py"
+                forbidden_str = str(protected) + "/backend"
+                code_file.write_text(f'REF = "{forbidden_str}"\n', encoding="utf-8")
+                passed, findings = check_b5_code_config(
+                    active_path=temp_dir,
+                    protected_rp=protected,
+                )
+                assert passed is False
+                assert len(findings) == 1
+                assert (
+                    "B5: Code/config file 'leaky_code.py' contains literal reference" in findings[0]
+                )
 
     def test_preflight_fails_on_simulated_pth_leak(self) -> None:
-        """Check B3 triggers when site-packages has a .pth file referencing protected workspace."""
-        with tempfile.TemporaryDirectory() as td:
-            temp_venv = Path(td) / "test-venv"
-            site_packages = temp_venv / "lib" / "python3.12" / "site-packages"
-            site_packages.mkdir(parents=True)
-            pth_file = site_packages / "leak.pth"
-            operator_home = "".join(["/", "home", "/", "muhammad-bilal"])
-            leak_path = operator_home + "/projects/threat" + "fusion"
-            pth_file.write_text(f"{leak_path}\n", encoding="utf-8")
+        """Check B3 triggers for the sibling path and the canonical protected path."""
+        for protected in _guarded_protected_roots():
+            with tempfile.TemporaryDirectory() as td:
+                temp_venv = Path(td) / "test-venv"
+                site_packages = temp_venv / "lib" / "python3.12" / "site-packages"
+                site_packages.mkdir(parents=True)
+                pth_file = site_packages / "leak.pth"
+                pth_file.write_text(f"{protected}\n", encoding="utf-8")
 
-            passed, findings = check_b3_venv(
-                venv_path=temp_venv,
-                active_rp=CANONICAL_ACTIVE_WORKSPACE.resolve(),
-                protected_rp=CANONICAL_PROTECTED_WORKSPACE.resolve(),
-            )
-            assert passed is False
-            assert len(findings) == 1
-            assert "B3: Virtualenv file" in findings[0]
-            assert "contains reference to protected workspace" in findings[0]
+                passed, findings = check_b3_venv(
+                    venv_path=temp_venv,
+                    active_rp=CANONICAL_ACTIVE_WORKSPACE.resolve(),
+                    protected_rp=protected,
+                )
+                assert passed is False
+                assert len(findings) == 1
+                assert "B3: Virtualenv file" in findings[0]
+                assert "contains reference to protected workspace" in findings[0]
 
     def test_preflight_fails_on_simulated_git_alternates_leak(self) -> None:
-        """Check B4 triggers when .git/objects/info/alternates references protected repo."""
-        with tempfile.TemporaryDirectory() as td:
-            temp_repo = Path(td)
-            git_info = temp_repo / ".git" / "objects" / "info"
-            git_info.mkdir(parents=True)
-            alternates = git_info / "alternates"
-            operator_home = "".join(["/", "home", "/", "muhammad-bilal"])
-            leak_path = operator_home + "/projects/threat" + "fusion/.git/objects"
-            alternates.write_text(f"{leak_path}\n", encoding="utf-8")
+        """Check B4 triggers for the sibling path and the canonical protected path."""
+        for protected in _guarded_protected_roots():
+            with tempfile.TemporaryDirectory() as td:
+                temp_repo = Path(td)
+                git_info = temp_repo / ".git" / "objects" / "info"
+                git_info.mkdir(parents=True)
+                alternates = git_info / "alternates"
+                leak_path = protected / ".git" / "objects"
+                alternates.write_text(f"{leak_path}\n", encoding="utf-8")
 
-            passed, findings = check_b4_git_metadata(
-                active_path=temp_repo,
-                protected_rp=CANONICAL_PROTECTED_WORKSPACE.resolve(),
-            )
-            assert passed is False
-            assert len(findings) == 1
-            assert "B4: Git alternates" in findings[0]
-            assert "references protected workspace" in findings[0]
+                passed, findings = check_b4_git_metadata(
+                    active_path=temp_repo,
+                    protected_rp=protected,
+                )
+                assert passed is False
+                assert len(findings) == 1
+                assert "B4: Git alternates" in findings[0]
+                assert "references protected workspace" in findings[0]
 
     def test_preflight_fails_on_symlink_escape(self) -> None:
         """Check B2 triggers when workspace contains a symlink pointing outside."""

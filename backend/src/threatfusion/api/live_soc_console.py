@@ -536,12 +536,49 @@ def _score_autoencoder(canonical: Sequence[float], repo_root: Path) -> dict[str,
         return empty
 
 
+def _dnn_class_labels(
+    *,
+    attack_probability: float,
+    category_name: str,
+    category_joint: float,
+    normal_probability: float,
+) -> dict[str, Any]:
+    """Label a benign flow as Normal and keep the top attack class beside it.
+
+    A binary attack probability below 0.5, or a Normal mass that beats the top
+    attack joint, is Normal. The attack name and its probability stay on
+    ``top_attack_class`` / ``top_attack_probability``.
+    """
+    top_attack_class = "Backdoors" if category_name == "Backdoor" else category_name
+    normal_is_top = normal_probability >= category_joint
+    if attack_probability < 0.5 or normal_is_top:
+        predicted = "Normal"
+        predicted_probability = normal_probability
+    else:
+        predicted = top_attack_class
+        predicted_probability = category_joint if category_joint > 0 else attack_probability
+    return {
+        "predicted_class": predicted,
+        "dnn_class": predicted,
+        "predicted_class_probability": predicted_probability,
+        "dnn_class_probability": predicted_probability,
+        "top_attack_class": top_attack_class,
+        "top_attack_probability": float(attack_probability),
+    }
+
+
 def _score_same_split_dnn(raw_features: Mapping[str, float], repo_root: Path) -> dict[str, Any]:
     empty = {
         "dnn_attack_probability": None,
         "dnn_binary_decision": None,
         "unsw_attack_category": None,
         "dnn_class_distribution": {},
+        "predicted_class": None,
+        "dnn_class": None,
+        "predicted_class_probability": None,
+        "dnn_class_probability": None,
+        "top_attack_class": None,
+        "top_attack_probability": None,
     }
     bundle = _dnn_bundle(repo_root)
     if bundle is None:
@@ -570,11 +607,20 @@ def _score_same_split_dnn(raw_features: Mapping[str, float], repo_root: Path) ->
             if name == "Backdoor":
                 distribution["Backdoors"] = joint
         distribution["Normal"] = normal_probability
+        category_name = _DNN_CATEGORIES[category_index]
+        category_joint = probability * float(class_probabilities[category_index].item())
+        labels = _dnn_class_labels(
+            attack_probability=probability,
+            category_name=category_name,
+            category_joint=category_joint,
+            normal_probability=normal_probability,
+        )
         return {
             "dnn_attack_probability": probability,
             "dnn_binary_decision": "Attack" if probability >= 0.5 else "Normal",
-            "unsw_attack_category": _DNN_CATEGORIES[category_index],
+            "unsw_attack_category": category_name,
             "dnn_class_distribution": distribution,
+            **labels,
         }
     except (OSError, ValueError, RuntimeError, TypeError, ImportError, KeyError, IndexError):
         return empty
@@ -719,6 +765,12 @@ def _advisory_model_fields(
             "dnn_binary_decision": None,
             "unsw_attack_category": None,
             "dnn_class_distribution": {},
+            "predicted_class": None,
+            "dnn_class": None,
+            "predicted_class_probability": None,
+            "dnn_class_probability": None,
+            "top_attack_class": None,
+            "top_attack_probability": None,
         }
     )
     consensus = _consensus_score(
@@ -739,6 +791,12 @@ def _advisory_model_fields(
         "dnn_attack_probability": dnn.get("dnn_attack_probability"),
         "dnn_binary_decision": dnn.get("dnn_binary_decision"),
         "unsw_attack_category": dnn.get("unsw_attack_category"),
+        "predicted_class": dnn.get("predicted_class"),
+        "dnn_class": dnn.get("dnn_class"),
+        "predicted_class_probability": dnn.get("predicted_class_probability"),
+        "dnn_class_probability": dnn.get("dnn_class_probability"),
+        "top_attack_class": dnn.get("top_attack_class"),
+        "top_attack_probability": dnn.get("top_attack_probability"),
         "dnn_class_distribution": dnn.get("dnn_class_distribution") or {},
         "ae_feature_errors": ae.get("ae_feature_errors") or [],
         "threatfusion_consensus_score": consensus,
@@ -772,6 +830,12 @@ def _model_proof_block(
         "dnn_attack_probability": advisory.get("dnn_attack_probability"),
         "dnn_binary_decision": advisory.get("dnn_binary_decision"),
         "unsw_attack_category": advisory.get("unsw_attack_category"),
+        "predicted_class": advisory.get("predicted_class"),
+        "dnn_class": advisory.get("dnn_class"),
+        "predicted_class_probability": advisory.get("predicted_class_probability"),
+        "dnn_class_probability": advisory.get("dnn_class_probability"),
+        "top_attack_class": advisory.get("top_attack_class"),
+        "top_attack_probability": advisory.get("top_attack_probability"),
         "ae_loss": advisory.get("ae_loss"),
         "ae_anomaly_flag": advisory.get("ae_anomaly_flag"),
         "ae_top_features": advisory.get("ae_top_features"),
@@ -904,6 +968,12 @@ def run_live_model_proof(
         "ae_sha256": _AE_SHA256,
         "dnn_sha256": _DNN_MODEL_SHA256,
         "dnn_class_distribution": perturbed.get("dnn_class_distribution") or {},
+        "predicted_class": perturbed.get("predicted_class"),
+        "dnn_class": perturbed.get("dnn_class"),
+        "predicted_class_probability": perturbed.get("predicted_class_probability"),
+        "dnn_class_probability": perturbed.get("dnn_class_probability"),
+        "top_attack_class": perturbed.get("top_attack_class"),
+        "top_attack_probability": perturbed.get("top_attack_probability"),
         "feature_error_breakdown": perturbed.get("feature_error_breakdown") or [],
         "dnn_evaluation_summary": scorecard,
         "benchmark_scorecard": scorecard,
@@ -4698,9 +4768,10 @@ def _snapshot_operator_enrollment() -> dict[str, Any]:
     return {
         "enrollment_state": "enrolled",
         "operator_id": "lab_operator",
-        "certificate_subject": "/CN=lab_operator",
-        "operator_auth_label": "verified mTLS cert (/CN=lab_operator)",
+        "certificate_subject": "",
+        "operator_auth_label": "Session Auth (Tier-3 RBAC · Lab HTTP)",
         "identity_verified": False,
+        "mtls_verified": False,
     }
 
 
@@ -4945,6 +5016,45 @@ def enroll_lab_operator(directory: Path, actor_id: str) -> dict[str, Any]:
     stamp["evidence_state"] = "verified"
     stamp["reason"] = "lab_operator_enrolled"
     return stamp
+
+
+def publish_http_enrollment(
+    result: Mapping[str, Any],
+    *,
+    mtls_verified: bool,
+) -> dict[str, Any]:
+    """Plain HTTP enrollment is a lab session, not a verified client certificate."""
+    published = dict(result)
+    refused_reasons = {
+        "actor_rejected",
+        "policy_directory_rejected",
+        "certificate_not_issued",
+        "enrollment_rejected",
+    }
+    if str(published.get("reason") or "") in refused_reasons or published.get("operator_id") in (
+        "",
+        None,
+    ):
+        published["evidence_state"] = "unavailable"
+        published["verified_operator"] = False
+        published["mtls_verified"] = False
+        published["identity_verified"] = False
+        return published
+    if mtls_verified and published.get("identity_verified") is True:
+        published["evidence_state"] = "verified"
+        published["verified_operator"] = True
+        published["mtls_verified"] = True
+        published["operator_auth_label"] = "verified mTLS cert (/CN=lab_operator)"
+        return published
+    published["evidence_state"] = "unverified_lab_session"
+    published["identity_label"] = "session_authenticated"
+    published["identity_verified"] = False
+    published["mtls_verified"] = False
+    published["verified_operator"] = False
+    published["operator_auth_label"] = _SESSION_AUTH_LABEL
+    published["header_identity"] = _BILAL_SESSION_HEADER
+    published["certificate_subject"] = ""
+    return published
 
 
 def _mark_playbook_approved(
@@ -8702,6 +8812,10 @@ _RESERVED_ACTORS = frozenset({"lab_operator", "tier1_analyst", "compliance_audit
 _BILAL_HEADER = (
     "Muhammad Bilal (21K-3551) · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)"
 )
+_BILAL_SESSION_HEADER = (
+    "Muhammad Bilal (21K-3551) · Tier-3 Approver | Session Auth (Tier-3 RBAC · Lab HTTP)"
+)
+_SESSION_AUTH_LABEL = "Session Auth (Tier-3 RBAC · Lab HTTP)"
 _SUHAIB_HEADER = "Muhammad Suhaib (22K-4302) · Tier-1 Triage | No SOAR Cert (Triage Only)"
 _HASNAIN_HEADER = "Muhammad Hasnain (22K-4718) · Auditor | Read-Only Compliance Token"
 _RBAC_SEEDS: tuple[dict[str, str], ...] = (
@@ -8811,8 +8925,9 @@ def operator_header_identity(
     actor_id: str,
     display_name: str = "",
     role: str = "",
+    mtls_verified: bool = False,
 ) -> dict[str, Any]:
-    """One header line per signed-in operator. Only Bilal can carry the lab cert."""
+    """One header line per signed-in operator. Password login is not mTLS."""
     actor = str(actor_id or "").strip()
     name = str(display_name or "").strip() or actor
     chosen = str(role or "").strip()
@@ -8821,14 +8936,18 @@ def operator_header_identity(
     verified = False
     label = "unverified_local_label"
     auth_label = "unverified local label"
-    if actor == "lab_operator" and enrolled:
+    presented_mtls = bool(mtls_verified) and enrolled and actor == "lab_operator"
+    if presented_mtls:
         line = _BILAL_HEADER
         subject = "/CN=lab_operator"
         verified = True
         label = "verified_mtls_lab_operator"
         auth_label = "verified mTLS cert (/CN=lab_operator)"
     elif actor == "lab_operator":
-        line = "Muhammad Bilal (21K-3551) · Tier-3 Approver | unverified local label"
+        line = _BILAL_SESSION_HEADER
+        verified = False
+        label = "session_authenticated"
+        auth_label = _SESSION_AUTH_LABEL
     elif actor == "tier1_analyst":
         line = _SUHAIB_HEADER
         label = "no_soar_cert_triage_only"
@@ -8863,6 +8982,7 @@ def operator_header_identity(
         "certificate_subject": subject,
         "operator_auth_label": auth_label,
         "enrollment_state": "enrolled" if enrolled and actor == "lab_operator" else "absent",
+        "mtls_verified": presented_mtls,
     }
 
 
@@ -8881,15 +9001,17 @@ def _lock_demo_passwords_for_production(conn: sqlite3.Connection) -> None:
     admin_user = "bilal.21k3551@nu.edu.pk"
     rows = conn.execute("SELECT username, password_hash FROM rbac_accounts").fetchall()
     for row in rows:
-        if str(row["password_hash"]) not in KNOWN_DEMO_PASSWORD_HASHES:
+        username = row["username"] if isinstance(row, (sqlite3.Row, dict)) else row[0]
+        current_hash = row["password_hash"] if isinstance(row, (sqlite3.Row, dict)) else row[1]
+        if str(current_hash) not in KNOWN_DEMO_PASSWORD_HASHES:
             continue
-        if str(row["username"]) == admin_user:
+        if str(username) == admin_user:
             replacement = _hash_password(secret)
         else:
             replacement = _hash_password(secrets.token_hex(32))
         conn.execute(
             "UPDATE rbac_accounts SET password_hash = ? WHERE username = ?",
-            (replacement, str(row["username"])),
+            (replacement, str(username)),
         )
 
 
@@ -8967,16 +9089,25 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
 
 
+def _session_evidence_state(header: Mapping[str, Any]) -> str:
+    if header.get("mtls_verified") is True and header.get("identity_verified") is True:
+        return "verified"
+    if header.get("identity_label") == "session_authenticated":
+        return "session_authenticated"
+    return "unavailable"
+
+
 def _account_public(row: sqlite3.Row, *, session_token: str = "") -> dict[str, Any]:
     header = operator_header_identity(
         actor_id=str(row["actor_id"]),
         display_name=str(row["display_name"]),
         role=str(row["role"]),
+        mtls_verified=False,
     )
     payload = {
         "schema_version": "rbac_session_v1",
         "authenticated": True,
-        "evidence_state": "verified" if header["identity_verified"] else "unavailable",
+        "evidence_state": _session_evidence_state(header),
         "username": str(row["username"]),
         "session_token": session_token,
         "production_fusion_enabled": False,
@@ -9069,11 +9200,12 @@ def rbac_session_status(db_path: Path, token: str) -> dict[str, Any]:
         actor_id=str(row["actor_id"]),
         display_name=str(row["display_name"]),
         role=str(row["role"]),
+        mtls_verified=False,
     )
     return {
         "schema_version": "rbac_session_v1",
         "authenticated": True,
-        "evidence_state": "verified" if header["identity_verified"] else "unavailable",
+        "evidence_state": _session_evidence_state(header),
         "username": str(row["username"]),
         "production_fusion_enabled": False,
         "http_status": 200,
@@ -9705,19 +9837,24 @@ def _percent_number(value: float) -> int | float:
     return rounded
 
 
-def _llm_tokens_saved_pct(raw: int, clusters: int) -> int | float:
-    """Token savings from SimHash reuse, floored by envelope field pruning.
+def _llm_tokens_saved_pct(raw: int, clusters: int) -> float:
+    """SimHash token reuse only. Static field omission is a separate percentage.
 
-    ``(raw - clusters) / max(raw, 1) * 100``. When at least one cluster exists,
-    the result cannot fall below the share of envelope keys a flow-only replay omits.
+    ``round((raw - clusters) / max(raw, 1) * 100, 1)``. Five distinct clusters
+    from five raw events report 0. Duplicate bursts raise the percentage.
     """
     denominator = raw if raw > 0 else 1
     reuse = (raw - clusters) * 100.0 / float(denominator)
-    if clusters < 1:
-        return 0
+    if reuse < 0:
+        reuse = 0.0
+    return round(reuse, 1)
+
+
+def _envelope_field_compaction_pct() -> float:
+    """Share of envelope keys a flow-only replay omits. Not an LLM token bill."""
     from threatfusion.advisory.telemetry_shield import envelope_field_prune_floor_pct
 
-    return _percent_number(max(reuse, envelope_field_prune_floor_pct()))
+    return round(float(envelope_field_prune_floor_pct()), 1)
 
 
 def _compression_funnel_empty() -> dict[str, Any]:
@@ -9725,9 +9862,11 @@ def _compression_funnel_empty() -> dict[str, Any]:
         "schema_version": "alert_fatigue_compression_funnel_v1",
         "raw_telemetry_events": 0,
         "simhash_unique_clusters": 0,
+        "simhash_deduplicated_clusters": 0,
         "high_confidence_incidents": 0,
         "noise_reduction_pct": 0,
-        "llm_tokens_saved_pct": 0,
+        "llm_tokens_saved_pct": 0.0,
+        "envelope_field_compaction_pct": _envelope_field_compaction_pct(),
         "replay_mode": "SIMHASH_ZERO_COST_REPLAY",
         "synthetic_burst_weight": 0,
         "production_fusion_enabled": False,
@@ -9741,9 +9880,12 @@ def build_alert_fatigue_compression_funnel(db_path: Path) -> dict[str, Any]:
     stored flow. ``burst_count`` already includes the synthetic weight of a
     repeated burst, so that surplus is reported as ``synthetic_burst_weight``
     and is not added a second time. Blank SimHash values stay per-flow clusters.
-    A flow is high-confidence when the frozen forest said Attack or its
-    probability is at least 0.5. ``noise_reduction_pct`` is the rounded
-    reduction from raw events to that high-confidence count.
+    A cluster is high-confidence when any member was an Attack decision or its
+    probability is at least 0.5. The funnel stays monotonic:
+    raw events >= deduplicated clusters >= high-confidence incidents.
+    ``noise_reduction_pct`` is the rounded reduction from raw events to that
+    high-confidence cluster count. ``llm_tokens_saved_pct`` is SimHash reuse
+    only. ``envelope_field_compaction_pct`` is the static omitted-key share.
     """
     if not Path(db_path).is_file():
         return _compression_funnel_empty()
@@ -9758,8 +9900,7 @@ def build_alert_fatigue_compression_funnel(db_path: Path) -> dict[str, Any]:
         return _compression_funnel_empty()
     raw = 0
     synthetic = 0
-    signatures: set[str] = set()
-    high = 0
+    cluster_high: dict[str, bool] = {}
     for row in rows:
         try:
             weight = int(row["burst_count"]) if row["burst_count"] is not None else 1
@@ -9771,15 +9912,19 @@ def build_alert_fatigue_compression_funnel(db_path: Path) -> dict[str, Any]:
         if weight > 1:
             synthetic += weight - 1
         signature = str(row["simhash_signature"] or "").strip()
-        if signature:
-            signatures.add(signature)
-        else:
-            signatures.add(f"flow:{int(row['flow_id'])}")
+        if not signature:
+            signature = f"flow:{int(row['flow_id'])}"
         probability = _finite_number(row["rf_attack_probability"])
-        if str(row["decision"] or "") == "Attack" or (
+        is_high = str(row["decision"] or "") == "Attack" or (
             probability is not None and probability >= 0.5
-        ):
-            high += 1
+        )
+        cluster_high[signature] = cluster_high.get(signature, False) or is_high
+    clusters = len(cluster_high)
+    high = sum(1 for flagged in cluster_high.values() if flagged)
+    if clusters > raw:
+        clusters = raw
+    if high > clusters:
+        high = clusters
     if raw <= 0:
         percent = 0
     else:
@@ -9788,10 +9933,12 @@ def build_alert_fatigue_compression_funnel(db_path: Path) -> dict[str, Any]:
     return {
         "schema_version": "alert_fatigue_compression_funnel_v1",
         "raw_telemetry_events": raw,
-        "simhash_unique_clusters": len(signatures),
+        "simhash_unique_clusters": clusters,
+        "simhash_deduplicated_clusters": clusters,
         "high_confidence_incidents": high,
         "noise_reduction_pct": percent,
-        "llm_tokens_saved_pct": _llm_tokens_saved_pct(raw, len(signatures)),
+        "llm_tokens_saved_pct": _llm_tokens_saved_pct(raw, clusters),
+        "envelope_field_compaction_pct": _envelope_field_compaction_pct(),
         "replay_mode": "SIMHASH_ZERO_COST_REPLAY",
         "synthetic_burst_weight": synthetic,
         "production_fusion_enabled": False,
@@ -10337,6 +10484,14 @@ def _rule_syntax_verified(rules: Mapping[str, Any]) -> bool:
         return False
     if 'msg:"' not in suricata or "sid:" not in suricata or "rev:1;" not in suricata:
         return False
+    import yaml
+
+    try:
+        loaded = yaml.safe_load(sigma)
+    except yaml.YAMLError:
+        return False
+    if not isinstance(loaded, dict):
+        return False
     for token in (
         "title:",
         "status: experimental",
@@ -10421,13 +10576,25 @@ def _readonly_rule_replay(
         if technique and _flow_matches_hunting_guide(row, technique)
     ]
     triggered = sum(1 for row in matched if _flow_triggers_draft(row, grounding))
-    closed = bool(matched) and triggered == len(matched) and syntax_ok
+    events = len(matched)
+    if not syntax_ok:
+        status = "SYNTAX_REJECTED"
+        closed = False
+    elif events == 0:
+        status = "NO_MATCHING_TELEMETRY_TO_REPLAY"
+        closed = False
+    elif triggered == 0:
+        status = "UNTRIGGERED_COVERAGE_GAP"
+        closed = False
+    else:
+        status = "VERIFIED_AGAINST_LIVE_TELEMETRY"
+        closed = True
     return {
         "mode": "READ_ONLY_SQLITE_EVALUATION",
-        "events_replayed": len(matched),
+        "events_replayed": events,
         "rules_triggered": triggered,
         "coverage_gap_closed": closed,
-        "verify_status": ("VERIFIED_AGAINST_LIVE_TELEMETRY" if syntax_ok else "SYNTAX_REJECTED"),
+        "verify_status": status,
     }
 
 
@@ -10470,6 +10637,70 @@ def _tactic_for_technique(technique: str) -> str:
     return ""
 
 
+def _nested_flow_mappings(row: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    found: list[Mapping[str, Any]] = [row]
+    for key in ("provenance", "scenario", "sensor_observation", "metadata", "flow"):
+        value = row.get(key)
+        if isinstance(value, Mapping):
+            found.append(value)
+    raw_features = row.get("features_json")
+    if raw_features is None:
+        raw_features = row.get("features")
+    parsed: Any = raw_features
+    if isinstance(raw_features, str) and raw_features.strip():
+        try:
+            parsed = json.loads(raw_features)
+        except json.JSONDecodeError:
+            parsed = None
+    if isinstance(parsed, Mapping):
+        found.append(parsed)
+        for key in ("provenance", "scenario", "metadata", "sensor_observation"):
+            nested = parsed.get(key)
+            if isinstance(nested, Mapping):
+                found.append(nested)
+    return found
+
+
+def _endpoint_from_row(row: Mapping[str, Any], side: str) -> str:
+    keys = (
+        ("src_ip", "src_entity_id", "source_ip", "src")
+        if side == "src"
+        else ("dst_ip", "dst_entity_id", "dest_ip", "destination_ip", "dst")
+    )
+    rejected = {"", "unknown", "unknown host", "none", "null", "unavailable"}
+    for mapping in _nested_flow_mappings(row):
+        for key in keys:
+            value = str(mapping.get(key) or "").strip()
+            if value.lower() not in rejected:
+                return value
+    return ""
+
+
+def _flow_descriptor(row: Mapping[str, Any]) -> str:
+    flow_id = str(row.get("flow_id") or "0").strip() or "0"
+    proto = str(row.get("flow_protocol") or row.get("proto") or "ip").strip() or "ip"
+    service = (
+        str(row.get("service_or_port") or row.get("dst_port") or row.get("service") or "0").strip()
+        or "0"
+    )
+    return f"dataset_flow#{flow_id} ({proto}/{service})"
+
+
+def _dedupe_technique_text(text: str) -> str:
+    seen: set[str] = set()
+    kept: list[str] = []
+    for part in str(text or "").split():
+        if _TITLE_TECHNIQUE_RE.fullmatch(part):
+            token = part.upper()
+            if token in seen:
+                continue
+            seen.add(token)
+            kept.append(token)
+        else:
+            kept.append(part)
+    return " ".join(kept)
+
+
 def build_forensic_scope(
     rows: Sequence[Mapping[str, Any]],
     *,
@@ -10502,19 +10733,30 @@ def build_forensic_scope(
     techniques: list[str] = []
     tactics: list[str] = []
     cvss_scores: list[float] = []
+
+    def _remember_host(value: str) -> None:
+        host = value.strip()
+        if host and host not in hosts:
+            hosts.add(host)
+            ips.append(host)
+
     for row in ordered:
-        for key in ("src_entity_id", "dst_entity_id"):
-            host = str(row.get(key) or "").strip()
-            if host and host not in hosts:
-                hosts.add(host)
-                ips.append(host)
+        src_endpoint = _endpoint_from_row(row, "src")
+        dst_endpoint = _endpoint_from_row(row, "dst")
+        if not src_endpoint and not dst_endpoint:
+            _remember_host(_flow_descriptor(row))
+        else:
+            if src_endpoint:
+                _remember_host(src_endpoint)
+            if dst_endpoint:
+                _remember_host(dst_endpoint)
         try:
             port = int(float(row.get("service_or_port") or 0))
         except (TypeError, ValueError):
             port = 0
         if port > 0 and port not in ports:
             ports.append(port)
-        technique = _technique_of_row(row)
+        technique = _dedupe_technique_text(_technique_of_row(row))
         if technique and technique not in techniques:
             techniques.append(technique)
             tactic = _tactic_for_technique(technique)
@@ -10526,28 +10768,28 @@ def build_forensic_scope(
                     cvss_scores.append(float(score))
     timeline: list[dict[str, Any]] = []
     for index, row in enumerate(ordered[:8], start=1):
-        technique = _technique_of_row(row)
-        src = str(row.get("src_entity_id") or "").strip() or "unknown host"
-        dst = str(row.get("dst_entity_id") or "").strip() or "unknown host"
-        stage = "First Seen" if index == 1 else (technique or "Later Observation")
+        technique = _dedupe_technique_text(_technique_of_row(row))
+        src = _endpoint_from_row(row, "src") or _flow_descriptor(row)
+        dst = _endpoint_from_row(row, "dst") or _flow_descriptor(row)
+        stage = "First Seen" if index == 1 else "Later Observation"
         if index == 1:
             summary = f"{src} is the earliest stored host in this scope"
         else:
-            summary = f"{src} observed toward {dst}"
+            summary = _dedupe_technique_text(f"{src} observed toward {dst}")
         timeline.append(
             {
                 "step": index,
                 "stage": stage,
                 "technique": technique,
-                "summary": summary,
+                "summary": _dedupe_technique_text(summary),
             }
         )
     tactic_count = len(tactics)
     return {
         "patient_zero": {
-            "host_ip": str(first.get("src_entity_id") or "").strip(),
+            "host_ip": _endpoint_from_row(first, "src") or _flow_descriptor(first),
             "first_seen_utc": str(first.get("observed_at_utc") or ""),
-            "distinct_assets_affected": len(hosts),
+            "distinct_assets_affected": len(hosts) if hosts else 1,
         },
         "composite_multi_stage": {
             "is_composite": tactic_count > 1 or len(techniques) > 1,

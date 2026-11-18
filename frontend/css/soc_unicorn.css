@@ -2443,6 +2443,45 @@ button.tier3-only {
   color: #d1d5db;
 }
 
+.forensic-scope-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+}
+
+.forensic-card {
+  background: #111827;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+  padding: 0.75rem 0.9rem;
+}
+
+.forensic-card h3 {
+  margin: 0 0 0.45rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8b9cb3;
+}
+
+.forensic-pills {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.forensic-pill {
+  display: inline-block;
+  background: #090d16;
+  border: 1px solid #30363d;
+  border-radius: 999px;
+  padding: 0.28rem 0.7rem;
+  color: #e6edf3;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
 .governance-pills {
   display: flex;
   flex-wrap: wrap;

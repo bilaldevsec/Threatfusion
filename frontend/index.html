@@ -257,13 +257,7 @@
         </section>
         <section class="compression-funnel" id="alertFatigueCompressionFunnel" aria-label="Alert Fatigue Compression Funnel">
           <h2>Alert Fatigue Compression Funnel</h2>
-          <p id="compressionFunnelLine" data-evidence-state="unavailable">Raw Telemetry Events (0) &rarr; SimHash Deduplicated Clusters (0) &rarr; High-Confidence Incidents (0) &middot; 0% Noise Reduction &middot; 0% LLM Tokens Saved</p>
-        </section>
-        <section id="forensicScopePanel" aria-label="Patient Zero and attack story">
-          <p id="patientZeroBadge" class="badge" data-evidence-state="unavailable">Patient Zero · Asset Scope</p>
-          <p id="compositeChainPill" class="badge" hidden>Composite Multi-Stage Chain</p>
-          <ol id="attackStoryTimeline"></ol>
-          <div id="decomposedCti" data-evidence-state="unavailable">Decomposed CTI &amp; CVSS</div>
+          <p id="compressionFunnelLine" data-evidence-state="unavailable">Raw Telemetry Events (0) &rarr; SimHash Deduplicated Clusters (0) &rarr; High-Confidence Incidents (0) &middot; 0% Noise Reduction &middot; 0% LLM Tokens Saved &middot; 50% Envelope Field Compaction</p>
         </section>
         <div class="inv-toolbar">
           <div class="queue-filter-bar">
@@ -344,6 +338,24 @@
           <button id="btnBackToInvestigations" class="btn" type="button">Back to Investigations</button>
           <button id="btnOpenActionGraph" class="btn" type="button">AI Action Graph</button>
         </div>
+        <section id="forensicScopePanel" class="forensic-scope-cards" aria-label="Patient Zero and attack story">
+          <article class="card forensic-card" id="patientZeroCard">
+            <h3>Patient Zero</h3>
+            <p id="patientZeroBadge" class="forensic-pill" data-evidence-state="unavailable">Patient Zero · Asset Scope</p>
+          </article>
+          <article class="card forensic-card" id="attackStoryCard">
+            <h3>Attack Story Timeline</h3>
+            <div id="attackStoryTimeline" class="forensic-pills"></div>
+          </article>
+          <article class="card forensic-card" id="compositeChainCard">
+            <h3>Composite Multi-Stage Chain</h3>
+            <p id="compositeChainPill" class="forensic-pill">Composite Multi-Stage Chain</p>
+          </article>
+          <article class="card forensic-card" id="decomposedCtiCard">
+            <h3>Decomposed CTI &amp; CVSS</h3>
+            <div id="decomposedCti" class="forensic-pills" data-evidence-state="unavailable">Decomposed CTI &amp; CVSS</div>
+          </article>
+        </section>
         <section class="card detail-card" aria-label="Forensic Evidence Detail" data-blast-ui-tier="unicorn-progressive-disclosure-v1" data-layer="split-investigation-workspace" style="background: #111827;">
           <div class="card-header detail-header">
             <div>

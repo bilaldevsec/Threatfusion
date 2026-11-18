@@ -81,3 +81,7 @@ The four digests checked by the live drawer and by audit check 2 are unchanged: 
 ## Read-only analyst upgrades, 2026-11-17
 
 The investigations queue now shows an alert-fatigue strip: raw telemetry events, SimHash clusters, high-confidence frozen-RF incidents, and the rounded noise reduction. The advisory trace can be opened to the exact fenced envelope, ChromaDB document ids, and ledger indicators, with ISO/IEC 42001, NIST AI RMF, and OWASP LLM01 named on the card. The hunter view lists five guides with live SQLite hit counts. Inspecting a guide drafts review-only Suricata and Sigma text and a four-section summary whose ledger status is computed, not assumed. Containment is not dispatched from these screens. TF-008 through TF-011 stay open. `production_fusion_enabled` stays false.
+
+## Red-team rectification
+
+ANSI and control bytes are stripped before the untrusted telemetry fence, and a forged envelope tag cannot close it. A password session and a bare HTTP enrollment display Session Auth rather than a verified mTLS certificate. LLM token savings count SimHash reuse only. The 50% envelope compaction figure is a separate field. Patient Zero, the attack story, the composite chain, and decomposed CTI render as cards on the investigation detail panel. Hunt YAML is quoted before it is checked. A benign DNN score is labeled Normal, with the top attack class kept beside it. TF-008 through TF-011 stay open. `production_fusion_enabled` stays false.

@@ -20,12 +20,16 @@ _INJECTION_PATTERNS = (
     re.compile(r"(?i)\bignore\s+(all\s+)?previous\s+instructions?\b"),
     re.compile(r"(?i)\bsystem\s*:"),
     re.compile(r"(?i)</?\s*(system|assistant|user|instructions?)\s*>"),
+    re.compile(r"(?i)</?\s*untrusted_telemetry_envelope\s*>"),
     re.compile(r"(?i)\byou\s+are\s+now\b"),
     re.compile(r"(?i)\boverride\s+(your\s+)?(rules?|instructions?|policy)\b"),
     re.compile(r"(?i)\bdo\s+not\s+follow\s+(your\s+)?(rules?|instructions?)\b"),
     re.compile(r"`{1,3}"),
     re.compile(r"(?i)\brole\s*[:=]\s*(system|assistant)\b"),
 )
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+_ASCII_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 _IPV4_RE = re.compile(
     r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\b"
@@ -208,17 +212,26 @@ def reset_burst_deduplicator() -> None:
         _GLOBAL_BURST._entries.clear()
 
 
+def _strip_untrusted_controls(text: str) -> str:
+    """Remove ANSI color sequences and ASCII control bytes before any match."""
+    stripped = _ANSI_ESCAPE_RE.sub("", str(text or ""))
+    return _ASCII_CONTROL_RE.sub("", stripped)
+
+
 def neutralize_prompt_injection(text: str) -> tuple[str, bool]:
-    """Strip/neutralize common prompt-injection control patterns."""
+    """Strip controls, then neutralize prompt-injection patterns and markup."""
     original = str(text or "")
-    cleaned = original
-    filtered = False
+    cleaned = _strip_untrusted_controls(original)
+    filtered = cleaned != original
     for pattern in _INJECTION_PATTERNS:
         updated, count = pattern.subn("[FILTERED]", cleaned)
         if count:
             filtered = True
             cleaned = updated
-    cleaned = cleaned.replace("\x00", "")
+    escaped = cleaned.replace("<", "&lt;").replace(">", "&gt;")
+    if escaped != cleaned:
+        filtered = True
+        cleaned = escaped
     return cleaned, filtered
 
 
@@ -231,9 +244,10 @@ def wrap_untrusted_telemetry_envelope(
     for key in _UNTRUSTED_KEYS:
         if key not in fields:
             continue
-        value, hit = neutralize_prompt_injection(str(fields.get(key) or ""))
+        raw = _strip_untrusted_controls(str(fields.get(key) or ""))
+        value, hit = neutralize_prompt_injection(raw)
         sanitized[key] = value
-        filtered = filtered or hit
+        filtered = filtered or hit or raw != str(fields.get(key) or "")
     body_lines = [f"{key}={sanitized[key]}" for key in sorted(sanitized)]
     body = "\n".join(body_lines)
     digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
@@ -250,6 +264,13 @@ def wrap_untrusted_telemetry_envelope(
         "system_instruction": EVIDENCE_FENCE_INSTRUCTION,
         "fenced_prompt_prefix": (f"{EVIDENCE_FENCE_INSTRUCTION}\n\n{envelope}"),
     }
+
+
+def build_untrusted_telemetry_envelope(
+    fields: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Strip controls, then wrap the same fence ``wrap_untrusted_telemetry_envelope`` builds."""
+    return wrap_untrusted_telemetry_envelope(fields)
 
 
 def build_fenced_advisory_prompt(
@@ -367,7 +388,12 @@ def verify_advisory_against_ledger(
     status = "VERIFIED" if not ungrounded else "FLAGGED_UNGROUNDED"
     annotated = text
     for fake in ungrounded:
-        annotated = annotated.replace(fake, f"{fake} [UNGROUNDED — stripped from ledger]")
+        annotated = re.sub(
+            re.escape(fake),
+            lambda match: f"{match.group(0)} [UNGROUNDED — stripped from ledger]",
+            annotated,
+            flags=re.IGNORECASE,
+        )
     return {
         "status": status,
         "verified_indicators": verified,
@@ -375,6 +401,25 @@ def verify_advisory_against_ledger(
         "annotated_summary": annotated if ungrounded else text,
         "cited_count": len(verified) + len(ungrounded),
     }
+
+
+def sanitize_rule_literal(value: str) -> str:
+    """Strip newlines and escape quotes, colons, and backslashes in rule text."""
+    text = _strip_untrusted_controls(str(value or ""))
+    text = text.replace("\r", " ").replace("\n", " ")
+    text = text.replace("\\", "\\\\")
+    text = text.replace('"', '\\"')
+    text = text.replace(":", "\\:")
+    return " ".join(text.split())
+
+
+def yaml_double_quoted(value: str) -> str:
+    """Return a YAML double-quoted scalar. Colons stay inside the quotes."""
+    text = _strip_untrusted_controls(str(value or ""))
+    text = text.replace("\r", " ").replace("\n", " ")
+    text = text.replace("\\", "\\\\").replace('"', '\\"')
+    text = " ".join(text.split())
+    return f'"{text}"'
 
 
 def _sid_for_flow(flow_dict: Mapping[str, Any]) -> int:
@@ -416,8 +461,11 @@ def draft_detection_rule(
     src_ip = str(flow.get("src_ip") or flow.get("src_entity_id") or "any").strip() or "any"
     vector = str(flow.get("vector") or flow.get("vector_id") or query or technique).strip()
     intent = str(query or vector or f"detect {technique} toward port {dst_port}").strip()
+    safe_vector = sanitize_rule_literal(vector or "hunt") or "hunt"
+    safe_intent = yaml_double_quoted(intent or "detect stored hunt")
+    safe_query = sanitize_rule_literal(query or intent or technique)
     sid = _sid_for_flow(flow if flow else {"technique_id": technique, "dst_port": dst_port})
-    msg = f"THREATFUSION {technique} {vector or 'hunt'}".replace('"', "")[:120]
+    msg = f"THREATFUSION {technique} {safe_vector}"[:120]
     suricata = (
         f"alert {proto} any any -> $HOME_NET {dst_port} "
         f'(msg:"{msg}"; flow:to_server,established; '
@@ -427,7 +475,7 @@ def draft_detection_rule(
         f"title: ThreatFusion Hunt {technique}\n"
         f"id: tf-hunt-{sid}\n"
         f"status: experimental\n"
-        f"description: {intent}\n"
+        f"description: {safe_intent}\n"
         f"logsource:\n"
         f"  product: zeek\n"
         f"  category: network_connection\n"
@@ -442,9 +490,36 @@ def draft_detection_rule(
         f"falsepositives:\n"
         f"  - Legitimate service scans require analyst review\n"
     )
+    import yaml
+
+    try:
+        loaded_sigma = yaml.safe_load(sigma)
+        if not isinstance(loaded_sigma, dict):
+            raise ValueError("sigma root must be a mapping")
+    except (yaml.YAMLError, ValueError):
+        sigma = (
+            f"title: ThreatFusion Hunt {technique}\n"
+            f"id: tf-hunt-{sid}\n"
+            f"status: experimental\n"
+            f'description: "sanitized hunt"\n'
+            f"logsource:\n"
+            f"  product: zeek\n"
+            f"  category: network_connection\n"
+            f"detection:\n"
+            f"  selection:\n"
+            f"    DestinationPort: {dst_port}\n"
+            f"    Protocol: {proto}\n"
+            f"  condition: selection\n"
+            f"level: medium\n"
+            f"tags:\n"
+            f"  - attack.{technique_tag}\n"
+            f"falsepositives:\n"
+            f"  - Legitimate service scans require analyst review\n"
+        )
     rule_name = "threatfusion_" + re.sub(r"[^a-z0-9_]", "_", technique.lower())
     spl = (
-        f"index=threatfusion technique_id={technique} proto={proto} dst_port={dst_port}\n"
+        f"index=threatfusion technique_id={technique} proto={proto} "
+        f'dst_port={dst_port} hunt_query="{safe_query}"\n'
         "| stats count by src_ip, dst_ip, dst_port\n"
         "| where count >= 1"
     )
@@ -453,6 +528,7 @@ def draft_detection_rule(
         "  meta:\n"
         '    author = "ThreatFusion"\n'
         f'    technique = "{technique}"\n'
+        f'    query = "{safe_query}"\n'
         '    deployment = "REVIEW_ONLY"\n'
         "  events:\n"
         '    $e.metadata.event_type = "NETWORK_CONNECTION"\n'

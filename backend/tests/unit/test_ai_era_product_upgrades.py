@@ -498,9 +498,16 @@ def test_compression_funnel_math_from_sqlite_bursts(tmp_path: Path) -> None:
     assert funnel["synthetic_burst_weight"] == 2
     assert funnel["raw_telemetry_events"] == 3 + funnel["synthetic_burst_weight"]
     assert funnel["simhash_unique_clusters"] == 2
-    assert funnel["high_confidence_incidents"] == 3
-    assert funnel["noise_reduction_pct"] == int(round((5 - 3) * 100 / 5))
-    assert funnel["llm_tokens_saved_pct"] == 60
+    assert funnel["simhash_deduplicated_clusters"] == 2
+    assert funnel["high_confidence_incidents"] == 2
+    assert (
+        funnel["raw_telemetry_events"]
+        >= funnel["simhash_deduplicated_clusters"]
+        >= funnel["high_confidence_incidents"]
+    )
+    assert funnel["noise_reduction_pct"] == int(round((5 - 2) * 100 / 5))
+    assert funnel["llm_tokens_saved_pct"] == 60.0
+    assert funnel["envelope_field_compaction_pct"] == 50.0
     assert funnel["replay_mode"] == "SIMHASH_ZERO_COST_REPLAY"
     assert funnel["production_fusion_enabled"] is False
     missing = build_alert_fatigue_compression_funnel(tmp_path / "absent.sqlite3")
@@ -682,7 +689,8 @@ def test_token_floor_when_each_event_is_its_own_cluster(tmp_path: Path) -> None:
     funnel = build_alert_fatigue_compression_funnel(live_db)
     assert funnel["raw_telemetry_events"] == 1
     assert funnel["simhash_unique_clusters"] == 1
-    assert funnel["llm_tokens_saved_pct"] == 50
+    assert funnel["llm_tokens_saved_pct"] == 0.0
+    assert funnel["envelope_field_compaction_pct"] == 50.0
 
 
 def test_queue_workbench_and_n8n_schema_contracts(tmp_path: Path) -> None:
