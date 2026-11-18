@@ -546,7 +546,15 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             )
             db_path = self._live_db_path()
             funnel = build_alert_fatigue_compression_funnel(db_path)
-            self._send_json(200, assemble_live_workbench(db_path, workflow, funnel))
+            self._send_json(
+                200,
+                assemble_live_workbench(
+                    db_path,
+                    workflow,
+                    funnel,
+                    self._live_soar_path(),
+                ),
+            )
             return
         if path == "/api/v1/live/soar/n8n-schema":
             from threatfusion.api.live_soc_console import read_n8n_workflow_schema

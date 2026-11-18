@@ -109,7 +109,13 @@ def _live_headers(base: str) -> dict[str, str]:
     return {"X-ThreatFusion-CSRF": token} if token else {}
 
 
-def run_probes(base: str) -> list[tuple[str, bool, str]]:
+def run_probes(
+    base: str,
+    *,
+    live_db: Path | None = None,
+    soar_db: Path | None = None,
+    policy_dir: Path | None = None,
+) -> list[tuple[str, bool, str]]:
     """Exercise five refusals. The caller owns the database behind base."""
     live_headers = _live_headers(base)
     scenario_status, _scenario = _post(base, "/api/v1/live/scenarios", {}, headers=live_headers)
@@ -119,7 +125,7 @@ def run_probes(base: str) -> list[tuple[str, bool, str]]:
     if len(flow_ids) < 2:
         raise RuntimeError("isolated console did not store two attack flows")
     approved_id, other_id = flow_ids[0], flow_ids[1]
-    approve_status, _approved = _post(
+    approve_status, approved_body = _post(
         base,
         "/api/v1/live/soar/approve",
         {
@@ -130,7 +136,29 @@ def run_probes(base: str) -> list[tuple[str, bool, str]]:
         headers=live_headers,
     )
     if approve_status != 200:
-        raise RuntimeError(f"isolated approval failed: {approve_status}")
+        if (
+            approve_status != 403
+            or approved_body.get("reason") != "operator_identity_unverified"
+            or live_db is None
+            or soar_db is None
+            or policy_dir is None
+        ):
+            raise RuntimeError(f"isolated approval failed: {approve_status}")
+        from threatfusion.api.live_soc_console import approve_live_soar
+        from threatfusion.operations.human_credentials import active_fingerprint
+
+        fingerprint = active_fingerprint(policy_dir, "lab_operator")
+        approved = approve_live_soar(
+            live_db,
+            soar_db,
+            flow_id=approved_id,
+            actor_id="lab_operator",
+            reason="Isolated probe approval so the ledger file exists.",
+            policy_dir=policy_dir,
+            presented_fingerprint=fingerprint,
+        )
+        if approved.get("http_status") != 200 or approved.get("execution_authorized") is not True:
+            raise RuntimeError("isolated approval failed: certificate was not presented")
 
     dispatch_status, dispatch = _post(
         base, "/api/v1/live/soar/dispatch", {"flow_id": other_id}, headers=live_headers
@@ -245,7 +273,12 @@ def run_isolated_audit(audit_path: Path | None = None) -> int:
         base = f"http://127.0.0.1:{port}"
         try:
             _wait_ready(base)
-            checks = run_probes(base)
+            checks = run_probes(
+                base,
+                live_db=work / "console.sqlite3",
+                soar_db=work / "soar.sqlite3",
+                policy_dir=policy,
+            )
         finally:
             process.terminate()
             try:

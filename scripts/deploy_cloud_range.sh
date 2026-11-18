@@ -815,6 +815,7 @@ simulate_range_attack() {
 
 deploy_full_stack() {
   local target env_file
+  local -a ssh_args=()
   ensure_admin_ssh_key
   require_stack_env
   install_attacker_tooling
@@ -824,6 +825,7 @@ deploy_full_stack() {
     echo "dry-run: THREATFUSION_ENV=production docker compose restart: unless-stopped"
     echo "dry-run: start Suricata eve.json bridge and require HTTP 200"
     echo "dry-run: poll /readyz then ssh -N -L 8766:127.0.0.1:8766"
+    verify_live_flow_bridge
     return 0
   fi
   target="$(victim_ssh_target)"
@@ -844,6 +846,7 @@ TF_ADMIN_SECRET=${TF_ADMIN_SECRET:-}
 EOF
   # shellcheck disable=SC2046
   ssh $(ssh_base) "$target" "sudo mkdir -p /opt/threatfusion /opt/threatfusion-venv /var/lib/threatfusion && sudo chown -R \$(id -u):\$(id -g) /opt/threatfusion /opt/threatfusion-venv /var/lib/threatfusion && chmod 700 /var/lib/threatfusion"
+  mapfile -t ssh_args < <(ssh_base)
   tar -C "$ROOT" \
     --exclude .git \
     --exclude threatfusion-venv \
@@ -853,7 +856,7 @@ EOF
     --exclude .env \
     --exclude '.env.*' \
     --exclude .cursor \
-    -czf - . | ssh $(ssh_base) "$target" "tar -C /opt/threatfusion -xzf -"
+    -czf - . | ssh "${ssh_args[@]}" "$target" "tar -C /opt/threatfusion -xzf -"
   # shellcheck disable=SC2046
   scp $(ssh_base) "$env_file" "${target}:/opt/threatfusion/.env"
   rm -f "$env_file"

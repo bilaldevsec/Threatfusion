@@ -143,7 +143,7 @@ def test_forensic_scope_uses_nested_endpoints_and_dedupes_techniques() -> None:
     assert "unknown host" not in rendered
     assert _dedupe_technique_phrase("T1498 T1498") == "T1498"
     assert "T1498 T1498" not in rendered
-    assert "dataset_flow#8 (/)" in rendered
+    assert "dataset_flow#8 (unsw_dataset)" in rendered
 
 
 def test_adversarial_sigma_parses_and_empty_replay_is_honest(tmp_path: Path) -> None:

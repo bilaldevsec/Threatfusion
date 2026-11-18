@@ -29,6 +29,7 @@ from threatfusion.models.drift_and_supply_chain import (
     evaluate_14_feature_telemetry_drift,
 )
 from threatfusion.operations.commercial_hardening import ensure_hmac_secret
+from threatfusion.operations.human_credentials import active_fingerprint
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -81,6 +82,7 @@ def test_invalid_audit_chain_returns_before_the_webhook(tmp_path: Path, monkeypa
         actor_id="lab_operator",
         reason="Analyst recorded local approval. Containment is not executed.",
         policy_dir=policy,
+        presented_fingerprint=active_fingerprint(policy, "lab_operator"),
     )
     with sqlite3.connect(soar_db) as conn:
         conn.execute("DROP TRIGGER IF EXISTS soar_audit_events_append_only_update")

@@ -20,6 +20,7 @@ from threatfusion.api.live_soc_console import (
     store_flow_provenance,
 )
 from threatfusion.models.drift_and_supply_chain import CANONICAL_14_FEATURES
+from threatfusion.operations.human_credentials import active_fingerprint
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SECRET = "lab-hmac-secret-01"
@@ -28,6 +29,12 @@ MISP_KEY = "lab-only-misp-key-16xx"
 
 def _features() -> dict[str, float]:
     return {name: 1.0 for name in CANONICAL_14_FEATURES}
+
+
+def _lab_fingerprint(policy: Path) -> str:
+    fingerprint = active_fingerprint(policy, "lab_operator")
+    assert fingerprint
+    return fingerprint
 
 
 class _Width14Model:
@@ -225,6 +232,7 @@ def test_n8n_dispatch_records_422_without_dropping_the_callback(
             actor_id="lab_operator",
             reason="Analyst recorded local approval. Containment is not executed.",
             policy_dir=policy,
+            presented_fingerprint=_lab_fingerprint(policy),
         )
         unapproved = _score(live_db)
         refused = dispatch_approved_callback(
@@ -259,6 +267,7 @@ def test_n8n_dispatch_records_422_without_dropping_the_callback(
             actor_id="lab_operator",
             reason="Analyst recorded local approval. Containment is not executed.",
             policy_dir=policy,
+            presented_fingerprint=_lab_fingerprint(policy),
         )
         dispatched = dispatch_approved_callback(
             live_db,
@@ -310,6 +319,7 @@ def test_tampered_chain_returns_no_callback(tmp_path: Path, monkeypatch) -> None
             actor_id="lab_operator",
             reason="Analyst recorded local approval. Containment is not executed.",
             policy_dir=policy,
+            presented_fingerprint=_lab_fingerprint(policy),
         )
         with sqlite3.connect(soar_db) as conn:
             conn.execute("DROP TRIGGER IF EXISTS soar_audit_events_append_only_update")

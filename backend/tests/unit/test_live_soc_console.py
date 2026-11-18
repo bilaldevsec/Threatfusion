@@ -61,8 +61,15 @@ from threatfusion.models.drift_and_supply_chain import (
     CANONICAL_14_FEATURES,
     FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY,
 )
+from threatfusion.operations.human_credentials import active_fingerprint
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _lab_fingerprint(policy: Path) -> str:
+    fingerprint = active_fingerprint(policy, "lab_operator")
+    assert fingerprint
+    return fingerprint
 
 
 def _features(**overrides: float) -> dict[str, float]:
@@ -391,6 +398,7 @@ def test_soar_approval_writes_linked_hash_and_does_not_execute(tmp_path: Path) -
         actor_id="lab_operator",
         reason="Analyst recorded local approval. Containment is not executed.",
         policy_dir=policy,
+        presented_fingerprint=_lab_fingerprint(policy),
     )
     assert approved["evidence_state"] == "verified"
     assert approved["operator_state"] == "approved_local"
@@ -411,6 +419,7 @@ def test_soar_approval_writes_linked_hash_and_does_not_execute(tmp_path: Path) -
         actor_id="lab_operator",
         reason="Analyst recorded local approval. Containment is not executed.",
         policy_dir=policy,
+        presented_fingerprint=_lab_fingerprint(policy),
     )
     assert again["reason"] == "already_approved"
     assert again["http_status"] == 200
@@ -460,6 +469,7 @@ def test_dispatch_records_signed_callback_and_mttr(tmp_path: Path, monkeypatch) 
         actor_id="lab_operator",
         reason="Analyst recorded local approval. Containment is not executed.",
         policy_dir=policy,
+        presented_fingerprint=_lab_fingerprint(policy),
     )
     server = ThreadingHTTPServer(("127.0.0.1", 0), MispAndCallbackContractHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1080,7 +1090,7 @@ def test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr(
         policy = tmp_path / "operator-policy"
         assert enroll_lab_operator(policy, "lab_operator")["identity_verified"] is True
         monkeypatch.setenv("THREATFUSION_OPERATOR_POLICY_DIR", str(policy))
-        approved_status, approved = _post_json(
+        bare_status, bare = _post_json(
             f"{base}/api/v1/live/soar/approve",
             {
                 "flow_id": stored["flow_id"],
@@ -1088,7 +1098,19 @@ def test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr(
                 "reason": "Analyst recorded local approval. Containment is not executed.",
             },
         )
-        assert approved_status == 200
+        assert bare_status == 403
+        assert bare["reason"] == "operator_identity_unverified"
+        assert bare["execution_authorized"] is False
+        approved = approve_live_soar(
+            live_db,
+            live_db.with_name("threatfusion-live-soar.sqlite3"),
+            flow_id=stored["flow_id"],
+            actor_id="lab_operator",
+            reason="Analyst recorded local approval. Containment is not executed.",
+            policy_dir=policy,
+            presented_fingerprint=_lab_fingerprint(policy),
+        )
+        assert approved["http_status"] == 200
         assert approved["ledger_state"] == "approved"
         assert approved["soar_state"] == "approved"
         assert approved["execution_authorized"] is True
@@ -1846,7 +1868,7 @@ def test_approve_unlocks_snapshot_and_repeat_click_stays_authorized(tmp_path: Pa
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
-        status, approved = _post_json(
+        status, bare = _post_json(
             f"{base}/api/v1/live/soar/approve",
             {
                 "flow_id": launched["flow_id"],
@@ -1854,19 +1876,33 @@ def test_approve_unlocks_snapshot_and_repeat_click_stays_authorized(tmp_path: Pa
                 "reason": "Analyst recorded local approval. Containment is not executed.",
             },
         )
-        assert status == 200
+        assert status == 403
+        assert bare["reason"] == "operator_identity_unverified"
+        assert bare["execution_authorized"] is False
+        soar_db = live_db.with_name("threatfusion-live-soar.sqlite3")
+        approved = approve_live_soar(
+            live_db,
+            soar_db,
+            flow_id=launched["flow_id"],
+            actor_id="lab_operator",
+            reason="Analyst recorded local approval. Containment is not executed.",
+            policy_dir=policy,
+            presented_fingerprint=_lab_fingerprint(policy),
+        )
+        assert approved["http_status"] == 200
         assert approved["soar_state"] == "approved"
         assert approved["playbook_state"] == "approved"
         assert approved["execution_authorized"] is True
-        again_status, again = _post_json(
-            f"{base}/api/v1/live/soar/approve",
-            {
-                "flow_id": launched["flow_id"],
-                "actor_id": "lab_operator",
-                "reason": "Analyst recorded local approval. Containment is not executed.",
-            },
+        again = approve_live_soar(
+            live_db,
+            soar_db,
+            flow_id=launched["flow_id"],
+            actor_id="lab_operator",
+            reason="Analyst recorded local approval. Containment is not executed.",
+            policy_dir=policy,
+            presented_fingerprint=_lab_fingerprint(policy),
         )
-        assert again_status == 200
+        assert again["http_status"] == 200
         assert again["reason"] == "already_approved"
         assert again["soar_state"] == "approved"
         assert again["execution_authorized"] is True

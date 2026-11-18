@@ -267,6 +267,20 @@ def _rpc_error(request_id: Any, code: int, message: str) -> dict[str, Any]:
     }
 
 
+def _arguments_smuggle_forbidden_action(value: Any) -> bool:
+    """True when a tool argument key or string hides Approve/Dispatch/Isolate/Rollback."""
+    if isinstance(value, str):
+        return mcp_action_is_forbidden(value)
+    if isinstance(value, dict):
+        return any(
+            mcp_action_is_forbidden(str(key)) or _arguments_smuggle_forbidden_action(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_arguments_smuggle_forbidden_action(item) for item in value)
+    return False
+
+
 def handle_rpc(message: dict[str, Any]) -> dict[str, Any] | None:
     """Handle one JSON-RPC request. Notifications return None."""
     if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
@@ -317,7 +331,11 @@ def handle_rpc(message: dict[str, Any]) -> dict[str, Any] | None:
     if method == "tools/call":
         name = str(params.get("name") or "")
         arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
-        if name in FORBIDDEN_TOOLS or mcp_action_is_forbidden(name):
+        if (
+            name in FORBIDDEN_TOOLS
+            or mcp_action_is_forbidden(name)
+            or _arguments_smuggle_forbidden_action(arguments)
+        ):
             return _rpc_error(
                 request_id,
                 -32001,

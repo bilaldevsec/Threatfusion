@@ -50,8 +50,11 @@ same date stops an invalid SOAR hash chain from calling the n8n webhook,
 leaves a console callback unverified until MTTR is measured, keeps an empty
 workbench at `evidence_state=unavailable`, refuses a zero-baseline PSI floor
 and a one-row severe label, counts the Urgent chip from Attack flow rows
-only, and rejects a symlinked HMAC secret before `chmod`. `TF-008` through
-`TF-011` stay open.
+only, and rejects a symlinked HMAC secret before `chmod`. A later pass
+on the same date refuses SOAR approval when the request presents no client
+certificate, reports a missing or empty ledger as unavailable, keeps
+noise reduction below 100% while one incident remains, and puts the remapped
+DNN class in the playbook. `TF-008` through `TF-011` stay open.
 RFC W46-01 adds a lab-only hunt pack runner, a read-only ATT&CK/CVE coverage
 heatmap, and a journal/table timeline toggle. Hunt rows are labeled
 `LAB HYPOTHESIS — NOT AN ALERT` and are hashed into a separate chain file.

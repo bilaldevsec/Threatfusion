@@ -29,6 +29,7 @@ from threatfusion.api.live_soc_console import (
     _run_range_action,
 )
 from threatfusion.models.drift_and_supply_chain import CANONICAL_14_FEATURES
+from threatfusion.operations.human_credentials import active_fingerprint
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -98,6 +99,7 @@ def _ready(tmp_path: Path, source: str = "172.29.0.10") -> tuple[Path, Path, int
         actor_id="lab_operator",
         reason="Analyst recorded local approval. Containment is not executed.",
         policy_dir=policy,
+        presented_fingerprint=active_fingerprint(policy, "lab_operator"),
     )
     assert approved["containment_executed"] is False
     with sqlite3.connect(live_db) as conn:

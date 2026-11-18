@@ -2902,6 +2902,9 @@ def _flow_rows(db_path: Path, *, limit: int, flow_id: int | None = None) -> list
                     "dnn_attack_probability",
                     "dnn_binary_decision",
                     "unsw_attack_category",
+                    "dnn_class",
+                    "predicted_class",
+                    "predicted_class_probability",
                     "threatfusion_consensus_score",
                     "consensus_label",
                 ):
@@ -4715,15 +4718,17 @@ def _annotate_soar_state(row: dict[str, Any]) -> None:
 
 
 def _snapshot_chain_status(soar_db_path: Path | None) -> str:
-    """A missing or empty ledger is a clean chain. A hash mismatch is invalid."""
+    """Verified means a non-empty intact hash chain. Missing and empty stay unavailable."""
     if soar_db_path is None or not Path(soar_db_path).is_file():
-        return "verified"
+        return "unavailable"
     repository = SoarPlaybookSqliteRepository(soar_db_path)
     try:
         chain_ok, message = repository.verify_audit_chain_integrity(require_non_empty=True)
     except (sqlite3.Error, OSError, KeyError, ValueError):
         return "unavailable"
-    if chain_ok or message == "empty ledger":
+    if message == "empty ledger":
+        return "unavailable"
+    if chain_ok:
         return "verified"
     return "invalid"
 
@@ -5108,9 +5113,12 @@ def approve_live_soar(
         return refused
     presented = presented_fingerprint.strip() if isinstance(presented_fingerprint, str) else ""
     stamp = operator_stamp(author, policy_dir, presented if presented else None)
-    if presented and stamp.get("identity_verified") is not True:
-        refused["reason"] = "operator_identity_unverified"
+    if not presented or stamp.get("identity_verified") is not True:
         refused.update(stamp)
+        refused["reason"] = "operator_identity_unverified"
+        refused["http_status"] = 403
+        refused["execution_authorized"] = False
+        refused["evidence_state"] = "unavailable"
         return refused
     candidate_id = f"live_flow:{flow_id}"
     repository = SoarPlaybookSqliteRepository(soar_db_path)
@@ -9442,6 +9450,17 @@ def _attach_rollback_identity(
     return result
 
 
+def _playbook_dnn_predicted_class(match: Mapping[str, Any]) -> str:
+    """Remap a sub-0.5 DNN probability to Normal. The dataset category stays separate."""
+    probability = _finite_number(match.get("dnn_attack_probability"))
+    if probability is not None and probability < 0.5:
+        return "Normal"
+    label = str(match.get("dnn_class") or match.get("predicted_class") or "").strip()
+    if label and label.lower() not in {"none", "null"}:
+        return label
+    return str(match.get("unsw_attack_category") or "")
+
+
 def preview_soar_playbook(db_path: Path, *, flow_id: int) -> dict[str, Any]:
     """Render the technique responder and the four-step trace for one stored flow."""
     from threatfusion.soar.soar_playbooks_catalog import preview_fields, technique_for_flow
@@ -9520,7 +9539,7 @@ def preview_soar_playbook(db_path: Path, *, flow_id: int) -> dict[str, Any]:
         proto=proto,
         rf_attack_probability=rf_probability,
         ae_mse=ae_mse,
-        dnn_predicted_class=str(match.get("unsw_attack_category") or ""),
+        dnn_predicted_class=_playbook_dnn_predicted_class(match),
         hmac_prev_sha256=str(match.get("prev_entry_sha256") or ""),
         approved=approved,
         dispatched=dispatched,
@@ -9546,6 +9565,8 @@ def preview_soar_playbook(db_path: Path, *, flow_id: int) -> dict[str, Any]:
     )
     preview["schema_version"] = "soar_playbook_preview_v1"
     preview["evidence_state"] = "verified"
+    preview["unsw_attack_category"] = str(match.get("unsw_attack_category") or "")
+    preview["dnn_predicted_class"] = _playbook_dnn_predicted_class(match)
     preview["flow_id"] = flow_id
     preview["proto"] = safe_proto
     preview["dport"] = safe_dport
@@ -9929,8 +9950,11 @@ def build_alert_fatigue_compression_funnel(db_path: Path) -> dict[str, Any]:
     if raw <= 0:
         percent = 0.0
     else:
-        percent = round((raw - high) * 100.0 / float(raw), 1)
-        percent = min(100.0, max(0.0, percent))
+        if high == 0:
+            percent = 100.0
+        else:
+            percent = round((raw - high) * 100.0 / float(raw), 1)
+            percent = min(99.9, max(0.0, percent))
     return {
         "schema_version": "alert_fatigue_compression_funnel_v1",
         "raw_telemetry_events": raw,
@@ -10691,7 +10715,11 @@ def _flow_endpoint(row: Mapping[str, Any], side: str) -> str:
         flow_id = int(row.get("flow_id") or 0)
     except (TypeError, ValueError):
         flow_id = 0
-    return f"dataset_flow#{flow_id} (/)"
+    proto = str(row.get("flow_protocol") or row.get("proto") or "").strip()
+    service = str(row.get("service_or_port") or row.get("service") or "").strip()
+    if not proto and not service:
+        return f"dataset_flow#{flow_id} (unsw_dataset)"
+    return f"dataset_flow#{flow_id} ({proto}/{service})"
 
 
 def _technique_of_row(row: Mapping[str, Any]) -> str:
@@ -10870,6 +10898,7 @@ def assemble_live_workbench(
     db_path: Path,
     workflow_path: Path,
     funnel: Mapping[str, Any],
+    soar_db_path: Path | None = None,
 ) -> dict[str, Any]:
     """Workbench payload plus the portable shift handoff brief."""
     payload = read_n8n_workbench(workflow_path)
@@ -10883,7 +10912,7 @@ def assemble_live_workbench(
     payload.update(scope)
     newest = rows[-1] if rows else None
     incident_id = f"flow {int(newest['flow_id'])}" if newest else "none"
-    ledger_status = str(payload.get("evidence_state") or "unavailable")
+    ledger_status = _snapshot_chain_status(soar_db_path)
     soar_state = "execution_authorized=false"
     if newest and str(newest.get("ledger_state") or "").strip():
         soar_state = str(newest.get("ledger_state"))

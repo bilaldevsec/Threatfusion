@@ -42,7 +42,7 @@ The test suite baseline must execute cleanly without regressions:
 ```bash
 threatfusion-venv/bin/pytest -q -o cache_dir=/tmp/.pytest_cache
 ```
-Expected baseline: `1685 passed, 1 skipped, 0 failed`.
+Expected baseline: `1725 passed, 1 skipped, 0 failed`.
 
 ## Architectural Guidelines
 

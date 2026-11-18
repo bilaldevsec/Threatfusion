@@ -34,7 +34,7 @@ load_gemini_dotenv() {
         value="${value:1:${#value}-2}"
       fi
       printf -v "$key" '%s' "$value"
-      export "$key"
+      export "${key?}"
     done < "$env_file"
   fi
 }
@@ -63,13 +63,16 @@ FOLLOWER_LOG="${DEMO_DIR}/follower.log"
 
 if [[ "${1:-}" != "--dry-run" ]]; then
   if [[ -z "${THREATFUSION_SOAR_HMAC_SECRET:-}" ]]; then
-    export THREATFUSION_SOAR_HMAC_SECRET="$("$PYTHON" -c 'import secrets; print(secrets.token_hex(32), end="")')"
+    THREATFUSION_SOAR_HMAC_SECRET="$("$PYTHON" -c 'import secrets; print(secrets.token_hex(32), end="")')"
+    export THREATFUSION_SOAR_HMAC_SECRET
   fi
   if [[ -z "${THREATFUSION_MISP_API_KEY:-}" ]]; then
-    export THREATFUSION_MISP_API_KEY="$("$PYTHON" -c 'import secrets; print(secrets.token_hex(32), end="")')"
+    THREATFUSION_MISP_API_KEY="$("$PYTHON" -c 'import secrets; print(secrets.token_hex(32), end="")')"
+    export THREATFUSION_MISP_API_KEY
   fi
   if [[ -z "${THREATFUSION_SENSOR_INGEST_TOKEN:-}" ]]; then
-    export THREATFUSION_SENSOR_INGEST_TOKEN="$("$PYTHON" -c 'import secrets; print(secrets.token_hex(32), end="")')"
+    THREATFUSION_SENSOR_INGEST_TOKEN="$("$PYTHON" -c 'import secrets; print(secrets.token_hex(32), end="")')"
+    export THREATFUSION_SENSOR_INGEST_TOKEN
   fi
 fi
 export THREATFUSION_N8N_WEBHOOK_URL="${THREATFUSION_N8N_WEBHOOK_URL:-http://127.0.0.1:5678/webhook/threatfusion-live-console}"

@@ -1788,6 +1788,7 @@
   function syncHeaderChainBadge(inc) {
     const chainOk = !!(
       inc
+      && ledgerChainStatus === 'verified'
       && verifySoarChain(inc.soarAuditChainVerified, inc.soarAuditChainHeadSha256)
       && selectedFlowHasReceipt(inc)
     );
@@ -5196,9 +5197,21 @@
     node.setAttribute('data-evidence-state', text ? 'verified' : 'unavailable');
   }
 
+  function portableHandoffEvidenceState(brief) {
+    const matched = String(brief || '').match(/Ledger Verification:\s*(\S+)/);
+    return matched && matched[1] === 'verified' ? 'verified' : 'unavailable';
+  }
+
   function copyTextBlock(text) {
-    if (!text || !navigator.clipboard || !navigator.clipboard.writeText) return;
-    navigator.clipboard.writeText(text);
+    if (!text || !navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') return;
+    try {
+      const pending = navigator.clipboard.writeText(String(text));
+      if (pending && typeof pending.catch === 'function') {
+        pending.catch(function () {});
+      }
+    } catch (err) {
+      return;
+    }
   }
 
   function copyHunterDetectionRule() {
@@ -5224,8 +5237,19 @@
         brief = '';
       }
     }
-    copyTextBlock(brief);
-    showHandoffReport(brief || 'Portable handoff brief is unavailable.', brief ? 'verified' : 'unavailable');
+    try {
+      copyTextBlock(brief);
+    } catch (err) {
+      brief = brief || '';
+    }
+    showHandoffReport(
+      brief || 'Portable handoff brief is unavailable.',
+      brief ? portableHandoffEvidenceState(brief) : 'unavailable'
+    );
+  }
+
+  function primePortableHandoffBrief(brief) {
+    latestPortableHandoffBrief = String(brief || '');
   }
 
   async function refreshN8nSchema(openModal) {
@@ -5387,6 +5411,18 @@
       if (bench && bench.compression_funnel) renderCompressionFunnel(bench.compression_funnel);
       if (bench && typeof bench.portable_handoff_brief === 'string') {
         latestPortableHandoffBrief = bench.portable_handoff_brief;
+        const report = document.getElementById('shiftHandoffReport');
+        const current = report ? String(report.textContent || '') : '';
+        if (
+          current.indexOf('No shift handoff') === 0
+          || current.indexOf('Incident ID:') === 0
+          || current.indexOf('Ledger Verification:') !== -1
+        ) {
+          showHandoffReport(
+            latestPortableHandoffBrief,
+            portableHandoffEvidenceState(latestPortableHandoffBrief)
+          );
+        }
       }
       renderForensicScope(bench);
       setLiveText(
@@ -6365,6 +6401,10 @@
     isSoarApprovalReceiptRow,
     ctiPresentation,
     groupConsecutiveTimelineByActor,
+    copyTextBlock,
+    copyPortableHandoffBrief,
+    primePortableHandoffBrief,
+    portableHandoffEvidenceState,
     initApp
   };
 

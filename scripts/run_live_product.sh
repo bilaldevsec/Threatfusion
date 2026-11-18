@@ -112,7 +112,7 @@ load_gemini_dotenv() {
         value="${value:1:${#value}-2}"
       fi
       printf -v "$key" '%s' "$value"
-      export "$key"
+      export "${key?}"
     done < "$env_file"
   fi
 }
@@ -137,13 +137,16 @@ ephemeral_secret() {
 
 if [[ "$MODE" != "dry-run" ]]; then
   if [[ -z "${THREATFUSION_SOAR_HMAC_SECRET:-}" ]]; then
-    export THREATFUSION_SOAR_HMAC_SECRET="$(ephemeral_secret)"
+    THREATFUSION_SOAR_HMAC_SECRET="$(ephemeral_secret)"
+    export THREATFUSION_SOAR_HMAC_SECRET
   fi
   if [[ -z "${THREATFUSION_MISP_API_KEY:-}" ]]; then
-    export THREATFUSION_MISP_API_KEY="$(ephemeral_secret)"
+    THREATFUSION_MISP_API_KEY="$(ephemeral_secret)"
+    export THREATFUSION_MISP_API_KEY
   fi
   if [[ -z "${THREATFUSION_SENSOR_INGEST_TOKEN:-}" ]]; then
-    export THREATFUSION_SENSOR_INGEST_TOKEN="$(ephemeral_secret)"
+    THREATFUSION_SENSOR_INGEST_TOKEN="$(ephemeral_secret)"
+    export THREATFUSION_SENSOR_INGEST_TOKEN
   fi
 fi
 
@@ -164,7 +167,8 @@ if [[ -z "$LIVE_DB" ]]; then
 fi
 export THREATFUSION_LIVE_CONSOLE_DB="$LIVE_DB"
 if [[ -z "${THREATFUSION_SOAR_LEDGER_DB_PATH+x}" ]]; then
-  export THREATFUSION_SOAR_LEDGER_DB_PATH="$(dirname "$LIVE_DB")/threatfusion-live-soar.sqlite3"
+  THREATFUSION_SOAR_LEDGER_DB_PATH="$(dirname "$LIVE_DB")/threatfusion-live-soar.sqlite3"
+  export THREATFUSION_SOAR_LEDGER_DB_PATH
 elif [[ -z "${THREATFUSION_SOAR_LEDGER_DB_PATH}" ]]; then
   die "THREATFUSION_SOAR_LEDGER_DB_PATH is empty"
 fi
@@ -257,7 +261,8 @@ prepare_operator_policy_dir() {
 
 mkdir -p "$(dirname "$THREATFUSION_LIVE_CONSOLE_DB")" "$(dirname "$THREATFUSION_SOAR_LEDGER_DB_PATH")"
 if [[ -z "${THREATFUSION_OPERATOR_POLICY_DIR:-}" ]]; then
-  export THREATFUSION_OPERATOR_POLICY_DIR="$(dirname "$THREATFUSION_LIVE_CONSOLE_DB")/operator-policy"
+  THREATFUSION_OPERATOR_POLICY_DIR="$(dirname "$THREATFUSION_LIVE_CONSOLE_DB")/operator-policy"
+  export THREATFUSION_OPERATOR_POLICY_DIR
 fi
 prepare_operator_policy_dir "$THREATFUSION_OPERATOR_POLICY_DIR"
 
@@ -396,12 +401,15 @@ if parent != parent.parent:
         os.chmod(parent, 0o700)
 sys.path.insert(0, str(Path(root) / "backend" / "src"))
 from threatfusion.api.live_soc_console import enroll_lab_operator
+from threatfusion.operations.human_credentials import FILENAME, active_fingerprint
 
 stamp = enroll_lab_operator(directory, "lab_operator")
-if stamp.get("evidence_state") != "verified" or stamp.get("reason") not in {
-    "lab_operator_enrolled",
-    "already_enrolled",
-}:
+fingerprint_file = directory / FILENAME
+enrolled_fingerprint = active_fingerprint(directory, "lab_operator")
+if stamp.get("reason") not in {"lab_operator_enrolled", "already_enrolled"}:
+    sys.stderr.write("error: seed-demo did not enroll lab_operator\n")
+    sys.exit(1)
+if enrolled_fingerprint is None or not fingerprint_file.is_file():
     sys.stderr.write("error: seed-demo did not enroll lab_operator\n")
     sys.exit(1)
 print("seed-demo: four scenarios stored")

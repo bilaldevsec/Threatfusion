@@ -119,6 +119,10 @@ def test_analyst_a_stays_unverified_until_a_different_actor_is_enrolled(tmp_path
     )
     assert unpresented_approval["identity_verified"] is False
     assert unpresented_approval["identity_label"] == "unverified_local_label"
+    assert unpresented_approval["execution_authorized"] is False
+    assert unpresented_approval["http_status"] == 403
+    assert unpresented_approval["reason"] == "operator_identity_unverified"
+    assert not (tmp_path / "soar-unpresented.sqlite3").exists()
     approved = approve_live_soar(
         db_path,
         tmp_path / "soar.sqlite3",
