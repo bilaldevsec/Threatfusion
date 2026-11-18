@@ -97,8 +97,15 @@ class TestBoundaryPreflight:
             temp_dir = Path(td)
             code_file = temp_dir / "leaky_code.py"
             operator_home = "".join(["/", "home", "/", "muhammad-bilal"])
-            forbidden_str = operator_home + "/projects/threat" + "fusion/backend"
-            code_file.write_text(f'REF = "{forbidden_str}"\n', encoding="utf-8")
+            canonical_home = operator_home + "/projects/threat" + "fusion/backend"
+            sibling = str(
+                (CANONICAL_ACTIVE_WORKSPACE.resolve().parent / "threatfusion") / "backend"
+            )
+            resolved = str(CANONICAL_PROTECTED_WORKSPACE.resolve() / "backend")
+            code_file.write_text(
+                f'REF = "{sibling}"\nREF2 = "{resolved}"\nREF3 = "{canonical_home}"\n',
+                encoding="utf-8",
+            )
             passed, findings = check_b5_code_config(active_path=temp_dir)
             assert passed is False
             assert len(findings) == 1
@@ -112,8 +119,13 @@ class TestBoundaryPreflight:
             site_packages.mkdir(parents=True)
             pth_file = site_packages / "leak.pth"
             operator_home = "".join(["/", "home", "/", "muhammad-bilal"])
-            leak_path = operator_home + "/projects/threat" + "fusion"
-            pth_file.write_text(f"{leak_path}\n", encoding="utf-8")
+            canonical_home = operator_home + "/projects/threat" + "fusion"
+            sibling = str(CANONICAL_ACTIVE_WORKSPACE.resolve().parent / "threatfusion")
+            resolved = str(CANONICAL_PROTECTED_WORKSPACE.resolve())
+            pth_file.write_text(
+                f"{sibling}\n{resolved}\n{canonical_home}\n",
+                encoding="utf-8",
+            )
 
             passed, findings = check_b3_venv(
                 venv_path=temp_venv,
@@ -133,8 +145,15 @@ class TestBoundaryPreflight:
             git_info.mkdir(parents=True)
             alternates = git_info / "alternates"
             operator_home = "".join(["/", "home", "/", "muhammad-bilal"])
-            leak_path = operator_home + "/projects/threat" + "fusion/.git/objects"
-            alternates.write_text(f"{leak_path}\n", encoding="utf-8")
+            canonical_home = operator_home + "/projects/threat" + "fusion/.git/objects"
+            sibling = str(
+                (CANONICAL_ACTIVE_WORKSPACE.resolve().parent / "threatfusion") / ".git" / "objects"
+            )
+            resolved = str(CANONICAL_PROTECTED_WORKSPACE.resolve() / ".git" / "objects")
+            alternates.write_text(
+                f"{sibling}\n{resolved}\n{canonical_home}\n",
+                encoding="utf-8",
+            )
 
             passed, findings = check_b4_git_metadata(
                 active_path=temp_repo,

@@ -33,6 +33,20 @@ recomputed chain, and groundedness must all pass before
 `data-evidence-state="verified"`. Production and a security-verified turnkey
 release remain NO-GO pending runtime evidence. `TF-008` through `TF-011`
 stay open.
+On 2026-11-19 the jury red-team pass corrected the console contracts that were
+over-claiming. Untrusted telemetry strips ANSI and ASCII controls before
+injection matching and escapes angle brackets inside the evidence fence.
+Ungrounded ledger identifiers are annotated without regard to case. A password
+login or a bare HTTP enrollment shows Session Auth, not a verified mTLS pill.
+LLM token savings count SimHash reuse only; envelope field compaction stays a
+separate field. Hunter replay says `NO_MATCHING_TELEMETRY_TO_REPLAY` when no
+stored flow matches, and drafted Sigma YAML is safe-loaded. A 9-class DNN
+attack probability below 0.5 is labeled Normal, with the top attack class
+reported separately. The default advisory model is `gemini-4-hydrogen`, with a
+quota cascade through `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, and
+`gemma-4-31b-it`. Production admin login accepts `muhammad.bilal@nu.edu.pk`
+and `TF_ADMIN_EMAIL` when `TF_ADMIN_SECRET` is set. `TF-008` through `TF-011`
+stay open.
 RFC W46-01 adds a lab-only hunt pack runner, a read-only ATT&CK/CVE coverage
 heatmap, and a journal/table timeline toggle. Hunt rows are labeled
 `LAB HYPOTHESIS — NOT AN ALERT` and are hashed into a separate chain file.

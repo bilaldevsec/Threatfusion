@@ -257,13 +257,7 @@
         </section>
         <section class="compression-funnel" id="alertFatigueCompressionFunnel" aria-label="Alert Fatigue Compression Funnel">
           <h2>Alert Fatigue Compression Funnel</h2>
-          <p id="compressionFunnelLine" data-evidence-state="unavailable">Raw Telemetry Events (0) &rarr; SimHash Deduplicated Clusters (0) &rarr; High-Confidence Incidents (0) &middot; 0% Noise Reduction &middot; 0% LLM Tokens Saved</p>
-        </section>
-        <section id="forensicScopePanel" aria-label="Patient Zero and attack story">
-          <p id="patientZeroBadge" class="badge" data-evidence-state="unavailable">Patient Zero · Asset Scope</p>
-          <p id="compositeChainPill" class="badge" hidden>Composite Multi-Stage Chain</p>
-          <ol id="attackStoryTimeline"></ol>
-          <div id="decomposedCti" data-evidence-state="unavailable">Decomposed CTI &amp; CVSS</div>
+          <p id="compressionFunnelLine" data-evidence-state="unavailable">Raw Telemetry Events (0) &rarr; SimHash Deduplicated Clusters (0) &rarr; High-Confidence Incidents (0) &middot; 0% Noise Reduction &middot; 0% LLM Tokens Saved &middot; Envelope Field Compaction 0%</p>
         </section>
         <div class="inv-toolbar">
           <div class="queue-filter-bar">
@@ -403,6 +397,24 @@
             <div class="inspector-tab-pane active" data-inspector-tab="1">
               <div class="detail-split">
                 <div class="detail-main">
+                  <section id="forensicScopePanel" class="forensic-card-grid" aria-label="Patient Zero and attack story">
+                    <article class="card forensic-card" id="patientZeroCard">
+                      <h3>Patient Zero</h3>
+                      <p id="patientZeroBadge" class="badge" data-evidence-state="unavailable">Patient Zero</p>
+                    </article>
+                    <article class="card forensic-card" id="attackStoryCard">
+                      <h3>Attack Story Timeline</h3>
+                      <div id="attackStoryTimeline"></div>
+                    </article>
+                    <article class="card forensic-card" id="compositeChainCard">
+                      <h3>Composite Multi-Stage Chain</h3>
+                      <p id="compositeChainPill" class="badge" hidden>Composite Multi-Stage Chain</p>
+                    </article>
+                    <article class="card forensic-card" id="decomposedCtiCard">
+                      <h3>Decomposed CTI &amp; CVSS</h3>
+                      <div id="decomposedCti" data-evidence-state="unavailable">Decomposed CTI &amp; CVSS</div>
+                    </article>
+                  </section>
                   <article class="card advisory-trace-card" id="advisoryTraceCard" aria-label="Advisory Trace: Assigned vs. Actual" style="background: #111827;">
                     <div class="advisory-trace-head">
                       <h3>Advisory Trace: Assigned vs. Actual</h3>
@@ -912,7 +924,7 @@
             <span class="shield-pill" data-copy-hash="bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9" title="Click to copy SHA-256 digest">Model Weights Frozen &amp; Verified</span>
             <span class="shield-pill">SOAR ledger: checked per flow</span>
           </div>
-          <p>Advisory model default: gemini-3.5-flash. A missing key uses the local corpus.</p>
+          <p>Advisory model default: gemini-4-hydrogen. A missing key uses the local corpus.</p>
           <p>99%+ Alert Noise Eliminated on the inspected January benchmark only.</p>
         </details>
       </section>

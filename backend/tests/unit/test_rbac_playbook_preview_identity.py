@@ -19,6 +19,9 @@ from threatfusion.api.live_soc_console import (
 )
 
 _BILAL = "Muhammad Bilal (21K-3551) · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)"
+_BILAL_SESSION = (
+    "Muhammad Bilal (21K-3551) · Tier-3 Approver | Session Auth (Tier-3 RBAC · Lab HTTP)"
+)
 _SUHAIB = "Muhammad Suhaib (22K-4302) · Tier-1 Triage | No SOAR Cert (Triage Only)"
 _HASNAIN = "Muhammad Hasnain (22K-4718) · Auditor | Read-Only Compliance Token"
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -101,9 +104,11 @@ def test_seeded_logins_bind_the_header_to_the_signed_in_role(tmp_path: Path, mon
     assert enroll_lab_operator(policy, "lab_operator")["identity_verified"] is True
     monkeypatch.setenv("THREATFUSION_OPERATOR_POLICY_DIR", str(policy))
     enrolled = rbac_login(live, username="bilal.21k3551@nu.edu.pk", access_code="TF-Bilal-3551!")
-    assert enrolled["header_identity"] == _BILAL
-    assert enrolled["identity_verified"] is True
-    assert enrolled["certificate_subject"] == "/CN=lab_operator"
+    assert enrolled["header_identity"] == _BILAL_SESSION
+    assert "verified mTLS" not in enrolled["header_identity"]
+    assert enrolled["identity_verified"] is False
+    assert enrolled["evidence_state"] == "session_authenticated"
+    assert enrolled["certificate_subject"] == ""
     suhaib = rbac_login(live, username="suhaib.22k4302@nu.edu.pk", access_code="TF-Suhaib-4302!")
     assert suhaib["header_identity"] == _SUHAIB
     assert "/CN=lab_operator" not in suhaib["header_identity"]
@@ -158,8 +163,9 @@ def test_rollback_keeps_verified_identity_and_suhaib_has_no_lab_cert(
     )
     assert _identity(live, flow_id) == 1
     assert kept["flow_identity_preserved"] is True
-    assert kept["header_identity"] == _BILAL
-    assert kept["identity_verified"] is True
+    assert kept["header_identity"] == _BILAL_SESSION
+    assert "verified mTLS" not in kept["header_identity"]
+    assert kept["identity_verified"] is False
     suhaib = rbac_login(live, username="suhaib.22k4302@nu.edu.pk", access_code="TF-Suhaib-4302!")
     switched = rollback_range_source(
         live,

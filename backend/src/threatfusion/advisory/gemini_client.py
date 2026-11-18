@@ -41,21 +41,33 @@ SOC_COPILOT_SYSTEM_PROMPT = (
 )
 
 _MODEL_LABELS = {
+    "gemini-4-hydrogen": "Gemini 4 Hydrogen",
     "gemini-3.5-flash": "Gemini 3.5 Flash",
-    "gemini-3.5-flash-lite": "Gemini 3.5 Flash",
-    "gemini-3.1-flash-lite": "Gemini 3.5 Flash",
+    "gemini-3.5-flash-lite": "Gemini 3.5 Flash Lite",
+    "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
+    "gemma-4-31b-it": "Gemma 4 31B",
     "gemini-2.5-flash": "Gemini 2.5 Flash",
     "gemini-2.0-flash": "Gemini 2.0 Flash",
     "gemini-1.5-pro": "Gemini 1.5 Pro",
 }
+_DEFAULT_ADVISORY_MODEL = "gemini-4-hydrogen"
+_ADVISORY_MODEL_CASCADE = (
+    "gemini-4-hydrogen",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemma-4-31b-it",
+)
 
 
 def resolve_gemini_model(explicit: str | None = None) -> str:
-    """Return an explicit model, else GEMINI_MODEL, else gemini-3.5-flash."""
+    """Return an explicit model, else TF_GEMINI_MODEL, else GEMINI_MODEL, else Hydrogen."""
     if explicit and explicit.strip():
         return explicit.strip()
-    configured = os.environ.get("GEMINI_MODEL", "").strip()
-    return configured or "gemini-3.5-flash"
+    for key in ("TF_GEMINI_MODEL", "GEMINI_MODEL"):
+        configured = os.environ.get(key, "").strip()
+        if configured:
+            return configured
+    return _DEFAULT_ADVISORY_MODEL
 
 
 def model_display_name(model_name: str) -> str:
@@ -131,7 +143,7 @@ def advisory_provider_status() -> dict[str, Any]:
 class GeminiAdvisoryConfig:
     """Configuration for Gemini Advisory debrief client."""
 
-    model_name: str = "gemini-3.5-flash"
+    model_name: str = "gemini-4-hydrogen"
     timeout_seconds: float = 5.0
     max_output_tokens: int = 512
     temperature: float = 0.0
@@ -150,22 +162,38 @@ class GeminiAdvisoryUnavailableError(RuntimeError):
     """Raised when Gemini Advisory LLM service is unavailable, misconfigured, or unparseable."""
 
 
-_COPILOT_FALLBACK_MODELS = (
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-3.5-flash",
-    "gemini-3.6-flash",
-    "gemini-3.8-flash",
-)
+_COPILOT_FALLBACK_MODELS = _ADVISORY_MODEL_CASCADE[1:]
 
 
 def _copilot_retryable_failure(exc: BaseException) -> bool:
-    """HTTP 404, HTTP 429, HTTP 503, and timeouts may be retried on the next model."""
+    """HTTP 404, HTTP 429, HTTP 503, quota exhaustion, and timeouts hop to the next model."""
     if isinstance(exc, TimeoutError):
+        return True
+    if "RESOURCE_EXHAUSTED" in str(exc):
         return True
     if isinstance(exc, urllib.error.HTTPError):
         return exc.code in {404, 429, 503}
     return isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
+
+
+def _fallback_reason_text(exc: BaseException) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code == 429 or "RESOURCE_EXHAUSTED" in str(exc):
+            return f"HTTP {exc.code} RESOURCE_EXHAUSTED"
+        return f"HTTP {exc.code}"
+    if "RESOURCE_EXHAUSTED" in str(exc):
+        return "RESOURCE_EXHAUSTED"
+    return type(exc).__name__
+
+
+def advisory_model_cascade(primary: str | None = None) -> tuple[str, ...]:
+    """Primary model, then the free-tier quota cascade, with duplicates removed."""
+    ordered: list[str] = []
+    for model_name in (primary or resolve_gemini_model(), *_ADVISORY_MODEL_CASCADE):
+        cleaned = str(model_name or "").strip()
+        if cleaned and cleaned not in ordered:
+            ordered.append(cleaned)
+    return tuple(ordered)
 
 
 def build_grounded_gemini_prompt(bundle: AdvisoryEvidenceBundle) -> str:
@@ -297,6 +325,10 @@ class GeminiAdvisoryCallable:
         else:
             self.config = config
         self._transport_callable = transport_callable
+        self.advisory_provenance = {
+            "model_used": self.config.model_name,
+            "fallback_reason": "",
+        }
 
     def __call__(self, bundle: AdvisoryEvidenceBundle) -> EvidenceBoundExplanation:
         """Generate an advisory explanation from bundle using Gemini REST API."""
@@ -488,11 +520,9 @@ class GeminiAdvisoryCallable:
                 "maxOutputTokens": self.config.max_output_tokens,
             },
         }
-        models: list[str] = []
-        for model_name in (self.config.model_name, *_COPILOT_FALLBACK_MODELS):
-            if model_name and model_name not in models:
-                models.append(model_name)
+        models = list(advisory_model_cascade(self.config.model_name))
         last_error: BaseException | None = None
+        fallback_reasons: list[str] = []
         for model_name in models:
             _refuse_blocked_live_gemini()
             endpoint_url = (
@@ -523,13 +553,18 @@ class GeminiAdvisoryCallable:
                 TimeoutError,
                 OSError,
                 json.JSONDecodeError,
+                RuntimeError,
             ) as exc:
-                if isinstance(exc, urllib.error.HTTPError):
+                if isinstance(exc, RuntimeError) and not _copilot_retryable_failure(exc):
+                    raise
+                if isinstance(exc, urllib.error.HTTPError) and self._transport_callable is None:
                     _record_gemini_live_spend()
                 if _copilot_retryable_failure(exc):
                     last_error = exc
+                    fallback_reasons.append(f"{model_name}: {_fallback_reason_text(exc)}")
                     if (
-                        isinstance(exc, urllib.error.HTTPError)
+                        self._transport_callable is None
+                        and isinstance(exc, urllib.error.HTTPError)
                         and exc.code in {429, 503}
                         and model_name != models[-1]
                     ):
@@ -552,6 +587,10 @@ class GeminiAdvisoryCallable:
             text = str(parts[0].get("text") or "").strip()
             if not text:
                 raise GeminiAdvisoryUnavailableError("Gemini copilot response text is empty.")
+            self.advisory_provenance = {
+                "model_used": model_name,
+                "fallback_reason": "; ".join(fallback_reasons),
+            }
             return text
         raise GeminiAdvisoryUnavailableError(
             f"Gemini copilot request failed: {last_error}"

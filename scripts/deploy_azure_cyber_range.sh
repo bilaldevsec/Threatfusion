@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Backwards-compatible Azure entry. Public flags delegate to
-# scripts/deploy_cloud_range.sh. TF_AZURE_RANGE_IMPL=1 runs this file's
-# Azure CLI implementation and must not delegate again.
-if [[ "${TF_AZURE_RANGE_IMPL:-}" != "1" ]]; then
+# Backwards-compatible Azure entry. The default runs this file's Azure CLI
+# implementation, including --student-free-tier Standard_B1s / ARM64,
+# empty public IPs, and 23:59 PKT shutdown. Set TF_AZURE_RANGE_IMPL=0 to
+# delegate public flags to scripts/deploy_cloud_range.sh instead.
+TF_AZURE_RANGE_IMPL="${TF_AZURE_RANGE_IMPL:-1}"
+if [[ "${TF_AZURE_RANGE_IMPL}" != "1" ]]; then
   set -euo pipefail
   _root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   _mapped=()

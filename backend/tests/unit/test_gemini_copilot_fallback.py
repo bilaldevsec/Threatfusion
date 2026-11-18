@@ -22,13 +22,14 @@ from threatfusion.advisory.gemini_client import (
 from threatfusion.api.live_soc_console import answer_mitre_copilot
 
 
-def test_unset_model_stays_gemini_3_5_flash(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unset_model_stays_gemini_4_hydrogen(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
-    assert GeminiAdvisoryConfig().model_name == "gemini-3.5-flash"
-    assert resolve_gemini_model() == "gemini-3.5-flash"
+    monkeypatch.delenv("TF_GEMINI_MODEL", raising=False)
+    assert GeminiAdvisoryConfig().model_name == "gemini-4-hydrogen"
+    assert resolve_gemini_model() == "gemini-4-hydrogen"
     dashboard = Path(__file__).resolve().parents[3] / "frontend" / "js" / "soc_dashboard.js"
-    assert "Live Gemini 3.5 Flash (Grounded API Call)" in dashboard.read_text(encoding="utf-8")
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.0-flash")
+    assert "Live Gemini 4 Hydrogen (Grounded API Call)" in dashboard.read_text(encoding="utf-8")
+    monkeypatch.setenv("TF_GEMINI_MODEL", "gemini-2.0-flash")
     assert resolve_gemini_model() == "gemini-2.0-flash"
     assert GeminiAdvisoryCallable().config.model_name == "gemini-2.0-flash"
 
@@ -91,6 +92,7 @@ def test_copilot_retries_503_and_timeout_across_fallback_models(
     import urllib.error
 
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    monkeypatch.delenv("TF_GEMINI_MODEL", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("GEMINI_ENABLED", "true")
     monkeypatch.delenv("THREATFUSION_CLOUD_SPEND_USD", raising=False)
@@ -99,25 +101,33 @@ def test_copilot_retries_503_and_timeout_across_fallback_models(
     def transport(endpoint_url: str, payload: dict) -> dict:
         del payload
         seen.append(endpoint_url)
-        if endpoint_url.endswith("models/gemini-3.5-flash:generateContent"):
+        if endpoint_url.endswith("models/gemini-4-hydrogen:generateContent"):
             raise urllib.error.HTTPError(
-                endpoint_url, 404, "not found", hdrs=None, fp=io.BytesIO(b"{}")
+                endpoint_url, 429, "RESOURCE_EXHAUSTED", hdrs=None, fp=io.BytesIO(b"{}")
             )
         if endpoint_url.endswith("models/gemini-3.5-flash-lite:generateContent"):
             raise urllib.error.HTTPError(
-                endpoint_url, 503, "unavailable", hdrs=None, fp=io.BytesIO(b"{}")
+                endpoint_url, 429, "RESOURCE_EXHAUSTED", hdrs=None, fp=io.BytesIO(b"{}")
             )
         if endpoint_url.endswith("models/gemini-3.1-flash-lite:generateContent"):
+            raise urllib.error.HTTPError(
+                endpoint_url, 503, "unavailable", hdrs=None, fp=io.BytesIO(b"{}")
+            )
+        if endpoint_url.endswith("models/gemma-4-31b-it:generateContent"):
             return {"candidates": [{"content": {"parts": [{"text": "live brief"}]}}]}
         raise AssertionError(endpoint_url)
 
-    text = GeminiAdvisoryCallable(transport_callable=transport).generate_copilot_text("evidence")
+    client = GeminiAdvisoryCallable(transport_callable=transport)
+    text = client.generate_copilot_text("evidence")
     assert text == "live brief"
     assert [url.rsplit("/", 1)[-1] for url in seen] == [
-        "gemini-3.5-flash:generateContent",
+        "gemini-4-hydrogen:generateContent",
         "gemini-3.5-flash-lite:generateContent",
         "gemini-3.1-flash-lite:generateContent",
+        "gemma-4-31b-it:generateContent",
     ]
+    assert client.advisory_provenance["model_used"] == "gemma-4-31b-it"
+    assert "429" in client.advisory_provenance["fallback_reason"]
     assert all("key=" not in url for url in seen)
 
 
@@ -142,6 +152,7 @@ def test_copilot_does_not_hop_models_on_http_401(monkeypatch: pytest.MonkeyPatch
 
 def test_copilot_raises_after_every_fallback_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    monkeypatch.delenv("TF_GEMINI_MODEL", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("GEMINI_ENABLED", "true")
     seen: list[str] = []
@@ -153,7 +164,7 @@ def test_copilot_raises_after_every_fallback_times_out(monkeypatch: pytest.Monke
 
     with pytest.raises(GeminiAdvisoryUnavailableError):
         GeminiAdvisoryCallable(transport_callable=transport).generate_copilot_text("evidence")
-    assert len(seen) == 5
+    assert len(seen) == 4
 
 
 def _five_section_reply(*sentences: str) -> str:

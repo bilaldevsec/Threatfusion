@@ -20,12 +20,15 @@ _INJECTION_PATTERNS = (
     re.compile(r"(?i)\bignore\s+(all\s+)?previous\s+instructions?\b"),
     re.compile(r"(?i)\bsystem\s*:"),
     re.compile(r"(?i)</?\s*(system|assistant|user|instructions?)\s*>"),
+    re.compile(r"(?i)</?\s*untrusted_telemetry_envelope\b"),
     re.compile(r"(?i)\byou\s+are\s+now\b"),
     re.compile(r"(?i)\boverride\s+(your\s+)?(rules?|instructions?|policy)\b"),
     re.compile(r"(?i)\bdo\s+not\s+follow\s+(your\s+)?(rules?|instructions?)\b"),
     re.compile(r"`{1,3}"),
     re.compile(r"(?i)\brole\s*[:=]\s*(system|assistant)\b"),
 )
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+_ASCII_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 _IPV4_RE = re.compile(
     r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\b"
@@ -208,17 +211,47 @@ def reset_burst_deduplicator() -> None:
         _GLOBAL_BURST._entries.clear()
 
 
+def _strip_terminal_controls(text: str) -> str:
+    """Remove ANSI color prefixes and ASCII controls before any pattern match."""
+    without_ansi = _ANSI_ESCAPE_RE.sub("", str(text or ""))
+    return _ASCII_CONTROL_RE.sub("", without_ansi)
+
+
+def _escape_untrusted_markup(text: str) -> str:
+    """Keep a hostile value from closing the evidence fence."""
+    return str(text or "").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _flatten_rule_text(value: str) -> str:
+    """One line, with terminal controls removed, for rule literals."""
+    flattened = _strip_terminal_controls(str(value or ""))
+    flattened = flattened.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    return " ".join(flattened.split())
+
+
+def _yaml_double_quoted(value: str) -> str:
+    """YAML double-quoted scalar. Colons, quotes, and breaks stay inside the quotes."""
+    import yaml
+
+    literal = _flatten_rule_text(value)
+    dumped = yaml.safe_dump(literal, default_style='"', width=10**9, allow_unicode=False)
+    return str(dumped or '""').strip()
+
+
 def neutralize_prompt_injection(text: str) -> tuple[str, bool]:
     """Strip/neutralize common prompt-injection control patterns."""
     original = str(text or "")
-    cleaned = original
-    filtered = False
+    cleaned = _strip_terminal_controls(original)
+    filtered = cleaned != original
     for pattern in _INJECTION_PATTERNS:
         updated, count = pattern.subn("[FILTERED]", cleaned)
         if count:
             filtered = True
             cleaned = updated
-    cleaned = cleaned.replace("\x00", "")
+    escaped = _escape_untrusted_markup(cleaned)
+    if escaped != cleaned:
+        filtered = True
+        cleaned = escaped
     return cleaned, filtered
 
 
@@ -250,6 +283,11 @@ def wrap_untrusted_telemetry_envelope(
         "system_instruction": EVIDENCE_FENCE_INSTRUCTION,
         "fenced_prompt_prefix": (f"{EVIDENCE_FENCE_INSTRUCTION}\n\n{envelope}"),
     }
+
+
+def build_untrusted_telemetry_envelope(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """Alias used by callers that build the fence before the advisory prompt."""
+    return wrap_untrusted_telemetry_envelope(fields)
 
 
 def build_fenced_advisory_prompt(
@@ -367,7 +405,12 @@ def verify_advisory_against_ledger(
     status = "VERIFIED" if not ungrounded else "FLAGGED_UNGROUNDED"
     annotated = text
     for fake in ungrounded:
-        annotated = annotated.replace(fake, f"{fake} [UNGROUNDED — stripped from ledger]")
+        pattern = re.compile(re.escape(fake), flags=re.IGNORECASE)
+
+        def _mark(match: re.Match[str]) -> str:
+            return f"{match.group(0)} [UNGROUNDED — stripped from ledger]"
+
+        annotated = pattern.sub(_mark, annotated)
     return {
         "status": status,
         "verified_indicators": verified,
@@ -414,20 +457,27 @@ def draft_detection_rule(
     )
     technique_tag = technique.lower().replace(".", ".")
     src_ip = str(flow.get("src_ip") or flow.get("src_entity_id") or "any").strip() or "any"
-    vector = str(flow.get("vector") or flow.get("vector_id") or query or technique).strip()
-    intent = str(query or vector or f"detect {technique} toward port {dst_port}").strip()
+    vector = _flatten_rule_text(
+        str(flow.get("vector") or flow.get("vector_id") or query or technique)
+    )
+    intent = _flatten_rule_text(
+        str(query or vector or f"detect {technique} toward port {dst_port}")
+    )
     sid = _sid_for_flow(flow if flow else {"technique_id": technique, "dst_port": dst_port})
-    msg = f"THREATFUSION {technique} {vector or 'hunt'}".replace('"', "")[:120]
+    msg = _flatten_rule_text(f"THREATFUSION {technique} {vector or 'hunt'}").replace('"', "")[:120]
     suricata = (
         f"alert {proto} any any -> $HOME_NET {dst_port} "
         f'(msg:"{msg}"; flow:to_server,established; '
         f"classtype:trojan-activity; sid:{sid}; rev:1;)"
     )
+    import yaml
+
+    description = _yaml_double_quoted(intent)
     sigma = (
         f"title: ThreatFusion Hunt {technique}\n"
         f"id: tf-hunt-{sid}\n"
         f"status: experimental\n"
-        f"description: {intent}\n"
+        f"description: {description}\n"
         f"logsource:\n"
         f"  product: zeek\n"
         f"  category: network_connection\n"
@@ -442,6 +492,31 @@ def draft_detection_rule(
         f"falsepositives:\n"
         f"  - Legitimate service scans require analyst review\n"
     )
+    try:
+        parsed_sigma = yaml.safe_load(sigma)
+        if not isinstance(parsed_sigma, dict) or "detection" not in parsed_sigma:
+            raise ValueError("sigma document rejected")
+    except (ValueError, TypeError, yaml.YAMLError):
+        description = _yaml_double_quoted("sanitized hunt query")
+        sigma = (
+            f"title: ThreatFusion Hunt {technique}\n"
+            f"id: tf-hunt-{sid}\n"
+            f"status: experimental\n"
+            f"description: {description}\n"
+            f"logsource:\n"
+            f"  product: zeek\n"
+            f"  category: network_connection\n"
+            f"detection:\n"
+            f"  selection:\n"
+            f"    DestinationPort: {dst_port}\n"
+            f"    Protocol: {proto}\n"
+            f"  condition: selection\n"
+            f"level: medium\n"
+            f"tags:\n"
+            f"  - attack.{technique_tag}\n"
+            f"falsepositives:\n"
+            f"  - Legitimate service scans require analyst review\n"
+        )
     rule_name = "threatfusion_" + re.sub(r"[^a-z0-9_]", "_", technique.lower())
     spl = (
         f"index=threatfusion technique_id={technique} proto={proto} dst_port={dst_port}\n"

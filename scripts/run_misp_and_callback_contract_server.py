@@ -1441,7 +1441,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/v1/live/operator/enroll":
-            from threatfusion.api.live_soc_console import enroll_lab_operator
+            from threatfusion.api.live_soc_console import (
+                enroll_lab_operator,
+                operator_stamp,
+                publish_lab_enrollment,
+            )
 
             try:
                 req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
@@ -1455,8 +1459,28 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if directory is None:
                 directory = Path(os.environ.get("TMPDIR", "/tmp")) / "threatfusion-operator-policy"
                 os.environ["THREATFUSION_OPERATOR_POLICY_DIR"] = str(directory)
-            result = enroll_lab_operator(directory, str(req_data.get("actor_id") or ""))
-            status = 200 if result.get("evidence_state") == "verified" else 400
+            actor = str(req_data.get("actor_id") or "")
+            result = enroll_lab_operator(directory, actor)
+            presented = self._presented_operator_fingerprint()
+            if presented:
+                stamp = operator_stamp(actor, directory, presented)
+                if stamp.get("identity_verified") is True:
+                    result.update(stamp)
+                    result["identity_verified"] = True
+                else:
+                    result["identity_verified"] = False
+                    presented = ""
+            else:
+                result["identity_verified"] = False
+            result = publish_lab_enrollment(result, presented_fingerprint=presented)
+            if result.get("evidence_state") in {
+                "verified",
+                "unverified_lab_session",
+                "session_authenticated",
+            }:
+                status = 200
+            else:
+                status = 400
             self._send_json(status, result)
             return
 

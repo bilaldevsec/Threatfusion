@@ -48,7 +48,7 @@ ATTACKER_HOST="${TF_ATTACKER_PUBLIC_IP:-}"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy_cloud_range.sh [--dry-run] [--auto-ip] [--provider azure|aws|gcp|generic] [--victim-host IP] [--attacker-host IP] (--provision-range|--deploy-full-stack|--teardown|--status|--deallocate|--help)
+Usage: scripts/deploy_cloud_range.sh [--dry-run] [--auto-ip] [--provider azure|aws|gcp|generic] [--victim-host IP] [--attacker-host IP] (--provision-range|--deploy-full-stack|--simulate-attack|--teardown|--status|--deallocate|--help)
 
   --provider         azure, aws, gcp, or generic. When omitted, the first
                      logged-in CLI wins: az account show, aws sts
@@ -63,7 +63,11 @@ Usage: scripts/deploy_cloud_range.sh [--dry-run] [--auto-ip] [--provider azure|a
                      $(curl -fsS https://api.ipify.org)/32.
   --deploy-full-stack
                      Copy the repo to the victim and start Console, ML engine,
-                     Suricata, and n8n with Docker Compose over SSH.
+                     Suricata, and n8n with Docker Compose over SSH. Installs
+                     nmap, curl, and python3 on the attacker VM.
+  --simulate-attack  Install nmap, curl, and python3 on the attacker if they
+                     are missing, check the Suricata eve.json bridge returns
+                     HTTP 200, and require alerts.sqlite3 stored_rows > 0.
   --teardown         Destroy the recorded resource group, stack, or instances.
   --status           Refresh cloud_state.json from the active CLI session.
   --deallocate       Stop recorded instances without deleting the network.
@@ -684,14 +688,141 @@ require_stack_env() {
   write_cloud_env_file "$CLOUD_ENV_FILE"
 }
 
+install_attacker_tooling() {
+  # nmap, curl, and python3 belong on the attacker VM. Missing tools are installed
+  # before a live probe. Dry-run only prints the plan.
+  local mode="${1:-optional}"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "dry-run: attacker apt-get install -y nmap curl python3"
+    echo "dry-run: fail-fast if nmap, curl, or python3 is still missing"
+    return 0
+  fi
+  local target="${ATTACKER_HOST:-${ATTACKER_PUBLIC:-}}"
+  if [[ -z "$target" ]]; then
+    if [[ "$mode" == "required" ]]; then
+      echo "Attacker host is not recorded. Set --attacker-host or TF_ATTACKER_PUBLIC_IP." >&2
+      exit 1
+    fi
+    echo "Attacker host is not recorded. nmap install runs with --simulate-attack."
+    return 0
+  fi
+  # shellcheck disable=SC2046
+  ssh $(ssh_base) "$target" "bash -s" <<'REMOTE'
+set -euo pipefail
+missing=()
+for tool in nmap curl python3; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    missing+=("$tool")
+  fi
+done
+if [[ ${#missing[@]} -gt 0 ]]; then
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "attacker is missing: ${missing[*]} and apt-get is unavailable" >&2
+    exit 1
+  fi
+  sudo DEBIAN_FRONTEND=noninteractive apt-get update -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" nmap curl python3
+fi
+for tool in nmap curl python3; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "attacker tool still missing: $tool" >&2; exit 1; }
+done
+REMOTE
+}
+
+verify_live_flow_bridge() {
+  # Victim Suricata eve.json must be followed into ThreatFusion and answer HTTP 200.
+  # A live probe is confirmed only when alerts.sqlite3 reports stored_rows > 0.
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "dry-run: start threatfusion-eve-follower on victim eve.json"
+    echo "dry-run: curl -fsS http://127.0.0.1:8766/readyz expects HTTP 200"
+    echo "dry-run: python3 checks alerts.sqlite3 stored_rows > 0"
+    return 0
+  fi
+  local target="${VICTIM_HOST:-${VICTIM_PUBLIC:-}}"
+  if [[ -z "$target" ]]; then
+    echo "Victim host is not recorded. Set --victim-host or TF_VICTIM_PUBLIC_IP." >&2
+    exit 1
+  fi
+  # shellcheck disable=SC2046
+  ssh $(ssh_base) "$target" "bash -s" <<'REMOTE'
+set -euo pipefail
+if command -v systemctl >/dev/null 2>&1; then
+  sudo systemctl enable --now suricata || true
+  if [[ -f /etc/systemd/system/threatfusion-eve-follower.service ]]; then
+    sudo systemctl enable --now threatfusion-eve-follower.service
+  fi
+fi
+if [[ ! -f /var/log/suricata/eve.json ]]; then
+  echo "victim Suricata eve.json is missing" >&2
+  exit 1
+fi
+code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8766/readyz || true)"
+if [[ "$code" != "200" ]]; then
+  echo "live flow bridge health check returned HTTP ${code:-000}, expected 200" >&2
+  exit 1
+fi
+python3 - <<'PY'
+import sqlite3
+import sys
+from pathlib import Path
+
+candidates = (
+    Path("/var/lib/threatfusion/alerts.sqlite3"),
+    Path("/opt/threatfusion/alerts.sqlite3"),
+    Path("/var/lib/threatfusion/live_console.sqlite3"),
+)
+found = None
+for path in candidates:
+    if path.is_file():
+        found = path
+        break
+if found is None:
+    print("stored_rows=0")
+    sys.exit(1)
+conn = sqlite3.connect(f"file:{found}?mode=ro", uri=True)
+try:
+    tables = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    if "alerts" in tables:
+        count = conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
+    elif "live_flows" in tables:
+        count = conn.execute("SELECT COUNT(*) FROM live_flows").fetchone()[0]
+    else:
+        count = 0
+finally:
+    conn.close()
+print(f"stored_rows={int(count)}")
+if int(count) <= 0:
+    sys.exit(1)
+PY
+REMOTE
+}
+
+simulate_range_attack() {
+  install_attacker_tooling required
+  local attacker="${ATTACKER_HOST:-${ATTACKER_PUBLIC:-}}"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "dry-run: nmap -Pn -p 22,80,445 172.29.0.20 from the attacker VM"
+    verify_live_flow_bridge
+    return 0
+  fi
+  # shellcheck disable=SC2046
+  ssh $(ssh_base) "$attacker" "command -v nmap >/dev/null && command -v curl >/dev/null && command -v python3 >/dev/null && nmap -Pn -p 22,80,445 172.29.0.20"
+  verify_live_flow_bridge
+}
+
 deploy_full_stack() {
   local target env_file
   ensure_admin_ssh_key
   require_stack_env
+  install_attacker_tooling
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "dry-run: deploy_full_stack preflight passed."
     echo "dry-run: rsync repo to victim:/opt/threatfusion excluding .git venv __pycache__ .env"
     echo "dry-run: THREATFUSION_ENV=production docker compose restart: unless-stopped"
+    echo "dry-run: start Suricata eve.json bridge and require HTTP 200"
     echo "dry-run: poll /readyz then ssh -N -L 8766:127.0.0.1:8766"
     return 0
   fi
@@ -708,6 +839,8 @@ THREATFUSION_THEHIVE_SECRET=${THREATFUSION_THEHIVE_SECRET:-}
 THREATFUSION_THEHIVE_API_KEY=${THREATFUSION_THEHIVE_API_KEY:-}
 THREATFUSION_N8N_USER=${THREATFUSION_N8N_USER:-}
 THREATFUSION_N8N_PASSWORD=${THREATFUSION_N8N_PASSWORD:-}
+TF_ADMIN_EMAIL=${TF_ADMIN_EMAIL:-muhammad.bilal@nu.edu.pk}
+TF_ADMIN_SECRET=${TF_ADMIN_SECRET:-}
 EOF
   # shellcheck disable=SC2046
   ssh $(ssh_base) "$target" "sudo mkdir -p /opt/threatfusion /opt/threatfusion-venv /var/lib/threatfusion && sudo chown -R \$(id -u):\$(id -g) /opt/threatfusion /opt/threatfusion-venv /var/lib/threatfusion && chmod 700 /var/lib/threatfusion"
@@ -748,7 +881,7 @@ echo "[2/5] Installing packages non-interactively"
 if command -v apt-get >/dev/null 2>&1; then
   sudo DEBIAN_FRONTEND=noninteractive apt-get update -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-    docker.io docker-compose-v2 suricata python3 python3-venv python3-pip
+    docker.io docker-compose-v2 suricata python3 python3-venv python3-pip nmap curl
   sudo systemctl enable --now docker
   sudo systemctl enable --now suricata || true
 fi
@@ -1004,7 +1137,7 @@ while [[ $# -gt 0 ]]; do
       ACTION="help"
       shift
       ;;
-    --provision-range|--deploy-full-stack|--teardown|--status|--deallocate|--pair-forwarder|--setup-entra-app)
+    --provision-range|--deploy-full-stack|--simulate-attack|--teardown|--status|--deallocate|--pair-forwarder|--setup-entra-app)
       ACTION="${1#--}"
       shift
       ;;
@@ -1061,6 +1194,9 @@ provision_selected_range() {
 case "$ACTION" in
   provision-range)
     provision_selected_range
+    ;;
+  simulate-attack)
+    simulate_range_attack
     ;;
   deploy-full-stack)
     if ! victim_public_recorded; then

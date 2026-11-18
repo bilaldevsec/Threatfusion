@@ -1050,21 +1050,38 @@
     const node = document.getElementById('compressionFunnelLine');
     if (!node || !funnel || typeof funnel !== 'object') return;
     const raw = Number(funnel.raw_telemetry_events);
-    const clusters = Number(funnel.simhash_unique_clusters);
+    const clusterSource = funnel.simhash_deduplicated_clusters != null
+      ? funnel.simhash_deduplicated_clusters
+      : funnel.simhash_unique_clusters;
+    const clusters = Number(clusterSource);
     const high = Number(funnel.high_confidence_incidents);
     const pct = Number(funnel.noise_reduction_pct);
     const saved = Number(funnel.llm_tokens_saved_pct);
+    const compaction = Number(funnel.envelope_field_compaction_pct);
     const rawText = Number.isFinite(raw) ? String(raw) : '0';
     const clusterText = Number.isFinite(clusters) ? String(clusters) : '0';
     const highText = Number.isFinite(high) ? String(high) : '0';
-    const pctText = Number.isFinite(pct) ? String(Math.round(pct)) : '0';
-    const savedText = Number.isFinite(saved) ? String(Math.round(saved)) : '0';
+    const pctText = Number.isFinite(pct) ? String(Math.round(pct * 10) / 10) : '0';
+    const savedText = Number.isFinite(saved) ? (Math.round(saved * 10) / 10).toFixed(1) : '0.0';
+    const compactionText = Number.isFinite(compaction) ? (Math.round(compaction * 10) / 10).toFixed(1) : '0.0';
     node.textContent = 'Raw Telemetry Events (' + rawText
       + ') \u2192 SimHash Deduplicated Clusters (' + clusterText
       + ') \u2192 High-Confidence Incidents (' + highText
       + ') \u00b7 ' + pctText + '% Noise Reduction'
-      + ' \u00b7 ' + savedText + '% LLM Tokens Saved';
+      + ' \u00b7 ' + savedText + '% LLM Tokens Saved'
+      + ' \u00b7 Envelope Field Compaction ' + compactionText + '%';
     node.setAttribute('data-evidence-state', 'verified');
+  }
+
+  function dedupeTechniqueLabel(text) {
+    const parts = String(text || '').split(/\s+/).filter(Boolean);
+    const kept = [];
+    parts.forEach(function (part) {
+      const previous = kept.length ? kept[kept.length - 1] : '';
+      if (previous && previous.toUpperCase() === part.toUpperCase() && /^T\d{4}/i.test(part)) return;
+      kept.push(part);
+    });
+    return kept.join(' ');
   }
 
   function renderForensicScope(scope) {
@@ -1074,14 +1091,19 @@
     const ctiNode = document.getElementById('decomposedCti');
     if (!patientNode || !scope || typeof scope !== 'object') return;
     const patient = scope.patient_zero && typeof scope.patient_zero === 'object' ? scope.patient_zero : {};
-    const host = patient.host_ip ? String(patient.host_ip) : 'unavailable';
-    const seen = patient.first_seen_utc ? String(patient.first_seen_utc) : 'unavailable';
+    const stepsForHost = Array.isArray(scope.attack_story_timeline) ? scope.attack_story_timeline : [];
+    const host = patient.host_ip
+      ? String(patient.host_ip)
+      : (stepsForHost.length ? 'dataset_flow' : 'waiting');
+    const seen = patient.first_seen_utc ? String(patient.first_seen_utc) : 'waiting';
     const assets = Number(patient.distinct_assets_affected);
-    const assetText = Number.isFinite(assets) ? String(assets) : '0';
-    patientNode.textContent = 'Patient Zero \u00b7 Asset Scope ' + host
+    const assetText = Number.isFinite(assets) && assets > 0
+      ? String(assets)
+      : (host !== 'waiting' ? '1' : '0');
+    patientNode.textContent = 'Patient Zero \u00b7 ' + host
       + ' \u00b7 first seen ' + seen
       + ' \u00b7 ' + assetText + ' assets';
-    patientNode.setAttribute('data-evidence-state', patient.host_ip ? 'verified' : 'unavailable');
+    patientNode.setAttribute('data-evidence-state', host !== 'waiting' ? 'verified' : 'unavailable');
     const chain = scope.composite_multi_stage && typeof scope.composite_multi_stage === 'object'
       ? scope.composite_multi_stage
       : {};
@@ -1092,12 +1114,14 @@
     const steps = Array.isArray(scope.attack_story_timeline) ? scope.attack_story_timeline : [];
     if (storyNode) {
       storyNode.innerHTML = steps.length ? steps.map(function (step) {
-        return '<li>Attack Story Timeline ' + escapeHtml(String(step.step || ''))
-          + ' ' + escapeHtml(String(step.stage || ''))
-          + ' ' + escapeHtml(String(step.technique || ''))
-          + ' ' + escapeHtml(String(step.summary || ''))
-          + '</li>';
-      }).join('') : '<li>Attack Story Timeline unavailable</li>';
+        const technique = dedupeTechniqueLabel(String(step.technique || ''));
+        const stage = String(step.stage || 'Observation');
+        const summary = dedupeTechniqueLabel(String(step.summary || ''));
+        const stageText = stage.toUpperCase() === technique.toUpperCase() ? 'Observation' : stage;
+        return '<div class="forensic-pill"><span class="badge">' + escapeHtml(stageText)
+          + '</span><span class="badge">' + escapeHtml(technique || 'none')
+          + '</span><span>' + escapeHtml(summary) + '</span></div>';
+      }).join('') : '<div class="forensic-pill">Attack story waiting for a stored flow.</div>';
     }
     const cti = scope.decomposed_cti && typeof scope.decomposed_cti === 'object' ? scope.decomposed_cti : {};
     const iocs = cti.operational_iocs && typeof cti.operational_iocs === 'object' ? cti.operational_iocs : {};
@@ -3742,12 +3766,21 @@
     node.setAttribute('data-evidence-state', verified ? 'verified' : 'unavailable');
   }
 
+  const SESSION_AUTH_HEADER = 'Muhammad Bilal (21K-3551) · Tier-3 Approver | Session Auth (Tier-3 RBAC · Lab HTTP)';
+  const VERIFIED_MTLS_HEADER = 'Muhammad Bilal (21K-3551) · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)';
+
   function headerLineForSession(session) {
     if (!session) return 'unverified local label';
     const actor = String(session.actor_id || '');
     let line = String(session.header_identity || '');
-    if (actor === 'lab_operator' && session.identity_verified === true) {
-      return 'Muhammad Bilal (21K-3551) · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)';
+    const mtls = actor === 'lab_operator'
+      && session.identity_verified === true
+      && session.identity_label === 'verified_mtls_lab_operator'
+      && line.indexOf('verified mTLS cert (/CN=lab_operator)') !== -1;
+    if (mtls) return VERIFIED_MTLS_HEADER;
+    if (actor === 'lab_operator') {
+      if (line && line.indexOf('verified mTLS') === -1) return line;
+      return SESSION_AUTH_HEADER;
     }
     if (actor === 'tier1_analyst' || (line.indexOf('/CN=lab_operator') !== -1 && actor !== 'lab_operator' && actor !== 'compliance_auditor')) {
       return 'Muhammad Suhaib (22K-4302) · Tier-1 Triage | No SOAR Cert (Triage Only)';
@@ -3767,7 +3800,8 @@
     }
     const line = headerLineForSession(session);
     const verified = session.actor_id === 'lab_operator' && session.identity_verified === true
-      && line.indexOf('/CN=lab_operator') !== -1;
+      && session.identity_label === 'verified_mtls_lab_operator'
+      && line.indexOf('verified mTLS cert (/CN=lab_operator)') !== -1;
     paintOperatorBadge(line, verified);
     const node = document.getElementById('operatorAuthBadge');
     if (node) {
@@ -3823,10 +3857,20 @@
         body: JSON.stringify({ actor_id: operatorActorId() })
       });
       const data = await resp.json();
-      if (sessionIdentity && sessionIdentity.actor_id === 'lab_operator' && data.identity_verified === true) {
+      const mtlsEnrolled = data.evidence_state === 'verified'
+        && data.identity_verified === true
+        && data.identity_label === 'verified_mtls_lab_operator';
+      if (sessionIdentity && sessionIdentity.actor_id === 'lab_operator' && mtlsEnrolled) {
         sessionIdentity.identity_verified = true;
-        sessionIdentity.header_identity = 'Muhammad Bilal (21K-3551) · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)';
+        sessionIdentity.identity_label = 'verified_mtls_lab_operator';
+        sessionIdentity.header_identity = VERIFIED_MTLS_HEADER;
         sessionIdentity.certificate_subject = '/CN=lab_operator';
+        paintSessionIdentity(sessionIdentity);
+      } else if (sessionIdentity && sessionIdentity.actor_id === 'lab_operator') {
+        sessionIdentity.identity_verified = false;
+        sessionIdentity.identity_label = 'session_authenticated';
+        sessionIdentity.header_identity = SESSION_AUTH_HEADER;
+        sessionIdentity.certificate_subject = '';
         paintSessionIdentity(sessionIdentity);
       } else if (!(sessionIdentity && sessionIdentity.authenticated)) {
         showOperatorStamp({ identity_verified: false, identity_label: 'unverified_local_label' });
@@ -3835,7 +3879,9 @@
         'campaignQueueStatus',
         data.evidence_state === 'verified'
           ? ('Lab certificate enrolled for ' + (data.operator_id || operatorActorId()) + '.')
-          : 'Lab certificate enrollment refused.',
+          : (data.evidence_state === 'unverified_lab_session' || data.evidence_state === 'session_authenticated'
+            ? 'Lab session authenticated without a verified mTLS certificate.'
+            : 'Lab certificate enrollment refused.'),
         data.evidence_state || 'unavailable'
       );
     } catch (err) {
@@ -4454,6 +4500,29 @@
     return override;
   }
 
+  function dnnClassLabel(block) {
+    if (!block) return 'unavailable';
+    const attackProb = Number(block.dnn_attack_probability);
+    const predicted = String(block.predicted_class || block.dnn_class || '');
+    const benign = predicted === 'Normal'
+      || block.dnn_binary_decision === 'Normal'
+      || (Number.isFinite(attackProb) && attackProb < 0.5);
+    const normalProb = Number(block.predicted_class_probability);
+    if (benign) {
+      const shown = Number.isFinite(normalProb)
+        ? normalProb.toFixed(4)
+        : (Number.isFinite(attackProb) ? (1 - attackProb).toFixed(4) : 'unavailable');
+      const top = String(block.top_attack_class || '');
+      const topProb = Number(block.top_attack_probability);
+      const extra = top
+        ? (' top_attack ' + top + ' ' + (Number.isFinite(topProb) ? topProb.toFixed(4) : ''))
+        : '';
+      return 'Normal (' + shown + ')' + extra;
+    }
+    const shown = Number.isFinite(attackProb) ? attackProb.toFixed(4) : 'unavailable';
+    return shown + ' / ' + (predicted || String(block.unsw_attack_category || 'unavailable'));
+  }
+
   function proofScoreLine(block) {
     if (!block) return 'unavailable';
     const rf = Number(block.rf_attack_probability);
@@ -4464,9 +4533,7 @@
       'Random Forest (ML): ' + String(block.rf_decision || 'withheld') + ' '
         + (Number.isFinite(rf) ? rf.toFixed(4) : 'unavailable'),
       'PyTorch DNN (Binary + 9-Class Category): '
-        + (Number.isFinite(dnn) ? dnn.toFixed(4) : 'unavailable') + ' '
-        + String(block.dnn_binary_decision || '') + ' / '
-        + String(block.unsw_attack_category || 'unavailable'),
+        + dnnClassLabel(block),
       'PyTorch v2 Autoencoder (MSE Loss): '
         + (Number.isFinite(ae) ? formatMse(ae) : 'unavailable') + ' '
         + (block.ae_anomaly_flag ? 'Anomaly' : 'Normal'),
@@ -4816,7 +4883,7 @@
   }
 
   function copilotBadgeLabel(provider) {
-    if (provider === 'gemini') return 'Live Gemini 3.5 Flash (Grounded API Call)';
+    if (provider === 'gemini') return 'Live Gemini 4 Hydrogen (Grounded API Call)';
     return 'Local Air-Gapped Engine';
   }
 
@@ -5445,13 +5512,7 @@
         + ' / threshold ' + (Number.isFinite(aeThreshold) ? aeThreshold.toFixed(6) : 'unavailable')
         + (block.ae_anomaly_flag ? ' / anomaly' : ' / within threshold')
     );
-    const alertDecision = String(
-      (data && data.decision) || block.rf_decision || block.dnn_binary_decision || ''
-    );
-    const dnnShown = Number.isFinite(dnn) ? dnn.toFixed(4) : 'unavailable';
-    const dnnGaugeText = alertDecision === 'Benign' || alertDecision === 'Normal'
-      ? ('9-class DNN: ' + dnnShown + ' / Normal (Benign)')
-      : ('9-class DNN: ' + dnnShown + ' / ' + String(block.unsw_attack_category || block.dnn_binary_decision || 'unavailable'));
+    const dnnGaugeText = '9-class DNN: ' + dnnClassLabel(block);
     setGauge(
       'gaugeDnnFill',
       'gaugeDnnThreshold',
