@@ -378,11 +378,21 @@ def test_soar_approval_writes_linked_hash_and_does_not_execute(tmp_path: Path) -
     assert refused["evidence_state"] == "unavailable"
     assert refused["execution_authorized"] is False
     assert not soar_db.exists()
-    unenrolled = approve_live_soar(
+    unregistered = approve_live_soar(
         live_db,
         soar_db,
         flow_id=stored["flow_id"],
         actor_id="analyst_a",
+        reason="Analyst recorded local approval. Containment is not executed.",
+    )
+    assert unregistered["reason"] == "role_insufficient_for_soar"
+    assert unregistered["http_status"] == 403
+    assert not soar_db.exists()
+    unenrolled = approve_live_soar(
+        live_db,
+        soar_db,
+        flow_id=stored["flow_id"],
+        actor_id="lab_operator",
         reason="Analyst recorded local approval. Containment is not executed.",
     )
     assert unenrolled["reason"] == "operator_not_enrolled"
@@ -1022,19 +1032,24 @@ def test_live_product_launcher_starts_one_process() -> None:
     assert "TF-008, TF-009, TF-010, and TF-011 remain open." in readme
 
 
-def _post_json(url: str, payload: dict) -> tuple[int, dict]:
+def _post_json(
+    url: str, payload: dict, extra_headers: dict[str, str] | None = None
+) -> tuple[int, dict]:
     import json
     import urllib.error
     import urllib.request
 
     body = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "X-ThreatFusion-Test-Client": "in-process",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
     request = urllib.request.Request(
         url,
         data=body,
-        headers={
-            "Content-Type": "application/json",
-            "X-ThreatFusion-Test-Client": "in-process",
-        },
+        headers=headers,
         method="POST",
     )
     try:
@@ -1078,9 +1093,20 @@ def test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr(
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
+    from threatfusion.api.live_soc_console import rbac_login
+
+    bilal_session = rbac_login(
+        live_db,
+        username="bilal.21k3551@nu.edu.pk",
+        access_code="TF-Bilal-3551!",
+    )
+    assert bilal_session["authenticated"] is True
+    auth_headers = {"X-ThreatFusion-Session": str(bilal_session["session_token"])}
     try:
         missing_status, missing = _post_json(
-            f"{base}/api/v1/live/soar/dispatch", {"flow_id": stored["flow_id"]}
+            f"{base}/api/v1/live/soar/dispatch",
+            {"flow_id": stored["flow_id"]},
+            extra_headers=auth_headers,
         )
         assert missing_status == 403
         assert missing["reason"] == "playbook_not_approved"
@@ -1116,7 +1142,9 @@ def test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr(
         assert approved["execution_authorized"] is True
 
         unapproved_status, unapproved = _post_json(
-            f"{base}/api/v1/live/soar/dispatch", {"flow_id": other["flow_id"]}
+            f"{base}/api/v1/live/soar/dispatch",
+            {"flow_id": other["flow_id"]},
+            extra_headers=auth_headers,
         )
         assert unapproved_status == 403
         assert unapproved["reason"] == "playbook_not_approved"
@@ -1124,7 +1152,9 @@ def test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr(
         time.sleep(0.05)
 
         status, dispatched = _post_json(
-            f"{base}/api/v1/live/soar/dispatch", {"flow_id": stored["flow_id"]}
+            f"{base}/api/v1/live/soar/dispatch",
+            {"flow_id": stored["flow_id"]},
+            extra_headers=auth_headers,
         )
         assert status == 200
         assert dispatched["evidence_state"] == "verified"
@@ -1202,7 +1232,9 @@ def test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr(
         assert flow["thehive_case_id"] == dispatched["thehive_case_id"]
 
         again_status, again = _post_json(
-            f"{base}/api/v1/live/soar/dispatch", {"flow_id": stored["flow_id"]}
+            f"{base}/api/v1/live/soar/dispatch",
+            {"flow_id": stored["flow_id"]},
+            extra_headers=auth_headers,
         )
         assert again_status == 200
         assert again["reason"] == "already_recorded"
@@ -1503,20 +1535,20 @@ _DNN_CLASS_NAMES = (
     "Worms",
 )
 _AE_BREAKDOWN_NAMES = (
-    "dur",
-    "spkts",
-    "dpkts",
-    "sbytes",
-    "dbytes",
-    "sload",
-    "dload",
-    "sinpkt",
-    "dinpkt",
-    "sjit",
-    "djit",
-    "tcprtt",
-    "synack",
-    "ackdat",
+    "duration_ms",
+    "fwd_packets",
+    "bwd_packets",
+    "fwd_bytes",
+    "bwd_bytes",
+    "packets_per_second",
+    "bytes_per_second",
+    "fwd_packet_length_mean",
+    "bwd_packet_length_mean",
+    "dst_port",
+    "protocol_tcp",
+    "protocol_udp",
+    "protocol_icmp",
+    "protocol_other",
 )
 
 

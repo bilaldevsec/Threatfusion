@@ -270,11 +270,7 @@ def build_operational_velocity_report(
         "analyst_toil_saved_pct": toil_saved_pct,
         "telemetry_source": telemetry_source,
         "evidence_state": evidence_state,
-        "measurement_label": (
-            "live_measured"
-            if mtti_vals and positive_mttr_vals
-            else "reference_benchmark_not_measured"
-        ),
+        "measurement_label": telemetry_source,
         "live_measured_mttr_seconds": live_measured_mttr,
         "reference_mtti_seconds": 1.25,
         "reference_ttd_mean_ms": 18.4,

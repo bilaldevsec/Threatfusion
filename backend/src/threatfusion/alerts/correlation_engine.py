@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 import stat
 import struct
@@ -140,7 +141,13 @@ class EntityProvenanceContract:
             return "missing_dst_entity_id"
         if self.address_reuse_or_nat is True:
             return "nat_address_reuse_ambiguous"
-        if self.max_clock_skew_seconds > MAX_ALLOWABLE_CLOCK_SKEW_SECONDS:
+        if (
+            isinstance(self.max_clock_skew_seconds, bool)
+            or not isinstance(self.max_clock_skew_seconds, (int, float))
+            or not math.isfinite(float(self.max_clock_skew_seconds))
+            or float(self.max_clock_skew_seconds) < 0.0
+            or float(self.max_clock_skew_seconds) > MAX_ALLOWABLE_CLOCK_SKEW_SECONDS
+        ):
             return "clock_skew_exceeded"
         if self.observed_at_utc:
             try:

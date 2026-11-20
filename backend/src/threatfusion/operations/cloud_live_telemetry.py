@@ -268,9 +268,10 @@ def evaluate_budget_kill_switch(
     if policy is None:
         policy = CloudBudgetKillSwitchPolicy()
 
-    # Fail-closed check: negative spend, NaN, Inf, or non-numeric
+    # Fail-closed check: booleans, negative spend, NaN, Inf, or non-numeric
     if (
-        not isinstance(gross_spend_usd, (int, float))
+        isinstance(gross_spend_usd, bool)
+        or not isinstance(gross_spend_usd, (int, float))
         or math.isnan(gross_spend_usd)
         or math.isinf(gross_spend_usd)
         or gross_spend_usd < 0.0
@@ -280,7 +281,9 @@ def evaluate_budget_kill_switch(
             "kill_switch_triggered": True,
             "gross_spend_usd": (
                 float(gross_spend_usd)
-                if isinstance(gross_spend_usd, (int, float)) and not math.isnan(gross_spend_usd)
+                if not isinstance(gross_spend_usd, bool)
+                and isinstance(gross_spend_usd, (int, float))
+                and math.isfinite(gross_spend_usd)
                 else -1.0
             ),
             "hard_shutoff_threshold_usd": policy.hard_shutoff_threshold_usd,

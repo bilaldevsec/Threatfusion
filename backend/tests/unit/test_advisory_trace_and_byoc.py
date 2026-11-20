@@ -266,9 +266,12 @@ def _http_json(
     method: str,
     url: str,
     payload: dict[str, object] | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, str], dict[str, object]]:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     headers = {"X-ThreatFusion-Test-Client": "in-process"}
+    if extra_headers:
+        headers.update(extra_headers)
     if data is not None:
         headers["Content-Type"] = "application/json"
         headers["Content-Length"] = str(len(data))
@@ -455,14 +458,24 @@ def test_protected_allowlist_blocks_self_isolation(
         assert guarded["http_status"] == 400
         assert guarded["reason"] == "protected_infrastructure_ip"
     assert guard_isolation_source("172.29.0.10") is None
-    server, _thread = _listen(tmp_path / "live.sqlite3", monkeypatch)
+    live_db = tmp_path / "live.sqlite3"
+    server, _thread = _listen(live_db, monkeypatch)
     monkeypatch.setenv("SSH_CLIENT", "203.0.113.44 54000 22")
     host, port = server.server_address
+    from threatfusion.api.live_soc_console import rbac_login
+
+    session = rbac_login(
+        live_db,
+        username="bilal.21k3551@nu.edu.pk",
+        access_code="TF-Bilal-3551!",
+    )
+    assert session["authenticated"] is True
     try:
         status, _headers, body = _http_json(
             "POST",
             f"http://{host}:{port}/api/soar/isolate",
             {"src_ip": "127.0.0.1", "flow_id": 1},
+            extra_headers={"X-ThreatFusion-Session": str(session["session_token"])},
         )
     finally:
         server.shutdown()

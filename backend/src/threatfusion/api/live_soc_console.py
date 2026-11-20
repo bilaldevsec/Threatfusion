@@ -261,8 +261,12 @@ def score_canonical_flow(
         base["reason"] = "feature_contract_mismatch"
         base["model_feature_width"] = width
         return base
+    scaled_vector = _canonical_zscore_vector(vector, repo_root)
+    if scaled_vector is None:
+        base["reason"] = "preprocessor_state_unverified"
+        return base
     try:
-        probabilities = model.predict_proba([vector])
+        probabilities = model.predict_proba([scaled_vector])
         attack_probability = float(probabilities[0][1])
     except (AttributeError, IndexError, TypeError, ValueError):
         base["reason"] = "frozen_random_forest_score_failed"
@@ -463,11 +467,16 @@ def _ae_model(repo_root: Path) -> Any | None:
 
 
 def _ae_scaler(repo_root: Path) -> tuple[list[float], list[float]] | None:
-    if "ae_scaler" in _ADVISORY_MODEL_CACHE:
-        return _ADVISORY_MODEL_CACHE["ae_scaler"]
+    path = repo_root / _AE_PREPROCESSOR_RELATIVE
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    cache_key = f"ae_scaler:{path.resolve()}:{st.st_mtime_ns}:{st.st_size}"
+    if cache_key in _ADVISORY_MODEL_CACHE:
+        return _ADVISORY_MODEL_CACHE[cache_key]
     pair: tuple[list[float], list[float]] | None
     try:
-        path = repo_root / _AE_PREPROCESSOR_RELATIVE
         raw = path.read_bytes()
         if hashlib.sha256(raw).hexdigest() != _AE_PREPROCESSOR_SHA256:
             pair = None
@@ -475,25 +484,55 @@ def _ae_scaler(repo_root: Path) -> tuple[list[float], list[float]] | None:
             payload = json.loads(raw)
             means = [float(value) for value in payload["numeric_means"]]
             scales = [float(value) for value in payload["numeric_scales"]]
-            pair = (means, scales) if len(means) == 10 and len(scales) == 10 else None
+            if (
+                len(means) == 10
+                and len(scales) == 10
+                and all(math.isfinite(m) for m in means)
+                and all(math.isfinite(s) and s > 0.0 for s in scales)
+            ):
+                pair = (means, scales)
+            else:
+                pair = None
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
         pair = None
-    _ADVISORY_MODEL_CACHE["ae_scaler"] = pair
+    _ADVISORY_MODEL_CACHE[cache_key] = pair
     return pair
 
 
-def _ae_input_vector(canonical: Sequence[float], repo_root: Path) -> list[float]:
-    values = [float(item) for item in canonical]
+def _canonical_zscore_vector(
+    canonical: Sequence[float],
+    repo_root: Path,
+) -> list[float] | None:
+    """Apply SHA-256-verified population Z-score scaling to numeric indices 0..9.
+
+    Fails closed (returns None) whenever preprocessor_state.json is missing,
+    digest-mismatched, malformed, or yields non-finite values. One-hot protocol
+    indicators (indices 10..13) are preserved unchanged.
+    """
+    try:
+        values = [float(item) for item in canonical]
+    except (TypeError, ValueError):
+        return None
+    if len(values) != 14 or not all(math.isfinite(v) for v in values):
+        return None
     scaler = _ae_scaler(repo_root)
-    if scaler is None or len(values) != 14:
-        return values
+    if scaler is None:
+        return None
     means, scales = scaler
-    transformed = [
-        (value - mean) / scale if scale else 0.0
-        for value, mean, scale in zip(values[:10], means, scales, strict=True)
-    ]
+    transformed: list[float] = []
+    for value, mean, scale in zip(values[:10], means, scales, strict=True):
+        if not math.isfinite(scale) or scale <= 0.0:
+            return None
+        z = (value - mean) / scale
+        if not math.isfinite(z):
+            return None
+        transformed.append(z)
     transformed.extend(values[10:])
     return transformed
+
+
+def _ae_input_vector(canonical: Sequence[float], repo_root: Path) -> list[float] | None:
+    return _canonical_zscore_vector(canonical, repo_root)
 
 
 def _score_autoencoder(canonical: Sequence[float], repo_root: Path) -> dict[str, Any]:
@@ -513,6 +552,8 @@ def _score_autoencoder(canonical: Sequence[float], repo_root: Path) -> dict[str,
         import torch
 
         transformed = _ae_input_vector(canonical, repo_root)
+        if transformed is None:
+            return empty
         matrix = np.array(transformed, dtype=np.float32).reshape(1, 14)
         with torch.inference_mode():
             reconstruction = model(torch.from_numpy(matrix)).detach().cpu().numpy()
@@ -526,7 +567,7 @@ def _score_autoencoder(canonical: Sequence[float], repo_root: Path) -> dict[str,
         ranked.sort(key=lambda item: item["squared_error"], reverse=True)
         return {
             "ae_loss": loss,
-            "ae_anomaly_flag": bool(loss >= _AE_THRESHOLD),
+            "ae_anomaly_flag": bool(loss > _AE_THRESHOLD),
             "ae_threshold": _AE_THRESHOLD,
             "ae_top_features": ranked[:5],
             "ae_feature_errors": list(ranked),
@@ -688,7 +729,9 @@ def canonical_from_dnn_features(
             float(raw_features["dbytes"]) / dpkts if dpkts else 0.0
         )
     if _touched("sload") or _touched("dload"):
-        canonical["bytes_per_second"] = float(raw_features["sload"]) + float(raw_features["dload"])
+        canonical["bytes_per_second"] = (
+            float(raw_features["sload"]) + float(raw_features["dload"])
+        ) / 8.0
     return canonical
 
 
@@ -714,6 +757,18 @@ def _canonical_override(payload: Mapping[str, Any]) -> dict[str, float] | None:
     return parsed
 
 
+_DNN_IMPUTED_FEATURES: tuple[str, ...] = (
+    "sttl",
+    "dttl",
+    "sload",
+    "dload",
+    "sinpkt",
+    "dinpkt",
+    "sjit",
+    "djit",
+)
+
+
 def _advisory_model_fields(
     features: Mapping[str, Any],
     repo_root: Path,
@@ -735,7 +790,11 @@ def _advisory_model_fields(
             "ae_sha256": _AE_SHA256,
         }
     )
+    has_direct_raw = raw_features is not None or all(name in features for name in _DNN_FEATURES)
     raw = raw_features if raw_features is not None else dnn_features_from_flow(features, repo_root)
+    imputed_features: list[str] = (
+        [] if (raw is None or has_direct_raw) else list(_DNN_IMPUTED_FEATURES)
+    )
     dnn = (
         _score_same_split_dnn(raw, repo_root)
         if raw is not None
@@ -746,6 +805,10 @@ def _advisory_model_fields(
             "dnn_class_distribution": {},
         }
     )
+    dnn["imputed_feature_count"] = len(imputed_features)
+    dnn["imputed_features"] = list(imputed_features)
+    dnn["dnn_imputed_feature_count"] = len(imputed_features)
+    dnn["dnn_imputed_features"] = list(imputed_features)
     consensus = _consensus_score(
         rf_probability,
         dnn.get("dnn_attack_probability"),
@@ -770,6 +833,10 @@ def _advisory_model_fields(
         "top_attack_class": dnn.get("top_attack_class"),
         "top_attack_probability": dnn.get("top_attack_probability"),
         "dnn_class_distribution": dnn.get("dnn_class_distribution") or {},
+        "imputed_feature_count": dnn.get("imputed_feature_count", 0),
+        "imputed_features": dnn.get("imputed_features") or [],
+        "dnn_imputed_feature_count": dnn.get("dnn_imputed_feature_count", 0),
+        "dnn_imputed_features": dnn.get("dnn_imputed_features") or [],
         "ae_feature_errors": ae.get("ae_feature_errors") or [],
         "threatfusion_consensus_score": consensus,
         "consensus_label": "advisory_consensus",
@@ -1300,18 +1367,26 @@ def persist_scored_flow(
         )
         flow_id = int(cursor.lastrowid)
         if burst.get("burst_key") and int(burst.get("burst_count") or 1) > 1:
-            # Keep sibling rows in the same 60s burst coherent for UI badges.
+            # Keep sibling rows within the same 60s burst coherent without mutating older windows.
+            seen_epoch = _epoch_seconds(burst.get("last_seen_at"))
+            window_floor = (
+                datetime.fromtimestamp(seen_epoch - 60.0, UTC).isoformat()
+                if seen_epoch is not None
+                else ""
+            )
             conn.execute(
                 """
                 UPDATE live_flows
                 SET burst_count = ?, last_seen_at = ?, simhash_signature = ?
                 WHERE burst_key = ?
+                  AND (last_seen_at IS NULL OR last_seen_at = '' OR last_seen_at >= ?)
                 """,
                 (
                     burst["burst_count"],
                     burst["last_seen_at"],
                     burst["simhash_signature"],
                     burst["burst_key"],
+                    window_floor,
                 ),
             )
     stored = dict(score)
@@ -1410,26 +1485,64 @@ def record_suricata_bridge_flow(
         refused["model_sha256"] = score.get("model_sha256")
         return refused
     observation = _sensor_observation_body(sensor_observation, score)
-    stored = persist_scored_flow(
-        db_path,
-        features,
-        score,
-        campaign_id=campaign_id,
-        source_label=SENSOR_BRIDGE_SOURCE,
-        case_title=None,
-        observed_at_utc=observed_at_utc,
-        provenance=provenance,
-        source_event_id=source_event_id,
-        sensor_observation_json=json.dumps(observation, sort_keys=True),
-        sensor_node=node,
-    )
+    try:
+        stored = persist_scored_flow(
+            db_path,
+            features,
+            score,
+            campaign_id=campaign_id,
+            source_label=SENSOR_BRIDGE_SOURCE,
+            case_title=None,
+            observed_at_utc=observed_at_utc,
+            provenance=provenance,
+            source_event_id=source_event_id,
+            sensor_observation_json=json.dumps(observation, sort_keys=True),
+            sensor_node=node,
+        )
+    except sqlite3.IntegrityError:
+        with _connect(db_path) as conn:
+            winner = conn.execute(
+                """
+                SELECT flow_id, decision, rf_attack_probability, reason, evidence_state,
+                       campaign_id, source_label, case_title, sensor_observation_json,
+                       observed_at_utc, sensor_node
+                FROM live_flows
+                WHERE source_event_id = ?
+                """,
+                (source_event_id,),
+            ).fetchone()
+        if winner is None:
+            raise
+        body = {
+            "schema_version": "live_sensor_flow_v1",
+            "evidence_state": winner["evidence_state"],
+            "reason": winner["reason"],
+            "decision": winner["decision"],
+            "rf_attack_probability": winner["rf_attack_probability"],
+            "production_fusion_enabled": False,
+            "source_label": winner["source_label"],
+            "campaign_id": winner["campaign_id"],
+            "case_title": winner["case_title"],
+            "flow_id": int(winner["flow_id"]),
+            "observed_at_utc": winner["observed_at_utc"],
+            "source_event_id": source_event_id,
+            "sensor_node": winner["sensor_node"] or SENSOR_BRIDGE_SOURCE,
+            "duplicate": True,
+        }
+        raw_obs = winner["sensor_observation_json"]
+        if isinstance(raw_obs, str):
+            try:
+                body["sensor_observation"] = json.loads(raw_obs)
+            except json.JSONDecodeError:
+                body["sensor_observation"] = None
+        return body
     if stored.get("reason") == "invalid_observed_at":
         return _refused_sensor("invalid_observed_at")
     created = datetime.now(UTC).isoformat()
     with _connect(db_path) as conn:
         conn.execute(
             """
-            INSERT INTO live_campaigns (
+            INSERT OR IGNORE INTO live_campaigns (
                 campaign_id, title, source_label, created_at_utc, member_count
             ) VALUES (?, ?, ?, ?, ?)
             """,
@@ -2487,6 +2600,7 @@ def answer_mitre_copilot(
         flow_id=stored_flow_id,
         db_path=db_path,
         identity=_copilot_flow_identity(stored if isinstance(stored, Mapping) else None),
+        stored_flow=stored if isinstance(stored, Mapping) else None,
     )
     provider = str(narrative.get("provider") or "local_air_gapped")
     narrative_text = str(narrative.get("narrative") or "")
@@ -2572,6 +2686,10 @@ def answer_mitre_copilot(
             "provider": provider,
             "provider_label": narrative.get("provider_label"),
             "narrative": narrative_text,
+            "evidence_envelope": narrative.get("evidence_envelope"),
+            "prompt_injection_filtered": bool(narrative.get("prompt_injection_filtered")),
+            "envelope_sha256": str(narrative.get("envelope_sha256") or ""),
+            "ledger_verification": narrative.get("ledger_verification"),
             "production_fusion_enabled": False,
             "flow_id": bound_flow_id,
             "decision": None if stored is None else stored.get("decision"),
@@ -2629,6 +2747,7 @@ def _grounded_gemini_narrative(
     flow_id: Any = None,
     db_path: Path | None = None,
     identity: tuple[str, str, str] = ("", "", ""),
+    stored_flow: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a Gemini brief after stripping unindexed ids and anonymized example addresses."""
     from threatfusion.advisory.explanation_engine import (
@@ -2643,6 +2762,7 @@ def _grounded_gemini_narrative(
 
     from threatfusion.advisory.telemetry_shield import (
         build_fenced_advisory_prompt,
+        neutralize_prompt_injection,
         verify_advisory_against_ledger,
     )
 
@@ -2652,13 +2772,44 @@ def _grounded_gemini_narrative(
         "provider_label": "AI Copilot: Local Air-Gapped Engine",
         "narrative": local_narrative,
     }
+    row = stored_flow if isinstance(stored_flow, Mapping) else {}
+    real_src_ip = str(row.get("src_entity_id") or row.get("src_ip") or "").strip()
+    real_dst_ip = str(row.get("dst_entity_id") or row.get("dst_ip") or "").strip()
+    real_proto = str(row.get("flow_protocol") or row.get("proto") or "").strip()
+    raw_port = row.get("service_or_port")
+    if raw_port in (None, ""):
+        raw_port = row.get("dst_port")
+    try:
+        real_dst_port = int(float(raw_port)) if raw_port not in (None, "") else 0
+    except (TypeError, ValueError):
+        real_dst_port = 0
+    real_technique = str(
+        _scenario_technique_id(row)
+        or _attack_technique_id(row)
+        or (identity[0] if identity else "")
+        or ""
+    ).strip()
+    real_cves = list(row.get("cve_ids") or ())
+    if real_technique:
+        for cve in _CORPUS_TECHNIQUE_CVES.get(real_technique, ()):
+            if cve not in real_cves:
+                real_cves.append(cve)
+    alert_sig = str(row.get("case_title") or source_label or "").strip()
     untrusted = {
-        "src_ip": identity[0] if identity else "",
-        "dst_ip": identity[1] if len(identity) > 1 else "",
-        "alert_signature": str(source_label or question or ""),
-        "payload_excerpt": "",
+        "src_ip": real_src_ip,
+        "dst_ip": real_dst_ip,
+        "alert_signature": alert_sig,
+        "payload_excerpt": str(question or ""),
         "dns_query": "",
         "http_uri": "",
+    }
+    ledger_flow: dict[str, Any] = {
+        "src_ip": real_src_ip,
+        "dst_ip": real_dst_ip,
+        "dst_port": real_dst_port,
+        "proto": real_proto,
+        "technique_id": real_technique,
+        "cve_ids": real_cves,
     }
     fence = build_fenced_advisory_prompt(
         trusted_preamble=_COPILOT_BRIEF_INSTRUCTION,
@@ -2671,11 +2822,7 @@ def _grounded_gemini_narrative(
         fallback = disclose_offline_fallback(local)
         ledger = verify_advisory_against_ledger(
             str(fallback.get("narrative") or local_narrative),
-            {
-                "src_ip": untrusted["src_ip"],
-                "dst_ip": untrusted["dst_ip"],
-                "technique_id": identity[2] if len(identity) > 2 else "",
-            },
+            ledger_flow,
             hits,
         )
         fallback["ledger_verification"] = ledger
@@ -2691,11 +2838,7 @@ def _grounded_gemini_narrative(
         cached["envelope_sha256"] = fence["envelope_sha256"]
         cached["ledger_verification"] = verify_advisory_against_ledger(
             str(cached.get("narrative") or ""),
-            {
-                "src_ip": untrusted["src_ip"],
-                "dst_ip": untrusted["dst_ip"],
-                "technique_id": identity[2] if len(identity) > 2 else "",
-            },
+            ledger_flow,
             hits,
         )
         cached["reused_advisory"] = True
@@ -2703,7 +2846,7 @@ def _grounded_gemini_narrative(
     if evidence_text:
         evidence = evidence_text
     else:
-        lines = [f"Analyst question: {question}"]
+        lines = []
         for hit in hits:
             lines.append(
                 f"Retrieved candidate technique {hit.get('technique_id')} "
@@ -2712,7 +2855,14 @@ def _grounded_gemini_narrative(
         if not hits:
             lines.append("No local corpus hit.")
         evidence = "\n".join(lines)
-    fenced_prompt = fence["prompt"] + "\n\n" + evidence
+    sanitized_evidence, evidence_filtered = neutralize_prompt_injection(evidence)
+    if evidence_filtered:
+        fence["prompt_injection_filtered"] = True
+        fence["evidence_envelope"]["prompt_injection_filtered"] = True
+    fenced_prompt = (
+        f"{fence['prompt']}\n\n"
+        f"<trusted_evidence_context>\n{sanitized_evidence}\n</trusted_evidence_context>"
+    )
     copilot = _live_copilot_callable()
     try:
         text = copilot.generate_copilot_text(fenced_prompt)
@@ -2747,11 +2897,7 @@ def _grounded_gemini_narrative(
         return local
     ledger = verify_advisory_against_ledger(
         text,
-        {
-            "src_ip": untrusted["src_ip"],
-            "dst_ip": untrusted["dst_ip"],
-            "technique_id": identity[2] if len(identity) > 2 else "",
-        },
+        ledger_flow,
         hits,
     )
     if ledger["status"] == "FLAGGED_UNGROUNDED":
@@ -3200,12 +3346,13 @@ def _soar_receipt_status(
     unavailable = {"status": "unavailable", "evidence_state": "unavailable"}
     containment_state = ""
     callback_recorded = False
+    mttr_seconds = 0.0
     if live_db_path is not None and live_db_path.is_file():
         try:
             with _connect(live_db_path) as live_conn:
                 live_row = live_conn.execute(
                     """
-                    SELECT containment_state, callback_recorded
+                    SELECT containment_state, callback_recorded, mttr_seconds
                     FROM live_flows WHERE flow_id = ?
                     """,
                     (flow_id,),
@@ -3213,46 +3360,63 @@ def _soar_receipt_status(
             if live_row is not None:
                 containment_state = str(live_row["containment_state"] or "")
                 callback_recorded = bool(live_row["callback_recorded"])
+                try:
+                    mttr_seconds = float(live_row["mttr_seconds"] or 0.0)
+                except (TypeError, ValueError):
+                    mttr_seconds = 0.0
         except sqlite3.Error:
             containment_state = ""
             callback_recorded = False
-    if containment_state in {"applied", "simulated_applied"}:
-        return {"status": "isolated", "evidence_state": "verified"}
-    if containment_state in {"rolled_back", "simulated_rolled_back"}:
-        return {"status": "rolled_back", "evidence_state": "verified"}
+            mttr_seconds = 0.0
     if soar_db_path is None or not soar_db_path.is_file():
+        if containment_state in {"applied", "simulated_applied"}:
+            return {"status": "isolated", "evidence_state": "verified"}
+        if containment_state in {"rolled_back", "simulated_rolled_back"}:
+            return {"status": "rolled_back", "evidence_state": "verified"}
         return unavailable
     conn: sqlite3.Connection | None = None
+    has_audit_rows = False
+    row = None
     try:
         conn = sqlite3.connect(f"file:{soar_db_path}?mode=ro", uri=True, timeout=5.0)
         conn.row_factory = sqlite3.Row
-        tables = {
-            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-        }
-        if "soar_playbook_records" not in tables:
-            return unavailable
-        row = conn.execute(
-            """
-            SELECT state FROM soar_playbook_records
-            WHERE candidate_id = ?
-            ORDER BY updated_at_utc DESC
-            LIMIT 1
-            """,
-            (f"live_flow:{flow_id}",),
-        ).fetchone()
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if "soar_audit_events" in tables:
+            cnt = conn.execute("SELECT COUNT(*) FROM soar_audit_events").fetchone()
+            has_audit_rows = bool(cnt and int(cnt[0] or 0) > 0)
+        if "soar_playbook_records" in tables:
+            row = conn.execute(
+                """
+                SELECT state FROM soar_playbook_records
+                WHERE candidate_id = ?
+                ORDER BY updated_at_utc DESC
+                LIMIT 1
+                """,
+                (f"live_flow:{flow_id}",),
+            ).fetchone()
     except sqlite3.Error:
         return unavailable
     finally:
         if conn is not None:
             conn.close()
+    chain_verified = _snapshot_chain_status(soar_db_path) == "verified" if has_audit_rows else False
+    if has_audit_rows and not chain_verified:
+        return unavailable
+    if containment_state in {"applied", "simulated_applied"}:
+        return {"status": "isolated", "evidence_state": "verified"}
+    if containment_state in {"rolled_back", "simulated_rolled_back"}:
+        return {"status": "rolled_back", "evidence_state": "verified"}
     if row is None:
         return {"status": "no_receipt", "evidence_state": "unavailable"}
     ledger_state = str(row["state"] or "")
     if callback_recorded and ledger_state in {"approved", "executed_simulated"}:
-        return {"status": "verified", "evidence_state": "verified"}
+        if chain_verified and mttr_seconds > 0.0:
+            return {"status": "verified", "evidence_state": "verified"}
+        return {"status": "callback_recorded", "evidence_state": "unavailable"}
+    evidence_state = "verified" if chain_verified else "unavailable"
     if ledger_state == "executed_simulated":
-        return {"status": "approved", "evidence_state": "verified"}
-    return {"status": ledger_state, "evidence_state": "verified"}
+        return {"status": "approved", "evidence_state": evidence_state}
+    return {"status": ledger_state, "evidence_state": evidence_state}
 
 
 def evidence_locker_queries(
@@ -3888,20 +4052,20 @@ _ATTACK_PROFILE_CANONICAL: dict[str, dict[str, float]] = {
         "protocol_other": 0.0,
     },
     "T1110": {
-        "duration_ms": 8512.332,
-        "fwd_packets": 4.0,
-        "bwd_packets": 6.0,
-        "fwd_bytes": 1444.0,
-        "bwd_bytes": 2832.0,
-        "packets_per_second": 1.1747662097765923,
-        "bytes_per_second": 502.33003130047086,
-        "fwd_packet_length_mean": 361.0,
-        "bwd_packet_length_mean": 472.0,
-        "dst_port": 5060.0,
+        "duration_ms": 0.01,
+        "fwd_packets": 2.0,
+        "bwd_packets": 0.0,
+        "fwd_bytes": 104.0,
+        "bwd_bytes": 0.0,
+        "packets_per_second": 199999.99999999997,
+        "bytes_per_second": 10400000.0,
+        "fwd_packet_length_mean": 52.0,
+        "bwd_packet_length_mean": 0.0,
+        "dst_port": 0.0,
         "protocol_tcp": 0.0,
-        "protocol_udp": 1.0,
+        "protocol_udp": 0.0,
         "protocol_icmp": 0.0,
-        "protocol_other": 0.0,
+        "protocol_other": 1.0,
     },
     "T1046": {
         "duration_ms": 59055.560999999994,
@@ -3954,20 +4118,20 @@ _ATTACK_PROFILE_RAW: dict[str, dict[str, float]] = {
         "djit": 42.961195,
     },
     "T1110": {
-        "dur": 8.512332,
-        "spkts": 4.0,
-        "dpkts": 6.0,
-        "sbytes": 1444.0,
-        "dbytes": 2832.0,
-        "rate": 1.1747662097765923,
+        "dur": 1e-05,
+        "spkts": 2.0,
+        "dpkts": 0.0,
+        "sbytes": 104.0,
+        "dbytes": 0.0,
+        "rate": 199999.99999999997,
         "sttl": 254.0,
-        "dttl": 60.0,
-        "sload": 1017.817444,
-        "dload": 2217.958496,
-        "sinpkt": 2837.444,
-        "dinpkt": 760.997187,
-        "sjit": 4012.73975,
-        "djit": 950.87325,
+        "dttl": 0.0,
+        "sload": 41600000.0,
+        "dload": 0.0,
+        "sinpkt": 0.01,
+        "dinpkt": 0.0,
+        "sjit": 0.0,
+        "djit": 0.0,
     },
     "T1046": {
         "dur": 59.055561,
@@ -4016,6 +4180,11 @@ def _benign_study_profile() -> dict[str, float]:
 
 
 def _attack_study_profile(technique_id: str) -> dict[str, float]:
+    if technique_id in _ATTACK_PROFILE_CANONICAL and technique_id in _ATTACK_PROFILE_RAW:
+        return _stored_profile(
+            _ATTACK_PROFILE_CANONICAL[technique_id],
+            _ATTACK_PROFILE_RAW[technique_id],
+        )
     report = _read_dnn_evaluation_report(_console_repo_root())
     vectors = report.get("scenario_vectors") if isinstance(report, dict) else None
     item = vectors.get(technique_id) if isinstance(vectors, dict) else None
@@ -5047,17 +5216,6 @@ def _mark_playbook_approved(
     )
 
 
-def _reseal_stale_soar_chain(repository: SoarPlaybookSqliteRepository) -> None:
-    """Re-sign rows left by an older daemon secret before a new approval is appended.
-
-    Dispatch does not call this. A tamper after approval still fails the chain check.
-    """
-    chain_ok, message = repository.verify_audit_chain_integrity(require_non_empty=True)
-    if chain_ok or message == "empty ledger":
-        return
-    repository.reseal_audit_chain_with_current_secret()
-
-
 def approve_live_soar(
     live_db_path: Path,
     soar_db_path: Path,
@@ -5081,6 +5239,9 @@ def approve_live_soar(
     }
     author = actor_id.strip()
     decision_reason = reason.strip()
+    if flow_id <= 0 or not author or not decision_reason:
+        refused["reason"] = "approval_incomplete"
+        return refused
     refused_role = _refuse_soar_role(live_db_path, author)
     if refused_role is not None:
         refused_role["schema_version"] = "live_soar_approval_v1"
@@ -5088,9 +5249,6 @@ def approve_live_soar(
         refused_role["entry_sha256"] = ""
         refused_role["prev_entry_sha256"] = ""
         return refused_role
-    if flow_id <= 0 or not author or not decision_reason:
-        refused["reason"] = "approval_incomplete"
-        return refused
     if not live_db_path.is_file():
         refused["reason"] = "flow_not_stored"
         return refused
@@ -5122,7 +5280,12 @@ def approve_live_soar(
         return refused
     candidate_id = f"live_flow:{flow_id}"
     repository = SoarPlaybookSqliteRepository(soar_db_path)
-    _reseal_stale_soar_chain(repository)
+    chain_ok, chain_message = repository.verify_audit_chain_integrity(require_non_empty=True)
+    if not chain_ok and chain_message != "empty ledger":
+        refused["reason"] = "audit_chain_tampered"
+        refused["chain_message"] = chain_message
+        refused["http_status"] = 409
+        return refused
     engine = ApprovalGatedSoarEngine(repository)
     existing = repository.list_records_for_candidate(candidate_id)
     if (
@@ -5203,7 +5366,12 @@ def _hmac_sha256(body: bytes, secret: str) -> str:
 
 
 def _post_signed(
-    url: str, body: bytes, signature: str, idem_key: str
+    url: str,
+    body: bytes,
+    signature: str,
+    idem_key: str,
+    *,
+    tls_ca_cert: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     request = urllib.request.Request(
         url,
@@ -5215,8 +5383,16 @@ def _post_signed(
         },
         method="POST",
     )
+    ssl_ctx = None
+    if url.lower().startswith("https://"):
+        import ssl
+
+        ca_file = (tls_ca_cert or os.environ.get("THREATFUSION_TLS_CA_CERT") or "").strip()
+        ssl_ctx = (
+            ssl.create_default_context(cafile=ca_file) if ca_file else ssl.create_default_context()
+        )
     try:
-        with urllib.request.urlopen(request, timeout=5.0) as response:
+        with urllib.request.urlopen(request, timeout=5.0, context=ssl_ctx) as response:
             raw = response.read().decode("utf-8")
             parsed = json.loads(raw) if raw else {}
             return response.status, parsed if isinstance(parsed, dict) else {}
@@ -5231,6 +5407,17 @@ def _post_signed(
         return 0, {"error": exc.__class__.__name__}
 
 
+_THEHIVE_CASE_ID_RE = re.compile(r"^case_[A-Za-z0-9_-]{1,64}$")
+
+
+def validate_thehive_case_id(case_id: str) -> str:
+    """Ensure TheHive case IDs match ^case_[A-Za-z0-9_-]{1,64}$ before storage or render."""
+    cleaned = str(case_id or "").strip()
+    if _THEHIVE_CASE_ID_RE.fullmatch(cleaned) is None:
+        raise ValueError("invalid_thehive_case_id")
+    return cleaned
+
+
 def _store_callback_receipt(
     db_path: Path,
     flow_id: int,
@@ -5241,6 +5428,7 @@ def _store_callback_receipt(
     execution_path: str,
     soar_receipt_status: str = "verified",
 ) -> None:
+    validated_case_id = validate_thehive_case_id(case_id)
     with _connect(db_path) as conn:
         conn.execute(
             """
@@ -5249,7 +5437,7 @@ def _store_callback_receipt(
                 callback_recorded = 1, execution_path = ?
             WHERE flow_id = ?
             """,
-            (signature, case_id, mttr_seconds, execution_path, flow_id),
+            (signature, validated_case_id, mttr_seconds, execution_path, flow_id),
         )
     rewrite_copilot_section_five(
         flow_id,
@@ -5530,6 +5718,7 @@ def _dispatch_signed_local_contract(
     base: str,
     thehive_url: str,
     outbox_db_path: Path | None,
+    tls_ca_cert: str | None = None,
 ) -> dict[str, Any]:
     """Record the HMAC callback on this process. Host containment is not executed."""
     verify_payload = {"candidate_id": candidate_id, "playbook_id": approved.playbook_id}
@@ -5541,6 +5730,7 @@ def _dispatch_signed_local_contract(
         verify_body,
         verify_sig,
         verify_key,
+        tls_ca_cert=tls_ca_cert,
     )
     if status != 200 or verified.get("state_verified") is not True:
         _mark_execution_path(live_db_path, flow_id, LOCAL_CONTRACT_FALLBACK)
@@ -5583,6 +5773,7 @@ def _dispatch_signed_local_contract(
         callback_body,
         callback_sig,
         callback_key,
+        tls_ca_cert=tls_ca_cert,
     )
     if callback_status != 200 or callback.get("callback_recorded") is not True:
         refused["reason"] = "callback_rejected"
@@ -5671,11 +5862,13 @@ def _record_console_callback_receipt(
         secret=secret,
     )
     signature = str(receipt.get("signature_sha256") or "")
+    safe_suffix = re.sub(r"[^A-Za-z0-9_-]", "_", str(candidate_id or "flow")).strip("_") or "flow"
+    safe_case_id = validate_thehive_case_id(f"case_{safe_suffix[:64]}")
     _store_callback_receipt(
         live_db_path,
         flow_id,
         signature=signature,
-        case_id=f"case_{candidate_id}",
+        case_id=safe_case_id,
         mttr_seconds=0.0,
         execution_path=LOCAL_CONTRACT_FALLBACK,
         soar_receipt_status="unavailable",
@@ -5692,7 +5885,7 @@ def _record_console_callback_receipt(
             "callback_verified": False,
             "soar_state": "callback_recorded",
             "signature_sha256": signature,
-            "thehive_case_id": f"case_{candidate_id}",
+            "thehive_case_id": safe_case_id,
             "mttr_seconds": 0.0,
             "flow_id": flow_id,
             "playbook_id": approved.playbook_id,
@@ -5719,6 +5912,7 @@ def dispatch_approved_callback(
     local_fallback_on_n8n_failure: bool = False,
     actor_id: str | None = None,
     console_local_receipt: bool = False,
+    tls_ca_cert: str | None = None,
 ) -> dict[str, Any]:
     """Verify an approved playbook, open a local 4-block case, and record the HMAC callback.
 
@@ -5733,7 +5927,8 @@ def dispatch_approved_callback(
         "callback_recorded": False,
         "signature_sha256": "",
     }
-    refused_role = _refuse_soar_role(live_db_path, actor_id or "")
+    effective_actor = "lab_operator" if actor_id is None else actor_id
+    refused_role = _refuse_soar_role(live_db_path, effective_actor)
     if refused_role is not None:
         refused.update(refused_role)
         refused["schema_version"] = "live_soar_callback_v1"
@@ -5822,6 +6017,7 @@ def dispatch_approved_callback(
         "base": base,
         "thehive_url": thehive_url,
         "outbox_db_path": outbox_db_path,
+        "tls_ca_cert": tls_ca_cert,
     }
     if webhook:
         n8n_result = _promote_recorded_callback(
@@ -7431,7 +7627,8 @@ def contain_range_source(
     172.29.0.10 uses the victim-namespace iptables runner. A 10.0.0.4 scenario
     replay is recorded as simulated and does not change a host firewall.
     """
-    refused_role = _refuse_soar_role(live_db_path, actor_id or "")
+    effective_actor = "lab_operator" if actor_id is None else actor_id
+    refused_role = _refuse_soar_role(live_db_path, effective_actor)
     if refused_role is not None:
         refused_role["schema_version"] = "live_range_containment_v1"
         return refused_role
@@ -7492,7 +7689,8 @@ def _rollback_range_source_work(
     actor_id: str | None = None,
 ) -> dict[str, Any]:
     """Remove a recorded drop. 10.0.0.4 scenario rollback stays on the ledger."""
-    refused_role = _refuse_soar_role(live_db_path, actor_id or "")
+    effective_actor = "lab_operator" if actor_id is None else actor_id
+    refused_role = _refuse_soar_role(live_db_path, effective_actor)
     if refused_role is not None:
         refused_role["schema_version"] = "live_range_containment_v1"
         return refused_role
@@ -7893,20 +8091,20 @@ _WORKSPACE_ID = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 _SENSOR_ID = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 _SERVICE_TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,32}$")
 _AE_BREAKDOWN_LABELS: tuple[tuple[str, str], ...] = (
-    ("dur", "duration_ms__zscore"),
-    ("spkts", "fwd_packets__zscore"),
-    ("dpkts", "bwd_packets__zscore"),
-    ("sbytes", "fwd_bytes__zscore"),
-    ("dbytes", "bwd_bytes__zscore"),
-    ("sload", "packets_per_second__zscore"),
-    ("dload", "bytes_per_second__zscore"),
-    ("sinpkt", "fwd_packet_length_mean__zscore"),
-    ("dinpkt", "bwd_packet_length_mean__zscore"),
-    ("sjit", "dst_port__zscore"),
-    ("djit", "protocol=tcp"),
-    ("tcprtt", "protocol=udp"),
-    ("synack", "protocol=icmp"),
-    ("ackdat", "protocol=other"),
+    ("duration_ms", "duration_ms__zscore"),
+    ("fwd_packets", "fwd_packets__zscore"),
+    ("bwd_packets", "bwd_packets__zscore"),
+    ("fwd_bytes", "fwd_bytes__zscore"),
+    ("bwd_bytes", "bwd_bytes__zscore"),
+    ("packets_per_second", "packets_per_second__zscore"),
+    ("bytes_per_second", "bytes_per_second__zscore"),
+    ("fwd_packet_length_mean", "fwd_packet_length_mean__zscore"),
+    ("bwd_packet_length_mean", "bwd_packet_length_mean__zscore"),
+    ("dst_port", "dst_port__zscore"),
+    ("protocol_tcp", "protocol=tcp"),
+    ("protocol_udp", "protocol=udp"),
+    ("protocol_icmp", "protocol=icmp"),
+    ("protocol_other", "protocol=other"),
 )
 _WORKSPACE_SEEDS: tuple[tuple[str, str, str, str, str, int], ...] = (
     (
@@ -8224,8 +8422,10 @@ def run_model_observatory(
 
 def _operator_role(db_path: Path, actor_id: str) -> str | None:
     author = str(actor_id or "").strip()
-    if not author or not db_path.is_file():
+    if not author:
         return None
+    if not db_path.is_file():
+        return {seed[0]: seed[2] for seed in _OPERATOR_SEEDS}.get(author)
     with _connect(db_path) as conn:
         row = conn.execute(
             "SELECT role FROM console_operators WHERE actor_id = ?",
@@ -8238,14 +8438,14 @@ def _operator_role(db_path: Path, actor_id: str) -> str | None:
 
 def _refuse_soar_role(db_path: Path, actor_id: str) -> dict[str, Any] | None:
     author = str(actor_id or "").strip()
-    role = _operator_role(db_path, author)
-    if role not in _SOAR_LIMITED_ROLES:
+    role = _operator_role(db_path, author) if author else None
+    if role == "soc_approver":
         return None
     return {
         "evidence_state": "refused",
         "reason": "role_insufficient_for_soar",
         "actor_id": author,
-        "role": role,
+        "role": role or "unregistered",
         "http_status": 403,
         "execution_authorized": False,
         "containment_executed": False,
@@ -8618,11 +8818,13 @@ def entra_identity_status(db_path: Path) -> dict[str, Any]:
 
 
 def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
-    """Check OIDC JWT structure and tid, oid, roles, and upn, then sync the session role.
+    """Check OIDC JWT structure and claims; strictly refuse unsigned tokens in production.
 
-    This checks the token shape and the lab directory claims. It does not fetch a
-    Microsoft JWKS document.
+    This helper performs structural and temporal claim validation in lab mode only
+    and never sets jwks_signature_checked=True without cryptographic JWKS validation.
     """
+    from threatfusion.operations.commercial_hardening import threatfusion_environment
+
     refused = {
         "schema_version": "live_entra_oidc_v1",
         "evidence_state": "unavailable",
@@ -8631,7 +8833,11 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
         "production_fusion_enabled": False,
         "execution_authorized": False,
         "token_structure_valid": False,
+        "jwks_signature_checked": False,
     }
+    if threatfusion_environment() == "production":
+        refused["reason"] = "entra_jwks_verification_required"
+        return refused
     raw = str(token or "").strip()
     if raw.lower().startswith("bearer "):
         raw = raw[7:].strip()
@@ -8648,6 +8854,34 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
     if str(header.get("alg") or "") not in {"RS256", "RS384", "RS512"}:
         refused["reason"] = "entra_alg_rejected"
         return refused
+    now_ts = time.time()
+    if "exp" in claims:
+        raw_exp = claims.get("exp")
+        if isinstance(raw_exp, bool) or not isinstance(raw_exp, (int, float)):
+            refused["reason"] = "entra_token_expired"
+            return refused
+        if not math.isfinite(float(raw_exp)) or float(raw_exp) <= now_ts:
+            refused["reason"] = "entra_token_expired"
+            return refused
+    if "nbf" in claims:
+        raw_nbf = claims.get("nbf")
+        if isinstance(raw_nbf, bool) or not isinstance(raw_nbf, (int, float)):
+            refused["reason"] = "entra_token_not_yet_valid"
+            return refused
+        if not math.isfinite(float(raw_nbf)) or float(raw_nbf) > now_ts:
+            refused["reason"] = "entra_token_not_yet_valid"
+            return refused
+    expected_iss = os.environ.get("THREATFUSION_ENTRA_ISSUER", "").strip()
+    if expected_iss and str(claims.get("iss") or "").strip() != expected_iss:
+        refused["reason"] = "entra_issuer_mismatch"
+        return refused
+    expected_aud = os.environ.get("THREATFUSION_ENTRA_AUDIENCE", "").strip()
+    if expected_aud:
+        aud = claims.get("aud")
+        aud_values = [aud] if isinstance(aud, str) else (aud if isinstance(aud, list) else [])
+        if expected_aud not in [str(item).strip() for item in aud_values]:
+            refused["reason"] = "entra_audience_mismatch"
+            return refused
     tenant = str(claims.get("tid") or "")
     object_id = str(claims.get("oid") or "")
     upn = str(claims.get("upn") or claims.get("preferred_username") or "")
@@ -8664,6 +8898,9 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
         return refused
     if expected_tenant and tenant != expected_tenant:
         refused["reason"] = "entra_claims_incomplete"
+        return refused
+    if "iss" in claims and tenant not in str(claims.get("iss") or ""):
+        refused["reason"] = "entra_issuer_mismatch"
         return refused
     actor = ""
     for actor_id, profile in _ENTRA_DIRECTORY.items():
@@ -8708,11 +8945,28 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
 
 
 def register_operator(
-    db_path: Path, *, actor_id: str, display_name: str, role: str
+    db_path: Path,
+    *,
+    actor_id: str,
+    display_name: str,
+    role: str,
+    session_token: str = "",
 ) -> dict[str, Any]:
+    from threatfusion.operations.commercial_hardening import threatfusion_environment
+
     author = str(actor_id or "").strip()
     name = str(display_name or "").strip()
     chosen = str(role or "").strip()
+    if threatfusion_environment() == "production":
+        caller = _session_row(db_path, session_token) if session_token else None
+        if caller is None or caller.get("role") != "soc_approver":
+            return {
+                "schema_version": "live_operator_v1",
+                "evidence_state": "unavailable",
+                "reason": "admin_session_required",
+                "production_fusion_enabled": False,
+                "http_status": 403,
+            }
     if _LOCAL_ACTOR.fullmatch(author) is None or not name or len(name) > 120:
         return {
             "schema_version": "live_operator_v1",
@@ -9006,8 +9260,31 @@ def _ensure_admin_email_aliases(conn: sqlite3.Connection, created: str) -> None:
         )
 
 
+_PROD_ADMIN_HASH_CACHE: dict[str, str] = {}
+_PROD_LOCKED_DB_CACHE: set[tuple[str, int, str, tuple[str, ...]]] = set()
+_PROD_LOCKED_RANDOM_HASH: str | None = None
+
+
+def _sqlite_main_db_identity(conn: sqlite3.Connection) -> tuple[str, int] | None:
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+    except sqlite3.Error:
+        return None
+    for row in rows:
+        name = row[1] if len(row) > 1 else ""
+        file_path = str(row[2] or "").strip() if len(row) > 2 else ""
+        if name == "main" and file_path and file_path != ":memory:":
+            try:
+                st = os.stat(file_path)
+                return str(Path(file_path).resolve()), int(st.st_ino)
+            except OSError:
+                return None
+    return None
+
+
 def _lock_demo_passwords_for_production(conn: sqlite3.Connection) -> None:
     """Replace the lab hashes with TF_ADMIN_SECRET or a one-time bootstrap secret."""
+    global _PROD_LOCKED_RANDOM_HASH
     from threatfusion.operations.commercial_hardening import (
         KNOWN_DEMO_PASSWORD_HASHES,
         demo_passwords_enabled,
@@ -9019,22 +9296,40 @@ def _lock_demo_passwords_for_production(conn: sqlite3.Connection) -> None:
         return
     explicit = os.environ.get("TF_ADMIN_SECRET", "").strip()
     secret = explicit or ensure_bootstrap_admin_secret(resolve_data_dir())
-    admin_users = set(_production_admin_usernames())
+    secret_digest = hashlib.sha256(secret.encode("utf-8")).hexdigest()
+    admin_users = tuple(sorted(set(_production_admin_usernames())))
+    db_identity = _sqlite_main_db_identity(conn)
+    cache_key: tuple[str, int, str, tuple[str, ...]] | None = (
+        (db_identity[0], db_identity[1], secret_digest, admin_users)
+        if db_identity is not None
+        else None
+    )
+    if cache_key is not None and cache_key in _PROD_LOCKED_DB_CACHE:
+        return
+    admin_hash = _PROD_ADMIN_HASH_CACHE.get(secret_digest)
+    if admin_hash is None:
+        admin_hash = _hash_password(secret)
+        _PROD_ADMIN_HASH_CACHE[secret_digest] = admin_hash
+    admin_set = set(admin_users)
     rows = conn.execute("SELECT username, password_hash FROM rbac_accounts").fetchall()
     for row in rows:
         username, current_hash = _account_username_and_hash(row)
         known_demo = current_hash in KNOWN_DEMO_PASSWORD_HASHES
-        force_admin = bool(explicit) and username in admin_users
+        force_admin = bool(explicit) and username in admin_set
         if not known_demo and not force_admin:
             continue
-        if username in admin_users:
-            replacement = _hash_password(secret)
+        if username in admin_set:
+            replacement = admin_hash
         else:
-            replacement = _hash_password(secrets.token_hex(32))
+            if _PROD_LOCKED_RANDOM_HASH is None:
+                _PROD_LOCKED_RANDOM_HASH = _hash_password(secrets.token_hex(32))
+            replacement = _PROD_LOCKED_RANDOM_HASH
         conn.execute(
             "UPDATE rbac_accounts SET password_hash = ? WHERE username = ?",
             (replacement, username),
         )
+    if cache_key is not None and rows:
+        _PROD_LOCKED_DB_CACHE.add(cache_key)
 
 
 def _verify_password(stored: str, password: str) -> bool:
@@ -9271,13 +9566,16 @@ def rbac_login(
     presented = str(entra_token or "").strip()
     if presented:
         verified = verify_entra_token(db_path, presented)
-        if int(verified.get("http_status") or 401) != 200:
+        if (
+            int(verified.get("http_status") or 401) != 200
+            or verified.get("jwks_signature_checked") is not True
+        ):
             _audit_auth(
                 db_path,
                 "login_failed",
-                str(username or email or ""),
+                str(username or email or verified.get("upn") or "entra"),
                 client_ip,
-                "invalid_credentials",
+                "entra_jwks_unverified",
             )
             return _rbac_refused("invalid_credentials", 401)
         actor = str(verified.get("actor_id") or "")
@@ -9356,12 +9654,21 @@ def rbac_register(
     access_code: str,
     display_name: str,
     role: str,
+    session_token: str = "",
 ) -> dict[str, Any]:
     """Create a custom analyst account and sign that account in."""
+    from threatfusion.operations.commercial_hardening import threatfusion_environment
+
     user = str(username or "").strip().lower()
     name = str(display_name or "").strip()
     chosen = str(role or "").strip()
     secret = str(access_code or "")
+    caller = _session_row(db_path, session_token) if session_token else None
+    is_admin_caller = caller is not None and caller.get("role") == "soc_approver"
+    if threatfusion_environment() == "production" and not is_admin_caller:
+        return _rbac_refused("admin_session_required", 403)
+    if chosen == "soc_approver" and not is_admin_caller:
+        return _rbac_refused("approver_registration_forbidden", 403)
     if (
         _RBAC_EMAIL.fullmatch(user) is None
         or len(secret) < 8
@@ -9398,7 +9705,13 @@ def rbac_register(
             ),
         )
         _audit_auth(db_path, "operator_registered", user, "", "rbac_register", conn)
-    registered = register_operator(db_path, actor_id=actor, display_name=name, role=chosen)
+    registered = register_operator(
+        db_path,
+        actor_id=actor,
+        display_name=name,
+        role=chosen,
+        session_token=session_token,
+    )
     if int(registered.get("http_status") or 400) != 200:
         return _rbac_refused(str(registered.get("reason") or "operator_invalid"), 400)
     return rbac_login(db_path, username=user, access_code=secret)
@@ -9518,7 +9831,7 @@ def preview_soar_playbook(db_path: Path, *, flow_id: int) -> dict[str, Any]:
         ae_mse = None
     ledger_state = str(match.get("ledger_state") or match.get("soar_state") or "")
     containment = str(match.get("containment_state") or "")
-    approved = ledger_state in {"approved", "executed_simulated"} or bool(
+    approved = ledger_state in {"approved", "executed_simulated"} and bool(
         match.get("audit_chain_verified")
     )
     dispatched = bool(match.get("callback_recorded"))
@@ -9897,6 +10210,22 @@ def _compression_funnel_empty() -> dict[str, Any]:
     }
 
 
+def _epoch_seconds(value: Any) -> float | None:
+    numeric = _finite_number(value)
+    if numeric is not None:
+        return numeric
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.timestamp()
+
+
 def build_alert_fatigue_compression_funnel(db_path: Path) -> dict[str, Any]:
     """Compress stored bursts into the executive alert-fatigue funnel.
 
@@ -9917,8 +10246,9 @@ def build_alert_fatigue_compression_funnel(db_path: Path) -> dict[str, Any]:
         with _connect(Path(db_path)) as conn:
             rows = conn.execute("""
                 SELECT flow_id, burst_count, simhash_signature, decision,
-                       rf_attack_probability
+                       rf_attack_probability, burst_key, last_seen_at
                 FROM live_flows
+                ORDER BY flow_id ASC
                 """).fetchall()
     except sqlite3.Error:
         return _compression_funnel_empty()
@@ -9926,6 +10256,7 @@ def build_alert_fatigue_compression_funnel(db_path: Path) -> dict[str, Any]:
     synthetic = 0
     signatures: set[str] = set()
     high_signatures: set[str] = set()
+    by_burst_key: dict[str, list[tuple[float | None, int]]] = {}
     for row in rows:
         try:
             weight = int(row["burst_count"]) if row["burst_count"] is not None else 1
@@ -9933,9 +10264,6 @@ def build_alert_fatigue_compression_funnel(db_path: Path) -> dict[str, Any]:
             weight = 1
         if weight < 1:
             weight = 1
-        raw += weight
-        if weight > 1:
-            synthetic += weight - 1
         signature = str(row["simhash_signature"] or "").strip()
         if not signature:
             signature = f"flow:{int(row['flow_id'])}"
@@ -9945,6 +10273,32 @@ def build_alert_fatigue_compression_funnel(db_path: Path) -> dict[str, Any]:
             probability is not None and probability >= 0.5
         ):
             high_signatures.add(signature)
+        bkey = str(row["burst_key"] or "").strip()
+        group_key = bkey if bkey else f"flow:{int(row['flow_id'])}"
+        seen_at = _epoch_seconds(row["last_seen_at"])
+        by_burst_key.setdefault(group_key, []).append((seen_at, weight))
+    for entries in by_burst_key.values():
+        ordered = sorted(entries, key=lambda item: (item[0] is None, item[0] or 0.0))
+        buckets: list[list[int]] = []
+        bucket_last: float | None = None
+        for seen_at, weight in ordered:
+            if (
+                not buckets
+                or seen_at is None
+                or bucket_last is None
+                or abs(seen_at - bucket_last) > 60.0
+            ):
+                buckets.append([weight])
+                bucket_last = seen_at
+            else:
+                buckets[-1].append(weight)
+                bucket_last = seen_at
+        for weights in buckets:
+            n_rows = len(weights)
+            bucket_raw = max(n_rows, max(weights))
+            raw += bucket_raw
+            if bucket_raw > n_rows:
+                synthetic += bucket_raw - n_rows
     high = len(high_signatures)
     clusters = len(signatures)
     if raw <= 0:
@@ -10384,18 +10738,27 @@ def read_advisory_trace(db_path: Path, flow_id: int) -> dict[str, Any]:
         trusted_preamble="ThreatFusion Stage-5 advisory trace.",
         untrusted_fields=untrusted_fields,
     )
-    ledger = verify_advisory_against_ledger(
-        str(narrative or ""),
-        {
-            "src_ip": row.get("src_entity_id"),
-            "dst_ip": row.get("dst_entity_id"),
-            "src_port": 0,
-            "dst_port": row.get("service_or_port"),
-            "technique_id": technique,
-            "cve_ids": row.get("cve_ids") or [],
-        },
-        row.get("chroma_rag_hits") if isinstance(row.get("chroma_rag_hits"), list) else [],
-    )
+    if str(narrative or "").strip():
+        ledger = verify_advisory_against_ledger(
+            str(narrative or ""),
+            {
+                "src_ip": row.get("src_entity_id"),
+                "dst_ip": row.get("dst_entity_id"),
+                "src_port": 0,
+                "dst_port": row.get("service_or_port"),
+                "technique_id": technique,
+                "cve_ids": row.get("cve_ids") or [],
+            },
+            row.get("chroma_rag_hits") if isinstance(row.get("chroma_rag_hits"), list) else [],
+        )
+    else:
+        ledger = {
+            "status": "UNAVAILABLE",
+            "verified_indicators": [],
+            "ungrounded_indicators": [],
+            "annotated_summary": "",
+            "cited_count": 0,
+        }
     payload["flow_id"] = number
     payload["decision"] = row.get("decision")
     payload["reason"] = "advisory_trace"
@@ -10745,7 +11108,12 @@ def build_forensic_scope(
     flow_id: int | None = None,
 ) -> dict[str, Any]:
     """Deterministic patient-zero, timeline, chain, and CTI fields for one scope."""
-    scoped = [dict(row) for row in rows if isinstance(row, Mapping)]
+    scoped = [
+        dict(row)
+        for row in rows
+        if isinstance(row, Mapping)
+        and str(row.get("decision") or "Attack").strip().lower() != "benign"
+    ]
     if flow_id is not None:
         chosen = next((row for row in scoped if int(row.get("flow_id") or 0) == int(flow_id)), None)
         if chosen is None:
@@ -10776,7 +11144,8 @@ def build_forensic_scope(
             host = _flow_endpoint(row, side)
             if host and host not in hosts:
                 hosts.add(host)
-                ips.append(host)
+                if not host.startswith("dataset_flow#"):
+                    ips.append(host)
         try:
             port = int(float(row.get("service_or_port") or 0))
         except (TypeError, ValueError):

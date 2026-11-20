@@ -20,8 +20,6 @@ if [[ -n "${THREATFUSION_PYTHON:-}" ]]; then
   PYTHON="${THREATFUSION_PYTHON}"
 elif [[ -x "${ROOT}/threatfusion-venv/bin/python" ]]; then
   PYTHON="${ROOT}/threatfusion-venv/bin/python"
-elif [[ -x "${ROOT}/.venv/bin/python" ]]; then
-  PYTHON="${ROOT}/.venv/bin/python"
 else
   PYTHON="$(command -v python3 || command -v python)"
 fi

@@ -613,6 +613,13 @@ def rank_rf_alerts_for_triage_queue(
         raise ValueError(
             "production_fusion_enabled must remain False per Section 8 of product charter."
         )
+    if (
+        isinstance(ae_threshold, bool)
+        or not isinstance(ae_threshold, (int, float))
+        or not math.isfinite(float(ae_threshold))
+        or float(ae_threshold) <= 0.0
+    ):
+        raise ValueError("ae_threshold must be a positive finite number.")
 
     admitted_alerts: list[dict[str, Any]] = []
     for alert in alerts:
@@ -625,13 +632,15 @@ def rank_rf_alerts_for_triage_queue(
             else:
                 continue
 
+        if isinstance(prob, bool):
+            continue
         try:
             prob_float = float(prob)
         except (TypeError, ValueError):
             continue
 
-        if prob_float < 0.5:
-            # RF-negative flows are strictly rejected from the queue
+        if not math.isfinite(prob_float) or prob_float < 0.5:
+            # Non-finite or RF-negative flows are strictly rejected from the queue
             continue
 
         burst_size = alert.get("burst_size")
@@ -639,20 +648,30 @@ def rank_rf_alerts_for_triage_queue(
             burst_size = alert.get("burst_packet_count")
         if burst_size is None:
             burst_size = alert.get("flow_count", alert.get("incident_size", 1))
-        try:
-            burst_size_int = int(burst_size)
-        except (TypeError, ValueError):
+        if isinstance(burst_size, bool):
             burst_size_int = 1
+        else:
+            try:
+                burst_float = float(burst_size)
+                burst_size_int = (
+                    int(burst_float) if math.isfinite(burst_float) and burst_float >= 1 else 1
+                )
+            except (TypeError, ValueError):
+                burst_size_int = 1
 
         ae_err = alert.get("ae_reconstruction_error")
         if ae_err is None:
             ae_err = alert.get("ae_error", alert.get("reconstruction_error", 0.0))
-        try:
-            ae_err_float = float(ae_err)
-        except (TypeError, ValueError):
+        if isinstance(ae_err, bool):
             ae_err_float = 0.0
+        else:
+            try:
+                parsed_ae = float(ae_err)
+                ae_err_float = parsed_ae if math.isfinite(parsed_ae) and parsed_ae >= 0.0 else 0.0
+            except (TypeError, ValueError):
+                ae_err_float = 0.0
 
-        ratio = round(ae_err_float / ae_threshold, 4) if ae_threshold > 0 else 0.0
+        ratio = round(ae_err_float / float(ae_threshold), 4)
 
         item = dict(alert)
         item["rf_attack_probability"] = prob_float

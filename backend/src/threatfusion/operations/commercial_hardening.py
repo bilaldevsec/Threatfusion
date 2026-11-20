@@ -110,7 +110,12 @@ def apply_posture_to_index(page: str) -> str:
         'id="demoQuickFill" class="demo-credential-box role-quick-grid"',
         'id="demoQuickFill" class="demo-credential-box role-quick-grid" hidden',
     )
-    return re.sub(r'data-demo-code="[^"]*"', 'data-demo-code=""', rendered)
+    rendered = re.sub(r'data-demo-code="[^"]*"', 'data-demo-code=""', rendered)
+    rendered = re.sub(r'data-demo-user="[^"]*"', 'data-demo-user=""', rendered)
+    rendered = re.sub(r'data-demo-actor="[^"]*"', 'data-demo-actor=""', rendered)
+    for code in DEMO_ACCESS_CODES:
+        rendered = rendered.replace(code, "")
+    return rendered
 
 
 def resolve_data_dir() -> Path:
@@ -142,16 +147,24 @@ def _reject_hmac_symlink(path: Path) -> None:
         raise OSError(f"refusing symlink for HMAC secret: {path}")
 
 
+def _fchmod_mode_0600_no_follow(path: Path) -> None:
+    _reject_hmac_symlink(path)
+    fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+    finally:
+        os.close(fd)
+
+
 def _write_mode_0600(path: Path, text: str) -> None:
     _reject_hmac_symlink(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     try:
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
         os.write(fd, text.encode("utf-8"))
     finally:
         os.close(fd)
-    _reject_hmac_symlink(path)
-    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
 
 
 def ensure_hmac_secret(data_dir: Path | None = None) -> Path:
@@ -165,9 +178,8 @@ def ensure_hmac_secret(data_dir: Path | None = None) -> Path:
         if not path.is_file():
             _write_mode_0600(path, existing + "\n")
         else:
-            _reject_hmac_symlink(path)
             try:
-                os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+                _fchmod_mode_0600_no_follow(path)
             except OSError:
                 pass
         return path
@@ -309,10 +321,15 @@ class LoginRateLimiter:
     """Sliding window of failed logins. Five failures per 60s per IP or email."""
 
     def __init__(
-        self, *, limit: int = _LOGIN_LIMIT, window_seconds: float = _LOGIN_WINDOW_SECONDS
+        self,
+        *,
+        limit: int = _LOGIN_LIMIT,
+        window_seconds: float = _LOGIN_WINDOW_SECONDS,
+        max_keys: int = 10_000,
     ) -> None:
         self.limit = limit
         self.window_seconds = window_seconds
+        self.max_keys = max(16, int(max_keys))
         self._events: dict[str, list[float]] = {}
         self._lock = threading.Lock()
 
@@ -327,6 +344,20 @@ class LoginRateLimiter:
         else:
             self._events.pop(key, None)
         return fresh
+
+    def _evict_if_full(self, now: float) -> None:
+        if len(self._events) <= self.max_keys:
+            return
+        for key in list(self._events.keys()):
+            self._prune(key, now)
+        if len(self._events) > self.max_keys:
+            overflow = len(self._events) - self.max_keys
+            oldest = sorted(
+                self._events.items(),
+                key=lambda item: item[1][-1] if item[1] else 0.0,
+            )[:overflow]
+            for key, _stamps in oldest:
+                self._events.pop(key, None)
 
     def rejected(self, client_ip: str, email: str, *, now: float | None = None) -> int | None:
         """Return Retry-After seconds when either key is already at the limit."""
@@ -347,6 +378,7 @@ class LoginRateLimiter:
         moment = time.monotonic() if now is None else now
         keys = [f"ip:{client_ip or 'unknown'}", f"email:{str(email or '').strip().lower()}"]
         with self._lock:
+            self._evict_if_full(moment)
             for key in keys:
                 stamps = self._prune(key, moment)
                 stamps.append(moment)
@@ -406,7 +438,25 @@ def isolation_refusal_reason(src_ip: str) -> str | None:
     """Return invalid_ip, protected_infrastructure_ip, or None when isolation may proceed."""
     raw = str(src_ip or "").strip()
     if "/" in raw:
-        raw = raw.split("/", 1)[0]
+        try:
+            net = ipaddress.ip_network(raw, strict=False)
+        except ValueError:
+            return "invalid_ip"
+        admin = _admin_ip()
+        loopback = (
+            ipaddress.ip_address("127.0.0.1") if net.version == 4 else ipaddress.ip_address("::1")
+        )
+        if (
+            net.prefixlen == 0
+            or loopback in net
+            or net.is_loopback
+            or net.is_link_local
+            or net.is_unspecified
+            or net.is_multicast
+            or (admin is not None and admin.version == net.version and admin in net)
+        ):
+            return "protected_infrastructure_ip"
+        return "invalid_ip"
     try:
         parsed = ipaddress.ip_address(raw)
     except ValueError:

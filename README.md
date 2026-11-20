@@ -286,7 +286,7 @@ Executes unit, API, integration, and advisory shield tests:
 ```bash
 threatfusion-venv/bin/pytest -q -o cache_dir=/tmp/.pytest_cache
 ```
-*Expected: `1,725 passed, 1 skipped, 0 failed` across 1,726 tests.*
+*Expected: `1,726+ tests collected, 0 failed; 1–11 environment-gated skips depending on local/Docker fixtures`.*
 
 ---
 

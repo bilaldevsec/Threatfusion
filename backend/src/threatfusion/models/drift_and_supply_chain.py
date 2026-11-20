@@ -289,18 +289,19 @@ CANONICAL_14_FEATURES: tuple[str, ...] = (
     "protocol_other",
 )
 
-# Standard reference baseline statistics (derived from UNSW TRAIN baseline distribution)
+# Standard reference baseline statistics aligned to preprocessor_state.json
+# (full-train-only-0141bde-v1, UNSW-NB15 training partition, n=865,480)
 DEFAULT_BASELINE_MEANS: dict[str, float] = {
-    "duration_ms": 650.0,
-    "fwd_packets": 15.0,
-    "bwd_packets": 12.0,
-    "fwd_bytes": 1250.0,
-    "bwd_bytes": 4800.0,
-    "packets_per_second": 25.0,
-    "bytes_per_second": 3500.0,
-    "fwd_packet_length_mean": 83.33,
-    "bwd_packet_length_mean": 400.0,
-    "dst_port": 80.0,
+    "duration_ms": 674.7873430327663,
+    "fwd_packets": 40.79383810140037,
+    "bwd_packets": 53.7352382492952,
+    "fwd_bytes": 4744.387895734159,
+    "bwd_bytes": 46146.04035795164,
+    "packets_per_second": 10030.53052796937,
+    "bytes_per_second": 1397249.979797445,
+    "fwd_packet_length_mean": 127.70309498757078,
+    "bwd_packet_length_mean": 344.62567228440037,
+    "dst_port": 13963.423913897483,
     "protocol_tcp": 0.80,
     "protocol_udp": 0.15,
     "protocol_icmp": 0.04,
@@ -308,16 +309,16 @@ DEFAULT_BASELINE_MEANS: dict[str, float] = {
 }
 
 DEFAULT_BASELINE_STDS: dict[str, float] = {
-    "duration_ms": 1200.0,
-    "fwd_packets": 30.0,
-    "bwd_packets": 25.0,
-    "fwd_bytes": 2500.0,
-    "bwd_bytes": 8000.0,
-    "packets_per_second": 50.0,
-    "bytes_per_second": 6000.0,
-    "fwd_packet_length_mean": 120.0,
-    "bwd_packet_length_mean": 450.0,
-    "dst_port": 500.0,
+    "duration_ms": 3249.359219215994,
+    "fwd_packets": 74.51383981177717,
+    "bwd_packets": 131.9446897097694,
+    "fwd_bytes": 34765.77442524916,
+    "bwd_bytes": 176662.62932597075,
+    "packets_per_second": 72274.32027031305,
+    "bytes_per_second": 10733970.32451404,
+    "fwd_packet_length_mean": 159.51951931804308,
+    "bwd_packet_length_mean": 344.0988063490458,
+    "dst_port": 19603.899142941656,
     "protocol_tcp": 0.40,
     "protocol_udp": 0.35,
     "protocol_icmp": 0.20,
@@ -477,11 +478,29 @@ def evaluate_14_feature_telemetry_drift(
 
     b_means = dict(DEFAULT_BASELINE_MEANS)
     if baseline_means is not None:
-        b_means.update(baseline_means)
+        for fname, val in baseline_means.items():
+            if isinstance(val, bool) or not isinstance(val, (int, float)):
+                raise TelemetryDriftError(
+                    f"baseline_means feature '{fname}' has invalid type {type(val).__name__}"
+                )
+            val_float = float(val)
+            if not math.isfinite(val_float):
+                raise TelemetryDriftError(f"baseline_means feature '{fname}' has non-finite value")
+            b_means[fname] = val_float
 
     b_stds = dict(DEFAULT_BASELINE_STDS)
     if baseline_stds is not None:
-        b_stds.update(baseline_stds)
+        for fname, val in baseline_stds.items():
+            if isinstance(val, bool) or not isinstance(val, (int, float)):
+                raise TelemetryDriftError(
+                    f"baseline_stds feature '{fname}' has invalid type {type(val).__name__}"
+                )
+            val_float = float(val)
+            if not math.isfinite(val_float) or val_float < 0.0:
+                raise TelemetryDriftError(
+                    f"baseline_stds feature '{fname}' must be finite and non-negative"
+                )
+            b_stds[fname] = val_float
 
     # 1. Strict Feature Presence & Type Validation across all records
     feature_vals: dict[str, list[float]] = {fname: [] for fname in CANONICAL_14_FEATURES}
@@ -493,7 +512,7 @@ def evaluate_14_feature_telemetry_drift(
                     f"Record at index {idx} missing canonical feature '{fname}'"
                 )
             val = rec[fname]
-            if not isinstance(val, (int, float)):
+            if isinstance(val, bool) or not isinstance(val, (int, float)):
                 raise TelemetryDriftError(
                     f"Record at index {idx} feature '{fname}' has invalid type {type(val).__name__}"
                 )

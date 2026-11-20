@@ -160,8 +160,21 @@ def run_probes(
         if approved.get("http_status") != 200 or approved.get("execution_authorized") is not True:
             raise RuntimeError("isolated approval failed: certificate was not presented")
 
+    dispatch_headers = dict(live_headers)
+    login_status, login_body = _post(
+        base,
+        "/api/rbac/login",
+        {
+            "username": "bilal.21k3551@nu.edu.pk",
+            "access_code": "TF-Bilal-3551!",
+        },
+        headers=live_headers,
+    )
+    if login_status == 200 and login_body.get("session_token"):
+        dispatch_headers["X-ThreatFusion-Session"] = str(login_body["session_token"])
+
     dispatch_status, dispatch = _post(
-        base, "/api/v1/live/soar/dispatch", {"flow_id": other_id}, headers=live_headers
+        base, "/api/v1/live/soar/dispatch", {"flow_id": other_id}, headers=dispatch_headers
     )
     forged_status, _forged = _post(
         base,

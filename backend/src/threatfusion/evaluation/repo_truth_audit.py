@@ -931,6 +931,7 @@ def _check_5_no_duplicate_package_regression(
             mod = importlib.import_module(mod_name)
             ok, msg = _verify_module_origin(mod, expected_src_root)
             if not ok:
+                passed = False
                 failures.append(msg)
         except Exception as e:
             passed = False

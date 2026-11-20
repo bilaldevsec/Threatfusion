@@ -139,6 +139,7 @@ class BurstDeduplicator:
         self.window_seconds = float(window_seconds)
         self._lock = threading.Lock()
         self._entries: dict[str, dict[str, Any]] = {}
+        self.max_entries = 10_000
 
     def _purge_locked(self, now: float) -> None:
         expired = [
@@ -148,6 +149,14 @@ class BurstDeduplicator:
         ]
         for key in expired:
             del self._entries[key]
+        if len(self._entries) > self.max_entries:
+            overflow = len(self._entries) - self.max_entries
+            oldest = sorted(
+                self._entries.items(),
+                key=lambda item: float(item[1].get("last_seen_at") or 0.0),
+            )[:overflow]
+            for key, _entry in oldest:
+                self._entries.pop(key, None)
 
     def observe(self, flow_dict: Mapping[str, Any], *, now: float | None = None) -> dict[str, Any]:
         """Record one observation. Reuses the burst when SimHash is near-identical."""
@@ -405,7 +414,12 @@ def verify_advisory_against_ledger(
     status = "VERIFIED" if not ungrounded else "FLAGGED_UNGROUNDED"
     annotated = text
     for fake in ungrounded:
-        pattern = re.compile(re.escape(fake), flags=re.IGNORECASE)
+        pattern = re.compile(
+            r"(?<![0-9A-Za-z_:])(?<![0-9]\.)"
+            + re.escape(fake)
+            + r"(?![0-9A-Za-z_:])(?!\.[0-9])",
+            flags=re.IGNORECASE,
+        )
 
         def _mark(match: re.Match[str]) -> str:
             return f"{match.group(0)} [UNGROUNDED — stripped from ledger]"
@@ -444,7 +458,7 @@ def draft_detection_rule(
         dst_port = 0
     if dst_port <= 0 or dst_port > 65535:
         dst_port = 80
-    technique = (
+    raw_technique = (
         str(
             flow.get("technique_id")
             or flow.get("mitre_technique_id")
@@ -453,10 +467,12 @@ def draft_detection_rule(
         )
         .strip()
         .upper()
-        or "T1046"
     )
-    technique_tag = technique.lower().replace(".", ".")
-    src_ip = str(flow.get("src_ip") or flow.get("src_entity_id") or "any").strip() or "any"
+    technique = raw_technique if re.fullmatch(r"T\d{4}(?:\.\d{3})?", raw_technique) else "T1046"
+    technique_tag = technique.lower()
+    src_ip = _flatten_rule_text(
+        str(flow.get("src_ip") or flow.get("src_entity_id") or "any")
+    ).replace('"', "").replace(";", "") or "any"
     vector = _flatten_rule_text(
         str(flow.get("vector") or flow.get("vector_id") or query or technique)
     )
@@ -464,7 +480,13 @@ def draft_detection_rule(
         str(query or vector or f"detect {technique} toward port {dst_port}")
     )
     sid = _sid_for_flow(flow if flow else {"technique_id": technique, "dst_port": dst_port})
-    msg = _flatten_rule_text(f"THREATFUSION {technique} {vector or 'hunt'}").replace('"', "")[:120]
+    msg = (
+        _flatten_rule_text(f"THREATFUSION {technique} {vector or 'hunt'}")
+        .replace("\\", "\\\\")
+        .replace('"', "")
+        .replace(";", " ")
+        .strip()[:120]
+    )
     suricata = (
         f"alert {proto} any any -> $HOME_NET {dst_port} "
         f'(msg:"{msg}"; flow:to_server,established; '
@@ -595,8 +617,9 @@ def mcp_readonly_tool_names() -> tuple[str, ...]:
 
 def mcp_action_is_forbidden(name: str) -> bool:
     """Hard read-only guard: Approve/Dispatch/Isolate/Rollback never exposed."""
-    token = str(name or "").strip().lower()
-    forbidden = (
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(name or "").strip())
+    tokens = set(re.findall(r"[a-z0-9]+", normalized.lower()))
+    forbidden = {
         "approve",
         "dispatch",
         "isolate",
@@ -606,8 +629,8 @@ def mcp_action_is_forbidden(name: str) -> bool:
         "write",
         "delete",
         "mutate",
-    )
-    return any(word in token for word in forbidden)
+    }
+    return bool(tokens & forbidden)
 
 
 def stable_tool_call_id(*parts: Any) -> str:

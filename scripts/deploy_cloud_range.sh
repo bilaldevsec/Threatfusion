@@ -349,11 +349,11 @@ read_azure_account() {
   local raw
   raw="$(az account show -o json)"
   eval "$(printf '%s' "$raw" | python3 -c '
-import json, sys
+import json, shlex, sys
 account = json.load(sys.stdin)
-print("ACCOUNT_ID=" + json.dumps(account.get("id") or ""))
-print("SUBSCRIPTION_ID=" + json.dumps(account.get("id") or ""))
-print("TENANT_ID=" + json.dumps(account.get("tenantId") or ""))
+print("ACCOUNT_ID=" + shlex.quote(str(account.get("id") or "")))
+print("SUBSCRIPTION_ID=" + shlex.quote(str(account.get("id") or "")))
+print("TENANT_ID=" + shlex.quote(str(account.get("tenantId") or "")))
 ')"
   REGION_NAME="${CLOUD_REGION:-${AZURE_LOCATION:-southeastasia}}"
 }
@@ -622,7 +622,7 @@ ensure_admin_ssh_key() {
 ssh_base() {
   ensure_admin_ssh_key
   printf '%s\n' "-i" "$SSH_IDENTITY" \
-    "-o" "StrictHostKeyChecking=no" \
+    "-o" "StrictHostKeyChecking=accept-new" \
     "-o" "BatchMode=yes" \
     "-o" "ServerAliveInterval=30" \
     "-o" "ServerAliveCountMax=6" \
@@ -697,6 +697,8 @@ install_attacker_tooling() {
     echo "dry-run: fail-fast if nmap, curl, or python3 is still missing"
     return 0
   fi
+  load_existing_public_ips
+  SSH_USER="${TF_SSH_USER:-${SSH_USER:-ubuntu}}"
   local target="${ATTACKER_HOST:-${ATTACKER_PUBLIC:-}}"
   if [[ -z "$target" ]]; then
     if [[ "$mode" == "required" ]]; then
@@ -707,7 +709,7 @@ install_attacker_tooling() {
     return 0
   fi
   # shellcheck disable=SC2046
-  ssh $(ssh_base) "$target" "bash -s" <<'REMOTE'
+  ssh $(ssh_base) "${SSH_USER}@${target}" "bash -s" <<'REMOTE'
 set -euo pipefail
 missing=()
 for tool in nmap curl python3; do
@@ -735,16 +737,18 @@ verify_live_flow_bridge() {
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "dry-run: start threatfusion-eve-follower on victim eve.json"
     echo "dry-run: curl -fsS http://127.0.0.1:8766/readyz expects HTTP 200"
-    echo "dry-run: python3 checks alerts.sqlite3 stored_rows > 0"
+    echo "dry-run: python3 checks threatfusion-live-console.sqlite3 / alerts.sqlite3 stored_rows > 0"
     return 0
   fi
+  load_existing_public_ips
+  SSH_USER="${TF_SSH_USER:-${SSH_USER:-ubuntu}}"
   local target="${VICTIM_HOST:-${VICTIM_PUBLIC:-}}"
   if [[ -z "$target" ]]; then
     echo "Victim host is not recorded. Set --victim-host or TF_VICTIM_PUBLIC_IP." >&2
     exit 1
   fi
   # shellcheck disable=SC2046
-  ssh $(ssh_base) "$target" "bash -s" <<'REMOTE'
+  ssh $(ssh_base) "${SSH_USER}@${target}" "bash -s" <<'REMOTE'
 set -euo pipefail
 if command -v systemctl >/dev/null 2>&1; then
   sudo systemctl enable --now suricata || true
@@ -767,6 +771,8 @@ import sys
 from pathlib import Path
 
 candidates = (
+    Path("/var/lib/threatfusion/threatfusion-live-console.sqlite3"),
+    Path("/tmp/threatfusion-range-demo/threatfusion-live-console.sqlite3"),
     Path("/var/lib/threatfusion/alerts.sqlite3"),
     Path("/opt/threatfusion/alerts.sqlite3"),
     Path("/var/lib/threatfusion/live_console.sqlite3"),
@@ -802,6 +808,8 @@ REMOTE
 
 simulate_range_attack() {
   install_attacker_tooling required
+  load_existing_public_ips
+  SSH_USER="${TF_SSH_USER:-${SSH_USER:-ubuntu}}"
   local attacker="${ATTACKER_HOST:-${ATTACKER_PUBLIC:-}}"
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "dry-run: nmap -Pn -p 22,80,445 172.29.0.20 from the attacker VM"
@@ -809,7 +817,7 @@ simulate_range_attack() {
     return 0
   fi
   # shellcheck disable=SC2046
-  ssh $(ssh_base) "$attacker" "command -v nmap >/dev/null && command -v curl >/dev/null && command -v python3 >/dev/null && nmap -Pn -p 22,80,445 172.29.0.20"
+  ssh $(ssh_base) "${SSH_USER}@${attacker}" "command -v nmap >/dev/null && command -v curl >/dev/null && command -v python3 >/dev/null && nmap -Pn -p 22,80,445 172.29.0.20"
   verify_live_flow_bridge
 }
 
@@ -1015,8 +1023,14 @@ verify_teardown_zero_burn() {
     azure)
       if command -v az >/dev/null 2>&1; then
         if az group exists --name ThreatFusion-RG --output tsv 2>/dev/null | grep -qx true; then
-          echo "Azure resource group ThreatFusion-RG still exists after teardown." >&2
-          exit 1
+          local rg_state
+          rg_state="$(az group show --name ThreatFusion-RG --query properties.provisioningState -o tsv 2>/dev/null || true)"
+          if [[ "$rg_state" == "Deleting" ]]; then
+            echo "Azure resource group ThreatFusion-RG is Deleting (asynchronous teardown in progress)."
+          else
+            echo "Azure resource group ThreatFusion-RG still exists after teardown (state=${rg_state:-unknown})." >&2
+            exit 1
+          fi
         fi
       fi
       ;;
@@ -1091,7 +1105,7 @@ teardown_generic() {
     return 0
   fi
   if [[ -n "$target" ]]; then
-    ssh -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=8 \
+    ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=8 \
       "${SSH_USER}@${target}" \
       "cd /opt/threatfusion && sudo docker compose -f docker/docker-compose.soc-stack.yml down && sudo docker compose -f docker/docker-compose.n8n.yml down" \
       || true

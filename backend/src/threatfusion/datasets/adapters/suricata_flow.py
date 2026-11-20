@@ -8,6 +8,7 @@ binding an explicit EntityProvenanceContract.
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -114,9 +115,21 @@ class SuricataFlowAdapter:
         # Extract network flow endpoints
         src_ip = required_ip(record, source, "src_ip")
         dest_ip = required_ip(record, source, "dest_ip")
-        src_port = required_int(record, source, "src_port", maximum=65535)
-        dest_port = required_int(record, source, "dest_port", maximum=65535)
         proto_str = required_protocol(record, source, "proto")
+        if proto_str == "icmp":
+            src_port = (
+                0
+                if record.get("src_port") in (None, "")
+                else required_int(record, source, "src_port", maximum=65535)
+            )
+            dest_port = (
+                0
+                if record.get("dest_port") in (None, "")
+                else required_int(record, source, "dest_port", maximum=65535)
+            )
+        else:
+            src_port = required_int(record, source, "src_port", maximum=65535)
+            dest_port = required_int(record, source, "dest_port", maximum=65535)
 
         # Flow counters
         fwd_packets = required_int(flow_block, source, "pkts_toserver")
@@ -143,9 +156,11 @@ class SuricataFlowAdapter:
         duration_ms = duration_sec * 1000.0
         if duration_ms == 0.0 and "age" in flow_block:
             try:
-                age_val = float(flow_block["age"])
-                if age_val > 0.0:
-                    duration_ms = age_val * 1000.0
+                raw_age = flow_block["age"]
+                if not isinstance(raw_age, bool):
+                    age_val = float(raw_age)
+                    if math.isfinite(age_val) and age_val > 0.0:
+                        duration_ms = age_val * 1000.0
             except (ValueError, TypeError):
                 pass
 

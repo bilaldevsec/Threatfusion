@@ -24,6 +24,7 @@ Implements lightweight deterministic HTTP services for containerized SOC stacks:
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from datetime import datetime, timezone
 import hashlib
 import hmac
@@ -32,6 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import secrets
+import ssl
 import urllib.parse
 from pathlib import Path
 import re
@@ -296,6 +298,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
     misp_api_key: str | None = None
     seen_verify_idempotency_keys: set[str] = set()
     seen_callback_idempotency_keys: set[str] = set()
+    in_flight_idempotency_keys: set[tuple[str, str]] = set()
     _lock: threading.Lock = threading.Lock()
 
     def _soar_db_file(self) -> str | None:
@@ -499,7 +502,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
             self._send_json(
                 200,
-                operator_stamp("lab_operator", _operator_policy_dir(), ""),
+                operator_stamp(
+                    "lab_operator",
+                    _operator_policy_dir(),
+                    self._presented_operator_fingerprint(),
+                ),
             )
             return
         if path in ("/healthz", "/api/v1/heartbeat", "/api/status"):
@@ -812,7 +819,62 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         return self._live_db_path().with_name("threatfusion-live-soar.sqlite3")
 
     def _presented_operator_fingerprint(self) -> str:
+        """SHA-256 of the TLS peer certificate DER. Request headers are ignored."""
+        connection = self.connection
+        if isinstance(connection, ssl.SSLSocket):
+            try:
+                der = connection.getpeercert(binary_form=True)
+            except (ssl.SSLError, OSError, ValueError):
+                return ""
+            if not der:
+                return ""
+            return hashlib.sha256(der).hexdigest()
         return http_client_certificate_fingerprint(self.headers)
+
+    def _extract_session_token(self, req_data: Mapping[str, Any] | None = None) -> str:
+        token = (self.headers.get("X-ThreatFusion-Session") or "").strip()
+        if not token:
+            authorization = (self.headers.get("Authorization") or "").strip()
+            if authorization.lower().startswith("bearer ") and not authorization.lower().startswith(
+                "bearer lab-"
+            ):
+                token = authorization[7:].strip()
+        if not token and isinstance(req_data, Mapping):
+            token = str(req_data.get("session_token") or "").strip()
+        return token
+
+    def _verified_operator_identity(
+        self, req_data: Mapping[str, Any] | None = None
+    ) -> tuple[str | None, str | None, str]:
+        """Resolve (actor_id, role, auth_method) from verified TLS mTLS cert or RBAC session."""
+        from threatfusion.api.live_soc_console import (
+            list_operators,
+            rbac_session_status,
+        )
+
+        presented = self._presented_operator_fingerprint()
+        if presented:
+            from threatfusion.operations.human_credentials import verify_operator_identity
+
+            policy_dir = _operator_policy_dir()
+            roster = list_operators(self._live_db_path()).get("operators") or []
+            for entry in roster:
+                candidate = str(entry.get("actor_id") or "").strip()
+                if not candidate:
+                    continue
+                stamp = verify_operator_identity(policy_dir, candidate, presented)
+                if stamp.get("identity_verified") is True:
+                    return candidate, str(entry.get("role") or ""), "mtls"
+        token = self._extract_session_token(req_data)
+        if token:
+            session = rbac_session_status(self._live_db_path(), token)
+            if session.get("authenticated") is True:
+                return (
+                    str(session.get("actor_id") or ""),
+                    str(session.get("role") or ""),
+                    "session",
+                )
+        return None, None, ""
 
     def _reject_actor_mismatch(self, actor_id: str) -> bool:
         """HTTP 403 when a presented certificate does not match this actor."""
@@ -830,6 +892,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 "error": "actor_identity_mismatch",
                 "evidence_state": "unavailable",
                 "identity_verified": False,
+                "execution_authorized": False,
             },
         )
         return True
@@ -881,6 +944,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             and hmac.compare_digest(test_client, _TEST_CLIENT_HEADER_VALUE)
         )
 
+    def _expected_scheme(self) -> str:
+        return "https" if getattr(self.server, "tls_enabled", False) else "http"
+
     def _csrf_origin_rejected(self, path: str) -> bool:
         """Refuse a browser POST whose Origin is not this loopback listener."""
         protected = (
@@ -904,10 +970,13 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return False
         parsed = urllib.parse.urlparse(origin)
         host = parsed.hostname
-        if parsed.scheme != "http" or host is None or not self._origin_host_allowed(host):
+        expected_scheme = self._expected_scheme()
+        default_port = 443 if expected_scheme == "https" else 80
+        if parsed.scheme != expected_scheme or host is None or not self._origin_host_allowed(host):
             self._send_json(403, {"error": "csrf_origin_mismatch"})
             return True
-        if parsed.port is not None and parsed.port not in self._accepted_origin_ports():
+        effective_port = parsed.port if parsed.port is not None else default_port
+        if effective_port not in self._accepted_origin_ports():
             self._send_json(403, {"error": "csrf_origin_mismatch"})
             return True
         return False
@@ -930,14 +999,16 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
     def _origin_value_allowed(self, raw: str) -> bool:
         parsed = urllib.parse.urlparse(raw.strip())
-        if parsed.scheme != "http" or parsed.hostname is None:
+        expected_scheme = self._expected_scheme()
+        default_port = 443 if expected_scheme == "https" else 80
+        if parsed.scheme != expected_scheme or parsed.hostname is None:
             return False
         if not self._origin_host_allowed(parsed.hostname):
             return False
         listening = int(self.server.server_address[1])
         header_port = _port_from_host_header(self.headers.get("Host"))
         if parsed.port is None:
-            return listening == 80 or header_port == 80
+            return listening == default_port or header_port == default_port
         return parsed.port == listening or parsed.port == header_port
 
     def _explicit_browser_origin_allowed(self) -> bool:
@@ -1080,7 +1151,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         if self._csrf_origin_rejected(path):
             return
         if (
-            path.startswith("/api/v1/live/")
+            path.startswith(("/api/v1/live/", "/api/soar/", "/api/range/", "/api/rbac/"))
             and path != "/api/v1/live/sensor"
             and not self._live_write_authorized()
         ):
@@ -1686,21 +1757,54 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 return
             raw_flow = req_data.get("flow_id")
             flow_id = raw_flow if isinstance(raw_flow, int) else 0
+            verified_actor, _verified_role, _auth_method = self._verified_operator_identity(
+                req_data
+            )
+            if not verified_actor:
+                self._send_json(
+                    401,
+                    {
+                        "schema_version": "live_soar_callback_v1",
+                        "error": "authentication_required",
+                        "reason": "authentication_required",
+                        "evidence_state": "unavailable",
+                        "execution_authorized": False,
+                        "containment_executed": False,
+                        "callback_recorded": False,
+                        "production_fusion_enabled": False,
+                    },
+                )
+                return
+            requested_actor = str(req_data.get("actor_id") or "").strip()
+            if requested_actor and requested_actor != verified_actor:
+                self._send_json(
+                    403,
+                    {
+                        "error": "actor_identity_mismatch",
+                        "evidence_state": "unavailable",
+                        "execution_authorized": False,
+                        "containment_executed": False,
+                        "callback_recorded": False,
+                        "production_fusion_enabled": False,
+                    },
+                )
+                return
             host, port = self.server.server_address[:2]
             if host in {"0.0.0.0", "::", ""}:
                 host = "127.0.0.1"
-            actor_id = str(req_data.get("actor_id") or "")
+            scheme = self._expected_scheme()
             result = dispatch_approved_callback(
                 self._live_db_path(),
                 self._live_soar_path(),
                 flow_id=flow_id,
-                contract_base_url=f"http://{host}:{port}",
+                contract_base_url=f"{scheme}://{host}:{port}",
                 hmac_secret=os.environ.get("THREATFUSION_SOAR_HMAC_SECRET", ""),
                 outbox_db_path=self._live_db_path().with_name("threatfusion-live-thehive.sqlite3"),
                 n8n_webhook_url=os.environ.get("THREATFUSION_N8N_WEBHOOK_URL", ""),
                 local_fallback_on_n8n_failure=True,
-                actor_id=actor_id,
+                actor_id=verified_actor,
                 console_local_receipt=True,
+                tls_ca_cert=getattr(self.server, "tls_ca_cert", None),
             )
             if result.get("http_status") == 403 or result.get("reason") in {
                 "playbook_not_approved",
@@ -1736,6 +1840,38 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if not isinstance(req_data, dict):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
+            verified_actor, _verified_role, _auth_method = self._verified_operator_identity(
+                req_data
+            )
+            if not verified_actor:
+                self._send_json(
+                    401,
+                    {
+                        "schema_version": "live_range_containment_v1",
+                        "error": "authentication_required",
+                        "reason": "authentication_required",
+                        "evidence_state": "unavailable",
+                        "execution_authorized": False,
+                        "containment_executed": False,
+                        "production_fusion_enabled": False,
+                    },
+                )
+                return
+            requested_actor = str(req_data.get("actor_id") or "").strip()
+            if requested_actor and requested_actor != verified_actor:
+                self._send_json(
+                    403,
+                    {
+                        "schema_version": "live_range_containment_v1",
+                        "error": "actor_identity_mismatch",
+                        "reason": "actor_identity_mismatch",
+                        "evidence_state": "unavailable",
+                        "execution_authorized": False,
+                        "containment_executed": False,
+                        "production_fusion_enabled": False,
+                    },
+                )
+                return
             presented_src = str(req_data.get("src_ip") or "").strip()
             if presented_src:
                 from threatfusion.operations.commercial_hardening import guard_isolation_source
@@ -1746,20 +1882,13 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                     return
             raw_flow = req_data.get("flow_id")
             flow_id = raw_flow if isinstance(raw_flow, int) else 0
-            actor_id = str(req_data.get("actor_id") or "")
-            session_token = (self.headers.get("X-ThreatFusion-Session") or "").strip()
-            if not session_token:
-                authorization = self.headers.get("Authorization") or ""
-                if authorization.lower().startswith(
-                    "bearer "
-                ) and not authorization.lower().startswith("bearer lab-"):
-                    session_token = authorization[7:].strip()
+            session_token = self._extract_session_token(req_data)
             if path.endswith("/rollback"):
                 result = rollback_range_source(
                     self._live_db_path(),
                     self._live_soar_path(),
                     flow_id=flow_id,
-                    actor_id=actor_id or None,
+                    actor_id=verified_actor,
                     session_token=session_token,
                 )
             else:
@@ -1767,7 +1896,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                     self._live_db_path(),
                     self._live_soar_path(),
                     flow_id=flow_id,
-                    actor_id=actor_id or None,
+                    actor_id=verified_actor,
                 )
             self._send_json(int(result.get("http_status") or 403), result)
             return
@@ -1799,30 +1928,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return
 
         if path in {"/api/v1/live/range/launch-vector", "/api/range/launch"}:
-            from threatfusion.api.live_soc_console import (
-                launch_range_vector,
-                rbac_session_status,
-            )
-
-            session_token = (self.headers.get("X-ThreatFusion-Session") or "").strip()
-            if session_token:
-                session = rbac_session_status(self._live_db_path(), session_token)
-                role = str(session.get("role") or "")
-                if session.get("authenticated") is not True or role not in {
-                    "soc_approver",
-                    "tier1_triage",
-                    "auditor_readonly",
-                    "compliance_auditor",
-                }:
-                    self._send_json(
-                        401,
-                        {
-                            "error": "authentication_required",
-                            "evidence_state": "unavailable",
-                            "production_fusion_enabled": False,
-                        },
-                    )
-                    return
+            from threatfusion.api.live_soc_console import launch_range_vector
 
             try:
                 req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
@@ -1831,6 +1937,22 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 return
             if not isinstance(req_data, dict):
                 self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            verified_actor, role, _auth_method = self._verified_operator_identity(req_data)
+            if not verified_actor or role not in {
+                "soc_approver",
+                "tier1_triage",
+                "auditor_readonly",
+                "compliance_auditor",
+            }:
+                self._send_json(
+                    401,
+                    {
+                        "error": "authentication_required",
+                        "evidence_state": "unavailable",
+                        "production_fusion_enabled": False,
+                    },
+                )
                 return
             result = launch_range_vector(
                 self._live_db_path(),
@@ -1920,12 +2042,14 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 self._send_json(int(result.get("http_status") or 401), result)
                 return
             if path == "/api/rbac/register":
+                session_token = self._extract_session_token(req_data)
                 result = rbac_register(
                     self._live_db_path(),
                     username=str(req_data.get("username") or req_data.get("email") or ""),
                     access_code=str(req_data.get("access_code") or ""),
                     display_name=str(req_data.get("display_name") or ""),
                     role=str(req_data.get("role") or ""),
+                    session_token=session_token,
                 )
                 self._send_json(int(result.get("http_status") or 401), result)
                 return
@@ -1936,12 +2060,14 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             )
 
             email = str(req_data.get("username") or req_data.get("email") or "")
-            retry_after = LOGIN_RATE_LIMITER.rejected(client_ip, email)
+            entra = str(req_data.get("entra_token") or req_data.get("id_token") or "")
+            rate_key = email or ("entra" if entra else "")
+            retry_after = LOGIN_RATE_LIMITER.rejected(client_ip, rate_key)
             if retry_after is not None:
                 append_auth_event(
                     self._live_db_path(),
                     "login_rate_limited",
-                    email,
+                    rate_key,
                     client_ip,
                     "sliding_window",
                 )
@@ -1963,13 +2089,12 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 self._live_db_path(),
                 username=email,
                 access_code=str(req_data.get("access_code") or req_data.get("password") or ""),
-                entra_token=str(req_data.get("entra_token") or req_data.get("id_token") or ""),
+                entra_token=entra,
                 client_ip=client_ip,
             )
             status = int(result.get("http_status") or 401)
-            entra = str(req_data.get("entra_token") or req_data.get("id_token") or "")
-            if status == 401 and not entra:
-                LOGIN_RATE_LIMITER.record_failure(client_ip, email)
+            if status == 401:
+                LOGIN_RATE_LIMITER.record_failure(client_ip, rate_key)
                 result = uniform_invalid_credentials()
             self._send_json(status, result)
             return
@@ -2018,11 +2143,27 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if not isinstance(req_data, dict):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
+            session_token = self._extract_session_token(req_data)
+            _caller_actor, caller_role, _auth_method = self._verified_operator_identity(req_data)
+            requested_role = str(req_data.get("role") or "").strip()
+            if requested_role == "soc_approver" and caller_role != "soc_approver":
+                self._send_json(
+                    403,
+                    {
+                        "schema_version": "live_operator_v1",
+                        "evidence_state": "unavailable",
+                        "reason": "approver_registration_forbidden",
+                        "production_fusion_enabled": False,
+                        "http_status": 403,
+                    },
+                )
+                return
             result = register_operator(
                 self._live_db_path(),
                 actor_id=str(req_data.get("actor_id") or ""),
                 display_name=str(req_data.get("display_name") or ""),
-                role=str(req_data.get("role") or ""),
+                role=requested_role,
+                session_token=session_token,
             )
             self._send_json(int(result.get("http_status") or 400), result)
             return
@@ -2160,7 +2301,10 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 return
 
             with self._lock:
-                if self._idempotency_is_replay("verify", idem_key):
+                if (
+                    self._idempotency_is_replay("verify", idem_key)
+                    or ("verify", idem_key) in self.in_flight_idempotency_keys
+                ):
                     self._send_json(
                         409,
                         {
@@ -2171,125 +2315,130 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                         },
                     )
                     return
+                self.in_flight_idempotency_keys.add(("verify", idem_key))
 
             try:
-                body_obj = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
-            except json.JSONDecodeError:
-                self._send_json(
-                    400,
-                    {
-                        "error": "Invalid JSON payload",
-                        "state_verified": False,
-                        "verified": False,
-                    },
-                )
-                return
-
-            playbook_id = str(body_obj.get("playbook_id", "")).strip()
-            candidate_id = str(body_obj.get("candidate_id", "")).strip()
-
-            if not playbook_id or not candidate_id:
-                self._send_json(
-                    403,
-                    {
-                        "error": "server_side_soar_ledger_verification_failed",
-                        "detail": "playbook_id and candidate_id are required for ledger-verified state verification",
-                        "state_verified": False,
-                        "verified": False,
-                    },
-                )
-                return
-
-            ledger = self._contract_ledger_file()
-            if ledger is None:
-                self._send_json(
-                    403,
-                    {
-                        "error": "server_side_soar_ledger_verification_failed",
-                        "detail": "soar_db_path is not configured or missing on disk; fail-closed verification rejection",
-                        "state_verified": False,
-                        "verified": False,
-                    },
-                )
-                return
-
-            try:
-                from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
-
-                repo = SoarPlaybookSqliteRepository(ledger)
-                chain_res = repo.verify_audit_chain_integrity()
-                chain_dict = (
-                    chain_res
-                    if isinstance(chain_res, dict)
-                    else (
-                        {"valid": chain_res[0], "message": chain_res[1]}
-                        if isinstance(chain_res, (tuple, list)) and len(chain_res) >= 2
-                        else {"valid": bool(chain_res)}
-                    )
-                )
-                if chain_dict.get("valid") is not True:
+                try:
+                    body_obj = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+                except json.JSONDecodeError:
                     self._send_json(
-                        403,
+                        400,
                         {
-                            "error": "server_side_soar_ledger_verification_failed",
-                            "detail": "Audit chain verification failed",
+                            "error": "Invalid JSON payload",
                             "state_verified": False,
                             "verified": False,
                         },
                     )
                     return
 
-                record = repo.get_record(playbook_id)
-                if record is None:
+                playbook_id = str(body_obj.get("playbook_id", "")).strip()
+                candidate_id = str(body_obj.get("candidate_id", "")).strip()
+
+                if not playbook_id or not candidate_id:
                     self._send_json(
                         403,
                         {
                             "error": "server_side_soar_ledger_verification_failed",
-                            "detail": f"Playbook '{playbook_id}' not found in ledger",
+                            "detail": "playbook_id and candidate_id are required for ledger-verified state verification",
                             "state_verified": False,
                             "verified": False,
                         },
                     )
                     return
 
-                record_candidate_id = getattr(record, "candidate_id", None)
-                if record_candidate_id and record_candidate_id != candidate_id:
+                ledger = self._contract_ledger_file()
+                if ledger is None:
                     self._send_json(
                         403,
                         {
                             "error": "server_side_soar_ledger_verification_failed",
-                            "detail": f"Candidate ID mismatch: expected '{record_candidate_id}', got '{candidate_id}'",
+                            "detail": "soar_db_path is not configured or missing on disk; fail-closed verification rejection",
                             "state_verified": False,
                             "verified": False,
                         },
                     )
                     return
 
-                if record.state not in ("approved", "executed_simulated"):
+                try:
+                    from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
+
+                    repo = SoarPlaybookSqliteRepository(ledger)
+                    chain_res = repo.verify_audit_chain_integrity()
+                    chain_dict = (
+                        chain_res
+                        if isinstance(chain_res, dict)
+                        else (
+                            {"valid": chain_res[0], "message": chain_res[1]}
+                            if isinstance(chain_res, (tuple, list)) and len(chain_res) >= 2
+                            else {"valid": bool(chain_res)}
+                        )
+                    )
+                    if chain_dict.get("valid") is not True:
+                        self._send_json(
+                            403,
+                            {
+                                "error": "server_side_soar_ledger_verification_failed",
+                                "detail": "Audit chain verification failed",
+                                "state_verified": False,
+                                "verified": False,
+                            },
+                        )
+                        return
+
+                    record = repo.get_record(playbook_id)
+                    if record is None:
+                        self._send_json(
+                            403,
+                            {
+                                "error": "server_side_soar_ledger_verification_failed",
+                                "detail": f"Playbook '{playbook_id}' not found in ledger",
+                                "state_verified": False,
+                                "verified": False,
+                            },
+                        )
+                        return
+
+                    record_candidate_id = getattr(record, "candidate_id", None)
+                    if record_candidate_id and record_candidate_id != candidate_id:
+                        self._send_json(
+                            403,
+                            {
+                                "error": "server_side_soar_ledger_verification_failed",
+                                "detail": f"Candidate ID mismatch: expected '{record_candidate_id}', got '{candidate_id}'",
+                                "state_verified": False,
+                                "verified": False,
+                            },
+                        )
+                        return
+
+                    if record.state not in ("approved", "executed_simulated"):
+                        self._send_json(
+                            403,
+                            {
+                                "error": "server_side_soar_ledger_verification_failed",
+                                "detail": f"Playbook state '{record.state}' is not approved or executed",
+                                "state_verified": False,
+                                "verified": False,
+                            },
+                        )
+                        return
+                except Exception as exc:
                     self._send_json(
                         403,
                         {
                             "error": "server_side_soar_ledger_verification_failed",
-                            "detail": f"Playbook state '{record.state}' is not approved or executed",
+                            "detail": f"Ledger access error: {exc}",
                             "state_verified": False,
                             "verified": False,
                         },
                     )
                     return
-            except Exception as exc:
-                self._send_json(
-                    403,
-                    {
-                        "error": "server_side_soar_ledger_verification_failed",
-                        "detail": f"Ledger access error: {exc}",
-                        "state_verified": False,
-                        "verified": False,
-                    },
-                )
-                return
 
-            with self._lock:
-                self._idempotency_commit("verify", idem_key)
+                with self._lock:
+                    self._idempotency_commit("verify", idem_key)
+            finally:
+                with self._lock:
+                    self.in_flight_idempotency_keys.discard(("verify", idem_key))
 
             self._send_json(
                 200,
@@ -2369,7 +2518,10 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 return
 
             with self._lock:
-                if self._idempotency_is_replay("callback", idem_key):
+                if (
+                    self._idempotency_is_replay("callback", idem_key)
+                    or ("callback", idem_key) in self.in_flight_idempotency_keys
+                ):
                     self._send_json(
                         409,
                         {
@@ -2379,62 +2531,119 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                         },
                     )
                     return
+                self.in_flight_idempotency_keys.add(("callback", idem_key))
 
             try:
-                body_obj = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
-            except json.JSONDecodeError:
-                self._send_json(
-                    400,
-                    {
-                        "error": "Invalid JSON payload",
-                        "callback_recorded": False,
-                    },
-                )
-                return
-
-            payload = body_obj
-            playbook_id = str(payload.get("playbook_id", "")).strip()
-            candidate_id = str(payload.get("candidate_id", "")).strip()
-
-            # (a) Check playbook_id and candidate_id are non-empty
-            if not playbook_id or not candidate_id:
-                self._send_json(
-                    403,
-                    {
-                        "error": "playbook_id and candidate_id are required for ledger-verified callback",
-                        "callback_recorded": False,
-                    },
-                )
-                return
-
-            # (b) Resolve the same ledger approval writes, and require that file.
-            ledger = self._contract_ledger_file()
-            if ledger is None:
-                self._send_json(
-                    403,
-                    {
-                        "error": "soar_db_path is not configured or missing on disk; fail-closed callback rejection",
-                        "callback_recorded": False,
-                    },
-                )
-                return
-
-            # (c) Open SoarPlaybookSqliteRepository and verify integrity and state
-            try:
-                from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
-
-                repo = SoarPlaybookSqliteRepository(ledger)
-                chain_res = repo.verify_audit_chain_integrity()
-                chain_dict = (
-                    chain_res
-                    if isinstance(chain_res, dict)
-                    else (
-                        {"valid": chain_res[0], "message": chain_res[1]}
-                        if isinstance(chain_res, (tuple, list)) and len(chain_res) >= 2
-                        else {"valid": bool(chain_res)}
+                try:
+                    body_obj = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+                except json.JSONDecodeError:
+                    self._send_json(
+                        400,
+                        {
+                            "error": "Invalid JSON payload",
+                            "callback_recorded": False,
+                        },
                     )
-                )
-                if chain_dict.get("valid") is not True:
+                    return
+
+                payload = body_obj
+                playbook_id = str(payload.get("playbook_id", "")).strip()
+                candidate_id = str(payload.get("candidate_id", "")).strip()
+                presented_case_id = str(
+                    payload.get("case_id") or payload.get("thehive_case_id") or ""
+                ).strip()
+                if presented_case_id and not re.fullmatch(
+                    r"^case_[A-Za-z0-9_-]{1,64}$", presented_case_id
+                ):
+                    self._send_json(
+                        400,
+                        {
+                            "error": "invalid_thehive_case_id",
+                            "callback_recorded": False,
+                        },
+                    )
+                    return
+
+                # (a) Check playbook_id and candidate_id are non-empty
+                if not playbook_id or not candidate_id:
+                    self._send_json(
+                        403,
+                        {
+                            "error": "playbook_id and candidate_id are required for ledger-verified callback",
+                            "callback_recorded": False,
+                        },
+                    )
+                    return
+
+                # (b) Resolve the same ledger approval writes, and require that file.
+                ledger = self._contract_ledger_file()
+                if ledger is None:
+                    self._send_json(
+                        403,
+                        {
+                            "error": "soar_db_path is not configured or missing on disk; fail-closed callback rejection",
+                            "callback_recorded": False,
+                        },
+                    )
+                    return
+
+                # (c) Open SoarPlaybookSqliteRepository and verify integrity and state
+                try:
+                    from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
+
+                    repo = SoarPlaybookSqliteRepository(ledger)
+                    chain_res = repo.verify_audit_chain_integrity()
+                    chain_dict = (
+                        chain_res
+                        if isinstance(chain_res, dict)
+                        else (
+                            {"valid": chain_res[0], "message": chain_res[1]}
+                            if isinstance(chain_res, (tuple, list)) and len(chain_res) >= 2
+                            else {"valid": bool(chain_res)}
+                        )
+                    )
+                    if chain_dict.get("valid") is not True:
+                        self._send_json(
+                            403,
+                            {
+                                "error": "unverified or unapproved playbook state in ledger",
+                                "callback_recorded": False,
+                            },
+                        )
+                        return
+
+                    record = repo.get_record(playbook_id)
+                    if record is None:
+                        self._send_json(
+                            403,
+                            {
+                                "error": "unverified or unapproved playbook state in ledger",
+                                "callback_recorded": False,
+                            },
+                        )
+                        return
+
+                    record_candidate_id = getattr(record, "candidate_id", None)
+                    if record_candidate_id and record_candidate_id != candidate_id:
+                        self._send_json(
+                            403,
+                            {
+                                "error": "unverified or unapproved playbook state in ledger",
+                                "callback_recorded": False,
+                            },
+                        )
+                        return
+
+                    if record.state not in ("approved", "executed_simulated"):
+                        self._send_json(
+                            403,
+                            {
+                                "error": "unverified or unapproved playbook state in ledger",
+                                "callback_recorded": False,
+                            },
+                        )
+                        return
+                except Exception:
                     self._send_json(
                         403,
                         {
@@ -2444,71 +2653,33 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                     )
                     return
 
-                record = repo.get_record(playbook_id)
-                if record is None:
+                t_cb = float(payload.get("t_callback_verified", datetime.now(UTC).timestamp()))
+                t_app = (
+                    float(payload["t_approval_queued"])
+                    if ("t_approval_queued" in payload and payload["t_approval_queued"] is not None)
+                    else None
+                )
+                try:
+                    t_resp = repo.record_callback_verification(
+                        playbook_id=playbook_id,
+                        t_callback_verified=t_cb,
+                        t_approval_queued=t_app,
+                    )
+                except Exception:
                     self._send_json(
                         403,
                         {
-                            "error": "unverified or unapproved playbook state in ledger",
+                            "error": "callback_timing_not_recorded",
                             "callback_recorded": False,
                         },
                     )
                     return
 
-                record_candidate_id = getattr(record, "candidate_id", None)
-                if record_candidate_id and record_candidate_id != candidate_id:
-                    self._send_json(
-                        403,
-                        {
-                            "error": "unverified or unapproved playbook state in ledger",
-                            "callback_recorded": False,
-                        },
-                    )
-                    return
-
-                if record.state not in ("approved", "executed_simulated"):
-                    self._send_json(
-                        403,
-                        {
-                            "error": "unverified or unapproved playbook state in ledger",
-                            "callback_recorded": False,
-                        },
-                    )
-                    return
-            except Exception:
-                self._send_json(
-                    403,
-                    {
-                        "error": "unverified or unapproved playbook state in ledger",
-                        "callback_recorded": False,
-                    },
-                )
-                return
-
-            t_cb = float(payload.get("t_callback_verified", datetime.now(UTC).timestamp()))
-            t_app = (
-                float(payload["t_approval_queued"])
-                if ("t_approval_queued" in payload and payload["t_approval_queued"] is not None)
-                else None
-            )
-            try:
-                t_resp = repo.record_callback_verification(
-                    playbook_id=playbook_id,
-                    t_callback_verified=t_cb,
-                    t_approval_queued=t_app,
-                )
-            except Exception:
-                self._send_json(
-                    403,
-                    {
-                        "error": "callback_timing_not_recorded",
-                        "callback_recorded": False,
-                    },
-                )
-                return
-
-            with self._lock:
-                self._idempotency_commit("callback", idem_key)
+                with self._lock:
+                    self._idempotency_commit("callback", idem_key)
+            finally:
+                with self._lock:
+                    self.in_flight_idempotency_keys.discard(("callback", idem_key))
 
             self._send_json(
                 200,
@@ -2560,17 +2731,99 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH"),
         help="Path to SQLite SOAR ledger database",
     )
+    parser.add_argument(
+        "--tls-cert",
+        default=None,
+        help="PEM server certificate. Requires --tls-key.",
+    )
+    parser.add_argument(
+        "--tls-key",
+        default=None,
+        help="PEM private key for --tls-cert.",
+    )
+    parser.add_argument(
+        "--tls-ca-cert",
+        default=None,
+        help="PEM CA that requests optional client certificates (CERT_OPTIONAL).",
+    )
     return parser
 
 
 class ThreatFusionThreadingHTTPServer(ThreadingHTTPServer):
-    """Listen backlog above socketserver's default of 5."""
+    """Listen backlog above socketserver's default of 5 with per-thread TLS handshakes."""
 
     request_queue_size = 128
+    tls_enabled: bool = False
+    tls_cert: str | None = None
+    tls_ca_cert: str | None = None
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        if isinstance(request, ssl.SSLSocket):
+            try:
+                request.settimeout(10.0)
+                request.do_handshake()
+            except (ssl.SSLError, TimeoutError, OSError):
+                try:
+                    request.close()
+                except OSError:
+                    pass
+                return
+            finally:
+                try:
+                    request.settimeout(None)
+                except OSError:
+                    pass
+        super().process_request_thread(request, client_address)
+
+
+def configure_server_tls(
+    httpd: ThreadingHTTPServer,
+    tls_cert: str | None,
+    tls_key: str | None,
+    tls_ca_cert: str | None,
+) -> None:
+    """Wrap the listening socket. A CA requests a client certificate and does not require one."""
+    cert = (tls_cert or "").strip()
+    key = (tls_key or "").strip()
+    ca = (tls_ca_cert or "").strip()
+    if not cert and not key and not ca:
+        httpd.tls_enabled = False  # type: ignore[attr-defined]
+        return
+    if not cert or not key:
+        httpd.server_close()
+        print(
+            "[ThreatFusion] TLS requires both --tls-cert and --tls-key.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    try:
+        context.load_cert_chain(certfile=cert, keyfile=key)
+        if ca:
+            context.load_verify_locations(cafile=ca)
+            context.verify_mode = ssl.CERT_OPTIONAL
+        httpd.socket = context.wrap_socket(
+            httpd.socket,
+            server_side=True,
+            do_handshake_on_connect=False,
+        )
+        httpd.tls_enabled = True  # type: ignore[attr-defined]
+        httpd.tls_cert = cert  # type: ignore[attr-defined]
+        httpd.tls_ca_cert = ca or cert  # type: ignore[attr-defined]
+    except (OSError, ssl.SSLError) as exc:
+        httpd.server_close()
+        print(f"[ThreatFusion] TLS setup failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
 def run_server(
-    bind_addr: str = "127.0.0.1", port: int = 8080, soar_db_path: str | None = None
+    bind_addr: str = "127.0.0.1",
+    port: int = 8080,
+    soar_db_path: str | None = None,
+    tls_cert: str | None = None,
+    tls_key: str | None = None,
+    tls_ca_cert: str | None = None,
 ) -> None:
     """Run the contract HTTP server synchronously."""
     effective_db = soar_db_path or os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH")
@@ -2603,6 +2856,7 @@ def run_server(
             file=sys.stderr,
         )
         raise SystemExit(1) from exc
+    configure_server_tls(httpd, tls_cert, tls_key, tls_ca_cert)
 
     def _stop(_signum: int, _frame: object) -> None:
         raise KeyboardInterrupt
@@ -2618,7 +2872,14 @@ def run_server(
 
 def main() -> int:
     args = build_argument_parser().parse_args()
-    run_server(bind_addr=args.bind, port=args.port, soar_db_path=args.soar_db_path)
+    run_server(
+        bind_addr=args.bind,
+        port=args.port,
+        soar_db_path=args.soar_db_path,
+        tls_cert=args.tls_cert,
+        tls_key=args.tls_key,
+        tls_ca_cert=args.tls_ca_cert,
+    )
     return 0
 
 

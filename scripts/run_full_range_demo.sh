@@ -296,7 +296,12 @@ cmd_down() {
   stop_pidfile "$FOLLOWER_PIDFILE"
   stop_pidfile "$CONSOLE_PIDFILE"
   if command -v fuser >/dev/null 2>&1; then
-    fuser -k "${PORT}/tcp" >/dev/null 2>&1 || true
+    local pid
+    for pid in $(fuser "${PORT}/tcp" 2>/dev/null || true); do
+      if [[ "$pid" =~ ^[0-9]+$ ]] && ps -p "$pid" -o args= 2>/dev/null | grep -Eq "threatfusion|run_misp_and_callback_contract_server"; then
+        kill "$pid" 2>/dev/null || true
+      fi
+    done
   fi
   docker compose -p threatfusion-n8n -f docker/docker-compose.n8n.yml down --remove-orphans
   docker compose -p threatfusion-range -f docker/docker-compose.range.yml down --remove-orphans

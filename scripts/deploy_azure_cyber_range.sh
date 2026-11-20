@@ -45,7 +45,7 @@ fi
 #   az CLI logged in
 #   AZURE_ADMIN_SSH_CIDR   source prefix allowed to SSH, never 0.0.0.0/0
 #   THREATFUSION_CONSOLE_URL
-#   THREATFUSION_SENSOR_TOKEN
+#   THREATFUSION_SENSOR_INGEST_TOKEN
 #   THREATFUSION_SOAR_HMAC_SECRET   at least 16 characters
 # Optional mTLS material, copied only when both files exist:
 #   THREATFUSION_CLIENT_CERT
@@ -261,7 +261,7 @@ render_forwarder_env() {
   local text
   text=$(cat <<'ENV'
 THREATFUSION_CONSOLE_URL=TFQ0CONSOLE
-THREATFUSION_SENSOR_TOKEN=TFQ0SENSOR
+THREATFUSION_SENSOR_INGEST_TOKEN=TFQ0SENSOR
 THREATFUSION_SOAR_HMAC_SECRET=TFQ0HMAC
 THREATFUSION_CLIENT_CERT=/etc/threatfusion/client.crt
 THREATFUSION_CLIENT_KEY=/etc/threatfusion/client.key
@@ -276,11 +276,11 @@ ENV
 pair_forwarder() {
   require_az
   local console_url="${THREATFUSION_CONSOLE_URL:-}"
-  local sensor_token="${THREATFUSION_SENSOR_TOKEN:-}"
+  local sensor_token="${THREATFUSION_SENSOR_INGEST_TOKEN:-${THREATFUSION_SENSOR_TOKEN:-}}"
   local hmac_secret="${THREATFUSION_SOAR_HMAC_SECRET:-}"
   if [[ "$DRY_RUN" -eq 0 ]]; then
     if [[ -z "$console_url" || -z "$sensor_token" || ${#hmac_secret} -lt 16 ]]; then
-      echo "Set THREATFUSION_CONSOLE_URL, THREATFUSION_SENSOR_TOKEN, and a 16+ character THREATFUSION_SOAR_HMAC_SECRET." >&2
+      echo "Set THREATFUSION_CONSOLE_URL, THREATFUSION_SENSOR_INGEST_TOKEN, and a 16+ character THREATFUSION_SOAR_HMAC_SECRET." >&2
       exit 1
     fi
     if [[ ! -f "$FORWARDER_SRC" ]]; then
@@ -323,7 +323,7 @@ EOF
     printf 'dry-run remote script follows\n%s\n' "$remote"
     printf 'dry-run: ssh stdin umask 077; cat > /etc/threatfusion/forwarder.env\n'
     printf 'THREATFUSION_CONSOLE_URL=%s\n' "${console_url:-}"
-    printf 'THREATFUSION_SENSOR_TOKEN=<redacted>\n'
+    printf 'THREATFUSION_SENSOR_INGEST_TOKEN=<redacted>\n'
     printf 'THREATFUSION_SOAR_HMAC_SECRET=<redacted>\n'
     printf 'THREATFUSION_CLIENT_CERT=/etc/threatfusion/client.crt\n'
     printf 'THREATFUSION_CLIENT_KEY=/etc/threatfusion/client.key\n'

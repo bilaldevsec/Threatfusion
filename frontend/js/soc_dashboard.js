@@ -1704,10 +1704,7 @@
       if (copyButton) {
         copyButton.addEventListener('click', (event) => {
           event.stopPropagation();
-          const value = copyButton.getAttribute('data-full-id') || '';
-          if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(value);
-          }
+          copyTextBlock(copyButton.getAttribute('data-full-id') || '');
         });
       }
       listEl.appendChild(itemEl);
@@ -2358,7 +2355,7 @@
       ? (attackHit.technique_id
         + (attackHit.technique_name ? ' · ' + attackHit.technique_name : '')
         + (attackHit.cve_ids && attackHit.cve_ids.length ? ' · ' + attackHit.cve_ids[0] : ''))
-      : 'None (Benign Flow)';
+      : (inc.decision === 'Benign' ? 'None (Benign Flow)' : 'unavailable');
     const tacticName = ragOk
       ? (attackHit.tactic || attackHit.technique_name)
       : (inc.decision === 'Benign' ? 'none' : (inc.live ? 'unavailable' : 'Network Service Discovery'));
@@ -2472,7 +2469,7 @@
               ${ragOk ? `ChromaDB RAG: ${inc.chromaRagHits.length} Hits Verified` : 'ChromaDB RAG: UNAVAILABLE'}
             </span>
             <span class="badge badge-n8n-hive" data-evidence-state="${hiveState}">
-              ${hiveLabel}
+              ${escapeHtml(hiveLabel)}
             </span>
           </div>
         </div>
@@ -2568,8 +2565,8 @@
           <!-- Block 4: Cryptographic SOAR Status -->
           <div class="anatomy-block" data-anatomy-block="4">
             <h4>Block 4: Cryptographic SOAR Status</h4>
-            <div><b>Playbook:</b> <code>${inc.soarRecord ? escapeHtml(inc.soarRecord.playbookId) : 'pb-isolate-01'}</code></div>
-            <div><b>State:</b> <span class="badge badge-state">${inc.soarRecord ? escapeHtml(inc.soarRecord.state) : 'pending_approval'}</span></div>
+            <div><b>Playbook:</b> <code>${inc.soarRecord ? escapeHtml(inc.soarRecord.playbookId) : (inc.decision === 'Benign' ? 'none (benign)' : 'unavailable')}</code></div>
+            <div><b>State:</b> <span class="badge badge-state">${inc.soarRecord ? escapeHtml(inc.soarRecord.state) : (inc.decision === 'Benign' ? 'not_applicable' : 'unavailable')}</span></div>
             <div><b>Audit Chain:</b> <span class="badge" data-evidence-state="${chainState}">${playbookChainLabel(inc)}</span></div>
             <div><b>TheHive case:</b> <code>${escapeHtml(recordedCaseId)}</code></div>
             <div><b>Callback MTTR:</b> ${inc.mttrSeconds === null || inc.mttrSeconds === undefined ? 'not recorded' : Number(inc.mttrSeconds).toFixed(3) + 's'}</div>
@@ -2806,14 +2803,15 @@
     document.querySelectorAll('[data-copy-hash], [data-copy-value]').forEach(el => {
       el.addEventListener('click', () => {
         const val = el.getAttribute('data-copy-hash') || el.getAttribute('data-copy-value');
-        if (val && navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(val).catch(() => {});
-        }
         const origTooltip = el.getAttribute('data-copy-tooltip') || 'Click to copy';
-        el.setAttribute('data-copy-tooltip', 'Copied to clipboard!');
-        setTimeout(() => {
-          el.setAttribute('data-copy-tooltip', origTooltip);
-        }, 1500);
+        if (val) {
+          copyTextBlock(val).then((copied) => {
+            el.setAttribute('data-copy-tooltip', copied ? 'Copied to clipboard!' : 'Clipboard unavailable');
+            setTimeout(() => {
+              el.setAttribute('data-copy-tooltip', origTooltip);
+            }, 1500);
+          });
+        }
       });
     });
 
@@ -3099,7 +3097,7 @@
       copyAzure.addEventListener('click', () => {
         const node = document.getElementById('azureProvisionSnippet');
         const value = node ? node.textContent : '';
-        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(value);
+        if (value) copyTextBlock(value);
       });
     }
   }
@@ -5384,7 +5382,7 @@
       const resp = await fetch('/api/v1/live/notes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ author_id: 'analyst_a', note_text: note })
+        body: JSON.stringify({ author_id: operatorActorId(), note_text: note })
       });
       const data = await resp.json();
       setLiveText(
@@ -6401,6 +6399,7 @@
     isSoarApprovalReceiptRow,
     ctiPresentation,
     groupConsecutiveTimelineByActor,
+    appendIncidentItem,
     copyTextBlock,
     copyPortableHandoffBrief,
     primePortableHandoffBrief,

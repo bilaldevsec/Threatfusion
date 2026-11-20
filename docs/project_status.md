@@ -23,7 +23,9 @@ Incomplete 14-feature ingest returns HTTP 422 and writes no row. Mutating
 `THREATFUSION_LIVE_WRITE_TOKEN` of at least 16 characters, or the in-process
 test header while pytest is running. An arbitrary Bearer token is rejected.
 This HTTP listener does not treat a certificate fingerprint header as a
-client certificate. Live Gemini stays off unless `GEMINI_ENABLED` is `true`,
+client certificate. With `--tls-cert`, `--tls-key`, and `--tls-ca-cert`,
+it reads the SHA-256 of the TLS peer certificate DER and passes that
+fingerprint into SOAR approval. Live Gemini stays off unless `GEMINI_ENABLED` is `true`,
 `1`, `yes`, or `on`. Missing `certutil` or `pk12util` fails Firefox
 provisioning closed instead of writing placeholder NSS files. Ledger rollback
 requires the executing actor and a valid audit chain, and a range rollback
@@ -54,7 +56,20 @@ only, and rejects a symlinked HMAC secret before `chmod`. A later pass
 on the same date refuses SOAR approval when the request presents no client
 certificate, reports a missing or empty ledger as unavailable, keeps
 noise reduction below 100% while one incident remains, and puts the remapped
-DNN class in the playbook. `TF-008` through `TF-011` stay open.
+DNN class in the playbook. On 2026-11-20 the Phase 2 code-freeze remediation
+pass applied SHA-256-verified `preprocessor_state.json` Z-score scaling in
+`score_canonical_flow()` (failing closed if absent/mismatched), completed
+optional TLS/mTLS peer-certificate verification (`--tls-cert`/`--tls-key`/`--tls-ca-cert`,
+`TLSv1.2+`, per-thread handshake timeout, HTTPS Origin/CSRF and self-callback),
+removed automatic SOAR chain resealing on approve (failing closed HTTP 409),
+hardened Entra/RBAC login and operator registration, enforced explicit
+`soc_approver` allowlists and authenticated session/mTLS binding on mutating
+SOAR/range routes, fixed linear alert-fatigue funnel math and real-IP copilot
+grounding, aligned AE observatory labels and DNN imputation/unit metadata,
+escaped frontend TheHive labels with server-side case ID validation, routed all
+clipboard writes through `copyTextBlock()`, and hardened Azure/cloud deployment
+scripts. Frozen model digests, Gate G9, and `production_fusion_enabled=False`
+remain unchanged; `TF-008` through `TF-011` stay open.
 RFC W46-01 adds a lab-only hunt pack runner, a read-only ATT&CK/CVE coverage
 heatmap, and a journal/table timeline toggle. Hunt rows are labeled
 `LAB HYPOTHESIS — NOT AN ALERT` and are hashed into a separate chain file.

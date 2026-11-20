@@ -614,12 +614,16 @@ def build_four_block_investigation_anatomy(
         if chronological_flow_progression is not None
         else (
             {
-                "timestamp_utc": bundle.observed_at or "2026-10-19T17:15:20Z",
-                "src_ip": final_assets[0] if final_assets else "10.0.0.4",
-                "dst_ip": final_assets[1] if len(final_assets) > 1 else "10.0.0.5",
-                "protocol": "TCP",
-                "bytes": byte_volume_delta or 1250,
-                "packets": packet_volume_delta or 18,
+                "timestamp_utc": bundle.observed_at or "",
+                "src_ip": final_assets[0] if final_assets else "",
+                "dst_ip": final_assets[1] if len(final_assets) > 1 else "",
+                "protocol": (
+                    provenance.protocol.upper()
+                    if provenance is not None and getattr(provenance, "protocol", None)
+                    else "UNKNOWN"
+                ),
+                "bytes": int(byte_volume_delta),
+                "packets": int(packet_volume_delta),
             },
         )
     )
@@ -691,7 +695,7 @@ def build_four_block_investigation_anatomy(
     )
 
     # 5. Block 4: Cryptographic SOAR Status
-    effective_pbid = playbook_id or "pb-isolate-host-01"
+    effective_pbid = playbook_id or "unavailable"
     effective_state = (
         playbook_state
         if playbook_state in ("pending_approval", "approved", "executed_simulated")
@@ -712,9 +716,8 @@ def build_four_block_investigation_anatomy(
     block_4 = CryptographicSoarStatusBlock(
         playbook_id=effective_pbid,
         playbook_state=effective_state,
-        prev_entry_sha256=prev_entry_sha256 or "0" * 64,
-        entry_sha256=entry_sha256
-        or "44d88612fea8a8f36de82e1278abb02f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d",
+        prev_entry_sha256=prev_entry_sha256 or "",
+        entry_sha256=entry_sha256 or "",
         audit_chain_valid=chain_valid,
         hmac_signature_verified=bool(hmac_signature_verified),
     )

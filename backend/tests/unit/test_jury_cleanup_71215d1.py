@@ -245,7 +245,7 @@ def test_forwarder_heredoc_is_quoted_and_expands_locally() -> None:
     assert completed.returncode == 0, completed.stderr
     rendered = completed.stdout
     assert "THREATFUSION_CONSOLE_URL=https://console.example/soc" in rendered
-    assert "THREATFUSION_SENSOR_TOKEN=tok en" in rendered
+    assert "THREATFUSION_SENSOR_INGEST_TOKEN=tok en" in rendered
     assert "THREATFUSION_SOAR_HMAC_SECRET=hmac secret" in rendered
     assert "TFQ0CONSOLE" not in rendered
 
