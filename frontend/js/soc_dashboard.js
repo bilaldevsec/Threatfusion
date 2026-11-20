@@ -696,6 +696,21 @@
     }
   }
 
+  const CAMPAIGN_POLL_INTERVAL_MS = 12000;
+  let campaignRefreshInFlight = 0;
+  let campaignPollTimer = 0;
+
+  function scheduleCampaignPoll() {
+    window.clearTimeout(campaignPollTimer);
+    campaignPollTimer = window.setTimeout(function () {
+      if (campaignRefreshInFlight > 0) {
+        scheduleCampaignPoll();
+        return;
+      }
+      Promise.resolve(refreshLiveCampaigns()).finally(scheduleCampaignPoll);
+    }, CAMPAIGN_POLL_INTERVAL_MS);
+  }
+
   async function initApp() {
     renderLiveClock();
     setInterval(renderLiveClock, 1000);
@@ -710,7 +725,6 @@
     refreshPosture();
     refreshReadyz();
     enforceAuthGate();
-    refreshLiveCampaigns();
     refreshOperatorStamp();
     loadModelObservatory(0);
     loadEnterpriseControls();
@@ -718,7 +732,7 @@
     renderMitreCoverageMatrix();
     renderScoringTimeProvenance(null);
     openInspectorHash();
-    setInterval(refreshLiveCampaigns, 3000);
+    Promise.resolve(refreshLiveCampaigns()).finally(scheduleCampaignPoll);
   }
 
   function activeIncidents() {
@@ -2881,6 +2895,12 @@
     if (driftButton) {
       driftButton.addEventListener('click', () => { refreshLiveDriftAndWorkbench(); });
     }
+    const refreshQueueButton = document.getElementById('btnRefreshQueue');
+    if (refreshQueueButton) {
+      refreshQueueButton.addEventListener('click', () => {
+        Promise.all([refreshLiveQueue(), refreshLiveCampaigns({ force: true })]);
+      });
+    }
     refreshLiveQueue();
     refreshHuntingGuides();
     refreshN8nSchema(false);
@@ -3139,7 +3159,10 @@
       analyst_approved_local: 'PLAYBOOK APPROVED — Signed into HMAC-SHA256 ledger by active SOC Approver. Step 2 (n8n Dispatch) is now unlocked.',
       already_approved: 'PLAYBOOK APPROVED — Already verified in HMAC-SHA256 ledger. Proceed to Step 2 (n8n Dispatch) or Step 3 (Isolate).',
       role_insufficient_for_soar: 'ACCESS DENIED (HTTP 403) — Active Microsoft Entra / RBAC role (Tier-1 Triage / Read-Only Auditor) is not authorized for SOAR execution. Switch to a Tier-3 SOC Approver.',
+      operator_not_enrolled: 'OPERATOR CERTIFICATE NOT ENROLLED (HTTP 403) — Enroll an operator certificate in Enterprise RBAC Controls before approving SOAR playbooks.',
+      operator_identity_unverified: 'OPERATOR IDENTITY UNVERIFIED (HTTP 403) — Plain HTTP cannot present a verified mTLS client certificate for this actor. Connect over the human-mTLS TLS listener or enroll and present a valid operator certificate.',
       audit_chain_invalid: 'SOAR LEDGER MISMATCH — The HMAC-SHA256 chain does not match this daemon key. Approve the playbook again so the ledger is re-sealed, then dispatch.',
+      audit_chain_tampered: 'SOAR LEDGER TAMPERED (HTTP 409) — Cryptographic hash-chain verification failed. Execution is halted fail-closed.',
       callback_not_recorded: 'CALLBACK NOT RECORDED — Step 2 (n8n Dispatch) has not stored a signed receipt. Dispatch the approved playbook before Isolate.'
     };
     return messages[reason] || fallback;
@@ -3637,107 +3660,141 @@
 
   let campaignRefreshGeneration = 0;
 
+  function mergePreservedAdvisoryTrace(incomingTrace, previousTrace) {
+    if (!previousTrace || typeof previousTrace !== 'object') return incomingTrace;
+    if (!incomingTrace || typeof incomingTrace !== 'object') return previousTrace;
+    const merged = Object.assign({}, incomingTrace);
+    [
+      'ai_governance_controls',
+      'evidence_envelope',
+      'envelope_sha256',
+      'ledger_verification',
+      'prompt_injection_filtered',
+      'model_used'
+    ].forEach(key => {
+      if (merged[key] == null && previousTrace[key] != null) {
+        merged[key] = previousTrace[key];
+      }
+    });
+    return merged;
+  }
+
   async function refreshLiveCampaigns(options) {
     const queueOnly = !!(options && options.queueOnly);
     const force = !!(options && options.force);
     const generation = ++campaignRefreshGeneration;
+    campaignRefreshInFlight += 1;
     try {
-      if (!queueOnly) await refreshAssetInventory();
-      const resp = await fetch('/api/v1/live/campaigns');
-      if (generation !== campaignRefreshGeneration) return;
-      if (!resp.ok) throw new Error('campaign status');
-      const data = await resp.json();
-      if (generation !== campaignRefreshGeneration) return;
-      const flowViews = [];
-      (data.campaigns || []).forEach(campaign => {
-        (campaign.flows || []).forEach(flow => {
-          flowViews.push(flowToIncident(flow, campaign.member_count));
+      try {
+        if (!queueOnly) await refreshAssetInventory();
+        const resp = await fetch('/api/v1/live/campaigns');
+        if (generation !== campaignRefreshGeneration) return;
+        if (!resp.ok) throw new Error('campaign status');
+        const data = await resp.json();
+        if (generation !== campaignRefreshGeneration) return;
+        const flowViews = [];
+        (data.campaigns || []).forEach(campaign => {
+          (campaign.flows || []).forEach(flow => {
+            flowViews.push(flowToIncident(flow, campaign.member_count));
+          });
         });
-      });
-      const views = flowViews.slice();
-      const seenIncidents = new Set();
-      (data.incidents || []).forEach(row => {
-        const incidentId = String(row.incident_id || '');
-        const shape = String(row.window_type || '') + '|' + String(row.escalated_decision || '');
-        if (!incidentId || seenIncidents.has(incidentId) || seenIncidents.has(shape)) return;
-        seenIncidents.add(incidentId);
-        seenIncidents.add(shape);
-        views.push(incidentRowToView(row));
-      });
-      ledgerChainStatus = data.playbook_hash_chain_status || '';
-      paintLedgerBadge(ledgerChainStatus);
-      if (sessionIdentity && sessionIdentity.authenticated) paintSessionIdentity(sessionIdentity);
-      liveCampaignIncidents = views;
-      showStoredN8nMttr(views);
-      showStoredContainment(views);
-      liveQueueLoaded = true;
-      campaignFetchSettled = true;
-      setSampleSurfacesHidden(true);
-      if (!views.some(item => item.id === selectedIncidentId)) {
-        if (Number.isInteger(selectedFlowId) && selectedFlowId > 0) {
-          const byFlow = views.find(item => Number(item.flowId || item.flow_id) === selectedFlowId);
-          selectedIncidentId = byFlow ? byFlow.id : (views.length ? views[0].id : '');
-        } else {
-          selectedIncidentId = views.length ? views[0].id : '';
+        const views = flowViews.slice();
+        const seenIncidents = new Set();
+        (data.incidents || []).forEach(row => {
+          const incidentId = String(row.incident_id || '');
+          const shape = String(row.window_type || '') + '|' + String(row.escalated_decision || '');
+          if (!incidentId || seenIncidents.has(incidentId) || seenIncidents.has(shape)) return;
+          seenIncidents.add(incidentId);
+          seenIncidents.add(shape);
+          views.push(incidentRowToView(row));
+        });
+        const previousById = {};
+        liveCampaignIncidents.forEach(item => {
+          if (item && item.id) previousById[item.id] = item;
+        });
+        views.forEach(item => {
+          const prev = item && item.id ? previousById[item.id] : null;
+          if (prev && prev.advisoryTrace) {
+            item.advisoryTrace = mergePreservedAdvisoryTrace(item.advisoryTrace, prev.advisoryTrace);
+          }
+        });
+        ledgerChainStatus = data.playbook_hash_chain_status || '';
+        paintLedgerBadge(ledgerChainStatus);
+        if (sessionIdentity && sessionIdentity.authenticated) paintSessionIdentity(sessionIdentity);
+        liveCampaignIncidents = views;
+        showStoredN8nMttr(views);
+        showStoredContainment(views);
+        liveQueueLoaded = true;
+        campaignFetchSettled = true;
+        setSampleSurfacesHidden(true);
+        if (!views.some(item => item.id === selectedIncidentId)) {
+          if (Number.isInteger(selectedFlowId) && selectedFlowId > 0) {
+            const byFlow = views.find(item => Number(item.flowId || item.flow_id) === selectedFlowId);
+            selectedIncidentId = byFlow ? byFlow.id : (views.length ? views[0].id : '');
+          } else {
+            selectedIncidentId = views.length ? views[0].id : '';
+          }
         }
+        bindSelectedFlowId(selectedIncident());
+        const badge = document.getElementById('queueCountBadge');
+        if (badge) badge.textContent = views.length + ' stored rows';
+        const flowCount = document.getElementById('liveHeroFlowCount');
+        const campaignCount = document.getElementById('liveHeroCampaignCount');
+        const incidentCount = document.getElementById('liveHeroIncidentCount');
+        const bridgeCount = document.getElementById('liveHeroBridgeCount');
+        if (flowCount) flowCount.textContent = String(data.flow_count || 0);
+        if (campaignCount) campaignCount.textContent = String(data.campaign_count || 0);
+        if (incidentCount) incidentCount.textContent = String(data.incident_count || 0);
+        if (bridgeCount) bridgeCount.textContent = 'Live bridge rows: ' + String(data.bridge_flow_count || 0);
+        renderTelemetryReductionFunnel(data, flowViews);
+        renderMitreCoverageMatrix();
+        renderScoringTimeProvenance(selectedIncident());
+        renderEntityTopology();
+        const nextPrint = views.map(item => [
+          item.id,
+          item.decision,
+          item.sourceLabel,
+          item.analystVerdict,
+          item.assigneeId,
+          item.reviewStatus,
+          item.containmentState || '',
+          item.callbackRecorded ? 'cb' : '',
+          item.soarState || (item.soarRecord && item.soarRecord.state) || '',
+          item.executionPath || '',
+          item.triageState || '',
+          item.sensorObservation && item.sensorObservation.forest_line,
+          (item.contextMemory || []).map(memory => memory.expected_behavior_rule).join(','),
+          item.evidenceLocker && item.evidenceLocker.queries
+            ? item.evidenceLocker.queries.map(query => query.entity_count || query.flow_count || query.stitched_flow_count || query.soar_receipt_status).join(',')
+            : ''
+        ].join(':')).join('|');
+        if (!force && nextPrint === campaignFingerprint) return;
+        campaignFingerprint = nextPrint;
+        const verifiedCount = views.filter(isReceiptVerified).length;
+        setLiveText(
+          'campaignQueueStatus',
+          views.length
+            ? ('Stored rows: ' + views.length + '. Verified SOAR receipts: ' + verifiedCount + '.')
+            : 'No stored campaigns yet.',
+          verifiedCount ? 'verified' : (views.length ? 'pending' : 'unavailable')
+        );
+      } catch (err) {
+        campaignFingerprint = null;
+        liveQueueLoaded = false;
+        campaignFetchSettled = true;
+        setSampleSurfacesHidden(false);
+        setLiveText('campaignQueueStatus', 'Campaign store unavailable. The recorded queue is the fallback.', 'unavailable');
+        renderTelemetryReductionFunnel(null, []);
+        renderMitreCoverageMatrix();
+        renderScoringTimeProvenance(selectedIncident());
       }
-      bindSelectedFlowId(selectedIncident());
-      const badge = document.getElementById('queueCountBadge');
-      if (badge) badge.textContent = views.length + ' stored rows';
-      const flowCount = document.getElementById('liveHeroFlowCount');
-      const campaignCount = document.getElementById('liveHeroCampaignCount');
-      const incidentCount = document.getElementById('liveHeroIncidentCount');
-      const bridgeCount = document.getElementById('liveHeroBridgeCount');
-      if (flowCount) flowCount.textContent = String(data.flow_count || 0);
-      if (campaignCount) campaignCount.textContent = String(data.campaign_count || 0);
-      if (incidentCount) incidentCount.textContent = String(data.incident_count || 0);
-      if (bridgeCount) bridgeCount.textContent = 'Live bridge rows: ' + String(data.bridge_flow_count || 0);
-      renderTelemetryReductionFunnel(data, flowViews);
-      renderMitreCoverageMatrix();
-      renderScoringTimeProvenance(selectedIncident());
-      renderEntityTopology();
-      const nextPrint = views.map(item => [
-        item.id,
-        item.decision,
-        item.sourceLabel,
-        item.analystVerdict,
-        item.assigneeId,
-        item.reviewStatus,
-        item.containmentState || '',
-        item.callbackRecorded ? 'cb' : '',
-        item.soarState || (item.soarRecord && item.soarRecord.state) || '',
-        item.executionPath || '',
-        item.triageState || '',
-        item.sensorObservation && item.sensorObservation.forest_line,
-        (item.contextMemory || []).map(memory => memory.expected_behavior_rule).join(','),
-        item.evidenceLocker && item.evidenceLocker.queries
-          ? item.evidenceLocker.queries.map(query => query.entity_count || query.flow_count || query.stitched_flow_count || query.soar_receipt_status).join(',')
-          : ''
-      ].join(':')).join('|');
-      if (!force && nextPrint === campaignFingerprint) return;
-      campaignFingerprint = nextPrint;
-      const verifiedCount = views.filter(isReceiptVerified).length;
-      setLiveText(
-        'campaignQueueStatus',
-        views.length
-          ? ('Stored rows: ' + views.length + '. Verified SOAR receipts: ' + verifiedCount + '.')
-          : 'No stored campaigns yet.',
-        verifiedCount ? 'verified' : (views.length ? 'pending' : 'unavailable')
-      );
-    } catch (err) {
-      campaignFingerprint = null;
-      liveQueueLoaded = false;
-      campaignFetchSettled = true;
-      setSampleSurfacesHidden(false);
-      setLiveText('campaignQueueStatus', 'Campaign store unavailable. The recorded queue is the fallback.', 'unavailable');
-      renderTelemetryReductionFunnel(null, []);
-      renderMitreCoverageMatrix();
-      renderScoringTimeProvenance(selectedIncident());
-    }
-    renderIncidentQueue();
-    renderForensicDrawer();
-    if (document.querySelector('.soc-view.is-active[data-soc-view="graph"]')) {
-      renderActionGraph();
+      renderIncidentQueue();
+      renderForensicDrawer();
+      if (document.querySelector('.soc-view.is-active[data-soc-view="graph"]')) {
+        renderActionGraph();
+      }
+    } finally {
+      campaignRefreshInFlight = Math.max(0, campaignRefreshInFlight - 1);
     }
   }
 
@@ -3788,7 +3845,7 @@
         body: '{}'
       });
       const data = await resp.json();
-      await refreshLiveCampaigns();
+      await Promise.all([refreshLiveCampaigns({ force: true }), refreshLiveQueue()]);
       const lines = (data.flows || []).map(flow => {
         const label = flow.scenario_label ? (' ' + flow.scenario_label) : '';
         const guard = flow.misp_guard_status === 422 ? ', ' + mispGuardLabel(422) : '';
@@ -3821,7 +3878,7 @@
         data.evidence_state || 'unavailable'
       );
       if (data.correlation) renderLiveCorrelation(data.correlation);
-      await refreshLiveCampaigns();
+      await Promise.all([refreshLiveCampaigns({ force: true }), refreshLiveQueue()]);
     } catch (err) {
       setLiveText('campaignQueueStatus', 'Benchmark replay unavailable.', 'unavailable');
     }
@@ -3983,6 +4040,14 @@
       const receipt = typeof data.entry_sha256 === 'string' ? data.entry_sha256 : '';
       const reason = typeof data.reason === 'string' ? data.reason : '';
       showOperatorStamp(data);
+      if (!resp.ok) {
+        showActionBanner(
+          soarOperatorMessage(reason, actionFailureText(data, resp)),
+          'unavailable',
+          reason
+        );
+        return false;
+      }
       const restore = preserveSelectionAfterMutation();
       await refreshLiveCampaigns();
       restore();
@@ -4696,6 +4761,15 @@
         body: JSON.stringify({ flow_id: inc.flowId, actor_id: operatorActorId() })
       });
       const data = await readActionPayload(resp);
+      const dispatchReason = typeof data.reason === 'string' ? data.reason : '';
+      if (!resp.ok) {
+        showActionBanner(
+          soarOperatorMessage(dispatchReason, actionFailureText(data, resp)),
+          'unavailable',
+          dispatchReason
+        );
+        return data;
+      }
       const restore = preserveSelectionAfterMutation();
       await refreshLiveCampaigns();
       restore();
@@ -4771,10 +4845,15 @@
       const data = await resp.json();
       if (data && data.ingested === true) {
         setLiveText('campaignQueueStatus', 'Range scan stored 172.29.0.10 -> 172.29.0.20.', 'verified');
-        await refreshLiveCampaigns();
+        await Promise.all([refreshLiveCampaigns({ force: true }), refreshLiveQueue()]);
         return;
       }
-      setLiveText('campaignQueueStatus', data && data.reason ? data.reason : 'Range scan was not ingested.', 'unavailable');
+      const scanReason = data && typeof data.reason === 'string' ? data.reason : '';
+      const scanMessage = soarOperatorMessage(scanReason, scanReason || 'Range scan was not ingested.');
+      setLiveText('campaignQueueStatus', scanMessage, 'unavailable');
+      if (resp.status === 403) {
+        showActionBanner(scanMessage, 'unavailable', scanReason);
+      }
     } catch (err) {
       setLiveText('campaignQueueStatus', 'Range scan unavailable.', 'unavailable');
     }
@@ -4792,6 +4871,15 @@
         body: JSON.stringify({ flow_id: inc.flowId, actor_id: operatorActorId() })
       });
       const data = await readActionPayload(resp);
+      const reason = typeof data.reason === 'string' ? data.reason : '';
+      if (!resp.ok) {
+        showActionBanner(
+          soarOperatorMessage(reason, actionFailureText(data, resp)),
+          'unavailable',
+          reason
+        );
+        return;
+      }
       const applied = data.reason === 'containment_applied';
       const rolled = data.reason === 'containment_rolled_back';
       if (data.reachability_probe) rememberDualFirewallProbe(data.reachability_probe);
@@ -4863,7 +4951,11 @@
         );
         return;
       }
-      showActionBanner(actionFailureText(data, resp), 'unavailable');
+      showActionBanner(
+        soarOperatorMessage(reason, actionFailureText(data, resp)),
+        'unavailable',
+        reason
+      );
     } catch (err) {
       showActionBanner(err && err.message ? String(err.message) : 'Range containment unavailable.', 'unavailable');
     }
@@ -5200,16 +5292,55 @@
     return matched && matched[1] === 'verified' ? 'verified' : 'unavailable';
   }
 
-  function copyTextBlock(text) {
-    if (!text || !navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') return;
-    try {
-      const pending = navigator.clipboard.writeText(String(text));
-      if (pending && typeof pending.catch === 'function') {
-        pending.catch(function () {});
-      }
-    } catch (err) {
-      return;
+  function fallbackCopyText(value) {
+    if (
+      typeof document === 'undefined'
+      || !document.body
+      || typeof document.createElement !== 'function'
+    ) {
+      return false;
     }
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = value;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const ok = typeof document.execCommand === 'function'
+        ? Boolean(document.execCommand('copy'))
+        : false;
+      textarea.remove();
+      if (ok) showToast('Copied to clipboard', 'verified');
+      return ok;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function copyTextBlock(text) {
+    if (text == null || text === '') return Promise.resolve(false);
+    const value = String(text);
+    const hasClipboard = typeof navigator !== 'undefined'
+      && navigator.clipboard
+      && typeof navigator.clipboard.writeText === 'function';
+    if (hasClipboard) {
+      try {
+        return Promise.resolve(navigator.clipboard.writeText(value)).then(
+          function () {
+            showToast('Copied to clipboard', 'verified');
+            return true;
+          },
+          function () {
+            return fallbackCopyText(value);
+          }
+        );
+      } catch (err) {
+        return Promise.resolve(fallbackCopyText(value));
+      }
+    }
+    return Promise.resolve(fallbackCopyText(value));
   }
 
   function copyHunterDetectionRule() {
@@ -6311,9 +6442,14 @@
       });
       const data = await readActionPayload(resp);
       if (!resp.ok || !data || !data.flow_id) {
-        const failure = actionFailureText(data, resp);
+        const reason = data && typeof data.reason === 'string' ? data.reason : '';
+        const failure = soarOperatorMessage(reason, actionFailureText(data, resp));
         setLiveText('rangeFirewallStatus', failure, 'unavailable');
-        showToast(failure, 'unavailable');
+        if (resp.status === 403) {
+          showActionBanner(failure, 'unavailable', reason);
+        } else {
+          showToast(failure, 'unavailable');
+        }
         return;
       }
       const score = Number(data.rf_attack_probability);
@@ -6326,7 +6462,7 @@
       modelProofLoadedFlowId = null;
       lastCopilotFlowId = 0;
       openEnterpriseDrawer(false);
-      await refreshLiveCampaigns({ queueOnly: true, force: true });
+      await Promise.all([refreshLiveCampaigns({ queueOnly: true, force: true }), refreshLiveQueue()]);
       if (selectedFlowId) {
         const match = activeIncidents().find(item => Number(item.flowId || item.flow_id) === selectedFlowId);
         if (match) selectedIncidentId = match.id;
@@ -6401,6 +6537,8 @@
     groupConsecutiveTimelineByActor,
     appendIncidentItem,
     copyTextBlock,
+    soarOperatorMessage,
+    mergePreservedAdvisoryTrace,
     copyPortableHandoffBrief,
     primePortableHandoffBrief,
     portableHandoffEvidenceState,

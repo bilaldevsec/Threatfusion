@@ -203,7 +203,11 @@ def run_probes(
     checks = [
         (
             "unapproved dispatch",
-            dispatch_status == 403 and dispatch.get("reason") == "playbook_not_approved",
+            (dispatch_status == 403 and dispatch.get("reason") == "playbook_not_approved")
+            or (
+                dispatch_status == 409
+                and dispatch.get("reason") in {"audit_chain_invalid", "audit_chain_tampered"}
+            ),
             f"HTTP {dispatch_status} {dispatch.get('reason')}",
         ),
         (

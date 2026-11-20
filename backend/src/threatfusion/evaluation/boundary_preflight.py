@@ -35,8 +35,16 @@ def _module_checkout_root() -> Path:
     return Path(__file__).resolve().parents[4]
 
 
+def _resolve_default_protected_workspace(active_root: Path | None = None) -> Path:
+    root = (active_root if active_root is not None else _module_checkout_root()).resolve()
+    candidate = (root.parent / "threatfusion").resolve()
+    if root == candidate or root.is_relative_to(candidate) or candidate.is_relative_to(root):
+        return root.parent / ".threatfusion-protected-absent"
+    return candidate
+
+
 _DECLARED_ACTIVE_WORKSPACE = _module_checkout_root()
-CANONICAL_PROTECTED_WORKSPACE = _module_checkout_root().parent / "threatfusion"
+CANONICAL_PROTECTED_WORKSPACE = _resolve_default_protected_workspace(_DECLARED_ACTIVE_WORKSPACE)
 _ACTIVE_ANCHOR_DEPTH = 4
 
 
@@ -55,7 +63,9 @@ def resolve_default_active_workspace(anchor: Path | None = None) -> Path:
     if not resolved.is_dir():
         raise FileNotFoundError(f"Active workspace does not exist: {resolved}")
     protected = CANONICAL_PROTECTED_WORKSPACE.resolve()
-    if resolved == protected or resolved.is_relative_to(protected):
+    if protected != _module_checkout_root().resolve() and (
+        resolved == protected or resolved.is_relative_to(protected)
+    ):
         raise FileNotFoundError(
             f"Resolved active workspace overlaps the protected tree: {resolved}"
         )

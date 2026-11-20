@@ -197,8 +197,11 @@ def _finite_feature_vector(features: Mapping[str, Any]) -> tuple[list[float] | N
     for name in CANONICAL_14_FEATURES:
         if name not in features:
             return None, f"missing_feature:{name}"
+        raw_val = features[name]
+        if isinstance(raw_val, bool):
+            return None, f"non_numeric_feature:{name}"
         try:
-            value = float(features[name])
+            value = float(raw_val)
         except (TypeError, ValueError):
             return None, f"non_numeric_feature:{name}"
         if not math.isfinite(value):
@@ -1950,6 +1953,7 @@ def _cached_live_gemini(
     payload = {
         "provider": row["provider"],
         "model_name": row["model_name"],
+        "model_used": row["model_name"] or model_name,
         "narrative": row["narrative"],
     }
     with _LIVE_GEMINI_CACHE_LOCK:
@@ -1970,6 +1974,12 @@ def _remember_live_gemini(
         return
     key = (number, identity, question.strip().lower(), model_name)
     stored = dict(payload)
+    provenance = stored.get("advisory_provenance")
+    stored_model = str(
+        (provenance.get("model_used") if isinstance(provenance, Mapping) else "")
+        or stored.get("model_used")
+        or model_name
+    )
     with _LIVE_GEMINI_CACHE_LOCK:
         _LIVE_GEMINI_CACHE[key] = stored
     if db_path is None or not db_path.is_file():
@@ -1991,7 +2001,7 @@ def _remember_live_gemini(
                 (
                     _copilot_cache_key(number, question, model_name, identity),
                     str(stored.get("provider") or ""),
-                    model_name,
+                    stored_model,
                     str(stored.get("narrative") or ""),
                     datetime.now(UTC).isoformat(),
                 ),
@@ -2902,9 +2912,13 @@ def _grounded_gemini_narrative(
     )
     if ledger["status"] == "FLAGGED_UNGROUNDED":
         text = str(ledger.get("annotated_summary") or text)
+    actual_model = str(
+        (provenance.get("model_used") if isinstance(provenance, Mapping) else "") or model_name
+    )
     live = {
         "provider": "gemini",
         "provider_label": status.get("label"),
+        "model_used": actual_model,
         "narrative": text,
         "evidence_envelope": fence["evidence_envelope"],
         "prompt_injection_filtered": fence["prompt_injection_filtered"],
@@ -2978,8 +2992,83 @@ def read_n8n_workbench(workflow_path: Path) -> dict[str, Any]:
     }
 
 
+_FLOW_ROW_COLUMNS: tuple[str, ...] = (
+    "flow_id",
+    "observed_at_utc",
+    "rf_attack_probability",
+    "decision",
+    "evidence_state",
+    "reason",
+    "model_sha256",
+    "campaign_id",
+    "source_label",
+    "case_title",
+    "playbook_id",
+    "ledger_state",
+    "entry_sha256",
+    "prev_entry_sha256",
+    "audit_chain_verified",
+    "callback_signature",
+    "thehive_case_id",
+    "mttr_seconds",
+    "callback_recorded",
+    "triage_state",
+    "src_entity_id",
+    "dst_entity_id",
+    "entity_namespace_id",
+    "flow_protocol",
+    "service_or_port",
+    "clock_synchronized",
+    "features_json",
+    "analyst_verdict",
+    "analyst_rationale",
+    "analyst_verdict_actor",
+    "analyst_verdict_at",
+    "assignee_id",
+    "review_status",
+    "correlation_window_checked",
+    "source_event_id",
+    "sensor_observation_json",
+    "execution_path",
+    "operator_id",
+    "cert_sha256_prefix",
+    "identity_verified",
+    "identity_label",
+    "containment_state",
+    "containment_rule",
+    "containment_at",
+    "rollback_at",
+    "sensor_node",
+    "burst_count",
+    "simhash_signature",
+    "last_seen_at",
+    "burst_key",
+)
+
+
+def _connect_readonly(db_path: Path) -> sqlite3.Connection:
+    uri = f"{Path(db_path).resolve().as_uri()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _live_flow_select_sql(conn: sqlite3.Connection, columns: Sequence[str]) -> str | None:
+    tables = {
+        str(row[0])
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    }
+    if "live_flows" not in tables:
+        return None
+    available = {str(row[1]) for row in conn.execute("PRAGMA table_info(live_flows)").fetchall()}
+    if not available:
+        return None
+    return ", ".join(col if col in available else f"NULL AS {col}" for col in columns)
+
+
 def _flow_rows(db_path: Path, *, limit: int, flow_id: int | None = None) -> list[dict[str, Any]]:
-    if not db_path.is_file():
+    path = Path(db_path)
+    if not path.is_file():
         return []
     if flow_id is not None:
         where_sql = "WHERE flow_id = ?"
@@ -2987,23 +3076,17 @@ def _flow_rows(db_path: Path, *, limit: int, flow_id: int | None = None) -> list
     else:
         where_sql = ""
         query_params = (max(1, min(limit, 100)),)
-    with _connect(db_path) as conn:
+    try:
+        conn = _connect_readonly(path)
+    except sqlite3.Error:
+        return []
+    try:
+        select_list = _live_flow_select_sql(conn, _FLOW_ROW_COLUMNS)
+        if not select_list:
+            return []
         rows = conn.execute(
             f"""
-            SELECT flow_id, observed_at_utc, rf_attack_probability, decision,
-                   evidence_state, reason, model_sha256, campaign_id, source_label,
-                   case_title, playbook_id, ledger_state, entry_sha256,
-                   prev_entry_sha256, audit_chain_verified, callback_signature,
-                   thehive_case_id, mttr_seconds, callback_recorded, triage_state,
-                   src_entity_id, dst_entity_id, entity_namespace_id, flow_protocol,
-                   service_or_port, clock_synchronized, features_json,
-                   analyst_verdict, analyst_rationale, analyst_verdict_actor,
-                   analyst_verdict_at, assignee_id, review_status,
-                   correlation_window_checked, source_event_id, sensor_observation_json,
-                   execution_path, operator_id, cert_sha256_prefix,
-                   identity_verified, identity_label, containment_state, containment_rule,
-                   containment_at, rollback_at, sensor_node,
-                   burst_count, simhash_signature, last_seen_at, burst_key
+            SELECT {select_list}
             FROM live_flows
             {where_sql}
             ORDER BY flow_id DESC
@@ -3011,6 +3094,10 @@ def _flow_rows(db_path: Path, *, limit: int, flow_id: int | None = None) -> list
             """,
             query_params,
         ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
     published: list[dict[str, Any]] = []
     repo_root = _console_repo_root()
     for row in rows:
@@ -3853,10 +3940,17 @@ def _attach_advisory_traces(db_path: Path, flows: list[dict[str, Any]]) -> None:
         except (TypeError, ValueError):
             flow_id = 0
         cached = narratives.get(flow_id, {})
-        row["advisory_trace"] = build_advisory_trace(
+        narrative = cached.get("narrative") or None
+        payload = build_advisory_trace(
             row,
-            narrative=cached.get("narrative") or None,
+            narrative=narrative,
             narrative_recorded_at=cached.get("recorded_at_utc") or None,
+        )
+        row["advisory_trace"] = _attach_trace_governance(
+            row,
+            payload,
+            narrative=narrative,
+            cached=cached,
         )
 
 
@@ -5990,9 +6084,16 @@ def dispatch_approved_callback(
         return refused
     repository = SoarPlaybookSqliteRepository(soar_db_path)
     try:
-        chain_ok, _message = repository.verify_audit_chain_integrity(require_non_empty=True)
+        chain_ok, chain_message = repository.verify_audit_chain_integrity(require_non_empty=True)
     except (sqlite3.Error, OSError, KeyError, ValueError):
-        chain_ok = False
+        chain_ok, chain_message = False, "ledger_integrity_error"
+    if not chain_ok and chain_message != "empty ledger":
+        refused["reason"] = "audit_chain_invalid"
+        refused["http_status"] = 409
+        refused["callback_recorded"] = False
+        refused["evidence_state"] = "unavailable"
+        refused["execution_path"] = N8N_LIVE_CONTAINER if webhook else LOCAL_CONTRACT_FALLBACK
+        return refused
     approved = next(
         (
             record
@@ -6006,6 +6107,7 @@ def dispatch_approved_callback(
         return refused
     if not chain_ok:
         refused["reason"] = "audit_chain_invalid"
+        refused["http_status"] = 409
         refused["callback_recorded"] = False
         refused["evidence_state"] = "unavailable"
         refused["execution_path"] = N8N_LIVE_CONTAINER if webhook else LOCAL_CONTRACT_FALLBACK
@@ -8582,10 +8684,10 @@ def _workspace_public(row: sqlite3.Row | Mapping[str, Any]) -> dict[str, Any]:
 
 def _valid_network(value: str) -> bool:
     try:
-        ipaddress.ip_network(value, strict=False)
+        network = ipaddress.ip_network(str(value or "").strip(), strict=False)
     except ValueError:
         return False
-    return True
+    return network.prefixlen > 0
 
 
 def list_workspaces(db_path: Path) -> dict[str, Any]:
@@ -10086,6 +10188,14 @@ _HUNT_DEFAULT_PORTS: dict[str, int] = {
     "INV-4": 443,
 }
 
+_HUNT_DEFAULT_PROTOS: dict[str, str] = {
+    "T1046": "tcp",
+    "T1110": "tcp",
+    "T1190": "tcp",
+    "T1498": "udp",
+    "INV-4": "tcp",
+}
+
 _HUNT_HYPOTHESES: dict[str, str] = {
     "T1046": (
         "H1: If a host is performing network service discovery, then its stored "
@@ -10240,18 +10350,33 @@ def build_alert_fatigue_compression_funnel(db_path: Path) -> dict[str, Any]:
     ``llm_tokens_saved_pct`` is SimHash reuse only.
     ``envelope_field_compaction_pct`` is the static omitted-field share.
     """
-    if not Path(db_path).is_file():
+    path = Path(db_path)
+    if not path.is_file():
         return _compression_funnel_empty()
     try:
-        with _connect(Path(db_path)) as conn:
-            rows = conn.execute("""
-                SELECT flow_id, burst_count, simhash_signature, decision,
-                       rf_attack_probability, burst_key, last_seen_at
-                FROM live_flows
-                ORDER BY flow_id ASC
-                """).fetchall()
+        conn = _connect_readonly(path)
     except sqlite3.Error:
         return _compression_funnel_empty()
+    try:
+        select_list = _live_flow_select_sql(
+            conn,
+            (
+                "flow_id",
+                "burst_count",
+                "simhash_signature",
+                "decision",
+                "rf_attack_probability",
+                "burst_key",
+                "last_seen_at",
+            ),
+        )
+        if not select_list:
+            return _compression_funnel_empty()
+        rows = conn.execute(f"SELECT {select_list} FROM live_flows ORDER BY flow_id ASC").fetchall()
+    except sqlite3.Error:
+        return _compression_funnel_empty()
+    finally:
+        conn.close()
     raw = 0
     synthetic = 0
     signatures: set[str] = set()
@@ -10405,20 +10530,41 @@ def _flow_matches_hunting_guide(row: Mapping[str, Any], technique: str) -> bool:
     return mapped == technique
 
 
+_HUNT_QUEUE_COLUMNS: tuple[str, ...] = (
+    "flow_id",
+    "decision",
+    "rf_attack_probability",
+    "case_title",
+    "service_or_port",
+    "flow_protocol",
+    "src_entity_id",
+    "dst_entity_id",
+    "simhash_signature",
+    "burst_count",
+    "features_json",
+    "observed_at_utc",
+)
+
+
 def _hunt_queue_rows(db_path: Path) -> list[dict[str, Any]]:
-    if not Path(db_path).is_file():
+    path = Path(db_path)
+    if not path.is_file():
         return []
     try:
-        with _connect(Path(db_path)) as conn:
-            rows = conn.execute("""
-                SELECT flow_id, decision, rf_attack_probability, case_title,
-                       service_or_port, flow_protocol, src_entity_id, dst_entity_id,
-                       simhash_signature, burst_count, features_json, observed_at_utc
-                FROM live_flows
-                ORDER BY flow_id DESC
-                """).fetchall()
+        conn = _connect_readonly(path)
     except sqlite3.Error:
         return []
+    try:
+        select_list = _live_flow_select_sql(conn, _HUNT_QUEUE_COLUMNS)
+        if not select_list:
+            return []
+        rows = conn.execute(
+            f"SELECT {select_list} FROM live_flows ORDER BY flow_id DESC"
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
     return [dict(row) for row in rows]
 
 
@@ -10684,46 +10830,31 @@ def list_recommended_hunting_guides(
     }
 
 
-def read_advisory_trace(db_path: Path, flow_id: int) -> dict[str, Any]:
-    """Read one flow's advisory trace. A missing flow does not create a database."""
-    from threatfusion.advisory.advisory_trace import (
-        build_advisory_trace,
-        read_cached_narratives,
-    )
+def _resolve_trace_model_used(cached: Mapping[str, Any] | None, narrative: str | None) -> str:
+    if isinstance(cached, Mapping):
+        cached_model = str(cached.get("model_name") or "").strip()
+        if cached_model:
+            return cached_model
+        if str(narrative or "").strip() and str(cached.get("provider") or "").strip() == "gemini":
+            from threatfusion.advisory.gemini_client import resolve_gemini_model
+
+            return resolve_gemini_model()
+    return "local_air_gapped"
+
+
+def _attach_trace_governance(
+    row: Mapping[str, Any],
+    payload: dict[str, Any],
+    *,
+    narrative: str | None,
+    cached: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     from threatfusion.advisory.telemetry_shield import (
         build_fenced_advisory_prompt,
         verify_advisory_against_ledger,
         wrap_untrusted_telemetry_envelope,
     )
 
-    number = _positive_flow_id(flow_id)
-    if number is None or not Path(db_path).is_file():
-        payload = build_advisory_trace(None)
-        payload["flow_id"] = flow_id
-        payload["reason"] = "flow_not_stored"
-        payload["http_status"] = 404
-        payload["production_fusion_enabled"] = False
-        return payload
-    rows = _flow_rows(db_path, limit=1, flow_id=number)
-    if not rows:
-        payload = build_advisory_trace(None)
-        payload["flow_id"] = number
-        payload["reason"] = "flow_not_stored"
-        payload["http_status"] = 404
-        payload["production_fusion_enabled"] = False
-        return payload
-    row = rows[0]
-    if not isinstance(row.get("chroma_rag_hits"), list):
-        technique = _attack_technique_id(row) or ""
-        hit = _corpus_technique_hit(technique) if technique else None
-        row["chroma_rag_hits"] = [hit] if hit else []
-    cached = read_cached_narratives(db_path).get(number, {})
-    narrative = cached.get("narrative") or None
-    payload = build_advisory_trace(
-        row,
-        narrative=narrative,
-        narrative_recorded_at=cached.get("recorded_at_utc") or None,
-    )
     technique = _attack_technique_id(row) or ""
     untrusted_fields = {
         "src_ip": str(row.get("src_entity_id") or ""),
@@ -10759,13 +10890,7 @@ def read_advisory_trace(db_path: Path, flow_id: int) -> dict[str, Any]:
             "annotated_summary": "",
             "cited_count": 0,
         }
-    payload["flow_id"] = number
-    payload["decision"] = row.get("decision")
-    payload["reason"] = "advisory_trace"
-    payload["http_status"] = 200
-    payload["production_fusion_enabled"] = False
-    payload["burst_count"] = int(row.get("burst_count") or 1)
-    payload["simhash_signature"] = str(row.get("simhash_signature") or "")
+    payload["model_used"] = _resolve_trace_model_used(cached, narrative)
     payload["evidence_envelope"] = fence["evidence_envelope"]
     payload["prompt_injection_filtered"] = fence["prompt_injection_filtered"]
     payload["envelope_sha256"] = fence["envelope_sha256"]
@@ -10779,6 +10904,54 @@ def read_advisory_trace(db_path: Path, flow_id: int) -> dict[str, Any]:
     return payload
 
 
+def read_advisory_trace(db_path: Path, flow_id: int) -> dict[str, Any]:
+    """Read one flow's advisory trace. A missing flow does not create a database."""
+    from threatfusion.advisory.advisory_trace import (
+        build_advisory_trace,
+        read_cached_narratives,
+    )
+
+    number = _positive_flow_id(flow_id)
+    if number is None or not Path(db_path).is_file():
+        payload = build_advisory_trace(None)
+        payload["flow_id"] = flow_id
+        payload["reason"] = "flow_not_stored"
+        payload["http_status"] = 404
+        payload["model_used"] = None
+        payload["production_fusion_enabled"] = False
+        return payload
+    rows = _flow_rows(db_path, limit=1, flow_id=number)
+    if not rows:
+        payload = build_advisory_trace(None)
+        payload["flow_id"] = number
+        payload["reason"] = "flow_not_stored"
+        payload["http_status"] = 404
+        payload["model_used"] = None
+        payload["production_fusion_enabled"] = False
+        return payload
+    row = rows[0]
+    if not isinstance(row.get("chroma_rag_hits"), list):
+        technique = _attack_technique_id(row) or ""
+        hit = _corpus_technique_hit(technique) if technique else None
+        row["chroma_rag_hits"] = [hit] if hit else []
+    cached = read_cached_narratives(db_path).get(number, {})
+    narrative = cached.get("narrative") or None
+    payload = build_advisory_trace(
+        row,
+        narrative=narrative,
+        narrative_recorded_at=cached.get("recorded_at_utc") or None,
+    )
+    payload["flow_id"] = number
+    payload["decision"] = row.get("decision")
+    payload["reason"] = "advisory_trace"
+    payload["http_status"] = 200
+    payload["production_fusion_enabled"] = False
+    payload["burst_count"] = int(row.get("burst_count") or 1)
+    payload["simhash_signature"] = str(row.get("simhash_signature") or "")
+    _attach_trace_governance(row, payload, narrative=narrative, cached=cached)
+    return payload
+
+
 def draft_live_hunter_rule(
     db_path: Path,
     *,
@@ -10786,6 +10959,7 @@ def draft_live_hunter_rule(
     query: str = "",
     rule_format: str = "both",
     guide_id: str | None = None,
+    technique_id: str | None = None,
 ) -> dict[str, Any]:
     """Draft a review-only Suricata/Sigma rule grounded in a stored flow when present."""
     from threatfusion.advisory.telemetry_shield import draft_detection_rule
@@ -10817,18 +10991,27 @@ def draft_live_hunter_rule(
                 "ae_loss": scored_row.get("ae_loss"),
                 "dnn_attack_probability": scored_row.get("dnn_attack_probability"),
             }
-    if guide is not None:
-        technique_id = guide["mitre_technique"]
+    requested_technique = str(technique_id or "").strip().upper()
+    if not re.fullmatch(r"(?:T\d{4}(?:\.\d{3})?|INV-\d+)", requested_technique):
+        requested_technique = ""
+    if requested_technique:
+        resolved_technique = requested_technique
+    elif guide is not None:
+        resolved_technique = guide["mitre_technique"]
     elif flow_record.get("technique_id"):
-        technique_id = str(flow_record["technique_id"])
+        resolved_technique = str(flow_record["technique_id"])
     else:
-        technique_id = _technique_from_hunt_query(query)
-    flow_record["technique_id"] = technique_id or str(flow_record.get("technique_id") or "T1046")
+        resolved_technique = _technique_from_hunt_query(query)
+    flow_record["technique_id"] = resolved_technique or str(
+        flow_record.get("technique_id") or "T1046"
+    )
     if guide is not None:
         flow_record["vector"] = guide["title"]
+    elif requested_technique and not flow_record.get("vector"):
+        flow_record["vector"] = requested_technique
     if "proto" not in flow_record:
-        flow_record["proto"] = "tcp"
-        flow_record["dst_port"] = _HUNT_DEFAULT_PORTS.get(technique_id, 80)
+        flow_record["proto"] = _HUNT_DEFAULT_PROTOS.get(resolved_technique, "tcp")
+        flow_record["dst_port"] = _HUNT_DEFAULT_PORTS.get(resolved_technique, 80)
     drafted = draft_detection_rule(
         query=query,
         flow_record=flow_record,
@@ -10843,7 +11026,7 @@ def draft_live_hunter_rule(
     drafted["guide_id"] = guide["guide_id"] if guide else ""
     drafted["hunt_ai_summary"] = build_hunt_ai_summary(
         summary_source,
-        technique_id=technique_id,
+        technique_id=resolved_technique,
         matched_rows=[summary_source],
         query=query,
     )
@@ -10851,7 +11034,7 @@ def draft_live_hunter_rule(
     syntax_ok = _rule_syntax_verified(rules)
     replay = _readonly_rule_replay(
         Path(db_path),
-        technique=str(technique_id or ""),
+        technique=str(resolved_technique or ""),
         grounding=drafted.get("grounding") if isinstance(drafted.get("grounding"), Mapping) else {},
         syntax_ok=syntax_ok,
     )
@@ -10911,20 +11094,32 @@ def _readonly_flow_rows(db_path: Path) -> list[dict[str, Any]]:
     path = Path(db_path)
     if not path.is_file():
         return []
-    uri = f"{path.resolve().as_uri()}?mode=ro"
     try:
-        conn = sqlite3.connect(uri, uri=True, timeout=5.0)
+        conn = _connect_readonly(path)
     except sqlite3.Error:
         return []
     try:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("""
-            SELECT flow_id, observed_at_utc, decision, case_title, src_entity_id,
-                   dst_entity_id, service_or_port, flow_protocol, campaign_id,
-                   ledger_state, features_json
-            FROM live_flows
-            ORDER BY observed_at_utc ASC, flow_id ASC
-            """).fetchall()
+        select_list = _live_flow_select_sql(
+            conn,
+            (
+                "flow_id",
+                "observed_at_utc",
+                "decision",
+                "case_title",
+                "src_entity_id",
+                "dst_entity_id",
+                "service_or_port",
+                "flow_protocol",
+                "campaign_id",
+                "ledger_state",
+                "features_json",
+            ),
+        )
+        if not select_list:
+            return []
+        rows = conn.execute(
+            f"SELECT {select_list} FROM live_flows ORDER BY observed_at_utc ASC, flow_id ASC"
+        ).fetchall()
     except sqlite3.Error:
         return []
     finally:
@@ -10935,6 +11130,7 @@ def _readonly_flow_rows(db_path: Path) -> list[dict[str, Any]]:
 def _flow_triggers_draft(row: Mapping[str, Any], grounding: Mapping[str, Any]) -> bool:
     proto = str(row.get("flow_protocol") or row.get("proto") or "").strip().lower()
     rule_proto = str(grounding.get("proto") or "").strip().lower()
+    technique = str(grounding.get("technique_id") or "").strip().upper()
     try:
         port = int(float(row.get("service_or_port") or row.get("dst_port") or 0))
     except (TypeError, ValueError):
@@ -10943,8 +11139,11 @@ def _flow_triggers_draft(row: Mapping[str, Any], grounding: Mapping[str, Any]) -
         rule_port = int(float(grounding.get("dst_port") or 0))
     except (TypeError, ValueError):
         rule_port = 0
-    if rule_proto and proto != rule_proto:
-        return False
+    if rule_proto:
+        if technique == "T1498" and rule_proto in {"tcp", "udp"} and proto in {"tcp", "udp"}:
+            pass
+        elif proto != rule_proto:
+            return False
     if rule_port and port != rule_port:
         return False
     return bool(rule_proto or rule_port)
@@ -11973,6 +12172,7 @@ def launch_range_vector(
     src_ip: str,
     dst_ip: str,
     repo_root: Path | None = None,
+    actor_id: str | None = None,
 ) -> dict[str, Any]:
     """Probe the lab pair when it is up, then ingest and score that vector."""
     vector = str(vector_id or "").strip()
@@ -11986,6 +12186,12 @@ def launch_range_vector(
         "src_ip": source,
         "dst_ip": destination,
     }
+    effective_actor = "lab_operator" if actor_id is None else actor_id
+    refused_role = _refuse_soar_role(db_path, effective_actor)
+    if refused_role is not None:
+        refused.update(refused_role)
+        refused["schema_version"] = "live_range_vector_v1"
+        return refused
     if vector not in _RANGE_VECTOR_IDS:
         refused["reason"] = "unknown_vector"
         refused["http_status"] = 400

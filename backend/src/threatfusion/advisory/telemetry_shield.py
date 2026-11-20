@@ -468,7 +468,11 @@ def draft_detection_rule(
         .strip()
         .upper()
     )
-    technique = raw_technique if re.fullmatch(r"T\d{4}(?:\.\d{3})?", raw_technique) else "T1046"
+    technique = (
+        raw_technique
+        if re.fullmatch(r"(?:T\d{4}(?:\.\d{3})?|INV-\d+)", raw_technique)
+        else "T1046"
+    )
     technique_tag = technique.lower()
     src_ip = _flatten_rule_text(
         str(flow.get("src_ip") or flow.get("src_entity_id") or "any")
@@ -480,13 +484,13 @@ def draft_detection_rule(
         str(query or vector or f"detect {technique} toward port {dst_port}")
     )
     sid = _sid_for_flow(flow if flow else {"technique_id": technique, "dst_port": dst_port})
-    msg = (
+    raw_msg = (
         _flatten_rule_text(f"THREATFUSION {technique} {vector or 'hunt'}")
-        .replace("\\", "\\\\")
         .replace('"', "")
         .replace(";", " ")
         .strip()[:120]
     )
+    msg = raw_msg.replace("\\", "\\\\")
     suricata = (
         f"alert {proto} any any -> $HOME_NET {dst_port} "
         f'(msg:"{msg}"; flow:to_server,established; '

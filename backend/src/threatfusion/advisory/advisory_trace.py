@@ -442,8 +442,17 @@ def read_cached_narratives(db_path: Path) -> dict[int, dict[str, str]]:
         }
         if "live_copilot_cache" not in tables:
             return {}
+        cols = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(live_copilot_cache)").fetchall()
+        }
+        select_cols = ["cache_key", "narrative", "created_at_utc"]
+        if "model_name" in cols:
+            select_cols.append("model_name")
+        if "provider" in cols:
+            select_cols.append("provider")
         rows = connection.execute(
-            "SELECT cache_key, narrative, created_at_utc FROM live_copilot_cache"
+            f"SELECT {', '.join(select_cols)} FROM live_copilot_cache"
         ).fetchall()
     except sqlite3.Error:
         return {}
@@ -462,9 +471,12 @@ def read_cached_narratives(db_path: Path) -> dict[int, dict[str, str]]:
         current = found.get(flow_id)
         if current is not None and recorded_at < current["recorded_at_utc"]:
             continue
+        row_keys = set(row.keys())
         found[flow_id] = {
             "narrative": str(row["narrative"] or ""),
             "recorded_at_utc": recorded_at,
+            "model_name": str(row["model_name"] or "") if "model_name" in row_keys else "",
+            "provider": str(row["provider"] or "") if "provider" in row_keys else "",
         }
     return found
 

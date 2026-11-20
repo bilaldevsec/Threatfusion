@@ -304,9 +304,12 @@ Description=ThreatFusion Suricata EVE follower
 After=network-online.target suricata.service
 
 [Service]
+WorkingDirectory=/opt/threatfusion
 EnvironmentFile=/etc/threatfusion/forwarder.env
-ExecStart=/usr/bin/python3 /opt/threatfusion/suricata_eve_follower.py --eve ${EVE_LOG} --console-url ${console_url}
+Environment=PYTHONPATH=/opt/threatfusion/backend/src
+ExecStart=/opt/threatfusion-venv/bin/python /opt/threatfusion/suricata_eve_follower.py --eve ${EVE_LOG} --console-url ${console_url}
 Restart=on-failure
+RestartSec=2
 NoNewPrivileges=true
 
 [Install]

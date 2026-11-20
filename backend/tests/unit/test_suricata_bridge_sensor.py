@@ -509,12 +509,37 @@ def test_connect_treats_duplicate_column_name_as_already_migrated(tmp_path: Path
 def test_range_scan_http_returns_503_json_when_sqlite_fails(
     live_http: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import os
+    from threatfusion.api.live_soc_console import rbac_login
+
+    monkeypatch.setenv("THREATFUSION_ENV", "lab")
+    session = rbac_login(
+        Path(os.environ["THREATFUSION_LIVE_CONSOLE_DB"]),
+        username="bilal.21k3551@nu.edu.pk",
+        access_code="TF-Bilal-3551!",
+    )
+    token = str(session["session_token"])
+
     def locked(*_args, **_kwargs):
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr("threatfusion.api.live_soc_console._docker_range_scan", lambda: None)
     monkeypatch.setattr("threatfusion.api.live_soc_console._latest_range_pair", locked)
-    status, body = _post(live_http, "/api/v1/live/range-scan", {})
+    request = urllib.request.Request(
+        f"{live_http}/api/v1/live/range-scan",
+        data=b"{}",
+        headers={
+            "Content-Type": "application/json",
+            "X-ThreatFusion-Test-Client": "in-process",
+            "X-ThreatFusion-Session": token,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            status, body = response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        status, body = exc.code, json.loads(exc.read().decode("utf-8"))
     assert status == 503
     assert body["reason"] == "database_unavailable"
     assert body["ingested"] is False

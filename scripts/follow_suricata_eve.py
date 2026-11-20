@@ -48,7 +48,7 @@ def remember_alert(cache: dict[tuple[str, str, str, int], str], record: dict[str
             str(record["src_ip"]),
             str(record["dest_ip"]),
             str(record["proto"]),
-            int(record["dest_port"]),
+            int(record.get("dest_port") or 0),
         )
     except (KeyError, TypeError, ValueError):
         return
@@ -72,7 +72,14 @@ def sensor_payload(
     src_ip = provenance.src_ip
     dst_ip = provenance.dst_ip
     proto = str(provenance.protocol or "")
-    dest_port = int(provenance.service_or_port or record["dest_port"])
+    raw_dest_port = (
+        provenance.service_or_port
+        if provenance.service_or_port not in (None, "")
+        else record.get("dest_port")
+    )
+    dest_port = int(raw_dest_port) if raw_dest_port not in (None, "") else 0
+    raw_src_port = record.get("src_port")
+    src_port = int(adapted.flow.src_port) if raw_src_port in (None, "") else int(raw_src_port)
     if not src_ip or not dst_ip:
         raise SourceRowValidationError(
             "SuricataFlow", "src_ip", "bare address missing after adaptation"
@@ -95,7 +102,7 @@ def sensor_payload(
         "sensor_observation": {
             "proto": proto,
             "src_ip": src_ip,
-            "src_port": int(record["src_port"]),
+            "src_port": src_port,
             "dst_ip": dst_ip,
             "dst_port": dest_port,
             "signature": signature,

@@ -1180,6 +1180,43 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 run_live_range_scan,
             )
 
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            verified_actor, role, _auth_method = self._verified_operator_identity(req_data)
+            if not verified_actor:
+                self._send_json(
+                    401,
+                    {
+                        "error": "authentication_required",
+                        "reason": "authentication_required",
+                        "ingested": False,
+                        "execution_authorized": False,
+                        "evidence_state": "unavailable",
+                        "production_fusion_enabled": False,
+                    },
+                )
+                return
+            if role != "soc_approver":
+                self._send_json(
+                    403,
+                    {
+                        "error": "role_insufficient_for_soar",
+                        "reason": "role_insufficient_for_soar",
+                        "actor_id": verified_actor,
+                        "role": role or "unregistered",
+                        "ingested": False,
+                        "execution_authorized": False,
+                        "evidence_state": "refused",
+                        "production_fusion_enabled": False,
+                    },
+                )
+                return
             result = run_live_range_scan(
                 self._live_db_path(),
                 eve_path=REPO_ROOT / "docker" / "range" / "eve" / "eve.json",
@@ -1201,6 +1238,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                     src_ip="172.29.0.10",
                     dst_ip="172.29.0.20",
                     repo_root=REPO_ROOT,
+                    actor_id=verified_actor,
                 )
                 if launched.get("flow_id"):
                     result = {
@@ -1420,6 +1458,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 query=str(req_data.get("query") or ""),
                 rule_format=str(req_data.get("format") or "both"),
                 guide_id=str(req_data.get("guide_id") or ""),
+                technique_id=str(req_data.get("technique_id") or "") or None,
             )
             self._send_json(int(result.get("http_status") or 200), result)
             return
@@ -1811,6 +1850,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 "role_insufficient_for_soar",
             }:
                 status = 403
+            elif result.get("http_status") == 409 or result.get("reason") in {
+                "audit_chain_invalid",
+                "audit_chain_tampered",
+            }:
+                status = 409
             elif (
                 result.get("evidence_state") == "verified"
                 or result.get("callback_recorded") is True
@@ -1939,17 +1983,28 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
             verified_actor, role, _auth_method = self._verified_operator_identity(req_data)
-            if not verified_actor or role not in {
-                "soc_approver",
-                "tier1_triage",
-                "auditor_readonly",
-                "compliance_auditor",
-            }:
+            if not verified_actor:
                 self._send_json(
                     401,
                     {
                         "error": "authentication_required",
+                        "reason": "authentication_required",
                         "evidence_state": "unavailable",
+                        "execution_authorized": False,
+                        "production_fusion_enabled": False,
+                    },
+                )
+                return
+            if role != "soc_approver":
+                self._send_json(
+                    403,
+                    {
+                        "error": "role_insufficient_for_soar",
+                        "reason": "role_insufficient_for_soar",
+                        "actor_id": verified_actor,
+                        "role": role or "unregistered",
+                        "evidence_state": "refused",
+                        "execution_authorized": False,
                         "production_fusion_enabled": False,
                     },
                 )
@@ -1960,6 +2015,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 src_ip=str(req_data.get("src_ip") or ""),
                 dst_ip=str(req_data.get("dst_ip") or ""),
                 repo_root=REPO_ROOT,
+                actor_id=verified_actor,
             )
             self._send_json(int(result.get("http_status") or 400), result)
             return

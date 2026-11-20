@@ -68,8 +68,28 @@ SOAR/range routes, fixed linear alert-fatigue funnel math and real-IP copilot
 grounding, aligned AE observatory labels and DNN imputation/unit metadata,
 escaped frontend TheHive labels with server-side case ID validation, routed all
 clipboard writes through `copyTextBlock()`, and hardened Azure/cloud deployment
-scripts. Frozen model digests, Gate G9, and `production_fusion_enabled=False`
-remain unchanged; `TF-008` through `TF-011` stay open.
+scripts. On 2026-11-21 the cloud-hardening and P0-P2 war-room remediation pass
+guarded `CANONICAL_PROTECTED_WORKSPACE` against `/opt/threatfusion`
+self-collision, replaced the 3s campaign polling interval with a non-overlapping
+12s recursive `setTimeout` and a manual Refresh Queue toolbar control synced
+with `1B`/`1C` replays, shrank cloud deploy uploads via `--exclude='data/raw'`,
+forwarded runtime Gemini/sensor/DB settings into mode-0600 victim `.env`,
+installed `threatfusion-eve-follower.service` on `/opt/threatfusion-venv/bin/python`
+with `scikit-learn==1.9.0`/`threadpoolctl==3.6.0`, added a 90s bounded retry
+loop for `--simulate-attack`, filtered Azure WireServer (`168.63.129.16`) and
+IMDS (`169.254.169.254`) probes as bridge noise, locked `/api/range/launch`,
+`/api/v1/live/range/launch-vector`, and `/api/v1/live/range-scan` to
+authenticated `soc_approver` RBAC, added plain-HTTP SOAR 403 refusal messages
+for `operator_not_enrolled` and `operator_identity_unverified`, preserved
+`ai_governance_controls` on `/api/v1/live/campaigns` and poll merges while
+exposing `model_used` on `/api/v1/live/advisory-trace`, made `copyTextBlock()`
+always return a `Promise` with clipboard toast feedback, switched Hunter flow
+readers to read-only SQLite `mode=ro` while fixing backslash truncation, explicit
+`technique_id`, `INV-4` preservation, and `hunt-t1498` UDP/TCP matching, and
+hardened fuzzing edges (`bool` feature rejection, `/0` CIDR rejection, portless
+ICMP EVE flows, and HTTP 409 on tampered ledger callback dispatch). Frozen model
+digests, Gate G9, and `production_fusion_enabled=False` remain unchanged;
+`TF-008` through `TF-011` stay open.
 RFC W46-01 adds a lab-only hunt pack runner, a read-only ATT&CK/CVE coverage
 heatmap, and a journal/table timeline toggle. Hunt rows are labeled
 `LAB HYPOTHESIS — NOT AN ALERT` and are hashed into a separate chain file.

@@ -32,6 +32,7 @@ CLOUD_ENV_FILE="${ROOT}/.env.cloud"
 STACK_SECRET_KEYS=(
   THREATFUSION_MISP_API_KEY
   THREATFUSION_SOAR_HMAC_SECRET
+  THREATFUSION_SENSOR_INGEST_TOKEN
   THREATFUSION_THEHIVE_SECRET
   THREATFUSION_THEHIVE_API_KEY
   THREATFUSION_N8N_USER
@@ -640,9 +641,35 @@ load_cloud_env_file() {
     key="${line%%=*}"
     value="${line#*=}"
     case "$key" in
-      THREATFUSION_MISP_API_KEY|THREATFUSION_SOAR_HMAC_SECRET|THREATFUSION_THEHIVE_SECRET|THREATFUSION_THEHIVE_API_KEY|THREATFUSION_N8N_USER|THREATFUSION_N8N_PASSWORD)
+      THREATFUSION_MISP_API_KEY|THREATFUSION_SOAR_HMAC_SECRET|THREATFUSION_SENSOR_INGEST_TOKEN|THREATFUSION_THEHIVE_SECRET|THREATFUSION_THEHIVE_API_KEY|THREATFUSION_N8N_USER|THREATFUSION_N8N_PASSWORD)
         if [[ -z "${!key:-}" ]]; then
           export "${key}=${value}"
+        fi
+        ;;
+    esac
+  done < "$env_file"
+}
+
+load_local_gemini_env() {
+  local env_file="$1" line key value
+  [[ -f "$env_file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    [[ "$line" == export\ * ]] && line="${line#export }"
+    [[ "$line" == *=* ]] || continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="${key%"${key##*[![:space:]]}"}"
+    case "$key" in
+      GEMINI_API_KEY|GEMINI_MODEL|GEMINI_ENABLED)
+        if [[ ${#value} -ge 2 && ( "$value" == \"*\" || "$value" == \'*\' ) ]]; then
+          value="${value:1:${#value}-2}"
+        fi
+        if [[ -z "${!key:-}" && -n "$value" ]]; then
+          printf -v "$key" '%s' "$value"
+          export "${key?}"
         fi
         ;;
     esac
@@ -768,6 +795,7 @@ fi
 python3 - <<'PY'
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 candidates = (
@@ -777,28 +805,40 @@ candidates = (
     Path("/opt/threatfusion/alerts.sqlite3"),
     Path("/var/lib/threatfusion/live_console.sqlite3"),
 )
-found = None
-for path in candidates:
-    if path.is_file():
-        found = path
+deadline = time.monotonic() + 90.0
+count = 0
+while True:
+    max_count = 0
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2.0)
+        except sqlite3.Error:
+            continue
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            if "live_flows" in tables:
+                max_count = max(
+                    max_count,
+                    int(conn.execute("SELECT COUNT(*) FROM live_flows").fetchone()[0]),
+                )
+            if "alerts" in tables:
+                max_count = max(
+                    max_count,
+                    int(conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]),
+                )
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    count = max_count
+    if count > 0 or time.monotonic() >= deadline:
         break
-if found is None:
-    print("stored_rows=0")
-    sys.exit(1)
-conn = sqlite3.connect(f"file:{found}?mode=ro", uri=True)
-try:
-    tables = {
-        row[0]
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    }
-    if "alerts" in tables:
-        count = conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
-    elif "live_flows" in tables:
-        count = conn.execute("SELECT COUNT(*) FROM live_flows").fetchone()[0]
-    else:
-        count = 0
-finally:
-    conn.close()
+    time.sleep(2.0)
 print(f"stored_rows={int(count)}")
 if int(count) <= 0:
     sys.exit(1)
@@ -829,13 +869,14 @@ deploy_full_stack() {
   install_attacker_tooling
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "dry-run: deploy_full_stack preflight passed."
-    echo "dry-run: rsync repo to victim:/opt/threatfusion excluding .git venv __pycache__ .env"
+    echo "dry-run: rsync repo to victim:/opt/threatfusion excluding .git data/raw data/interim *.npy venv __pycache__ .env"
     echo "dry-run: THREATFUSION_ENV=production docker compose restart: unless-stopped"
-    echo "dry-run: start Suricata eve.json bridge and require HTTP 200"
+    echo "dry-run: install and enable threatfusion-eve-follower.service with /opt/threatfusion-venv/bin/python"
     echo "dry-run: poll /readyz then ssh -N -L 8766:127.0.0.1:8766"
     verify_live_flow_bridge
     return 0
   fi
+  load_local_gemini_env "${ROOT}/.env"
   target="$(victim_ssh_target)"
   env_file="$(mktemp)"
   chmod 600 "$env_file"
@@ -843,20 +884,34 @@ deploy_full_stack() {
   cat > "$env_file" <<EOF
 THREATFUSION_ENV=production
 THREATFUSION_DATA_DIR=/var/lib/threatfusion
+THREATFUSION_LIVE_CONSOLE_DB=/var/lib/threatfusion/threatfusion-live-console.sqlite3
 THREATFUSION_MISP_API_KEY=${THREATFUSION_MISP_API_KEY:-}
 THREATFUSION_SOAR_HMAC_SECRET=${THREATFUSION_SOAR_HMAC_SECRET:-}
+THREATFUSION_SENSOR_INGEST_TOKEN=${THREATFUSION_SENSOR_INGEST_TOKEN:-}
 THREATFUSION_THEHIVE_SECRET=${THREATFUSION_THEHIVE_SECRET:-}
 THREATFUSION_THEHIVE_API_KEY=${THREATFUSION_THEHIVE_API_KEY:-}
 THREATFUSION_N8N_USER=${THREATFUSION_N8N_USER:-}
 THREATFUSION_N8N_PASSWORD=${THREATFUSION_N8N_PASSWORD:-}
 TF_ADMIN_EMAIL=${TF_ADMIN_EMAIL:-muhammad.bilal@nu.edu.pk}
 TF_ADMIN_SECRET=${TF_ADMIN_SECRET:-}
+GEMINI_ENABLED=${GEMINI_ENABLED:-false}
 EOF
+  if [[ -n "${GEMINI_API_KEY:-}" ]]; then
+    printf 'GEMINI_API_KEY=%s\n' "${GEMINI_API_KEY}" >> "$env_file"
+  fi
+  if [[ -n "${GEMINI_MODEL:-}" ]]; then
+    printf 'GEMINI_MODEL=%s\n' "${GEMINI_MODEL}" >> "$env_file"
+  fi
   # shellcheck disable=SC2046
   ssh $(ssh_base) "$target" "sudo mkdir -p /opt/threatfusion /opt/threatfusion-venv /var/lib/threatfusion && sudo chown -R \$(id -u):\$(id -g) /opt/threatfusion /opt/threatfusion-venv /var/lib/threatfusion && chmod 700 /var/lib/threatfusion"
   mapfile -t ssh_args < <(ssh_base)
   tar -C "$ROOT" \
     --exclude .git \
+    --exclude='data/raw' \
+    --exclude='data/interim' \
+    --exclude='*.npy' \
+    --exclude='artifacts/reports/network_cic_external_evaluation' \
+    --exclude='artifacts/reports/network_classical_evaluation' \
     --exclude threatfusion-venv \
     --exclude .venv \
     --exclude venv \
@@ -876,7 +931,7 @@ chmod 600 .env
 sudo mkdir -p /var/lib/threatfusion
 sudo chown "$(id -u):$(id -g)" /var/lib/threatfusion
 chmod 700 /var/lib/threatfusion
-echo "[1/5] Allocating 4GB swapfile"
+echo "[1/6] Allocating 4GB swapfile"
 if ! swapon --show | grep -q '/swapfile'; then
   if [[ ! -f /swapfile ]]; then
     sudo fallocate -l 4G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
@@ -888,7 +943,7 @@ if ! swapon --show | grep -q '/swapfile'; then
     echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
   fi
 fi
-echo "[2/5] Installing packages non-interactively"
+echo "[2/6] Installing packages non-interactively"
 if command -v apt-get >/dev/null 2>&1; then
   sudo DEBIAN_FRONTEND=noninteractive apt-get update -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
@@ -896,12 +951,12 @@ if command -v apt-get >/dev/null 2>&1; then
   sudo systemctl enable --now docker
   sudo systemctl enable --now suricata || true
 fi
-echo "[3/5] Starting SOC stack without a second publisher on port 5678"
+echo "[3/6] Starting SOC stack without a second publisher on port 5678"
 sudo docker compose --env-file .env -f docker/docker-compose.soc-stack.yml up -d
 if [[ -f docker/docker-compose.n8n.yml ]] && ! grep -q '5678:5678' docker/docker-compose.soc-stack.yml; then
   sudo docker compose --env-file .env -f docker/docker-compose.n8n.yml up -d
 fi
-echo "[4/5] Preparing virtualenv and PyTorch wheel"
+echo "[4/6] Preparing virtualenv and PyTorch wheel"
 if [[ ! -x /opt/threatfusion-venv/bin/python ]]; then
   python3 -m venv /opt/threatfusion-venv
   /opt/threatfusion-venv/bin/pip install --upgrade pip
@@ -910,7 +965,11 @@ if [[ ! -x /opt/threatfusion-venv/bin/python ]]; then
   else
     /opt/threatfusion-venv/bin/pip install --no-cache-dir 'torch>=2.1,<2.7'
   fi
-  /opt/threatfusion-venv/bin/pip install 'pandas>=2,<3' 'pydantic>=2,<3' 'pydantic-settings>=2,<3' 'PyYAML>=6,<7' 'scikit-learn>=1.5'
+  /opt/threatfusion-venv/bin/pip install 'pandas>=2,<3' 'pydantic>=2,<3' 'pydantic-settings>=2,<3' 'PyYAML>=6,<7' 'scikit-learn==1.9.0' 'threadpoolctl==3.6.0'
+else
+  if ! /opt/threatfusion-venv/bin/python -c "import sklearn, threadpoolctl; assert sklearn.__version__ == '1.9.0' and threadpoolctl.__version__ == '3.6.0'" >/dev/null 2>&1; then
+    /opt/threatfusion-venv/bin/pip install 'scikit-learn==1.9.0' 'threadpoolctl==3.6.0'
+  fi
 fi
 cat > /opt/threatfusion/run-console-watchdog.sh <<'WATCH'
 #!/bin/bash
@@ -921,6 +980,7 @@ set -a
 set +a
 export THREATFUSION_ENV=production
 export THREATFUSION_DATA_DIR="${THREATFUSION_DATA_DIR:-/var/lib/threatfusion}"
+export THREATFUSION_LIVE_CONSOLE_DB="${THREATFUSION_LIVE_CONSOLE_DB:-/var/lib/threatfusion/threatfusion-live-console.sqlite3}"
 mkdir -p "$THREATFUSION_DATA_DIR"
 chmod 700 "$THREATFUSION_DATA_DIR"
 export PYTHONPATH=/opt/threatfusion/backend/src
@@ -943,13 +1003,13 @@ else
   nohup /opt/threatfusion/run-console-watchdog.sh >/var/lib/threatfusion/watchdog.log 2>&1 &
   echo $! > /var/lib/threatfusion/console-watchdog.pid
 fi
-echo "[5/5] Polling /readyz for up to 180s"
+echo "[5/6] Polling /readyz for up to 180s"
 python3 - <<'PY'
 import time, urllib.request
 deadline = time.time() + 180
 started = time.time()
 last = ""
-print("[5/5] polling /readyz (deadline 180s)", flush=True)
+print("[5/6] polling /readyz (deadline 180s)", flush=True)
 while time.time() < deadline:
     try:
         with urllib.request.urlopen("http://127.0.0.1:8766/readyz", timeout=3) as response:
@@ -961,11 +1021,36 @@ while time.time() < deadline:
     except Exception as exc:
         last = str(exc)
     elapsed = int(time.time() - started)
-    print(f"[5/5] /readyz waiting {elapsed}s", flush=True)
+    print(f"[5/6] /readyz waiting {elapsed}s", flush=True)
     time.sleep(2)
 print(last)
 raise SystemExit(1)
 PY
+echo "[6/6] Installing and enabling threatfusion-eve-follower.service"
+sudo install -d -m 0755 /var/log/suricata
+if [[ ! -f /var/log/suricata/eve.json ]]; then
+  sudo touch /var/log/suricata/eve.json
+fi
+sudo tee /etc/systemd/system/threatfusion-eve-follower.service >/dev/null <<'UNIT'
+[Unit]
+Description=ThreatFusion Suricata EVE follower
+After=network-online.target suricata.service
+
+[Service]
+WorkingDirectory=/opt/threatfusion
+EnvironmentFile=/opt/threatfusion/.env
+Environment=PYTHONPATH=/opt/threatfusion/backend/src
+ExecStart=/opt/threatfusion-venv/bin/python /opt/threatfusion/scripts/follow_suricata_eve.py --eve /var/log/suricata/eve.json --console-url http://127.0.0.1:8766/api/v1/live/sensor
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+sudo systemctl daemon-reload
+sudo systemctl enable --now suricata || true
+sudo systemctl enable --now threatfusion-eve-follower.service
 REMOTE
   # shellcheck disable=SC2046
   ssh -N -L 8766:127.0.0.1:8766 -o ExitOnForwardFailure=yes $(ssh_base) -f "$target"
