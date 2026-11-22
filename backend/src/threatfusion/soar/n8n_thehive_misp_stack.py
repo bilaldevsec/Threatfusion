@@ -29,36 +29,75 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import stat
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import urllib.error
 import urllib.request
 import uuid
 
-from threatfusion.advisory.explanation_engine import (
-    AdvisoryEvidenceBundle,
-    FourBlockInvestigationAnatomy,
-    build_four_block_investigation_anatomy,
+from threatfusion.db.sqlite_permissions import (
+    ensure_secure_parent_dir,
+    harden_sqlite_permissions,
+    precreate_sqlite_0600,
+    scoped_umask_077,
 )
+from threatfusion.operations.http_egress import EgressBlockedError, safe_urlopen
 from threatfusion.soar.playbook_ledger import (
     SoarPlaybookRecord,
     SoarPlaybookSqliteRepository,
     SoarStateTransitionError,
 )
 
+if TYPE_CHECKING:
+    from threatfusion.advisory.explanation_engine import (
+        AdvisoryEvidenceBundle,
+        FourBlockInvestigationAnatomy,
+    )
+
 UTC = timezone.utc
+
+_PLACEHOLDER_API_KEYS: frozenset[str] = frozenset(
+    {
+        "",
+        "threatfusion_misp_auth_key",
+        "threatfusion_thehive_api_key",
+        "changeme",
+        "placeholder",
+    }
+)
+_HEX_HASH_RE = re.compile(r"^(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{40}|[0-9a-fA-F]{64}|[0-9a-fA-F]{128})$")
+_SINGLE_LABEL_RE = re.compile(r"^[A-Za-z0-9-]+$")
+_INTERNAL_HOST_SUFFIXES: tuple[str, ...] = (".local", ".internal", ".localhost", ".localdomain")
+
+
+def _allow_loopback_egress() -> bool:
+    return os.environ.get("THREATFUSION_ENV", "lab").strip().lower() != "production"
+
+
+def _is_placeholder_or_empty_key(api_key: str | None) -> bool:
+    return str(api_key or "").strip().lower() in _PLACEHOLDER_API_KEYS
 
 
 def _connect_durable_sqlite(db_path: Path) -> sqlite3.Connection:
-    """Open a product SQLite file with a 5s busy timeout and WAL journaling."""
-    conn = sqlite3.connect(str(db_path), timeout=5.0)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 5000")
-    previous_isolation = conn.isolation_level
-    conn.isolation_level = None
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.isolation_level = previous_isolation
+    """Open a product SQLite file with a 5s busy timeout, WAL journaling, and 0600 perms."""
+    ensure_secure_parent_dir(db_path.parent)
+    try:
+        info = db_path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise sqlite3.OperationalError("sqlite path is not a regular file")
+    except FileNotFoundError:
+        precreate_sqlite_0600(db_path)
+    with scoped_umask_077():
+        conn = sqlite3.connect(str(db_path), timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 5000")
+        previous_isolation = conn.isolation_level
+        conn.isolation_level = None
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.isolation_level = previous_isolation
+    harden_sqlite_permissions(db_path)
     return conn
 
 
@@ -99,7 +138,9 @@ CANONICAL_MISP_SNAPSHOT: dict[str, dict[str, Any]] = {
 
 
 _RFC1918_AND_ULA = (
+    ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("100.64.0.0/10"),
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("fc00::/7"),
@@ -107,13 +148,12 @@ _RFC1918_AND_ULA = (
 
 
 def is_rfc1918_or_loopback_ip(ip_str: str) -> bool:
-    """Return True for RFC1918, IPv6 ULA, loopback, and link-local addresses.
+    """Return True for RFC1918, ULA, CGNAT, loopback, link-local, multicast, reserved, unspecified.
 
     Documentation ranges such as 198.51.100.0/24 and 203.0.113.0/24 are not
     RFC1918. Python's ``ipaddress`` ``is_private`` flag includes them, so this
-    check does not use that flag. Loopback (127.0.0.0/8, ::1) and link-local
-    (169.254.0.0/16, fe80::/10) are refused with the private ranges. An
-    IPv4-mapped IPv6 address is judged by the embedded IPv4 address.
+    check does not use that flag. An IPv4-mapped IPv6 address is judged by the
+    embedded IPv4 address.
     """
     try:
         parsed = ipaddress.ip_address(ip_str.strip())
@@ -121,7 +161,13 @@ def is_rfc1918_or_loopback_ip(ip_str: str) -> bool:
         return False
     if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
         parsed = parsed.ipv4_mapped
-    if parsed.is_loopback or parsed.is_link_local:
+    if (
+        parsed.is_loopback
+        or parsed.is_link_local
+        or parsed.is_multicast
+        or parsed.is_reserved
+        or parsed.is_unspecified
+    ):
         return True
     return any(
         parsed.version == network.version and parsed in network for network in _RFC1918_AND_ULA
@@ -174,13 +220,11 @@ class MispDeterministicClient:
     ) -> None:
         self.misp_url = misp_url.rstrip("/")
         self.api_key = (
-            api_key
-            if api_key is not None
-            else os.environ.get("THREATFUSION_MISP_API_KEY", "threatfusion_misp_auth_key")
-        )
+            api_key if api_key is not None else os.environ.get("THREATFUSION_MISP_API_KEY", "")
+        ).strip()
         self.outbox_db_path = Path(outbox_db_path) if outbox_db_path else None
         if self.outbox_db_path:
-            self.outbox_db_path.parent.mkdir(parents=True, exist_ok=True)
+            ensure_secure_parent_dir(self.outbox_db_path.parent)
             self._init_outbox()
 
     def _init_outbox(self) -> None:
@@ -200,8 +244,7 @@ class MispDeterministicClient:
                     created_at_utc TEXT NOT NULL
                 )
             """)
-        if self.outbox_db_path.exists():
-            os.chmod(self.outbox_db_path, stat.S_IRUSR | stat.S_IWUSR)
+        harden_sqlite_permissions(self.outbox_db_path)
 
     def query_indicator(
         self,
@@ -210,13 +253,24 @@ class MispDeterministicClient:
     ) -> MispQueryResult:
         """Query MISP for an indicator (IP or hash).
 
-        Enforces RFC1918 Guard: private/loopback IPs are never sent externally.
+        Enforces RFC1918 Guard: private/loopback IPs and internal hostnames are never sent externally.
         """
         clean_ind = indicator.strip()
         now_str = datetime.now(UTC).isoformat()
 
         from threatfusion.correlation.misp_client import external_lookup_allowed
 
+        lower_host = clean_ind.lower().rstrip(".")
+        is_valid_hex_hash = _HEX_HASH_RE.fullmatch(clean_ind) is not None
+        internal_hostname = (
+            lower_host == "localhost"
+            or lower_host.endswith(_INTERNAL_HOST_SUFFIXES)
+            or (
+                not is_valid_hex_hash
+                and bool(clean_ind)
+                and _SINGLE_LABEL_RE.fullmatch(clean_ind) is not None
+            )
+        )
         address_attempt = (
             "ip" in indicator_type.lower()
             or clean_ind.lower() == "localhost"
@@ -226,7 +280,7 @@ class MispDeterministicClient:
             or "." in clean_ind
             or ":" in clean_ind
         )
-        if address_attempt and not external_lookup_allowed(clean_ind):
+        if internal_hostname or (address_attempt and not external_lookup_allowed(clean_ind)):
             res = MispQueryResult(
                 indicator=clean_ind,
                 indicator_type=indicator_type,
@@ -237,6 +291,22 @@ class MispDeterministicClient:
                 private_ip_guard_triggered=True,
                 query_mode="rfc1918_guard_suppressed",
                 timestamp_utc=now_str,
+            )
+            self._record_query(res)
+            return res
+
+        if _is_placeholder_or_empty_key(self.api_key):
+            res = MispQueryResult(
+                indicator=clean_ind,
+                indicator_type=indicator_type,
+                matched=False,
+                threat_level="undefined",
+                tags=(),
+                event_id=None,
+                private_ip_guard_triggered=False,
+                query_mode="offline_snapshot_unverified",
+                timestamp_utc=now_str,
+                transport_error="misp_api_key_unconfigured",
             )
             self._record_query(res)
             return res
@@ -257,7 +327,12 @@ class MispDeterministicClient:
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=1.0) as resp:
+            with safe_urlopen(
+                req,
+                timeout=1.0,
+                max_bytes=1_048_576,
+                allow_loopback=_allow_loopback_egress(),
+            ) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 attrs = data.get("response", {}).get("Attribute", [])
                 matched = len(attrs) > 0
@@ -279,6 +354,7 @@ class MispDeterministicClient:
                 self._record_query(res)
                 return res
         except (
+            EgressBlockedError,
             urllib.error.URLError,
             TimeoutError,
             ConnectionError,
@@ -327,6 +403,7 @@ class MispDeterministicClient:
                     res.timestamp_utc,
                 ),
             )
+        harden_sqlite_permissions(self.outbox_db_path)
 
 
 # =============================================================================
@@ -379,14 +456,16 @@ class TheHiveDeterministicClient:
     def __init__(
         self,
         thehive_url: str = DEFAULT_THEHIVE_URL,
-        api_key: str = "threatfusion_thehive_api_key",
+        api_key: str | None = None,
         outbox_db_path: Path | str | None = None,
     ) -> None:
         self.thehive_url = thehive_url.rstrip("/")
-        self.api_key = api_key
+        self.api_key = (
+            api_key if api_key is not None else os.environ.get("THREATFUSION_THEHIVE_API_KEY", "")
+        ).strip()
         self.outbox_db_path = Path(outbox_db_path) if outbox_db_path else None
         if self.outbox_db_path:
-            self.outbox_db_path.parent.mkdir(parents=True, exist_ok=True)
+            ensure_secure_parent_dir(self.outbox_db_path.parent)
             self._init_outbox()
 
     def _init_outbox(self) -> None:
@@ -407,8 +486,7 @@ class TheHiveDeterministicClient:
                     created_at_utc TEXT NOT NULL
                 )
             """)
-        if self.outbox_db_path.exists():
-            os.chmod(self.outbox_db_path, stat.S_IRUSR | stat.S_IWUSR)
+        harden_sqlite_permissions(self.outbox_db_path)
 
     def create_case_from_soar(
         self,
@@ -423,12 +501,66 @@ class TheHiveDeterministicClient:
         anatomy: FourBlockInvestigationAnatomy | None = None,
         bundle: AdvisoryEvidenceBundle | None = None,
     ) -> TheHiveCaseRecord:
-        """Create a TheHive case from an authenticated, approved SOAR record."""
-        # 1. Enforce Mandatory Approval Gate
+        """Create a TheHive case from an authenticated, repository-verified approved SOAR record."""
+        from threatfusion.advisory.explanation_engine import (
+            AdvisoryEvidenceBundle as _AdvisoryEvidenceBundle,
+            build_four_block_investigation_anatomy as _build_four_block_anatomy,
+        )
+
+        # 1. Reload authoritative record from repository & enforce Mandatory Approval Gate
         if soar_record.state not in ("approved", "executed_simulated"):
             raise SoarStateTransitionError(
                 f"TheHive case creation rejected: SOAR record '{soar_record.playbook_id}' "
                 f"state is '{soar_record.state}' (must be approved or executed_simulated)"
+            )
+        db_record = soar_repo.get_record(soar_record.playbook_id)
+        if db_record is None:
+            raise SoarStateTransitionError(
+                f"TheHive case creation rejected: SOAR record '{soar_record.playbook_id}' "
+                "not found in authoritative repository"
+            )
+        if (
+            db_record.candidate_id != soar_record.candidate_id
+            or db_record.target_entity != soar_record.target_entity
+            or db_record.action_type != soar_record.action_type
+        ):
+            raise SoarStateTransitionError(
+                f"TheHive case creation rejected: SOAR record '{soar_record.playbook_id}' "
+                "fields do not match authoritative repository record"
+            )
+        has_verified_approval_history = db_record.state in (
+            "approved",
+            "executed_simulated",
+        ) or (
+            db_record.state == "rolled_back"
+            and any(
+                ev.get("new_state") == "approved"
+                for ev in soar_repo.list_audit_events(db_record.playbook_id)
+            )
+        )
+        if not has_verified_approval_history:
+            raise SoarStateTransitionError(
+                f"TheHive case creation rejected: SOAR record '{db_record.playbook_id}' "
+                f"state is '{db_record.state}' (must be approved or executed_simulated)"
+            )
+        if db_record.state == "rolled_back":
+            db_record = SoarPlaybookRecord(
+                playbook_id=db_record.playbook_id,
+                candidate_id=db_record.candidate_id,
+                action_type=db_record.action_type,
+                target_entity=db_record.target_entity,
+                state=soar_record.state,
+                version=soar_record.version,
+                actor_id=db_record.actor_id,
+                decision_reason=db_record.decision_reason,
+                pre_action_snapshot=db_record.pre_action_snapshot,
+                execution_evidence=db_record.execution_evidence,
+                rollback_reason=db_record.rollback_reason,
+                created_at_utc=db_record.created_at_utc,
+                updated_at_utc=db_record.updated_at_utc,
+                t_approval_queued=db_record.t_approval_queued,
+                t_callback_verified=db_record.t_callback_verified,
+                t_response=db_record.t_response,
             )
 
         # 2. Enforce Cryptographic Audit Hash Chain Gate
@@ -441,23 +573,23 @@ class TheHiveDeterministicClient:
 
         # 3. Grounded 4-Block Investigation Case Anatomy
         if anatomy is None:
-            eff_bundle = bundle or AdvisoryEvidenceBundle(
-                candidate_id=soar_record.candidate_id,
-                record_id=soar_record.candidate_id,
+            eff_bundle = bundle or _AdvisoryEvidenceBundle(
+                candidate_id=db_record.candidate_id,
+                record_id=db_record.candidate_id,
                 rf_model_version="full-network-random-forest-6d69c72-v1",
                 rf_attack_probability=rf_confidence_pct / 100.0,
                 rf_threshold=0.5000,
                 top_feature_signals={"sbytes": 1250.0},
                 incident_id=incident_id,
             )
-            anatomy = build_four_block_investigation_anatomy(
+            anatomy = _build_four_block_anatomy(
                 eff_bundle,
-                soar_record=soar_record,
+                soar_record=db_record,
                 soar_repo=soar_repo,
                 audit_chain_valid=ok,
             )
 
-        case_id = f"case_{soar_record.candidate_id.replace(':', '_')}_{uuid.uuid4().hex[:6]}"
+        case_id = f"case_{db_record.candidate_id.replace(':', '_')}_{uuid.uuid4().hex[:6]}"
         now_str = datetime.now(UTC).isoformat()
         severity = 3 if rf_confidence_pct >= 80.0 else 2
 
@@ -465,8 +597,8 @@ class TheHiveDeterministicClient:
             "threatfusion:alert",
             f"rf_confidence:{rf_confidence_pct:.1f}%",
             f"queue_rank:{queue_priority_rank}",
-            f"soar_playbook:{soar_record.playbook_id}",
-            f"action:{soar_record.action_type}",
+            f"soar_playbook:{db_record.playbook_id}",
+            f"action:{db_record.action_type}",
         ]
         if incident_id:
             all_tags.append(f"incident:{incident_id}")
@@ -478,13 +610,13 @@ class TheHiveDeterministicClient:
         observables = (
             {
                 "dataType": "ip",
-                "data": soar_record.target_entity,
-                "message": f"Target entity associated with {soar_record.action_type}",
+                "data": db_record.target_entity,
+                "message": f"Target entity associated with {db_record.action_type}",
                 "tags": ["target_entity"],
             },
             {
                 "dataType": "other",
-                "data": soar_record.candidate_id,
+                "data": db_record.candidate_id,
                 "message": "ThreatFusion Alert Candidate ID",
                 "tags": ["candidate_id"],
             },
@@ -492,13 +624,13 @@ class TheHiveDeterministicClient:
 
         description = (
             f"ThreatFusion Autonomous Security Operations Alert.\n"
-            f"Candidate: {soar_record.candidate_id}\n"
-            f"Playbook: {soar_record.playbook_id} ({soar_record.action_type})\n"
-            f"Target Entity: {soar_record.target_entity}\n"
+            f"Candidate: {db_record.candidate_id}\n"
+            f"Playbook: {db_record.playbook_id} ({db_record.action_type})\n"
+            f"Target Entity: {db_record.target_entity}\n"
             f"Primary RF Confidence: {rf_confidence_pct:.2f}%\n"
             f"Non-Fused Queue Priority Rank: #{queue_priority_rank}\n"
-            f"Approved by Actor: {soar_record.actor_id}\n"
-            f"Approval Reason: {soar_record.decision_reason}\n"
+            f"Approved by Actor: {db_record.actor_id}\n"
+            f"Approval Reason: {db_record.decision_reason}\n"
             f"Cryptographic Audit Chain: VERIFIED\n\n"
             f"--- 4-Block Investigation Anatomy ---\n"
             f"Block 1 (Executive Summary): {anatomy.block_1_executive_summary.risk_level} | RF {anatomy.block_1_executive_summary.rf_probability:.4f} | {anatomy.block_1_executive_summary.recall_gain_badge}\n"
@@ -507,7 +639,7 @@ class TheHiveDeterministicClient:
             f"Block 4 (Cryptographic SOAR Status): {anatomy.block_4_cryptographic_soar_status.playbook_id} [{anatomy.block_4_cryptographic_soar_status.playbook_state}] | Audit Chain Valid={anatomy.block_4_cryptographic_soar_status.audit_chain_valid}"
         )
 
-        title = f"[ThreatFusion] {soar_record.action_type.upper()}: {soar_record.target_entity} ({rf_confidence_pct:.1f}%)"
+        title = f"[ThreatFusion] {db_record.action_type.upper()}: {db_record.target_entity} ({rf_confidence_pct:.1f}%)"
 
         payload = {
             "title": title,
@@ -521,32 +653,41 @@ class TheHiveDeterministicClient:
             "four_block_anatomy": anatomy.to_dict(),
         }
 
-        # Attempt REST dispatch
+        # Attempt REST dispatch (refuse empty/placeholder key without network traffic)
         status = "queued_offline"
         transport_error: str | None = None
-        req = urllib.request.Request(
-            f"{self.thehive_url}/api/v1/case",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=1.0) as resp:
-                if resp.status in (200, 201):
-                    status = "created_live"
-        except (
-            urllib.error.URLError,
-            TimeoutError,
-            ConnectionError,
-            OSError,
-            ValueError,
-            json.JSONDecodeError,
-        ) as exc:
-            status = "queued_offline"
-            transport_error = f"{type(exc).__name__}: {str(exc)[:100]}"
+        if _is_placeholder_or_empty_key(self.api_key):
+            transport_error = "thehive_api_key_unconfigured"
+        else:
+            req = urllib.request.Request(
+                f"{self.thehive_url}/api/v1/case",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            try:
+                with safe_urlopen(
+                    req,
+                    timeout=1.0,
+                    max_bytes=1_048_576,
+                    allow_loopback=_allow_loopback_egress(),
+                ) as resp:
+                    if resp.status in (200, 201):
+                        status = "created_live"
+            except (
+                EgressBlockedError,
+                urllib.error.URLError,
+                TimeoutError,
+                ConnectionError,
+                OSError,
+                ValueError,
+                json.JSONDecodeError,
+            ) as exc:
+                status = "queued_offline"
+                transport_error = f"{type(exc).__name__}: {str(exc)[:100]}"
 
         rec = TheHiveCaseRecord(
             case_id=case_id,
@@ -591,6 +732,7 @@ class TheHiveDeterministicClient:
                     rec.created_at_utc,
                 ),
             )
+        harden_sqlite_permissions(self.outbox_db_path)
 
 
 # =============================================================================
@@ -659,7 +801,7 @@ class N8nDeterministicPlaybookClient:
         self.secret_key = resolved_secret.strip()
         self.outbox_db_path = Path(outbox_db_path) if outbox_db_path else None
         if self.outbox_db_path:
-            self.outbox_db_path.parent.mkdir(parents=True, exist_ok=True)
+            ensure_secure_parent_dir(self.outbox_db_path.parent)
             self._init_outbox()
 
     def _init_outbox(self) -> None:
@@ -680,8 +822,7 @@ class N8nDeterministicPlaybookClient:
                     created_at_utc TEXT NOT NULL
                 )
             """)
-        if self.outbox_db_path.exists():
-            os.chmod(self.outbox_db_path, stat.S_IRUSR | stat.S_IWUSR)
+        harden_sqlite_permissions(self.outbox_db_path)
 
     def trigger_soar_playbook(
         self,
@@ -695,11 +836,60 @@ class N8nDeterministicPlaybookClient:
         mitre_technique_id: str = "T1046",
     ) -> N8nPlaybookExecutionReceipt:
         """Trigger deterministic n8n webhook playbook signed with HMAC-SHA256."""
-        # 1. Enforce Mandatory Approval Gate
+        # 1. Reload authoritative record from repository & enforce Mandatory Approval Gate
         if soar_record.state not in ("approved", "executed_simulated"):
             raise SoarStateTransitionError(
                 f"Cannot trigger n8n playbook: record '{soar_record.playbook_id}' "
                 f"state is '{soar_record.state}' (must be approved or executed_simulated)"
+            )
+        db_record = soar_repo.get_record(soar_record.playbook_id)
+        if db_record is None:
+            raise SoarStateTransitionError(
+                f"Cannot trigger n8n playbook: record '{soar_record.playbook_id}' "
+                "not found in authoritative repository"
+            )
+        if (
+            db_record.candidate_id != soar_record.candidate_id
+            or db_record.target_entity != soar_record.target_entity
+            or db_record.action_type != soar_record.action_type
+        ):
+            raise SoarStateTransitionError(
+                f"Cannot trigger n8n playbook: record '{soar_record.playbook_id}' "
+                "fields do not match authoritative repository record"
+            )
+        has_verified_approval_history = db_record.state in (
+            "approved",
+            "executed_simulated",
+        ) or (
+            db_record.state == "rolled_back"
+            and any(
+                ev.get("new_state") == "approved"
+                for ev in soar_repo.list_audit_events(db_record.playbook_id)
+            )
+        )
+        if not has_verified_approval_history:
+            raise SoarStateTransitionError(
+                f"Cannot trigger n8n playbook: record '{db_record.playbook_id}' "
+                f"state is '{db_record.state}' (must be approved or executed_simulated)"
+            )
+        if db_record.state == "rolled_back":
+            db_record = SoarPlaybookRecord(
+                playbook_id=db_record.playbook_id,
+                candidate_id=db_record.candidate_id,
+                action_type=db_record.action_type,
+                target_entity=db_record.target_entity,
+                state=soar_record.state,
+                version=soar_record.version,
+                actor_id=db_record.actor_id,
+                decision_reason=db_record.decision_reason,
+                pre_action_snapshot=db_record.pre_action_snapshot,
+                execution_evidence=db_record.execution_evidence,
+                rollback_reason=db_record.rollback_reason,
+                created_at_utc=db_record.created_at_utc,
+                updated_at_utc=db_record.updated_at_utc,
+                t_approval_queued=db_record.t_approval_queued,
+                t_callback_verified=db_record.t_callback_verified,
+                t_response=db_record.t_response,
             )
 
         # 2. Enforce Cryptographic Audit Hash Chain Gate
@@ -711,18 +901,18 @@ class N8nDeterministicPlaybookClient:
             )
 
         execution_id = f"exec_{uuid.uuid4().hex[:12]}"
-        idempotency_key = f"idem_{soar_record.playbook_id}_{soar_record.version}"
+        idempotency_key = f"idem_{db_record.playbook_id}_{db_record.version}"
         now_str = datetime.now(UTC).isoformat()
 
         payload: dict[str, Any] = {
             "execution_id": execution_id,
-            "playbook_id": soar_record.playbook_id,
-            "candidate_id": soar_record.candidate_id,
-            "action_type": soar_record.action_type,
-            "target_entity": soar_record.target_entity,
-            "soar_state": soar_record.state,
-            "actor_id": soar_record.actor_id,
-            "decision_reason": soar_record.decision_reason,
+            "playbook_id": db_record.playbook_id,
+            "candidate_id": db_record.candidate_id,
+            "action_type": db_record.action_type,
+            "target_entity": db_record.target_entity,
+            "soar_state": db_record.state,
+            "actor_id": db_record.actor_id,
+            "decision_reason": db_record.decision_reason,
             "rf_confidence_pct": rf_confidence_pct,
             "queue_priority_rank": queue_priority_rank,
             "incident_id": incident_id,
@@ -756,10 +946,16 @@ class N8nDeterministicPlaybookClient:
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=1.0) as resp:
+            with safe_urlopen(
+                req,
+                timeout=1.0,
+                max_bytes=1_048_576,
+                allow_loopback=_allow_loopback_egress(),
+            ) as resp:
                 if resp.status in (200, 201, 204):
                     status = "dispatched_live"
         except (
+            EgressBlockedError,
             urllib.error.URLError,
             TimeoutError,
             ConnectionError,
@@ -773,10 +969,10 @@ class N8nDeterministicPlaybookClient:
         receipt = N8nPlaybookExecutionReceipt(
             execution_id=execution_id,
             webhook_url=target_endpoint,
-            playbook_id=soar_record.playbook_id,
-            candidate_id=soar_record.candidate_id,
-            action_type=soar_record.action_type,
-            target_entity=soar_record.target_entity,
+            playbook_id=db_record.playbook_id,
+            candidate_id=db_record.candidate_id,
+            action_type=db_record.action_type,
+            target_entity=db_record.target_entity,
             idempotency_key=idempotency_key,
             signature_sha256=signature,
             status=status,
@@ -812,6 +1008,7 @@ class N8nDeterministicPlaybookClient:
                     rec.dispatched_at_utc,
                 ),
             )
+        harden_sqlite_permissions(self.outbox_db_path)
 
 
 def lookup_durable_dispatch(outbox_db_path: Path | str, idempotency_key: str) -> dict[str, Any]:
@@ -821,7 +1018,7 @@ def lookup_durable_dispatch(outbox_db_path: Path | str, idempotency_key: str) ->
     database or row stays unavailable.
     """
     path = Path(outbox_db_path)
-    if not path.is_file():
+    if not path.is_file() or path.is_symlink():
         return {
             "evidence_state": "unavailable",
             "status": None,
@@ -829,7 +1026,9 @@ def lookup_durable_dispatch(outbox_db_path: Path | str, idempotency_key: str) ->
             "retry_requires_new_approval": False,
         }
     try:
-        conn = _connect_durable_sqlite(path)
+        uri = f"{path.resolve().as_uri()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=5.0)
+        conn.row_factory = sqlite3.Row
         try:
             row = conn.execute(
                 """

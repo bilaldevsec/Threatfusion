@@ -30,6 +30,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator
 
+from threatfusion.operations._posix_safety import (
+    normalize_darwin_system_prefix,
+    open_private_leaf_nofollow,
+)
+
 UTC = timezone.utc
 
 
@@ -91,6 +96,7 @@ def _directory_context(directory: Path, *, write: bool = True) -> Generator[int,
         directory = Path(directory)
     if not directory.is_absolute() or ".." in directory.parts:
         raise StorageBackupError("directory_invalid")
+    directory = normalize_darwin_system_prefix(directory)
 
     try:
         fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
@@ -143,6 +149,7 @@ def _ensure_private_directory(directory: Path) -> None:
         directory = Path(directory)
     if not directory.is_absolute() or ".." in directory.parts:
         raise StorageBackupError("directory_invalid")
+    directory = normalize_darwin_system_prefix(directory)
 
     if not directory.exists():
         parent = directory.parent
@@ -411,32 +418,41 @@ def _check_cross_database_consistency(
 
 def _write_manifest(snapshot_dir: Path, manifest_data: dict[str, object]) -> None:
     """Atomically write and fsync manifest.json with mode 0600."""
+    snapshot_dir = normalize_darwin_system_prefix(snapshot_dir)
     manifest_bytes = (json.dumps(manifest_data, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if len(manifest_bytes) > MAX_MANIFEST_BYTES:
         raise StorageBackupError("manifest_too_large")
 
-    tmp_path = snapshot_dir / f".{MANIFEST_FILENAME}.tmp.{uuid.uuid4().hex}"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
     try:
-        fd = os.open(tmp_path, flags, 0o600)
+        dfd = os.open(snapshot_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError:
-        raise StorageBackupError("file_invalid") from None
+        raise StorageBackupError("directory_invalid") from None
 
+    tmp_name = f".{MANIFEST_FILENAME}.tmp.{uuid.uuid4().hex}"
     try:
-        os.fchmod(fd, 0o600)
-        os.write(fd, manifest_bytes)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+        try:
+            fd = open_private_leaf_nofollow(
+                dfd, tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+            )
+        except OSError:
+            raise StorageBackupError("file_invalid") from None
 
-    manifest_path = snapshot_dir / MANIFEST_FILENAME
-    try:
-        os.replace(tmp_path, manifest_path)
-    except OSError:
-        raise StorageBackupError("file_invalid") from None
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, manifest_bytes)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
-    dfd = os.open(snapshot_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
+        try:
+            os.replace(tmp_name, MANIFEST_FILENAME, src_dir_fd=dfd, dst_dir_fd=dfd)
+        except OSError:
+            try:
+                os.unlink(tmp_name, dir_fd=dfd)
+            except OSError:
+                pass
+            raise StorageBackupError("file_invalid") from None
+
         os.fsync(dfd)
     finally:
         os.close(dfd)
@@ -527,6 +543,9 @@ def create_storage_snapshot(
         incidents_path=incidents_path,
     )
 
+    if target_snapshot_dir.is_absolute() and ".." not in target_snapshot_dir.parts:
+        target_snapshot_dir = normalize_darwin_system_prefix(target_snapshot_dir)
+
     _ensure_private_directory(target_snapshot_dir)
 
     with _directory_context(target_snapshot_dir, write=True):
@@ -579,6 +598,8 @@ def create_storage_snapshot(
 def verify_storage_snapshot(snapshot_dir: Path | str) -> dict[str, object]:
     """Verify cryptographic digests, schema versions, and referential integrity of a snapshot."""
     target_snapshot_dir = Path(snapshot_dir) if not isinstance(snapshot_dir, Path) else snapshot_dir
+    if target_snapshot_dir.is_absolute() and ".." not in target_snapshot_dir.parts:
+        target_snapshot_dir = normalize_darwin_system_prefix(target_snapshot_dir)
 
     with _directory_context(target_snapshot_dir, write=False):
         all_entries = os.listdir(target_snapshot_dir)
@@ -693,19 +714,24 @@ def restore_storage_snapshot(
     if resolved_target_dir is None:
         raise StorageBackupError("target_directory_missing")
 
+    if resolved_snapshot_dir.is_absolute() and ".." not in resolved_snapshot_dir.parts:
+        resolved_snapshot_dir = normalize_darwin_system_prefix(resolved_snapshot_dir)
+    if resolved_target_dir.is_absolute() and ".." not in resolved_target_dir.parts:
+        resolved_target_dir = normalize_darwin_system_prefix(resolved_target_dir)
+
     manifest = verify_storage_snapshot(resolved_snapshot_dir)
 
     with _directory_context(resolved_target_dir, write=True) as target_fd:
         for role in manifest["databases"]:
             filename = EXPECTED_DB_FILENAMES[role]
             src_file = resolved_snapshot_dir / filename
-            dest_file = resolved_target_dir / filename
-            tmp_file = resolved_target_dir / f".{filename}.tmp.{uuid.uuid4().hex}"
+            tmp_name = f".{filename}.tmp.{uuid.uuid4().hex}"
 
             try:
-                tfd = os.open(
-                    tmp_file,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                tfd = open_private_leaf_nofollow(
+                    target_fd,
+                    tmp_name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                     0o600,
                 )
             except OSError:
@@ -721,8 +747,12 @@ def restore_storage_snapshot(
                 os.close(tfd)
 
             try:
-                os.replace(tmp_file, dest_file)
+                os.replace(tmp_name, filename, src_dir_fd=target_fd, dst_dir_fd=target_fd)
             except OSError:
+                try:
+                    os.unlink(tmp_name, dir_fd=target_fd)
+                except OSError:
+                    pass
                 raise StorageBackupError("file_invalid") from None
 
             for sidecar in (f"{filename}-wal", f"{filename}-shm"):

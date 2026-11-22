@@ -13,7 +13,6 @@
     return String(meta.getAttribute('content') || '');
   }
   let liveCsrfToken = embeddedLiveCsrf();
-  let rbacSessionToken = '';
   let sessionIdentity = null;
   let latestDualFirewallProbe = null;
   let latestAzureRollback = false;
@@ -23,11 +22,10 @@
   const AZURE_LOCAL_CONTAINMENT_BADGE = 'CONTAINMENT APPLIED — Source 172.29.0.10 blocked at Azure & Local firewall (iptables DROP active).';
   let selectedFlowId = null;
   let identityGateSwitchMode = false;
-  const RBAC_SESSION_KEYS = ['threatfusion.rbac.session'];
   const nativeFetch = window.fetch.bind(window);
   async function ensureLiveCsrf() {
     if (liveCsrfToken) return liveCsrfToken;
-    const response = await nativeFetch('/api/v1/live/health');
+    const response = await nativeFetch('/api/v1/live/health', { credentials: 'same-origin' });
     if (!response.ok) return '';
     const payload = await response.json();
     liveCsrfToken = payload && payload.csrf_token ? String(payload.csrf_token) : '';
@@ -48,8 +46,8 @@
       if (!liveCsrfToken) await ensureLiveCsrf();
       if (liveCsrfToken) headers.set('X-ThreatFusion-CSRF', liveCsrfToken);
     }
-    if (rbacSessionToken && target.indexOf('/api/') !== -1) {
-      headers.set('X-ThreatFusion-Session', rbacSessionToken);
+    if (target.indexOf('/api/') !== -1) {
+      opts.credentials = opts.credentials || 'same-origin';
     }
     opts.headers = headers;
     return nativeFetch(url, opts);
@@ -5995,7 +5993,7 @@
   }
 
   function isSessionAuthenticated() {
-    return !!(sessionIdentity && sessionIdentity.authenticated === true && rbacSessionToken);
+    return !!(sessionIdentity && sessionIdentity.authenticated === true);
   }
 
   function renderActiveSessionCard() {
@@ -6101,41 +6099,27 @@
     syncIdentityGateControls();
   }
 
-  function rememberSession(token) {
-    rbacSessionToken = token || '';
+  function clearLegacyClientSessionStorage() {
     try {
-      if (rbacSessionToken) {
-        sessionStorage.setItem('threatfusion.rbac.session', rbacSessionToken);
-        localStorage.setItem('threatfusion.rbac.session', rbacSessionToken);
-      } else {
-        sessionStorage.removeItem('threatfusion.rbac.session');
-        localStorage.removeItem('threatfusion.rbac.session');
-      }
+      sessionStorage.removeItem('threatfusion.rbac.session');
+      localStorage.removeItem('threatfusion.rbac.session');
     } catch (err) {
-      rbacSessionToken = token || '';
-    }
-  }
-
-  function readStoredSessionToken() {
-    try {
-      return sessionStorage.getItem('threatfusion.rbac.session')
-        || localStorage.getItem('threatfusion.rbac.session')
-        || '';
-    } catch (err) {
-      return '';
+      // Ignore storage access errors; sessions use HttpOnly cookies exclusively.
     }
   }
 
   function applyAuthenticatedSession(data) {
+    clearLegacyClientSessionStorage();
     if (!data || data.authenticated !== true) {
       sessionIdentity = null;
-      rememberSession('');
       paintOperatorBadge('unverified local label', false);
       renderActiveSessionCard();
       return;
     }
     sessionIdentity = data;
-    rememberSession(data.session_token || rbacSessionToken);
+    if (data.csrf_token) {
+      liveCsrfToken = String(data.csrf_token);
+    }
     applyOperatorSelection(data.actor_id || '', data.display_name || '');
     paintSessionIdentity(sessionIdentity);
     const select = document.getElementById('operatorRoleSelect');
@@ -6151,22 +6135,13 @@
   }
 
   async function refreshRbacSession() {
+    clearLegacyClientSessionStorage();
     try {
-      if (!rbacSessionToken) rbacSessionToken = readStoredSessionToken();
-    } catch (err) {
-      rbacSessionToken = rbacSessionToken || '';
-    }
-    if (!rbacSessionToken) {
-      sessionIdentity = null;
-      return;
-    }
-    try {
-      const resp = await fetch('/api/rbac/session');
+      const resp = await fetch('/api/rbac/session', { credentials: 'same-origin' });
       const data = await readActionPayload(resp);
       if (data && data.authenticated === true) applyAuthenticatedSession(data);
       else {
         sessionIdentity = null;
-        rememberSession('');
         paintOperatorBadge('unverified local label', false);
       }
     } catch (err) {
@@ -6243,7 +6218,7 @@
       identityStatus('Sign-out unavailable.', 'unavailable');
     }
     sessionIdentity = null;
-    rememberSession('');
+    clearLegacyClientSessionStorage();
     paintOperatorBadge('unverified local label', false);
     identityStatus('Signed out. Authenticate to re-enter the SOC console.', 'unavailable');
     identityGateSwitchMode = false;

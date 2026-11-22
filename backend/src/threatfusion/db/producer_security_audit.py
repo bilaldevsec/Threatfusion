@@ -19,6 +19,12 @@ from threatfusion.api.producer_admission import (
     REGISTERED_UNSW_SOURCE_CONTRACT,
 )
 from threatfusion.db.alert_repository import SQLITE_BUSY_TIMEOUT_MS
+from threatfusion.db.sqlite_permissions import (
+    ensure_secure_parent_dir,
+    harden_sqlite_permissions,
+    precreate_sqlite_0600,
+    scoped_umask_077,
+)
 
 UTC = timezone.utc
 
@@ -382,14 +388,16 @@ class ProducerSecurityAuditRepository:
 
     def _connect(self) -> sqlite3.Connection:
         try:
-            connection = sqlite3.connect(
-                self._database_path,
-                timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
-                isolation_level=None,
-            )
-            connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+            with scoped_umask_077():
+                connection = sqlite3.connect(
+                    self._database_path,
+                    timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
+                    isolation_level=None,
+                )
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA foreign_keys = ON")
+                connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+            harden_sqlite_permissions(self._database_path)
             return connection
         except sqlite3.Error:
             raise ProducerSecurityAuditError("audit_unavailable") from None
@@ -401,26 +409,31 @@ class ProducerSecurityAuditRepository:
                 existed = True
                 if not stat.S_ISREG(information.st_mode) or information.st_size == 0:
                     raise ProducerSecurityAuditError("audit_corrupt")
+                ensure_secure_parent_dir(self._database_path.parent)
             except FileNotFoundError:
                 existed = False
-                self._database_path.parent.mkdir(parents=True, exist_ok=True)
-            connection = self._connect()
-            try:
-                self._verify_integrity(connection)
-                if not existed:
-                    connection.execute("BEGIN EXCLUSIVE")
-                    connection.execute(_CREATE_METADATA)
-                    connection.execute(_CREATE_EVENTS)
-                    connection.execute(_CREATE_ORDER_INDEX)
-                    connection.execute(
-                        "INSERT INTO audit_metadata(key, value) VALUES (?, ?)",
-                        ("schema_identity", AUDIT_REPOSITORY_SCHEMA_IDENTITY),
-                    )
-                    connection.execute(f"PRAGMA user_version = {AUDIT_REPOSITORY_SCHEMA_VERSION}")
-                    connection.commit()
-                self._verify_schema(connection)
-            finally:
-                connection.close()
+                precreate_sqlite_0600(self._database_path)
+            with scoped_umask_077():
+                connection = self._connect()
+                try:
+                    self._verify_integrity(connection)
+                    if not existed:
+                        connection.execute("BEGIN EXCLUSIVE")
+                        connection.execute(_CREATE_METADATA)
+                        connection.execute(_CREATE_EVENTS)
+                        connection.execute(_CREATE_ORDER_INDEX)
+                        connection.execute(
+                            "INSERT INTO audit_metadata(key, value) VALUES (?, ?)",
+                            ("schema_identity", AUDIT_REPOSITORY_SCHEMA_IDENTITY),
+                        )
+                        connection.execute(
+                            f"PRAGMA user_version = {AUDIT_REPOSITORY_SCHEMA_VERSION}"
+                        )
+                        connection.commit()
+                    self._verify_schema(connection)
+                finally:
+                    connection.close()
+                    harden_sqlite_permissions(self._database_path)
         except ProducerSecurityAuditError:
             raise
         except (OSError, sqlite3.DatabaseError):

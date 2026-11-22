@@ -21,6 +21,12 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
+from threatfusion.db.sqlite_permissions import (
+    ensure_secure_parent_dir,
+    harden_sqlite_permissions,
+    precreate_sqlite_0600,
+    scoped_umask_077,
+)
 from threatfusion.models.drift_and_supply_chain import (
     FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY,
     verify_frozen_model_supply_chain,
@@ -118,8 +124,81 @@ def apply_posture_to_index(page: str) -> str:
     return rendered
 
 
+def configured_allowed_hosts() -> frozenset[str]:
+    """Parse THREATFUSION_ALLOWED_HOSTS into a normalized lowercase frozenset."""
+    raw = os.environ.get("THREATFUSION_ALLOWED_HOSTS", "")
+    hosts: list[str] = []
+    for item in raw.split(","):
+        token = item.strip().lower()
+        if token:
+            hosts.append(token)
+    return frozenset(hosts)
+
+
+def configured_trusted_proxies() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """Parse THREATFUSION_TRUSTED_PROXIES into valid IPv4/IPv6 CIDR networks."""
+    raw = os.environ.get("THREATFUSION_TRUSTED_PROXIES", "")
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for item in raw.split(","):
+        token = item.strip()
+        if not token:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(token, strict=False))
+        except ValueError:
+            continue
+    return tuple(networks)
+
+
+def _parse_ip(raw: str | None) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    try:
+        parsed = ipaddress.ip_address(text)
+    except ValueError:
+        return None
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
+        return parsed.ipv4_mapped
+    return parsed
+
+
+def is_trusted_proxy_ip(peer_ip: str) -> bool:
+    """Return True iff peer_ip falls inside a configured THREATFUSION_TRUSTED_PROXIES CIDR."""
+    parsed = _parse_ip(peer_ip)
+    if parsed is None:
+        return False
+    for net in configured_trusted_proxies():
+        if parsed.version == net.version and parsed in net:
+            return True
+    return False
+
+
+def resolve_client_ip(peer_ip: str, x_forwarded_for: str | None) -> str:
+    """Return rightmost non-trusted valid IP from X-Forwarded-For only if peer_ip is trusted."""
+    peer_text = str(peer_ip or "").strip()
+    if not is_trusted_proxy_ip(peer_text) or not x_forwarded_for:
+        return peer_text
+    trusted_nets = configured_trusted_proxies()
+    seen_valid: list[str] = []
+    for raw_hop in reversed(str(x_forwarded_for).split(",")):
+        hop_ip = _parse_ip(raw_hop)
+        if hop_ip is None:
+            return peer_text
+        hop_str = str(hop_ip)
+        seen_valid.append(hop_str)
+        is_trusted_hop = any(
+            hop_ip.version == net.version and hop_ip in net for net in trusted_nets
+        )
+        if not is_trusted_hop:
+            return hop_str
+    return seen_valid[-1] if seen_valid else peer_text
+
+
 def resolve_data_dir() -> Path:
-    """Prefer THREATFUSION_DATA_DIR, then /var/lib/threatfusion, then the lab tmp dir."""
+    """Prefer THREATFUSION_DATA_DIR, then /var/lib/threatfusion; fail closed in production."""
     configured = os.environ.get("THREATFUSION_DATA_DIR", "").strip()
     if configured:
         path = Path(configured)
@@ -131,13 +210,14 @@ def resolve_data_dir() -> Path:
             probe = preferred / ".write_probe"
             probe.write_text("ok", encoding="utf-8")
             probe.unlink()
-        except OSError:
+        except OSError as exc:
+            if threatfusion_environment() == "production":
+                raise RuntimeError(
+                    "THREATFUSION_DATA_DIR must be set or /var/lib/threatfusion must be "
+                    "writable in production"
+                ) from exc
             path = Path("/tmp/threatfusion-range-demo")
-    path.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(path, 0o700)
-    except OSError:
-        pass
+    ensure_secure_parent_dir(path)
     return path
 
 
@@ -302,19 +382,18 @@ def append_auth_event(
     client_ip: str = "",
     detail: str = "",
 ) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), timeout=5.0)
-    try:
-        apply_sqlite_pragmas(conn)
-        record_auth_event(conn, event_type, username, client_ip, detail)
-        conn.commit()
-    finally:
-        conn.close()
-    if db_path.exists():
+    ensure_secure_parent_dir(db_path.parent)
+    if not db_path.exists() and not db_path.is_symlink():
+        precreate_sqlite_0600(db_path)
+    with scoped_umask_077():
+        conn = sqlite3.connect(str(db_path), timeout=5.0)
         try:
-            os.chmod(db_path, stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:
-            pass
+            apply_sqlite_pragmas(conn)
+            record_auth_event(conn, event_type, username, client_ip, detail)
+            conn.commit()
+        finally:
+            conn.close()
+            harden_sqlite_permissions(db_path)
 
 
 class LoginRateLimiter:
@@ -596,46 +675,46 @@ def seed_chromadb(db_path: Path) -> dict[str, Any]:
         ChromaDbMitrePlaybookRag,
     )
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    ChromaDbMitrePlaybookRag(db_path)
-    conn = sqlite3.connect(str(db_path), timeout=5.0)
-    try:
-        apply_sqlite_pragmas(conn)
-        count = int(conn.execute("SELECT COUNT(*) FROM chroma_embeddings").fetchone()[0])
-        conn.commit()
-    finally:
-        conn.close()
-    try:
-        os.chmod(db_path, stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        pass
+    ensure_secure_parent_dir(db_path.parent)
+    if not db_path.exists() and not db_path.is_symlink():
+        precreate_sqlite_0600(db_path)
+    with scoped_umask_077():
+        ChromaDbMitrePlaybookRag(db_path)
+        conn = sqlite3.connect(str(db_path), timeout=5.0)
+        try:
+            apply_sqlite_pragmas(conn)
+            count = int(conn.execute("SELECT COUNT(*) FROM chroma_embeddings").fetchone()[0])
+            conn.commit()
+        finally:
+            conn.close()
+            harden_sqlite_permissions(db_path)
     expected = len(CANONICAL_MITRE_AND_PLAYBOOK_CORPUS)
     return {"ready": count >= expected and count > 0, "documents": count}
 
 
 def _sqlite_wal_writable(db_path: Path) -> bool:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), timeout=5.0)
-    try:
-        apply_sqlite_pragmas(conn)
-        mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS readyz_probe (
-                id INTEGER PRIMARY KEY,
-                note TEXT NOT NULL
-            )
-            """)
-        conn.execute("INSERT INTO readyz_probe (note) VALUES ('readyz')")
-        conn.execute("DELETE FROM readyz_probe WHERE note = 'readyz'")
-        conn.commit()
-    except sqlite3.Error:
-        return False
-    finally:
-        conn.close()
-    try:
-        os.chmod(db_path, stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        pass
+    ensure_secure_parent_dir(db_path.parent)
+    if not db_path.exists() and not db_path.is_symlink():
+        precreate_sqlite_0600(db_path)
+    with scoped_umask_077():
+        conn = sqlite3.connect(str(db_path), timeout=5.0)
+        try:
+            apply_sqlite_pragmas(conn)
+            mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS readyz_probe (
+                    id INTEGER PRIMARY KEY,
+                    note TEXT NOT NULL
+                )
+                """)
+            conn.execute("INSERT INTO readyz_probe (note) VALUES ('readyz')")
+            conn.execute("DELETE FROM readyz_probe WHERE note = 'readyz'")
+            conn.commit()
+        except sqlite3.Error:
+            return False
+        finally:
+            conn.close()
+            harden_sqlite_permissions(db_path)
     return mode == "wal"
 
 
@@ -679,31 +758,30 @@ def build_readiness(repo_root: Path, db_path: Path) -> dict[str, Any]:
 def prepare_cold_boot(data_dir: Path, repo_root: Path) -> dict[str, Any]:
     """Empty data directory: 0700 dir, WAL, immutable auth triggers, HMAC, ChromaDB."""
     directory = Path(data_dir)
-    directory.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(directory, 0o700)
-    except OSError:
-        pass
+    ensure_secure_parent_dir(directory)
     hmac_path = ensure_hmac_secret(directory)
     db_path = directory / "threatfusion-live-console.sqlite3"
-    conn = sqlite3.connect(str(db_path), timeout=5.0)
-    try:
-        apply_sqlite_pragmas(conn)
-        ensure_auth_audit_schema(conn)
-        record_auth_event(conn, "operator_registered", "cold-boot", "127.0.0.1", "schema")
-        journal = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
-        synchronous = int(conn.execute("PRAGMA synchronous").fetchone()[0])
-        busy = int(conn.execute("PRAGMA busy_timeout").fetchone()[0])
-        triggers = [
-            str(row[0])
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name"
-            )
-        ]
-        conn.commit()
-    finally:
-        conn.close()
-    os.chmod(db_path, stat.S_IRUSR | stat.S_IWUSR)
+    if not db_path.exists() and not db_path.is_symlink():
+        precreate_sqlite_0600(db_path)
+    with scoped_umask_077():
+        conn = sqlite3.connect(str(db_path), timeout=5.0)
+        try:
+            apply_sqlite_pragmas(conn)
+            ensure_auth_audit_schema(conn)
+            record_auth_event(conn, "operator_registered", "cold-boot", "127.0.0.1", "schema")
+            journal = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+            synchronous = int(conn.execute("PRAGMA synchronous").fetchone()[0])
+            busy = int(conn.execute("PRAGMA busy_timeout").fetchone()[0])
+            triggers = [
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name"
+                )
+            ]
+            conn.commit()
+        finally:
+            conn.close()
+            harden_sqlite_permissions(db_path)
     chroma = seed_chromadb(directory / "chromadb_vectors.sqlite3")
     return {
         "data_dir": str(directory),

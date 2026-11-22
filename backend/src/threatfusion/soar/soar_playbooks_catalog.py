@@ -7,6 +7,7 @@ The preview does not execute the script and does not change a firewall.
 from __future__ import annotations
 
 import ast
+import ipaddress
 from typing import Any
 
 _DEFAULT_DPORT = {
@@ -75,14 +76,33 @@ def technique_for_flow(*, decision: str, case_title: str, playbook_id: str) -> s
     return "T1498"
 
 
+def _validated_ip(raw: str, *, allow_empty_default: bool = False) -> str:
+    text = str(raw or "").strip()
+    if not text and allow_empty_default:
+        return "0.0.0.0"
+    try:
+        return str(ipaddress.ip_address(text))
+    except ValueError as exc:
+        raise ValueError("invalid_ip_address") from exc
+
+
 def firewall_rule_preview(*, technique: str, src_ip: str, proto: str, dport: int) -> str:
     if technique == "BENIGN":
         return "noop: benign flow, no iptables change"
-    return f"iptables -I INPUT 1 -s {src_ip} -p {proto} --dport {dport} -j DROP"
+    validated_ip = _validated_ip(src_ip)
+    safe_proto = str(proto or "").strip().lower()
+    if safe_proto not in {"tcp", "udp", "icmp"}:
+        raise ValueError("invalid_protocol")
+    safe_dport = int(dport)
+    if not 1 <= safe_dport <= 65535:
+        raise ValueError("invalid_dport")
+    return f"iptables -I INPUT 1 -s {validated_ip} -p {safe_proto} --dport {safe_dport} -j DROP"
 
 
 def render_python_playbook(technique: str, fields: dict[str, Any]) -> str:
     """Return a syntax-clean responder populated with this flow's live values."""
+    if technique != "BENIGN":
+        _validated_ip(str(fields.get("src_ip") or ""))
     spec = _PLAYBOOKS[technique]
     source = f'''"""ThreatFusion lab SOAR responder {spec["script_filename"]}.
 
@@ -201,10 +221,12 @@ def preview_fields(
     spec = dict(_PLAYBOOKS[technique])
     safe_proto = proto if proto in {"tcp", "udp", "icmp"} else "tcp"
     safe_dport = dport if dport > 0 else int(_DEFAULT_DPORT[technique])
+    safe_src_ip = _validated_ip(src_ip, allow_empty_default=True)
+    safe_dst_ip = _validated_ip(dst_ip, allow_empty_default=True)
     fields = {
         "flow_id": int(flow_id),
-        "src_ip": src_ip or "0.0.0.0",
-        "dst_ip": dst_ip or "0.0.0.0",
+        "src_ip": safe_src_ip,
+        "dst_ip": safe_dst_ip,
         "sport": int(sport) if sport > 0 else 0,
         "dport": int(safe_dport),
         "proto": safe_proto,

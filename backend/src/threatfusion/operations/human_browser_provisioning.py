@@ -36,8 +36,20 @@ from typing import Generator
 from uuid import uuid4
 
 from threatfusion.operations import human_ca_issuance as ca_ops
+from threatfusion.operations._posix_safety import (
+    _resolve_openssl_bin,
+    _sterile_openssl_env,
+    normalize_darwin_system_prefix,
+    open_private_leaf_nofollow,
+)
 
 UTC = timezone.utc
+
+_STDLIB_SHUTIL_WHICH = shutil.which
+_HOMEBREW_NSS_BIN_DIRS: tuple[str, ...] = (
+    "/opt/homebrew/opt/nss/bin",
+    "/usr/local/opt/nss/bin",
+)
 
 
 PROFILE_MANIFEST_SCHEMA = "operator_human_firefox_profile_v1"
@@ -106,6 +118,7 @@ def _directory_context(directory: Path, *, write: bool = True) -> Generator[int,
         directory = Path(directory)
     if not directory.is_absolute() or ".." in directory.parts:
         raise HumanBrowserProvisioningError("directory_invalid")
+    directory = normalize_darwin_system_prefix(directory)
 
     try:
         fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
@@ -157,7 +170,7 @@ def _check_file_stat(
 ) -> os.stat_result:
     """Verify regular file, ownership, mode 0600, single link, and byte bound."""
     try:
-        file_fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+        file_fd = open_private_leaf_nofollow(dir_fd, filename, os.O_RDONLY | os.O_NONBLOCK)
     except OSError as err:
         if err.errno in (errno.ELOOP, errno.ENOTDIR):
             raise HumanBrowserProvisioningError("symlink_rejected") from None
@@ -183,7 +196,7 @@ def _check_file_stat(
 def _read_file(dir_fd: int, filename: str, max_bytes: int = MAX_MANIFEST_BYTES) -> bytes:
     """Read a bounded regular file under directory descriptor checks."""
     try:
-        file_fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+        file_fd = open_private_leaf_nofollow(dir_fd, filename, os.O_RDONLY | os.O_NONBLOCK)
     except OSError as err:
         if err.errno in (errno.ELOOP, errno.ENOTDIR):
             raise HumanBrowserProvisioningError("symlink_rejected") from None
@@ -212,7 +225,7 @@ def _read_file(dir_fd: int, filename: str, max_bytes: int = MAX_MANIFEST_BYTES) 
 def _hash_file(dir_fd: int, filename: str, max_bytes: int = MAX_DB_BYTES) -> str:
     """Compute SHA-256 digest of a regular file under directory descriptor checks."""
     try:
-        file_fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+        file_fd = open_private_leaf_nofollow(dir_fd, filename, os.O_RDONLY | os.O_NONBLOCK)
     except OSError as err:
         if err.errno in (errno.ELOOP, errno.ENOTDIR):
             raise HumanBrowserProvisioningError("symlink_rejected") from None
@@ -260,11 +273,11 @@ def _write_atomic_file(
 
     temp_name = f".tmp-{uuid4().hex}"
     try:
-        temp_fd = os.open(
+        temp_fd = open_private_leaf_nofollow(
+            dir_fd,
             temp_name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
             mode,
-            dir_fd=dir_fd,
         )
     except OSError:
         raise HumanBrowserProvisioningError("file_invalid") from None
@@ -305,9 +318,22 @@ def _validate_passphrase(passphrase: str) -> None:
         raise HumanBrowserProvisioningError("invalid_passphrase")
 
 
+def _resolve_nss_tool(name: str) -> str | None:
+    """Locate an NSS CLI binary on PATH, or Homebrew keg-only NSS dirs on macOS."""
+    found = shutil.which(name)
+    if found is not None:
+        return found
+    if sys.platform == "darwin" and shutil.which is _STDLIB_SHUTIL_WHICH:
+        for bindir in _HOMEBREW_NSS_BIN_DIRS:
+            candidate = os.path.join(bindir, name)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+    return None
+
+
 def _nss_tools_missing() -> bool:
     """True when this machine has no libnss3-tools binaries on PATH."""
-    return shutil.which("certutil") is None or shutil.which("pk12util") is None
+    return _resolve_nss_tool("certutil") is None or _resolve_nss_tool("pk12util") is None
 
 
 def _refuse_missing_nss_tools(
@@ -331,14 +357,15 @@ def _verify_pkcs12_passphrase(bundle_path: Path, passphrase: str) -> None:
     The passphrase is written only to OpenSSL stdin. A wrong passphrase returns
     invalid_passphrase even when libnss3-tools is not installed.
     """
+    openssl_bin = _resolve_openssl_bin()
     try:
         proc = subprocess.run(
-            ["openssl", "pkcs12", "-in", str(bundle_path), "-noout", "-passin", "stdin"],
+            [openssl_bin, "pkcs12", "-in", str(bundle_path), "-noout", "-passin", "stdin"],
             input=(passphrase + "\n").encode("utf-8"),
             capture_output=True,
             timeout=15.0,
             check=False,
-            env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+            env=_sterile_openssl_env(openssl_bin),
         )
     except (OSError, subprocess.SubprocessError):
         raise HumanBrowserProvisioningError("invalid_passphrase") from None
@@ -365,8 +392,13 @@ def _run_nss_command(
         if not isinstance(proc, subprocess.CompletedProcess):
             raise HumanBrowserProvisioningError("nss_tool_failed")
         return proc
+    raw_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    path_parts = [part for part in raw_path.split(os.pathsep) if part]
+    for nss_dir in _HOMEBREW_NSS_BIN_DIRS:
+        if nss_dir not in path_parts:
+            path_parts.append(nss_dir)
     env = {
-        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "PATH": os.pathsep.join(path_parts),
         "LC_ALL": "C",
     }
     try:
@@ -386,6 +418,8 @@ def _run_nss_command(
 def init_policy_directory(policy_dir: Path | str) -> Path:
     """Initialize a mode-0700 policy directory for operator credential enrollment."""
     p = Path(policy_dir) if not isinstance(policy_dir, Path) else policy_dir
+    if p.is_absolute() and ".." not in p.parts:
+        p = normalize_darwin_system_prefix(p)
     if p.is_symlink():
         raise HumanBrowserProvisioningError("symlink_rejected")
     p.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -421,6 +455,10 @@ def provision_firefox_profile(
         raise HumanBrowserProvisioningError("directory_invalid")
     if not p_dir.is_absolute() or ".." in p_dir.parts:
         raise HumanBrowserProvisioningError("directory_invalid")
+
+    c_dir = normalize_darwin_system_prefix(c_dir)
+    d_dir = normalize_darwin_system_prefix(d_dir)
+    p_dir = normalize_darwin_system_prefix(p_dir)
 
     if len({str(c_dir), str(d_dir), str(p_dir)}) != 3:
         raise HumanBrowserProvisioningError("directory_invalid")
@@ -573,7 +611,7 @@ def provision_firefox_profile(
                 # Enforce mode 0600 on NSS database files
                 for fname in (CERT9_DB_FILENAME, KEY4_DB_FILENAME, PKCS11_TXT_FILENAME):
                     _check_file_stat(p_fd, fname, MAX_DB_BYTES)
-                    f_fd = os.open(fname, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=p_fd)
+                    f_fd = open_private_leaf_nofollow(p_fd, fname, os.O_RDONLY)
                     try:
                         os.fchmod(f_fd, 0o600)
                     finally:
@@ -628,6 +666,7 @@ def verify_firefox_profile(
     p_dir = Path(profile_dir) if not isinstance(profile_dir, Path) else profile_dir
     if not p_dir.is_absolute() or ".." in p_dir.parts:
         raise HumanBrowserProvisioningError("directory_invalid")
+    p_dir = normalize_darwin_system_prefix(p_dir)
     with _directory_context(p_dir, write=False) as p_fd:
         # Check files inside profile directory
         entries = set(os.listdir(p_fd))
@@ -710,6 +749,7 @@ def verify_firefox_profile(
             d_dir = Path(delivery_dir) if not isinstance(delivery_dir, Path) else delivery_dir
             if not d_dir.is_absolute() or ".." in d_dir.parts:
                 raise HumanBrowserProvisioningError("directory_invalid")
+            d_dir = normalize_darwin_system_prefix(d_dir)
             try:
                 b_res = ca_ops.verify_client_bundle(d_dir, ca_dir=ca_dir)
             except ca_ops.HumanCaIssuanceError as err:
@@ -733,6 +773,7 @@ def verify_firefox_profile(
             c_dir = Path(ca_dir) if not isinstance(ca_dir, Path) else ca_dir
             if not c_dir.is_absolute() or ".." in c_dir.parts:
                 raise HumanBrowserProvisioningError("directory_invalid")
+            c_dir = normalize_darwin_system_prefix(c_dir)
             try:
                 c_res = ca_ops.verify_human_ca(c_dir)
             except ca_ops.HumanCaIssuanceError as err:

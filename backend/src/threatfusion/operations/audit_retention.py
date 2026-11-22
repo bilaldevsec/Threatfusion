@@ -21,6 +21,10 @@ from threatfusion.db.analyst_security_audit import (
     AUDIT_REPOSITORY_SCHEMA_IDENTITY,
     AUDIT_REPOSITORY_SCHEMA_VERSION,
 )
+from threatfusion.operations._posix_safety import (
+    normalize_darwin_system_prefix,
+    open_private_leaf_nofollow,
+)
 from threatfusion.schemas.analyst_state import is_utc
 
 UTC = timezone.utc
@@ -67,6 +71,7 @@ def _directory_context(directory: Path, *, write: bool = True) -> Generator[int,
         directory = Path(directory)
     if not directory.is_absolute() or ".." in directory.parts:
         raise AuditRetentionError("directory_invalid")
+    directory = normalize_darwin_system_prefix(directory)
 
     try:
         fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
@@ -114,6 +119,7 @@ def _validate_audit_db_path(db_path: Path | str) -> Path:
     path = Path(db_path) if not isinstance(db_path, Path) else db_path
     if not path.is_absolute() or ".." in path.parts:
         raise AuditRetentionError("directory_invalid")
+    path = normalize_darwin_system_prefix(path)
 
     # Walk ancestors to verify ownership & permissions
     try:
@@ -138,7 +144,7 @@ def _validate_audit_db_path(db_path: Path | str) -> Path:
 
         # Now check the target database file inside parent dir
         try:
-            file_fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+            file_fd = open_private_leaf_nofollow(fd, path.name, os.O_RDONLY)
         except OSError as err:
             if err.errno in (errno.ELOOP, errno.ENOTDIR):
                 raise AuditRetentionError("symlink_rejected") from None
@@ -203,7 +209,7 @@ def export_security_audit_archive(
         # Check archive_dir is clean of existing archive files
         for filename in (AUDIT_ARCHIVE_EVENTS_FILENAME, AUDIT_ARCHIVE_MANIFEST_FILENAME):
             try:
-                chk = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=arch_fd)
+                chk = open_private_leaf_nofollow(arch_fd, filename, os.O_RDONLY)
                 os.close(chk)
                 raise AuditRetentionError("archive_directory_not_empty")
             except FileNotFoundError:
@@ -255,11 +261,11 @@ def export_security_audit_archive(
                 raise AuditRetentionError("manifest_too_large")
 
             # Write audit_events.jsonl into archive_dir
-            events_fd = os.open(
+            events_fd = open_private_leaf_nofollow(
+                arch_fd,
                 AUDIT_ARCHIVE_EVENTS_FILENAME,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                 0o600,
-                dir_fd=arch_fd,
             )
             try:
                 os.fchmod(events_fd, 0o600)
@@ -286,11 +292,11 @@ def export_security_audit_archive(
             }
 
             raw_manifest = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode("utf-8")
-            m_fd = os.open(
+            m_fd = open_private_leaf_nofollow(
+                arch_fd,
                 AUDIT_ARCHIVE_MANIFEST_FILENAME,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                 0o600,
-                dir_fd=arch_fd,
             )
             try:
                 os.fchmod(m_fd, 0o600)
@@ -315,7 +321,7 @@ def verify_security_audit_archive(archive_dir: Path | str) -> dict[str, object]:
         # Check files inside archive_dir: only manifest.json and audit_events.jsonl allowed
         expected_files = {AUDIT_ARCHIVE_MANIFEST_FILENAME, AUDIT_ARCHIVE_EVENTS_FILENAME}
         try:
-            names = set(os.listdir(arch_dir))
+            names = set(os.listdir(arch_fd))
             if not expected_files.issubset(names) or not names.issubset(expected_files):
                 raise AuditRetentionError("archive_incomplete")
         except OSError:
@@ -323,10 +329,10 @@ def verify_security_audit_archive(archive_dir: Path | str) -> dict[str, object]:
 
         # Verify manifest.json
         try:
-            m_fd = os.open(
+            m_fd = open_private_leaf_nofollow(
+                arch_fd,
                 AUDIT_ARCHIVE_MANIFEST_FILENAME,
-                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                dir_fd=arch_fd,
+                os.O_RDONLY | os.O_NONBLOCK,
             )
         except FileNotFoundError:
             raise AuditRetentionError("archive_incomplete") from None
@@ -354,10 +360,10 @@ def verify_security_audit_archive(archive_dir: Path | str) -> dict[str, object]:
 
         # Verify audit_events.jsonl
         try:
-            e_fd = os.open(
+            e_fd = open_private_leaf_nofollow(
+                arch_fd,
                 AUDIT_ARCHIVE_EVENTS_FILENAME,
-                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                dir_fd=arch_fd,
+                os.O_RDONLY | os.O_NONBLOCK,
             )
         except FileNotFoundError:
             raise AuditRetentionError("archive_incomplete") from None
@@ -455,10 +461,10 @@ def prune_archived_security_audit(
 
     # Read events from verified archive
     with _directory_context(arch_dir, write=False) as arch_fd:
-        e_fd = os.open(
+        e_fd = open_private_leaf_nofollow(
+            arch_fd,
             AUDIT_ARCHIVE_EVENTS_FILENAME,
-            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-            dir_fd=arch_fd,
+            os.O_RDONLY | os.O_NONBLOCK,
         )
         try:
             raw_events = os.read(e_fd, MAX_ARCHIVE_EVENTS_BYTES + 1)

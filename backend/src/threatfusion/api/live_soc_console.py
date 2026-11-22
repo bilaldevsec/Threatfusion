@@ -21,6 +21,7 @@ import secrets
 import shutil
 import sqlite3
 import stat
+import sys
 import threading
 import time
 import urllib.error
@@ -36,7 +37,14 @@ from threatfusion.advisory.chromadb_mitre_rag import (
     CANONICAL_MITRE_AND_PLAYBOOK_CORPUS,
     ChromaDbMitrePlaybookRag,
 )
+from threatfusion.db.sqlite_permissions import (
+    ensure_secure_parent_dir,
+    harden_sqlite_permissions,
+    precreate_sqlite_0600,
+    scoped_umask_077,
+)
 from threatfusion.operations.bridge_noise import is_lab_bridge_noise
+from threatfusion.operations.http_egress import EgressBlockedError, safe_urlopen
 from threatfusion.models.drift_and_supply_chain import (
     CANONICAL_14_FEATURES,
     FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY,
@@ -122,73 +130,79 @@ def _add_missing_flow_columns(conn: sqlite3.Connection, existing: set[str]) -> N
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), timeout=5.0)
-    conn.row_factory = sqlite3.Row
-    with _SCHEMA_LOCK:
-        previous = conn.isolation_level
-        conn.isolation_level = None
-        conn.execute("PRAGMA busy_timeout = 5000")
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.isolation_level = previous
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS live_flows (
-                flow_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                observed_at_utc TEXT NOT NULL,
-                features_json TEXT NOT NULL,
-                rf_attack_probability REAL,
-                decision TEXT NOT NULL,
-                evidence_state TEXT NOT NULL,
-                reason TEXT NOT NULL,
-                model_sha256 TEXT NOT NULL,
-                production_fusion_enabled INTEGER NOT NULL
-            )
-            """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS analyst_notes (
-                note_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                flow_id INTEGER,
-                author_id TEXT NOT NULL,
-                note_text TEXT NOT NULL,
-                created_at_utc TEXT NOT NULL
-            )
-            """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS live_campaigns (
-                campaign_id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                source_label TEXT NOT NULL,
-                created_at_utc TEXT NOT NULL,
-                member_count INTEGER NOT NULL
-            )
-            """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS context_memory (
-                memory_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                entity_ip_or_subnet TEXT NOT NULL,
-                service_or_port TEXT NOT NULL DEFAULT '',
-                expected_behavior_rule TEXT NOT NULL,
-                created_from_flow_id INTEGER,
-                operator_id TEXT NOT NULL,
-                created_at_utc TEXT NOT NULL,
-                UNIQUE(entity_ip_or_subnet, service_or_port)
-            )
-            """)
-        existing = {row[1] for row in conn.execute("PRAGMA table_info(live_flows)")}
-        _add_missing_flow_columns(conn, existing)
-        conn.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS live_flows_source_event_id
-            ON live_flows(source_event_id)
-            WHERE source_event_id IS NOT NULL
-            """)
-        _ensure_enterprise_catalog(conn)
-        from threatfusion.operations.commercial_hardening import ensure_auth_audit_schema
+    ensure_secure_parent_dir(db_path.parent)
+    try:
+        info = db_path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise sqlite3.OperationalError("database path must be a regular file")
+    except FileNotFoundError:
+        precreate_sqlite_0600(db_path)
+    with scoped_umask_077():
+        conn = sqlite3.connect(str(db_path), timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        with _SCHEMA_LOCK:
+            previous = conn.isolation_level
+            conn.isolation_level = None
+            conn.execute("PRAGMA busy_timeout = 5000")
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.isolation_level = previous
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS live_flows (
+                    flow_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    observed_at_utc TEXT NOT NULL,
+                    features_json TEXT NOT NULL,
+                    rf_attack_probability REAL,
+                    decision TEXT NOT NULL,
+                    evidence_state TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    model_sha256 TEXT NOT NULL,
+                    production_fusion_enabled INTEGER NOT NULL
+                )
+                """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS analyst_notes (
+                    note_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    flow_id INTEGER,
+                    author_id TEXT NOT NULL,
+                    note_text TEXT NOT NULL,
+                    created_at_utc TEXT NOT NULL
+                )
+                """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS live_campaigns (
+                    campaign_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    source_label TEXT NOT NULL,
+                    created_at_utc TEXT NOT NULL,
+                    member_count INTEGER NOT NULL
+                )
+                """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS context_memory (
+                    memory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_ip_or_subnet TEXT NOT NULL,
+                    service_or_port TEXT NOT NULL DEFAULT '',
+                    expected_behavior_rule TEXT NOT NULL,
+                    created_from_flow_id INTEGER,
+                    operator_id TEXT NOT NULL,
+                    created_at_utc TEXT NOT NULL,
+                    UNIQUE(entity_ip_or_subnet, service_or_port)
+                )
+                """)
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(live_flows)")}
+            _add_missing_flow_columns(conn, existing)
+            conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS live_flows_source_event_id
+                ON live_flows(source_event_id)
+                WHERE source_event_id IS NOT NULL
+                """)
+            _ensure_enterprise_catalog(conn)
+            from threatfusion.operations.commercial_hardening import ensure_auth_audit_schema
 
-        ensure_auth_audit_schema(conn)
-        conn.commit()
-    if db_path.exists():
-        os.chmod(db_path, stat.S_IRUSR | stat.S_IWUSR)
+            ensure_auth_audit_schema(conn)
+            conn.commit()
+    harden_sqlite_permissions(db_path)
     return conn
 
 
@@ -1090,12 +1104,18 @@ def _normalize_sensor_node(value: str | None) -> str | None:
 def sensor_ingest_auth_status(authorization_header: str | None) -> str:
     """Return ok, unauthorized, or unconfigured.
 
-    A pytest process with no configured token stays open so existing fixtures
-    can post ingest bodies. Outside those fixtures a missing token is unconfigured.
+    A pytest process with no configured token stays open in non-production so existing
+    fixtures can post ingest bodies. Production always requires an explicit token.
     """
+    from threatfusion.operations.commercial_hardening import threatfusion_environment
+
     required = os.environ.get("THREATFUSION_REQUIRE_SENSOR_TOKEN", "").strip() == "1"
     expected = os.environ.get("THREATFUSION_SENSOR_INGEST_TOKEN", "").strip()
-    under_test = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+    under_test = (
+        bool(os.environ.get("PYTEST_CURRENT_TEST"))
+        and ("pytest" in sys.modules)
+        and threatfusion_environment() != "production"
+    )
     if not expected:
         if under_test and not required:
             return "ok"
@@ -5144,7 +5164,21 @@ def enroll_lab_operator(directory: Path, actor_id: str) -> dict[str, Any]:
 
     from threatfusion.api.analyst_tls_service import ANALYST_URI_PREFIX
     from threatfusion.operations import human_credentials as policy
+    from threatfusion.operations.commercial_hardening import threatfusion_environment
     from threatfusion.schemas.analyst_state import valid_actor_id
+
+    if threatfusion_environment() == "production":
+        return {
+            "error": "lab_enrollment_disabled_in_production",
+            "reason": "lab_enrollment_disabled_in_production",
+            "evidence_state": "unavailable",
+            "identity_verified": False,
+            "identity_label": "unverified_local_label",
+            "operator_id": "",
+            "cert_sha256_prefix": "",
+            "production_fusion_enabled": False,
+            "http_status": 403,
+        }
 
     actor = actor_id.strip()
     refused = {
@@ -5485,19 +5519,40 @@ def _post_signed(
         ssl_ctx = (
             ssl.create_default_context(cafile=ca_file) if ca_file else ssl.create_default_context()
         )
+    parsed_host = (urllib.parse.urlsplit(url).hostname or "").strip().lower()
+    allowed_hosts: tuple[str, ...] = (
+        (parsed_host,) if parsed_host in {"host.docker.internal", "threatfusion-callback"} else ()
+    )
     try:
-        with urllib.request.urlopen(request, timeout=5.0, context=ssl_ctx) as response:
+        with safe_urlopen(
+            request,
+            timeout=5.0,
+            max_bytes=262_144,
+            allowed_schemes=("https", "http"),
+            allow_loopback=True,
+            allowed_hosts=allowed_hosts,
+            ssl_context=ssl_ctx,
+        ) as response:
             raw = response.read().decode("utf-8")
             parsed = json.loads(raw) if raw else {}
             return response.status, parsed if isinstance(parsed, dict) else {}
     except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8")
+        try:
+            raw = exc.read(262_144).decode("utf-8", errors="replace")
+        finally:
+            exc.close()
         try:
             parsed = json.loads(raw) if raw else {}
         except json.JSONDecodeError:
             parsed = {"error": "invalid_response"}
         return exc.code, parsed if isinstance(parsed, dict) else {}
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+    except (
+        EgressBlockedError,
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+        json.JSONDecodeError,
+    ) as exc:
         return 0, {"error": exc.__class__.__name__}
 
 
@@ -5589,6 +5644,8 @@ def _n8n_contract_base(contract_base_url: str, override: str | None) -> str:
 
 
 def _post_n8n_webhook(webhook_url: str, envelope: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    from threatfusion.operations.commercial_hardening import threatfusion_environment
+
     encoded = json.dumps(envelope).encode("utf-8")
     request = urllib.request.Request(
         webhook_url,
@@ -5596,12 +5653,26 @@ def _post_n8n_webhook(webhook_url: str, envelope: dict[str, Any]) -> tuple[int, 
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+    parsed_host = (urllib.parse.urlsplit(webhook_url).hostname or "").strip().lower()
+    allowed_hosts: tuple[str, ...] = (
+        (parsed_host,) if parsed_host in {"n8n", "host.docker.internal"} else ()
+    )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            raw = response.read(65536)
+        with safe_urlopen(
+            request,
+            timeout=30.0,
+            max_bytes=65_536,
+            allowed_schemes=("https", "http"),
+            allow_loopback=(threatfusion_environment() != "production"),
+            allowed_hosts=allowed_hosts,
+        ) as response:
+            raw = response.read(65_536)
             status = int(response.status)
     except urllib.error.HTTPError as exc:
-        raw = exc.read(65536)
+        try:
+            raw = exc.read(65_536)
+        finally:
+            exc.close()
         status = int(exc.code)
     payload = json.loads(raw.decode("utf-8")) if raw else {}
     return status, _n8n_result_dict(payload)
@@ -5659,12 +5730,13 @@ def _dispatch_through_live_n8n(
     verify_key = f"idem_{approved.playbook_id}_{approved.version}"
     verify_sig = _hmac_sha256(verify_body, secret)
     case = None
+    thehive_api_key = os.environ.get("THREATFUSION_THEHIVE_API_KEY", "").strip()
     try:
         probability = flow["rf_attack_probability"]
         confidence = float(probability) * 100.0 if probability is not None else 0.0
         case = TheHiveDeterministicClient(
             thehive_url=thehive_url,
-            api_key=secret,
+            api_key=thehive_api_key,
             outbox_db_path=outbox_db_path,
         ).create_case_from_soar(
             soar_record=approved,
@@ -5707,7 +5779,13 @@ def _dispatch_through_live_n8n(
     }
     try:
         status, result = _post_n8n_webhook(webhook_url, envelope)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+    except (
+        EgressBlockedError,
+        urllib.error.URLError,
+        TimeoutError,
+        json.JSONDecodeError,
+        OSError,
+    ):
         _mark_execution_path(live_db_path, flow_id, N8N_LIVE_CONTAINER)
         refused["reason"] = "n8n_unreachable"
         refused["execution_path"] = N8N_LIVE_CONTAINER
@@ -5836,9 +5914,10 @@ def _dispatch_signed_local_contract(
 
     probability = flow["rf_attack_probability"]
     confidence = float(probability) * 100.0 if probability is not None else 0.0
+    thehive_api_key = os.environ.get("THREATFUSION_THEHIVE_API_KEY", "").strip()
     case = TheHiveDeterministicClient(
         thehive_url=thehive_url,
-        api_key=secret,
+        api_key=thehive_api_key,
         outbox_db_path=outbox_db_path,
     ).create_case_from_soar(
         soar_record=approved,
@@ -8888,13 +8967,196 @@ def switch_operator(db_path: Path, *, actor_id: str) -> dict[str, Any]:
     )
 
 
+_SHA256_PKCS1_DIGEST_INFO = bytes.fromhex("3031300d060960864801650304020105000420")
+_ENTRA_JWKS_UNKNOWN_KID_COOLDOWN_SECONDS = 300.0
+_ENTRA_JWKS_CACHE_TTL_SECONDS = 3600.0
+_ENTRA_JWKS_LOCK = threading.Lock()
+_ENTRA_JWKS_KEYS_BY_KID: dict[str, dict[str, Any]] = {}
+_ENTRA_JWKS_SOURCE: str = ""
+_ENTRA_JWKS_LOADED_AT: float = 0.0
+_ENTRA_JWKS_LAST_UNKNOWN_KID_REFRESH: float = -1000.0
+
+
+def reset_entra_jwks_cache() -> None:
+    """Clear in-memory Entra JWKS cache and unknown-kid cooldown state."""
+    global _ENTRA_JWKS_SOURCE, _ENTRA_JWKS_LOADED_AT, _ENTRA_JWKS_LAST_UNKNOWN_KID_REFRESH
+    with _ENTRA_JWKS_LOCK:
+        _ENTRA_JWKS_KEYS_BY_KID.clear()
+        _ENTRA_JWKS_SOURCE = ""
+        _ENTRA_JWKS_LOADED_AT = 0.0
+        _ENTRA_JWKS_LAST_UNKNOWN_KID_REFRESH = -1000.0
+
+
+def _b64url_decode_bytes(segment: str) -> bytes:
+    cleaned = str(segment or "").strip()
+    if not cleaned:
+        raise ValueError("b64url_empty")
+    padded = cleaned + ("=" * ((4 - len(cleaned) % 4) % 4))
+    return base64.urlsafe_b64decode(padded.encode("ascii"))
+
+
 def _decode_jwt_part(segment: str) -> dict[str, Any]:
-    padded = segment + ("=" * ((4 - len(segment) % 4) % 4))
-    raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+    raw = _b64url_decode_bytes(segment)
     payload = json.loads(raw.decode("utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("jwt_part")
     return payload
+
+
+def _verify_rs256_jwk_signature(
+    signing_input: bytes,
+    signature: bytes,
+    jwk: Mapping[str, Any],
+) -> bool:
+    """Pure-stdlib RFC 8017 RSASSA-PKCS1-v1_5 SHA-256 verification against an RSA JWK."""
+    if str(jwk.get("kty") or "").upper() != "RSA":
+        return False
+    jwk_alg = str(jwk.get("alg") or "RS256").upper()
+    if jwk_alg != "RS256":
+        return False
+    jwk_use = str(jwk.get("use") or "sig").lower()
+    if jwk_use not in {"sig", ""}:
+        return False
+    try:
+        n_bytes = _b64url_decode_bytes(str(jwk.get("n") or ""))
+        e_bytes = _b64url_decode_bytes(str(jwk.get("e") or ""))
+    except (ValueError, UnicodeError):
+        return False
+    if not n_bytes or not e_bytes:
+        return False
+    n = int.from_bytes(n_bytes, "big")
+    e = int.from_bytes(e_bytes, "big")
+    if n.bit_length() < 2048 or e < 3 or (e % 2 == 0):
+        return False
+    k = (n.bit_length() + 7) // 8
+    if len(signature) != k:
+        return False
+    s = int.from_bytes(signature, "big")
+    if s <= 0 or s >= n:
+        return False
+    m = pow(s, e, n)
+    em = m.to_bytes(k, "big")
+    digest_info = _SHA256_PKCS1_DIGEST_INFO + hashlib.sha256(signing_input).digest()
+    ps_len = k - len(digest_info) - 3
+    if ps_len < 8:
+        return False
+    expected_em = b"\x00\x01" + (b"\xff" * ps_len) + b"\x00" + digest_info
+    return hmac.compare_digest(em, expected_em)
+
+
+def _parse_jwks_document(raw_doc: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(raw_doc, Mapping):
+        return {}
+    keys_raw = raw_doc.get("keys")
+    if not isinstance(keys_raw, list):
+        return {}
+    by_kid: dict[str, dict[str, Any]] = {}
+    for item in keys_raw:
+        if not isinstance(item, Mapping):
+            continue
+        kid = str(item.get("kid") or "").strip()
+        if not kid or str(item.get("kty") or "").upper() != "RSA":
+            continue
+        by_kid[kid] = dict(item)
+    return by_kid
+
+
+def _fetch_entra_jwks_keys() -> dict[str, dict[str, Any]]:
+    from threatfusion.operations.commercial_hardening import threatfusion_environment
+
+    inline_json = os.environ.get("THREATFUSION_ENTRA_JWKS_JSON", "").strip()
+    if inline_json:
+        try:
+            doc = json.loads(inline_json)
+        except json.JSONDecodeError:
+            candidate_path = Path(inline_json)
+            if candidate_path.is_file() and not candidate_path.is_symlink():
+                doc = json.loads(candidate_path.read_text(encoding="utf-8"))
+            else:
+                return {}
+        return _parse_jwks_document(doc)
+
+    jwks_url = os.environ.get("THREATFUSION_ENTRA_JWKS_URL", "").strip()
+    if not jwks_url:
+        return {}
+    is_prod = threatfusion_environment() == "production"
+    req = urllib.request.Request(
+        jwks_url,
+        headers={"Accept": "application/json"},
+        method="GET",
+    )
+    with safe_urlopen(
+        req,
+        timeout=5.0,
+        max_bytes=262_144,
+        allowed_schemes=("https",) if is_prod else ("https", "http"),
+        allow_loopback=(not is_prod),
+    ) as resp:
+        raw = resp.read(262_144)
+    doc = json.loads(raw.decode("utf-8"))
+    return _parse_jwks_document(doc)
+
+
+def _resolve_entra_jwk(kid: str) -> tuple[dict[str, Any] | None, str]:
+    """Lookup JWK by kid with a 5-min single-flight mutex cooldown on unknown kids."""
+    global _ENTRA_JWKS_SOURCE, _ENTRA_JWKS_LOADED_AT, _ENTRA_JWKS_LAST_UNKNOWN_KID_REFRESH
+    clean_kid = str(kid or "").strip()
+    if not clean_kid:
+        return None, "entra_jwks_kid_missing"
+    source_key = (
+        os.environ.get("THREATFUSION_ENTRA_JWKS_JSON", "").strip()
+        or os.environ.get("THREATFUSION_ENTRA_JWKS_URL", "").strip()
+    )
+    if not source_key:
+        return None, "entra_jwks_verification_required"
+
+    with _ENTRA_JWKS_LOCK:
+        now_mono = time.monotonic()
+        source_changed = source_key != _ENTRA_JWKS_SOURCE
+        ttl_expired = (
+            _ENTRA_JWKS_LOADED_AT <= 0.0
+            or (now_mono - _ENTRA_JWKS_LOADED_AT) >= _ENTRA_JWKS_CACHE_TTL_SECONDS
+        )
+        if not source_changed and not ttl_expired and clean_kid in _ENTRA_JWKS_KEYS_BY_KID:
+            return dict(_ENTRA_JWKS_KEYS_BY_KID[clean_kid]), ""
+
+        # If cache is already warm for this source and an unknown kid arrives within the
+        # 5-minute single-flight cooldown window, refuse upstream refetch to prevent DoS.
+        if (
+            not source_changed
+            and _ENTRA_JWKS_LOADED_AT > 0.0
+            and not ttl_expired
+            and (now_mono - _ENTRA_JWKS_LAST_UNKNOWN_KID_REFRESH)
+            < _ENTRA_JWKS_UNKNOWN_KID_COOLDOWN_SECONDS
+        ):
+            return None, "entra_jwks_kid_not_found"
+
+        if not source_changed and _ENTRA_JWKS_LOADED_AT > 0.0:
+            _ENTRA_JWKS_LAST_UNKNOWN_KID_REFRESH = now_mono
+
+        try:
+            loaded = _fetch_entra_jwks_keys()
+        except (
+            EgressBlockedError,
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            return None, "entra_jwks_fetch_failed"
+
+        _ENTRA_JWKS_KEYS_BY_KID.clear()
+        _ENTRA_JWKS_KEYS_BY_KID.update(loaded)
+        _ENTRA_JWKS_SOURCE = source_key
+        _ENTRA_JWKS_LOADED_AT = now_mono
+        if _ENTRA_JWKS_LAST_UNKNOWN_KID_REFRESH < 0.0:
+            _ENTRA_JWKS_LAST_UNKNOWN_KID_REFRESH = now_mono
+        found = _ENTRA_JWKS_KEYS_BY_KID.get(clean_kid)
+        if found is None:
+            _ENTRA_JWKS_LAST_UNKNOWN_KID_REFRESH = now_mono
+            return None, "entra_jwks_kid_not_found"
+        return dict(found), ""
 
 
 def entra_identity_status(db_path: Path) -> dict[str, Any]:
@@ -8920,11 +9182,7 @@ def entra_identity_status(db_path: Path) -> dict[str, Any]:
 
 
 def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
-    """Check OIDC JWT structure and claims; strictly refuse unsigned tokens in production.
-
-    This helper performs structural and temporal claim validation in lab mode only
-    and never sets jwks_signature_checked=True without cryptographic JWKS validation.
-    """
+    """Verify OIDC JWT claims and RS256 JWKS signature; fail closed in production."""
     from threatfusion.operations.commercial_hardening import threatfusion_environment
 
     refused = {
@@ -8937,7 +9195,12 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
         "token_structure_valid": False,
         "jwks_signature_checked": False,
     }
-    if threatfusion_environment() == "production":
+    is_prod = threatfusion_environment() == "production"
+    jwks_configured = bool(
+        os.environ.get("THREATFUSION_ENTRA_JWKS_JSON", "").strip()
+        or os.environ.get("THREATFUSION_ENTRA_JWKS_URL", "").strip()
+    )
+    if is_prod and not jwks_configured:
         refused["reason"] = "entra_jwks_verification_required"
         return refused
     raw = str(token or "").strip()
@@ -8953,7 +9216,13 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
         return refused
     if str(header.get("typ") or "JWT").upper() != "JWT":
         return refused
-    if str(header.get("alg") or "") not in {"RS256", "RS384", "RS512"}:
+    alg = str(header.get("alg") or "")
+    if jwks_configured or is_prod:
+        # Pin algorithms=["RS256"] strictly when verifying JWKS signatures.
+        if alg != "RS256":
+            refused["reason"] = "entra_alg_rejected"
+            return refused
+    elif alg not in {"RS256", "RS384", "RS512"}:
         refused["reason"] = "entra_alg_rejected"
         return refused
     now_ts = time.time()
@@ -8965,6 +9234,9 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
         if not math.isfinite(float(raw_exp)) or float(raw_exp) <= now_ts:
             refused["reason"] = "entra_token_expired"
             return refused
+    elif jwks_configured or is_prod:
+        refused["reason"] = "entra_token_expired"
+        return refused
     if "nbf" in claims:
         raw_nbf = claims.get("nbf")
         if isinstance(raw_nbf, bool) or not isinstance(raw_nbf, (int, float)):
@@ -8984,6 +9256,28 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
         if expected_aud not in [str(item).strip() for item in aud_values]:
             refused["reason"] = "entra_audience_mismatch"
             return refused
+
+    jwks_signature_checked = False
+    if jwks_configured:
+        kid = str(header.get("kid") or "").strip()
+        if not kid:
+            refused["reason"] = "entra_jwks_kid_missing"
+            return refused
+        jwk, jwk_err = _resolve_entra_jwk(kid)
+        if jwk is None:
+            refused["reason"] = jwk_err or "entra_jwks_kid_not_found"
+            return refused
+        try:
+            sig_bytes = _b64url_decode_bytes(parts[2])
+            signing_input = f"{parts[0]}.{parts[1]}".encode("ascii")
+        except (ValueError, UnicodeError):
+            refused["reason"] = "entra_signature_invalid"
+            return refused
+        if not _verify_rs256_jwk_signature(signing_input, sig_bytes, jwk):
+            refused["reason"] = "entra_signature_invalid"
+            return refused
+        jwks_signature_checked = True
+
     tenant = str(claims.get("tid") or "")
     object_id = str(claims.get("oid") or "")
     upn = str(claims.get("upn") or claims.get("preferred_username") or "")
@@ -9031,8 +9325,10 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
         "schema_version": "live_entra_oidc_v1",
         "evidence_state": "verified",
         "reason": "entra_token_verified",
-        "oidc_claim_check": "structure_and_claims",
-        "jwks_signature_checked": False,
+        "oidc_claim_check": (
+            "rs256_jwks_and_claims" if jwks_signature_checked else "structure_and_claims"
+        ),
+        "jwks_signature_checked": jwks_signature_checked,
         "token_structure_valid": True,
         "tid": tenant,
         "oid": object_id,
@@ -9208,9 +9504,15 @@ def _ensure_rbac_accounts(conn: sqlite3.Connection) -> None:
             actor_id TEXT NOT NULL,
             role TEXT NOT NULL,
             expires_at_utc TEXT NOT NULL,
-            created_at_utc TEXT NOT NULL
+            created_at_utc TEXT NOT NULL,
+            csrf_token TEXT NOT NULL DEFAULT ''
         )
         """)
+    session_cols = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(rbac_sessions)").fetchall()
+    }
+    if "csrf_token" not in session_cols:
+        conn.execute("ALTER TABLE rbac_sessions ADD COLUMN csrf_token TEXT NOT NULL DEFAULT ''")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS rbac_runtime (
             key TEXT PRIMARY KEY,
@@ -9521,7 +9823,12 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
 
 
-def _account_public(row: sqlite3.Row, *, session_token: str = "") -> dict[str, Any]:
+def _account_public(
+    row: sqlite3.Row,
+    *,
+    session_token: str = "",
+    csrf_token: str = "",
+) -> dict[str, Any]:
     header = operator_header_identity(
         actor_id=str(row["actor_id"]),
         display_name=str(row["display_name"]),
@@ -9533,6 +9840,7 @@ def _account_public(row: sqlite3.Row, *, session_token: str = "") -> dict[str, A
         "evidence_state": _session_evidence_state(header),
         "username": str(row["username"]),
         "session_token": session_token,
+        "csrf_token": csrf_token,
         "production_fusion_enabled": False,
         "http_status": 200,
     }
@@ -9540,22 +9848,15 @@ def _account_public(row: sqlite3.Row, *, session_token: str = "") -> dict[str, A
     return payload
 
 
-def _issue_session(conn: sqlite3.Connection, row: sqlite3.Row) -> str:
-    secret = _rbac_secret(conn)
+def _issue_session(conn: sqlite3.Connection, row: sqlite3.Row) -> tuple[str, str]:
     expires = datetime.now(UTC) + timedelta(hours=12)
-    payload = {
-        "u": str(row["username"]),
-        "a": str(row["actor_id"]),
-        "r": str(row["role"]),
-        "exp": expires.isoformat(),
-        "n": secrets.token_hex(8),
-    }
-    token = _sign_session(secret, payload)
+    token = secrets.token_urlsafe(32)
+    csrf_token = secrets.token_urlsafe(32)
     conn.execute(
         """
         INSERT INTO rbac_sessions (
-            token_hash, username, actor_id, role, expires_at_utc, created_at_utc
-        ) VALUES (?, ?, ?, ?, ?, ?)
+            token_hash, username, actor_id, role, expires_at_utc, created_at_utc, csrf_token
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
             _token_hash(token),
@@ -9564,31 +9865,35 @@ def _issue_session(conn: sqlite3.Connection, row: sqlite3.Row) -> str:
             str(row["role"]),
             expires.isoformat(),
             datetime.now(UTC).isoformat(),
+            csrf_token,
         ),
     )
-    return token
+    return token, csrf_token
 
 
 def _session_row(db_path: Path, token: str) -> dict[str, str] | None:
     from threatfusion.operations.commercial_hardening import threatfusion_environment
 
-    parts = _session_parts(token)
-    if parts is None or not db_path.is_file():
+    bare = _bare_token(token)
+    if not bare or len(bare) < 16 or not db_path.is_file():
         return None
-    body, signature = parts
+    parts = _session_parts(bare)
     with _connect(db_path) as conn:
-        secret = _rbac_secret(conn)
-        expected = hmac.new(secret, body.encode("ascii"), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(expected, signature):
-            return None
+        _ensure_rbac_accounts(conn)
+        if parts is not None:
+            body, signature = parts
+            secret = _rbac_secret(conn)
+            expected = hmac.new(secret, body.encode("ascii"), hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(expected, signature):
+                return None
         row = conn.execute(
             """
-            SELECT s.username, s.actor_id, s.role, s.expires_at_utc, a.display_name
+            SELECT s.username, s.actor_id, s.role, s.expires_at_utc, s.csrf_token, a.display_name
             FROM rbac_sessions AS s
             JOIN rbac_accounts AS a ON a.username = s.username
             WHERE s.token_hash = ?
             """,
-            (_token_hash(_bare_token(token)),),
+            (_token_hash(bare),),
         ).fetchone()
         if row is None:
             return None
@@ -9635,6 +9940,7 @@ def rbac_session_status(db_path: Path, token: str) -> dict[str, Any]:
         "authenticated": True,
         "evidence_state": _session_evidence_state(header),
         "username": str(row["username"]),
+        "csrf_token": str(row.get("csrf_token") or ""),
         "production_fusion_enabled": False,
         "http_status": 200,
         **header,
@@ -9720,8 +10026,8 @@ def rbac_login(
                     conn,
                 )
                 return _rbac_refused("invalid_credentials", 401)
-            token = _issue_session(conn, row)
-            public = _account_public(row, session_token=token)
+            token, csrf_token = _issue_session(conn, row)
+            public = _account_public(row, session_token=token, csrf_token=csrf_token)
             _audit_auth(db_path, "login_success", str(row["username"]), client_ip, "entra", conn)
         switch_operator(db_path, actor_id=str(public["actor_id"]))
         public["reason"] = "entra_token_verified"
@@ -9746,8 +10052,8 @@ def rbac_login(
         ):
             _audit_auth(db_path, "login_failed", user, client_ip, "invalid_credentials", conn)
             return _rbac_refused("invalid_credentials", 401)
-        token = _issue_session(conn, row)
-        public = _account_public(row, session_token=token)
+        token, csrf_token = _issue_session(conn, row)
+        public = _account_public(row, session_token=token, csrf_token=csrf_token)
         _audit_auth(db_path, "login_success", user, client_ip, "access_code_verified", conn)
     switch_operator(db_path, actor_id=str(public["actor_id"]))
     public["reason"] = "access_code_verified"
@@ -9755,8 +10061,9 @@ def rbac_login(
 
 
 def rbac_logout(db_path: Path, token: str) -> dict[str, Any]:
-    digest = _token_hash(_bare_token(token))
-    if db_path.is_file() and _session_parts(token) is not None:
+    bare = _bare_token(token)
+    if db_path.is_file() and bare:
+        digest = _token_hash(bare)
         with _connect(db_path) as conn:
             conn.execute("DELETE FROM rbac_sessions WHERE token_hash = ?", (digest,))
     return {

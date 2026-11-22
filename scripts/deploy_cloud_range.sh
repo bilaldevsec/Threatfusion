@@ -18,7 +18,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STATE_DIR="/tmp/threatfusion-range-demo"
+STATE_DIR="${THREATFUSION_CLOUD_STATE_DIR:-/tmp/threatfusion-range-demo}"
 CLOUD_STATE="${STATE_DIR}/cloud_state.json"
 AZURE_STATE="${STATE_DIR}/azure_portal_state.json"
 RANGE_TAG="threatfusion-range"
@@ -43,19 +43,20 @@ PROVIDER=""
 ACTION=""
 DRY_RUN=0
 AUTO_IP=0
-STUDENT=0
+LOW_COST_TIER=0
 VICTIM_HOST="${TF_VICTIM_PUBLIC_IP:-}"
 ATTACKER_HOST="${TF_ATTACKER_PUBLIC_IP:-}"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy_cloud_range.sh [--dry-run] [--auto-ip] [--provider azure|aws|gcp|generic] [--victim-host IP] [--attacker-host IP] (--provision-range|--deploy-full-stack|--simulate-attack|--teardown|--status|--deallocate|--help)
+Usage: scripts/deploy_cloud_range.sh [--dry-run] [--auto-ip] [--low-cost-tier] [--provider azure|aws|gcp|generic|ssh] [--victim-host IP] [--attacker-host IP] (--provision-range|--deploy-full-stack|--simulate-attack|--teardown|--status|--deallocate|--help)
 
-  --provider         azure, aws, gcp, or generic. When omitted, the first
-                     logged-in CLI wins: az account show, aws sts
-                     get-caller-identity, gcloud config get-value project.
-                     Host flags or TF_VICTIM_PUBLIC_IP and
-                     TF_ATTACKER_PUBLIC_IP select generic.
+  --provider         azure, aws, gcp, generic, or ssh (alias for generic).
+                     When omitted, --victim-host or TF_VICTIM_PUBLIC_IP selects
+                     generic; otherwise the first logged-in CLI wins: az account
+                     show, aws sts get-caller-identity, gcloud config get-value project.
+  --low-cost-tier    Use lowest-cost VM sizes / budget auto-shutdown on Azure
+                     (alias: --student-free-tier).
   --provision-range  Create the 2-VM range in the signed-in account, or record
                      a generic Ubuntu/Linux pair. Opens SSH port 22 from
                      CLOUD_ADMIN_SSH_CIDR, AZURE_ADMIN_SSH_CIDR, or
@@ -145,7 +146,15 @@ cli_ok() {
 
 detect_provider() {
   if [[ -n "${CLOUD_PROVIDER:-}" ]]; then
-    printf '%s\n' "$CLOUD_PROVIDER"
+    if [[ "$CLOUD_PROVIDER" == "ssh" ]]; then
+      printf '%s\n' "generic"
+    else
+      printf '%s\n' "$CLOUD_PROVIDER"
+    fi
+    return 0
+  fi
+  if [[ -n "${VICTIM_HOST:-}" || -n "${TF_VICTIM_PUBLIC_IP:-}" ]]; then
+    printf '%s\n' "generic"
     return 0
   fi
   if command -v az >/dev/null 2>&1 && cli_ok 15 az account show; then
@@ -163,10 +172,6 @@ detect_provider() {
       printf '%s\n' "gcp"
       return 0
     fi
-  fi
-  if [[ -n "$VICTIM_HOST" && -n "$ATTACKER_HOST" ]]; then
-    printf '%s\n' "generic"
-    return 0
   fi
   printf '%s\n' "unbound"
 }
@@ -301,7 +306,7 @@ load_existing_public_ips() {
   if [[ ! -f "$CLOUD_STATE" ]]; then
     return 0
   fi
-  eval "$(CLOUD_STATE="$CLOUD_STATE" python3 - <<'PY'
+  eval "$(CLOUD_STATE="$CLOUD_STATE" CURRENT_PROVIDER="${PROVIDER:-}" python3 - <<'PY'
 import json, os, shlex
 from pathlib import Path
 path = Path(os.environ["CLOUD_STATE"])
@@ -310,6 +315,10 @@ try:
 except (OSError, json.JSONDecodeError):
     state = {}
 if not isinstance(state, dict):
+    state = {}
+current_provider = os.environ.get("CURRENT_PROVIDER", "")
+state_provider = str(state.get("provider") or "")
+if current_provider and state_provider and state_provider != current_provider:
     state = {}
 pairs = {
     "VICTIM_PUBLIC": state.get("victim_public_ip") or "",
@@ -332,10 +341,10 @@ azure_delegate() {
   if [[ "$DRY_RUN" -eq 1 ]]; then
     extra+=(--dry-run)
   fi
-  if [[ "$STUDENT" -eq 1 ]]; then
-    extra+=(--student-free-tier)
+  if [[ "$LOW_COST_TIER" -eq 1 ]]; then
+    extra+=(--low-cost-tier)
   fi
-  TF_AZURE_RANGE_IMPL=1 bash "$ROOT/scripts/deploy_azure_cyber_range.sh" "${extra[@]}" "$flag"
+  TF_AZURE_RANGE_IMPL=1 bash "$ROOT/scripts/deploy_azure_cyber_range.sh" ${extra[@]+"${extra[@]}"} "$flag"
   mirror_azure_portal_state
 }
 
@@ -483,14 +492,29 @@ provision_aws() {
   fi
   aws ec2 authorize-security-group-ingress --region "$REGION_NAME" --group-id "$sg" \
     --protocol tcp --port 22 --cidr "$cidr" >/dev/null 2>&1 || true
+  aws ec2 authorize-security-group-ingress --region "$REGION_NAME" --group-id "$sg" \
+    --protocol -1 --cidr "$SUBNET_CIDR" >/dev/null 2>&1 || true
   # Port 8766 stays closed to 0.0.0.0/0. Operators use an SSH local forward.
   aws ec2 revoke-security-group-ingress --region "$REGION_NAME" --group-id "$sg" \
     --protocol tcp --port 8766 --cidr "0.0.0.0/0" >/dev/null 2>&1 || true
   aws ec2 revoke-security-group-ingress --region "$REGION_NAME" --group-id "$sg" \
     --protocol tcp --port 8766 --cidr "$cidr" >/dev/null 2>&1 || true
+  local instance_type="${CLOUD_INSTANCE_TYPE:-t3.small}"
+  local ami_arch="amd64"
+  case "$instance_type" in
+    t4g.*|c6g.*|m6g.*|c7g.*|m7g.*)
+      ami_arch="arm64"
+      ;;
+  esac
   ami="$(aws ssm get-parameter --region "$REGION_NAME" \
-    --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
+    --name "/aws/service/canonical/ubuntu/server/24.04/stable/current/${ami_arch}/hvm/ebs-gp3/ami-id" \
     --query Parameter.Value --output text)"
+  local root_dev
+  root_dev="$(aws ec2 describe-images --region "$REGION_NAME" --image-ids "$ami" \
+    --query 'Images[0].RootDeviceName' --output text 2>/dev/null || true)"
+  if [[ -z "$root_dev" || "$root_dev" == "None" ]]; then
+    root_dev="/dev/sda1"
+  fi
   local user_data
   user_data="$(mktemp)"
   shutdown_user_data > "$user_data"
@@ -504,10 +528,11 @@ provision_aws() {
       return 0
     fi
     aws ec2 run-instances --region "$REGION_NAME" --image-id "$ami" \
-      --instance-type "${CLOUD_INSTANCE_TYPE:-t3.micro}" --key-name "$key_name" \
+      --instance-type "$instance_type" --key-name "$key_name" \
       --subnet-id "$subnet" --private-ip-address "$private_ip" \
       --security-group-ids "$sg" --user-data "file://${user_data}" \
-      --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${name}},{Key=Project,Value=${RANGE_TAG}}]" \
+      --block-device-mappings "[{\"DeviceName\":\"${root_dev}\",\"Ebs\":{\"VolumeSize\":24,\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true}}]" \
+      --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${name}},{Key=Project,Value=${RANGE_TAG}}]" "ResourceType=volume,Tags=[{Key=Name,Value=${name}},{Key=Project,Value=${RANGE_TAG}}]" \
       --query 'Instances[0].InstanceId' --output text
   }
   victim="$(launch_one tf-soc-victim-vm "$VICTIM_PRIVATE")"
@@ -554,6 +579,28 @@ provision_gcp() {
       --network "$RANGE_TAG" --allow tcp:22 \
       --source-ranges "$cidr" --target-tags "$RANGE_TAG"
   fi
+  if gcloud compute firewall-rules describe threatfusion-range-internal >/dev/null 2>&1; then
+    gcloud compute firewall-rules update threatfusion-range-internal \
+      --allow tcp,udp,icmp --source-ranges "$SUBNET_CIDR" --target-tags "$RANGE_TAG"
+  else
+    gcloud compute firewall-rules create threatfusion-range-internal \
+      --network "$RANGE_TAG" --allow tcp,udp,icmp \
+      --source-ranges "$SUBNET_CIDR" --target-tags "$RANGE_TAG"
+  fi
+  ensure_admin_ssh_key
+  local pub_key=""
+  if [[ -f "${SSH_IDENTITY}.pub" ]]; then
+    pub_key="$(tr -d '\r\n' < "${SSH_IDENTITY}.pub")"
+  else
+    pub_key="$(ssh-keygen -y -f "${SSH_IDENTITY}" 2>/dev/null | tr -d '\r\n' || true)"
+  fi
+  local gcp_machine_type="${CLOUD_INSTANCE_TYPE:-e2-micro}"
+  local gcp_image_family="ubuntu-2404-lts-amd64"
+  case "$gcp_machine_type" in
+    t2a-*|c4a-*|n4a-*|*-arm64*)
+      gcp_image_family="ubuntu-2404-lts-arm64"
+      ;;
+  esac
   local startup
   startup="$(mktemp)"
   shutdown_user_data > "$startup"
@@ -562,11 +609,17 @@ provision_gcp() {
     if gcloud compute instances describe "$name" --zone "$zone" >/dev/null 2>&1; then
       return 0
     fi
+    local -a metadata_args=()
+    if [[ -n "$pub_key" ]]; then
+      metadata_args+=(--metadata "ssh-keys=${SSH_USER}:${pub_key}")
+    fi
     gcloud compute instances create "$name" \
-      --zone "$zone" --machine-type "${CLOUD_INSTANCE_TYPE:-e2-micro}" \
-      --image-family ubuntu-2404-lts --image-project ubuntu-os-cloud \
+      --zone "$zone" --machine-type "$gcp_machine_type" \
+      --image-family "$gcp_image_family" --image-project ubuntu-os-cloud \
+      --boot-disk-size 24GB \
       --subnet tf-range-subnet --private-network-ip "$private_ip" \
-      --tags "$RANGE_TAG" --metadata-from-file startup-script="$startup"
+      --tags "$RANGE_TAG" ${metadata_args[@]+"${metadata_args[@]}"} \
+      --metadata-from-file startup-script="$startup"
   }
   launch_gcp tf-soc-victim-vm "$VICTIM_PRIVATE"
   launch_gcp tf-attacker-redteam-vm "$ATTACKER_PRIVATE"
@@ -601,23 +654,34 @@ ensure_admin_ssh_key() {
     SSH_IDENTITY="$TF_SSH_IDENTITY"
     return 0
   fi
-  local candidate
-  for candidate in "${HOME}/.ssh/id_ed25519" "${HOME}/.ssh/id_rsa" "${STATE_DIR}/threatfusion-range"; do
-    if [[ -f "$candidate" ]]; then
-      SSH_IDENTITY="$candidate"
-      return 0
-    fi
-  done
+  if [[ "${PROVIDER:-}" == "aws" ]]; then
+    local aws_key_name="${CLOUD_SSH_KEY_NAME:-${RANGE_TAG}}"
+    local aws_cand
+    for aws_cand in "${STATE_DIR}/${aws_key_name}.pem" "${STATE_DIR}/${RANGE_TAG}.pem"; do
+      if [[ -f "$aws_cand" ]]; then
+        SSH_IDENTITY="$aws_cand"
+        return 0
+      fi
+    done
+  fi
+  local range_key="${STATE_DIR}/threatfusion-range-ed25519"
+  if [[ -f "$range_key" ]]; then
+    SSH_IDENTITY="$range_key"
+    return 0
+  fi
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    SSH_IDENTITY="${HOME}/.ssh/id_ed25519"
+    SSH_IDENTITY="$range_key"
     echo "dry-run: ssh-keygen -t ed25519 -f ${SSH_IDENTITY}"
     return 0
   fi
-  mkdir -p "${HOME}/.ssh" "$STATE_DIR"
-  chmod 700 "${HOME}/.ssh"
-  ssh-keygen -t ed25519 -N "" -f "${HOME}/.ssh/id_ed25519" -C "threatfusion-range"
-  chmod 600 "${HOME}/.ssh/id_ed25519"
-  SSH_IDENTITY="${HOME}/.ssh/id_ed25519"
+  mkdir -p "$STATE_DIR"
+  chmod 700 "$STATE_DIR"
+  ssh-keygen -t ed25519 -N "" -f "$range_key" -C "threatfusion-range"
+  chmod 600 "$range_key"
+  if [[ -f "${range_key}.pub" ]]; then
+    chmod 644 "${range_key}.pub"
+  fi
+  SSH_IDENTITY="$range_key"
 }
 
 ssh_base() {
@@ -735,8 +799,12 @@ install_attacker_tooling() {
     echo "Attacker host is not recorded. nmap install runs with --simulate-attack."
     return 0
   fi
-  # shellcheck disable=SC2046
-  ssh $(ssh_base) "${SSH_USER}@${target}" "bash -s" <<'REMOTE'
+  local -a ssh_args=()
+  local _a
+  while IFS= read -r _a; do
+    ssh_args+=("$_a")
+  done < <(ssh_base)
+  ssh ${ssh_args[@]+"${ssh_args[@]}"} "${SSH_USER}@${target}" "bash -s" <<'REMOTE'
 set -euo pipefail
 missing=()
 for tool in nmap curl python3; do
@@ -774,8 +842,12 @@ verify_live_flow_bridge() {
     echo "Victim host is not recorded. Set --victim-host or TF_VICTIM_PUBLIC_IP." >&2
     exit 1
   fi
-  # shellcheck disable=SC2046
-  ssh $(ssh_base) "${SSH_USER}@${target}" "bash -s" <<'REMOTE'
+  local -a ssh_args=()
+  local _a
+  while IFS= read -r _a; do
+    ssh_args+=("$_a")
+  done < <(ssh_base)
+  ssh ${ssh_args[@]+"${ssh_args[@]}"} "${SSH_USER}@${target}" "bash -s" <<'REMOTE'
 set -euo pipefail
 if command -v systemctl >/dev/null 2>&1; then
   sudo systemctl enable --now suricata || true
@@ -856,8 +928,12 @@ simulate_range_attack() {
     verify_live_flow_bridge
     return 0
   fi
-  # shellcheck disable=SC2046
-  ssh $(ssh_base) "${SSH_USER}@${attacker}" "command -v nmap >/dev/null && command -v curl >/dev/null && command -v python3 >/dev/null && nmap -Pn -p 22,80,445 172.29.0.20"
+  local -a ssh_args=()
+  local _a
+  while IFS= read -r _a; do
+    ssh_args+=("$_a")
+  done < <(ssh_base)
+  ssh ${ssh_args[@]+"${ssh_args[@]}"} "${SSH_USER}@${attacker}" "command -v nmap >/dev/null && command -v curl >/dev/null && command -v python3 >/dev/null && nmap -Pn -p 22,80,445 172.29.0.20"
   verify_live_flow_bridge
 }
 
@@ -902,10 +978,13 @@ EOF
   if [[ -n "${GEMINI_MODEL:-}" ]]; then
     printf 'GEMINI_MODEL=%s\n' "${GEMINI_MODEL}" >> "$env_file"
   fi
-  # shellcheck disable=SC2046
-  ssh $(ssh_base) "$target" "sudo mkdir -p /opt/threatfusion /opt/threatfusion-venv /var/lib/threatfusion && sudo chown -R \$(id -u):\$(id -g) /opt/threatfusion /opt/threatfusion-venv /var/lib/threatfusion && chmod 700 /var/lib/threatfusion"
-  mapfile -t ssh_args < <(ssh_base)
-  tar -C "$ROOT" \
+  local -a ssh_args=()
+  local _a
+  while IFS= read -r _a; do
+    ssh_args+=("$_a")
+  done < <(ssh_base)
+  ssh ${ssh_args[@]+"${ssh_args[@]}"} "$target" "sudo mkdir -p /opt/threatfusion /opt/threatfusion-venv /var/lib/threatfusion && sudo chown -R \$(id -u):\$(id -g) /opt/threatfusion /opt/threatfusion-venv /var/lib/threatfusion && chmod 700 /var/lib/threatfusion"
+  COPYFILE_DISABLE=1 tar -C "$ROOT" \
     --exclude .git \
     --exclude='data/raw' \
     --exclude='data/interim' \
@@ -919,12 +998,10 @@ EOF
     --exclude .env \
     --exclude '.env.*' \
     --exclude .cursor \
-    -czf - . | ssh "${ssh_args[@]}" "$target" "tar -C /opt/threatfusion -xzf -"
-  # shellcheck disable=SC2046
-  scp $(ssh_base) "$env_file" "${target}:/opt/threatfusion/.env"
+    -czf - . | ssh ${ssh_args[@]+"${ssh_args[@]}"} "$target" "tar -C /opt/threatfusion -xzf -"
+  scp ${ssh_args[@]+"${ssh_args[@]}"} "$env_file" "${target}:/opt/threatfusion/.env"
   rm -f "$env_file"
-  # shellcheck disable=SC2046
-  ssh $(ssh_base) "$target" "bash -s" <<'REMOTE'
+  ssh ${ssh_args[@]+"${ssh_args[@]}"} "$target" "bash -s" <<'REMOTE'
 set -euo pipefail
 cd /opt/threatfusion
 chmod 600 .env
@@ -947,9 +1024,70 @@ echo "[2/6] Installing packages non-interactively"
 if command -v apt-get >/dev/null 2>&1; then
   sudo DEBIAN_FRONTEND=noninteractive apt-get update -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-    docker.io docker-compose-v2 suricata python3 python3-venv python3-pip nmap curl
+    docker.io docker-compose-v2 suricata ethtool python3 python3-venv python3-pip nmap curl
   sudo systemctl enable --now docker
+fi
+PRIMARY_NIC="$(ip -o -4 route show to default | awk '{print $5; exit}')"
+PRIMARY_NIC="${PRIMARY_NIC:-eth0}"
+ETHTOOL_BIN=""
+for _cand in /sbin/ethtool /usr/sbin/ethtool; do
+  if [[ -x "$_cand" ]]; then
+    ETHTOOL_BIN="$_cand"
+    break
+  fi
+done
+if [[ -z "$ETHTOOL_BIN" ]]; then
+  ETHTOOL_BIN="$(command -v ethtool || true)"
+fi
+ETHTOOL_BIN="${ETHTOOL_BIN:-/sbin/ethtool}"
+sudo "$ETHTOOL_BIN" -K "$PRIMARY_NIC" gro off lro off tso off gso off 2>/dev/null || true
+if [[ -f /etc/suricata/suricata.yaml ]]; then
+  sudo python3 - "$PRIMARY_NIC" <<'SURICATA_PY'
+import re
+import sys
+from pathlib import Path
+
+nic = sys.argv[1]
+cfg_path = Path("/etc/suricata/suricata.yaml")
+text = cfg_path.read_text(encoding="utf-8")
+text = re.sub(
+    r"(?ms)(^af-packet:\s*\n(?:[ \t]*#[^\n]*\n|[ \t]+[^\n]*\n)*?[ \t]*-\s*interface:\s*)([^\s#\n]+)",
+    rf"\g<1>{nic}",
+    text,
+    count=1,
+)
+if re.search(r"(?m)^[ \t]*checksum-validation:\s*", text):
+    text = re.sub(
+        r"(?m)^([ \t]*checksum-validation:\s*)[^\s#\n]+",
+        r"\g<1>no",
+        text,
+    )
+else:
+    text = re.sub(
+        r"(?m)^(stream:\s*\n)",
+        r"\1  checksum-validation: no\n",
+        text,
+        count=1,
+    )
+cfg_path.write_text(text, encoding="utf-8")
+SURICATA_PY
+fi
+sudo mkdir -p /etc/systemd/system/suricata.service.d
+sudo tee /etc/systemd/system/suricata.service.d/threatfusion-offload.conf >/dev/null <<EOF
+[Service]
+ExecStartPre=-${ETHTOOL_BIN} -K ${PRIMARY_NIC} gro off lro off tso off gso off
+EOF
+sudo install -d -m 0755 /var/log/suricata
+if [[ ! -f /var/log/suricata/eve.json ]]; then
+  sudo touch /var/log/suricata/eve.json
+fi
+if id -u suricata >/dev/null 2>&1; then
+  sudo chown -R suricata:suricata /var/log/suricata
+fi
+if command -v systemctl >/dev/null 2>&1; then
+  sudo systemctl daemon-reload
   sudo systemctl enable --now suricata || true
+  sudo systemctl restart suricata || true
 fi
 echo "[3/6] Starting SOC stack without a second publisher on port 5678"
 sudo docker compose --env-file .env -f docker/docker-compose.soc-stack.yml up -d
@@ -1031,6 +1169,9 @@ sudo install -d -m 0755 /var/log/suricata
 if [[ ! -f /var/log/suricata/eve.json ]]; then
   sudo touch /var/log/suricata/eve.json
 fi
+if id -u suricata >/dev/null 2>&1; then
+  sudo chown -R suricata:suricata /var/log/suricata
+fi
 sudo tee /etc/systemd/system/threatfusion-eve-follower.service >/dev/null <<'UNIT'
 [Unit]
 Description=ThreatFusion Suricata EVE follower
@@ -1052,8 +1193,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now suricata || true
 sudo systemctl enable --now threatfusion-eve-follower.service
 REMOTE
-  # shellcheck disable=SC2046
-  ssh -N -L 8766:127.0.0.1:8766 -o ExitOnForwardFailure=yes $(ssh_base) -f "$target"
+  ssh -N -L 8766:127.0.0.1:8766 -o ExitOnForwardFailure=yes ${ssh_args[@]+"${ssh_args[@]}"} -f "$target"
   echo "Operator console: http://127.0.0.1:8766/"
   echo "Port 8766 stays closed to 0.0.0.0/0. Access is the SSH local forward."
 }
@@ -1067,7 +1207,7 @@ verify_teardown_zero_burn() {
     aws)
       local volumes addresses
       volumes="$(aws ec2 describe-volumes --region "$REGION_NAME" \
-        --filters "Name=tag:Name,Values=${RANGE_TAG}" "Name=status,Values=available" \
+        --filters "Name=tag:Project,Values=${RANGE_TAG}" "Name=status,Values=available" \
         --query 'Volumes[].VolumeId' --output text 2>/dev/null || true)"
       if [[ -n "$volumes" && "$volumes" != "None" ]]; then
         local volume_id
@@ -1076,7 +1216,7 @@ verify_teardown_zero_burn() {
         done
       fi
       addresses="$(aws ec2 describe-addresses --region "$REGION_NAME" \
-        --filters "Name=tag:Name,Values=${RANGE_TAG}" \
+        --filters "Name=tag:Project,Values=${RANGE_TAG}" \
         --query 'Addresses[?AssociationId==null].AllocationId' --output text 2>/dev/null || true)"
       if [[ -n "$addresses" && "$addresses" != "None" ]]; then
         local allocation
@@ -1085,7 +1225,7 @@ verify_teardown_zero_burn() {
         done
       fi
       volumes="$(aws ec2 describe-volumes --region "$REGION_NAME" \
-        --filters "Name=tag:Name,Values=${RANGE_TAG}" "Name=status,Values=available" \
+        --filters "Name=tag:Project,Values=${RANGE_TAG}" "Name=status,Values=available" \
         --query 'Volumes[].VolumeId' --output text 2>/dev/null || true)"
       if [[ -n "$volumes" && "$volumes" != "None" ]]; then
         echo "Orphaned disks remain after teardown: ${volumes}" >&2
@@ -1141,10 +1281,16 @@ teardown_aws() {
     # shellcheck disable=SC2086
     aws ec2 wait instance-terminated --region "$REGION_NAME" --instance-ids $ids || true
   fi
-  sg="$(aws ec2 describe-security-groups --region "$REGION_NAME" \
-    --filters "Name=group-name,Values=${RANGE_TAG}" --query 'SecurityGroups[0].GroupId' --output text || true)"
   vpc="$(aws ec2 describe-vpcs --region "$REGION_NAME" \
     --filters "Name=tag:Name,Values=${RANGE_TAG}" --query 'Vpcs[0].VpcId' --output text || true)"
+  if [[ -n "$vpc" && "$vpc" != "None" ]]; then
+    sg="$(aws ec2 describe-security-groups --region "$REGION_NAME" \
+      --filters "Name=vpc-id,Values=${vpc}" "Name=group-name,Values=${RANGE_TAG}" \
+      --query 'SecurityGroups[0].GroupId' --output text || true)"
+  else
+    sg="$(aws ec2 describe-security-groups --region "$REGION_NAME" \
+      --filters "Name=group-name,Values=${RANGE_TAG}" --query 'SecurityGroups[0].GroupId' --output text || true)"
+  fi
   if [[ -n "$sg" && "$sg" != "None" ]]; then
     aws ec2 delete-security-group --region "$REGION_NAME" --group-id "$sg" || true
   fi
@@ -1174,6 +1320,7 @@ teardown_gcp() {
   fi
   gcloud compute instances delete tf-soc-victim-vm tf-attacker-redteam-vm --zone "$zone" --quiet || true
   gcloud compute firewall-rules delete threatfusion-range-ssh --quiet || true
+  gcloud compute firewall-rules delete threatfusion-range-internal --quiet || true
   gcloud compute networks subnets delete tf-range-subnet --region "$REGION_NAME" --quiet || true
   gcloud compute networks delete "$RANGE_TAG" --quiet || true
 }
@@ -1190,7 +1337,12 @@ teardown_generic() {
     return 0
   fi
   if [[ -n "$target" ]]; then
-    ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=8 \
+    local -a ssh_args=()
+    local _a
+    while IFS= read -r _a; do
+      ssh_args+=("$_a")
+    done < <(ssh_base)
+    ssh ${ssh_args[@]+"${ssh_args[@]}"} \
       "${SSH_USER}@${target}" \
       "cd /opt/threatfusion && sudo docker compose -f docker/docker-compose.soc-stack.yml down && sudo docker compose -f docker/docker-compose.n8n.yml down" \
       || true
@@ -1231,8 +1383,8 @@ while [[ $# -gt 0 ]]; do
       AUTO_IP=1
       shift
       ;;
-    --student-free-tier)
-      STUDENT=1
+    --low-cost-tier|--student-free-tier)
+      LOW_COST_TIER=1
       shift
       ;;
     --help|-h)
@@ -1261,6 +1413,9 @@ fi
 
 if [[ -z "$PROVIDER" ]]; then
   PROVIDER="$(detect_provider)"
+fi
+if [[ "$PROVIDER" == "ssh" ]]; then
+  PROVIDER="generic"
 fi
 case "$PROVIDER" in
   azure|aws|gcp|generic) ;;
@@ -1358,6 +1513,12 @@ case "$ACTION" in
           provision_generic
         else
           load_existing_public_ips
+          if [[ -n "$VICTIM_HOST" ]]; then
+            VICTIM_PUBLIC="$VICTIM_HOST"
+          fi
+          if [[ -n "$ATTACKER_HOST" ]]; then
+            ATTACKER_PUBLIC="$ATTACKER_HOST"
+          fi
           ACCOUNT_ID="${ACCOUNT_ID:-${CLOUD_ACCOUNT_ID:-}}"
           REGION_NAME="${REGION_NAME:-${CLOUD_REGION:-generic}}"
           RESOURCE_GROUP="${RESOURCE_GROUP:-generic-linux-hosts}"

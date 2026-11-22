@@ -9,6 +9,12 @@ from dataclasses import dataclass, fields
 from datetime import datetime
 from pathlib import Path
 
+from threatfusion.db.sqlite_permissions import (
+    ensure_secure_parent_dir,
+    harden_sqlite_permissions,
+    precreate_sqlite_0600,
+    scoped_umask_077,
+)
 from threatfusion.schemas.alert_candidate import AlertCandidate, AlertCandidateError
 
 ALERT_REPOSITORY_SCHEMA_VERSION = 1
@@ -140,15 +146,17 @@ class AlertCandidateRepository:
 
     def _connect(self) -> sqlite3.Connection:
         try:
-            connection = sqlite3.connect(
-                self._database_path,
-                timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
-                isolation_level=None,
-            )
-            connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
-            connection.execute("PRAGMA journal_mode=WAL")
+            with scoped_umask_077():
+                connection = sqlite3.connect(
+                    self._database_path,
+                    timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
+                    isolation_level=None,
+                )
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA foreign_keys = ON")
+                connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+                connection.execute("PRAGMA journal_mode=WAL")
+            harden_sqlite_permissions(self._database_path)
             return connection
         except sqlite3.Error as exc:
             message = str(exc).lower()
@@ -163,27 +171,32 @@ class AlertCandidateRepository:
                 existed = True
                 if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
                     raise AlertPersistenceError("database_corrupt")
+                ensure_secure_parent_dir(self._database_path.parent)
             except FileNotFoundError:
                 existed = False
-                self._database_path.parent.mkdir(parents=True, exist_ok=True)
-            connection = self._connect()
-            try:
-                check = connection.execute("PRAGMA quick_check").fetchone()
-                if check is None or check[0] != "ok":
-                    raise AlertPersistenceError("database_corrupt")
-                if not existed:
-                    connection.execute("BEGIN EXCLUSIVE")
-                    connection.execute(_CREATE_METADATA)
-                    connection.execute(_CREATE_CANDIDATES)
-                    connection.execute(
-                        "INSERT INTO repository_metadata(key, value) VALUES (?, ?)",
-                        ("schema_identity", ALERT_REPOSITORY_SCHEMA_IDENTITY),
-                    )
-                    connection.execute(f"PRAGMA user_version = {ALERT_REPOSITORY_SCHEMA_VERSION}")
-                    connection.commit()
-                self._verify_schema(connection)
-            finally:
-                connection.close()
+                precreate_sqlite_0600(self._database_path)
+            with scoped_umask_077():
+                connection = self._connect()
+                try:
+                    check = connection.execute("PRAGMA quick_check").fetchone()
+                    if check is None or check[0] != "ok":
+                        raise AlertPersistenceError("database_corrupt")
+                    if not existed:
+                        connection.execute("BEGIN EXCLUSIVE")
+                        connection.execute(_CREATE_METADATA)
+                        connection.execute(_CREATE_CANDIDATES)
+                        connection.execute(
+                            "INSERT INTO repository_metadata(key, value) VALUES (?, ?)",
+                            ("schema_identity", ALERT_REPOSITORY_SCHEMA_IDENTITY),
+                        )
+                        connection.execute(
+                            f"PRAGMA user_version = {ALERT_REPOSITORY_SCHEMA_VERSION}"
+                        )
+                        connection.commit()
+                    self._verify_schema(connection)
+                finally:
+                    connection.close()
+                    harden_sqlite_permissions(self._database_path)
         except AlertPersistenceError:
             raise
         except (OSError, sqlite3.DatabaseError):

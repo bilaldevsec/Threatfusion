@@ -10,7 +10,6 @@ recording feedback, proving zero online weight drift for the academic jury viva.
 from __future__ import annotations
 
 import hashlib
-import os
 import sqlite3
 import stat
 from dataclasses import dataclass
@@ -18,6 +17,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from threatfusion.db.sqlite_permissions import (
+    ensure_secure_parent_dir,
+    harden_sqlite_permissions,
+    precreate_sqlite_0600,
+    scoped_umask_077,
+)
 from threatfusion.schemas.analyst_state import valid_actor_id
 
 UTC = timezone.utc
@@ -174,14 +179,16 @@ class OfflineRetrainingFeedbackRepository:
 
     def _connect(self) -> sqlite3.Connection:
         try:
-            conn = sqlite3.connect(
-                self._database_path,
-                timeout=SQLITE_BUSY_TIMEOUT_MS / 1000.0,
-                isolation_level=None,
-            )
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA foreign_keys = ON")
-            conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+            with scoped_umask_077():
+                conn = sqlite3.connect(
+                    self._database_path,
+                    timeout=SQLITE_BUSY_TIMEOUT_MS / 1000.0,
+                    isolation_level=None,
+                )
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA foreign_keys = ON")
+                conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+            harden_sqlite_permissions(self._database_path)
             return conn
         except sqlite3.Error:
             raise RetrainingFeedbackError("ledger_unavailable") from None
@@ -192,48 +199,40 @@ class OfflineRetrainingFeedbackRepository:
             try:
                 st = self._database_path.lstat()
                 existed = True
-                if not stat.S_ISREG(st.st_mode):
+                if not stat.S_ISREG(st.st_mode) or st.st_size == 0:
                     raise RetrainingFeedbackError("ledger_not_regular_file")
+                ensure_secure_parent_dir(self._database_path.parent)
             except FileNotFoundError:
                 existed = False
-                self._database_path.parent.mkdir(parents=True, exist_ok=True)
-                # Enforce directory mode 0700 if created
+                precreate_sqlite_0600(self._database_path)
+
+            with scoped_umask_077():
+                conn = self._connect()
                 try:
-                    os.chmod(self._database_path.parent, 0o700)
-                except OSError:
-                    pass
-
-            conn = self._connect()
-            try:
-                if not existed:
-                    conn.execute("BEGIN EXCLUSIVE")
-                    conn.execute(_CREATE_METADATA_TABLE)
-                    conn.execute(_CREATE_FEEDBACK_TABLE)
-                    conn.execute(_CREATE_INDEX_CANDIDATE)
-                    conn.execute(_CREATE_INDEX_RECORDED_AT)
-                    conn.execute(
-                        "INSERT INTO feedback_metadata(key, value) VALUES (?, ?)",
-                        ("schema_identity", OFFLINE_RETRAINING_FEEDBACK_SCHEMA_IDENTITY),
-                    )
-                    conn.execute(
-                        f"PRAGMA user_version = {RETRAINING_FEEDBACK_REPOSITORY_SCHEMA_VERSION}"
-                    )
-                    conn.commit()
-
-                    # Enforce mode 0600 on the newly created database file
-                    try:
-                        os.chmod(self._database_path, 0o600)
-                    except OSError:
-                        pass
-                else:
-                    # Verify schema
-                    row = conn.execute(
-                        "SELECT value FROM feedback_metadata WHERE key = 'schema_identity'"
-                    ).fetchone()
-                    if not row or row["value"] != OFFLINE_RETRAINING_FEEDBACK_SCHEMA_IDENTITY:
-                        raise RetrainingFeedbackError("ledger_schema_mismatch")
-            finally:
-                conn.close()
+                    if not existed:
+                        conn.execute("BEGIN EXCLUSIVE")
+                        conn.execute(_CREATE_METADATA_TABLE)
+                        conn.execute(_CREATE_FEEDBACK_TABLE)
+                        conn.execute(_CREATE_INDEX_CANDIDATE)
+                        conn.execute(_CREATE_INDEX_RECORDED_AT)
+                        conn.execute(
+                            "INSERT INTO feedback_metadata(key, value) VALUES (?, ?)",
+                            ("schema_identity", OFFLINE_RETRAINING_FEEDBACK_SCHEMA_IDENTITY),
+                        )
+                        conn.execute(
+                            f"PRAGMA user_version = {RETRAINING_FEEDBACK_REPOSITORY_SCHEMA_VERSION}"
+                        )
+                        conn.commit()
+                    else:
+                        # Verify schema
+                        row = conn.execute(
+                            "SELECT value FROM feedback_metadata WHERE key = 'schema_identity'"
+                        ).fetchone()
+                        if not row or row["value"] != OFFLINE_RETRAINING_FEEDBACK_SCHEMA_IDENTITY:
+                            raise RetrainingFeedbackError("ledger_schema_mismatch")
+                finally:
+                    conn.close()
+                    harden_sqlite_permissions(self._database_path)
         except RetrainingFeedbackError:
             raise
         except (OSError, sqlite3.DatabaseError) as err:

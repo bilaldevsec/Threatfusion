@@ -1,7 +1,9 @@
 [project]
 name = "threatfusion"
-version = "0.1.0"
-description = "ThreatFusion: AI-driven SOC alert triage FYP platform"
+version = "1.1.0"
+description = "ThreatFusion: AI-assisted SOC alert triage and approval-gated SOAR platform"
+license = "MIT"
+readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "pandas>=2,<3",
@@ -9,11 +11,12 @@ dependencies = [
     "pydantic-settings>=2,<3",
     "PyYAML>=6,<7",
     "scikit-learn>=1.9.0",
-    "torch==2.10.0+cpu",
+    "torch==2.10.0+cpu; sys_platform == 'linux'",
+    "torch==2.10.0; sys_platform != 'linux'",
 ]
 
 [tool.uv.sources]
-torch = { index = "pytorch-cpu" }
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

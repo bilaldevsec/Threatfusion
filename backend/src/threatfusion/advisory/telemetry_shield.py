@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import math
 import re
 import threading
 import time
-from collections.abc import Mapping, Sequence
+import unicodedata
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 BURST_WINDOW_SECONDS = 60.0
@@ -27,8 +29,8 @@ _INJECTION_PATTERNS = (
     re.compile(r"`{1,3}"),
     re.compile(r"(?i)\brole\s*[:=]\s*(system|assistant)\b"),
 )
-_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
-_ASCII_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_ANSI_OSC_RE = re.compile(r"(?:\x1b\]|\x9d)[^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)")
+_ANSI_CSI_RE = re.compile(r"(?:\x1b\[|\x9b)[0-9;?]*[ -/]*[@-~]")
 
 _IPV4_RE = re.compile(
     r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\b"
@@ -183,7 +185,7 @@ class BurstDeduplicator:
             if distance <= 3:
                 existing["burst_count"] = int(existing["burst_count"]) + 1
                 existing["last_seen_at"] = stamp
-                existing["simhash_signature"] = signature
+                # Anchor simhash_signature to first_seen so chain drift cannot merge bursts.
                 existing["reused_advisory"] = True
                 existing["is_new_burst"] = False
                 return dict(existing)
@@ -199,9 +201,14 @@ class BurstDeduplicator:
             self._entries[key] = entry
             return dict(entry)
 
-    def peek(self, flow_dict: Mapping[str, Any]) -> dict[str, Any] | None:
+    def peek(
+        self, flow_dict: Mapping[str, Any], *, now: float | None = None
+    ) -> dict[str, Any] | None:
+        """Return the active burst entry if present and unexpired, else None."""
+        stamp = time.time() if now is None else float(now)
         key = burst_identity_key(flow_dict)
         with self._lock:
+            self._purge_locked(stamp)
             entry = self._entries.get(key)
             return dict(entry) if entry is not None else None
 
@@ -220,15 +227,23 @@ def reset_burst_deduplicator() -> None:
         _GLOBAL_BURST._entries.clear()
 
 
+def _strip_cf_cc(text: str, *, preserve_line_whitespace: bool) -> str:
+    """Remove Unicode format (Cf) and control (Cc) codepoints."""
+    kept = {"\t", "\n", "\r"} if preserve_line_whitespace else set()
+    return "".join(ch for ch in text if ch in kept or unicodedata.category(ch) not in {"Cc", "Cf"})
+
+
 def _strip_terminal_controls(text: str) -> str:
-    """Remove ANSI color prefixes and ASCII controls before any pattern match."""
-    without_ansi = _ANSI_ESCAPE_RE.sub("", str(text or ""))
-    return _ASCII_CONTROL_RE.sub("", without_ansi)
+    """NFKC-normalize and strip ANSI CSI/OSC and Unicode Cf/Cc controls."""
+    normalized = unicodedata.normalize("NFKC", str(text or ""))
+    without_osc = _ANSI_OSC_RE.sub("", normalized)
+    without_csi = _ANSI_CSI_RE.sub("", without_osc)
+    return _strip_cf_cc(without_csi, preserve_line_whitespace=True)
 
 
 def _escape_untrusted_markup(text: str) -> str:
     """Keep a hostile value from closing the evidence fence."""
-    return str(text or "").replace("<", "&lt;").replace(">", "&gt;")
+    return str(text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _flatten_rule_text(value: str) -> str:
@@ -274,7 +289,15 @@ def wrap_untrusted_telemetry_envelope(
         if key not in fields:
             continue
         value, hit = neutralize_prompt_injection(str(fields.get(key) or ""))
-        sanitized[key] = value
+        escaped_line = (
+            value.replace("\r", "\\r")
+            .replace("\n", "\\n")
+            .replace("\u2028", "\\u2028")
+            .replace("\u2029", "\\u2029")
+        )
+        if escaped_line != value:
+            hit = True
+        sanitized[key] = escaped_line
         filtered = filtered or hit
     body_lines = [f"{key}={sanitized[key]}" for key in sorted(sanitized)]
     body = "\n".join(body_lines)
@@ -319,6 +342,36 @@ def build_fenced_advisory_prompt(
     }
 
 
+def _parse_valid_port(raw: Any, *, allow_zero: bool = True) -> int | None:
+    """Parse an integer TCP/UDP port in [0..65535], rejecting booleans and non-finite floats."""
+    if raw is None or raw == "" or isinstance(raw, bool):
+        return None
+    try:
+        numeric = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(numeric) or numeric != int(numeric):
+        return None
+    port = int(numeric)
+    low = 0 if allow_zero else 1
+    return port if low <= port <= 65535 else None
+
+
+def _collect_cve_tokens(raw_cves: Any, allowed: set[str]) -> None:
+    """Collect normalized CVE tokens while avoiding character-by-character str iteration."""
+    if isinstance(raw_cves, str):
+        token = raw_cves.strip().upper()
+        if token:
+            allowed.add(token)
+        return
+    if isinstance(raw_cves, (bytes, bytearray, Mapping)) or not isinstance(raw_cves, Iterable):
+        return
+    for cve in raw_cves:
+        token = str(cve or "").strip().upper()
+        if token:
+            allowed.add(token)
+
+
 def _allowed_indicator_set(
     flow_record: Mapping[str, Any],
     rag_docs: Sequence[Mapping[str, Any]] | None,
@@ -334,14 +387,8 @@ def _allowed_indicator_set(
         if value:
             allowed.add(value.lower())
     for key in ("src_port", "dst_port", "service_or_port"):
-        raw = flow_record.get(key)
-        if raw is None or raw == "":
-            continue
-        try:
-            port = int(float(raw))
-        except (TypeError, ValueError):
-            continue
-        if 0 <= port <= 65535:
+        port = _parse_valid_port(flow_record.get(key), allow_zero=True)
+        if port is not None:
             allowed.add(str(port))
     technique = (
         str(
@@ -363,17 +410,11 @@ def _allowed_indicator_set(
         if tid:
             allowed.add(tid)
             allowed.add(tid.split(".", 1)[0])
-        for cve in doc.get("cve_ids") or ():
-            token = str(cve or "").strip().upper()
-            if token:
-                allowed.add(token)
+        _collect_cve_tokens(doc.get("cve_ids"), allowed)
         cve_single = str(doc.get("cve_id") or "").strip().upper()
         if cve_single:
             allowed.add(cve_single)
-    for cve in flow_record.get("cve_ids") or ():
-        token = str(cve or "").strip().upper()
-        if token:
-            allowed.add(token)
+    _collect_cve_tokens(flow_record.get("cve_ids"), allowed)
     return allowed
 
 
@@ -438,6 +479,36 @@ def _sid_for_flow(flow_dict: Mapping[str, Any]) -> int:
     return 9000000 + (int.from_bytes(digest[:3], "big") % 900000)
 
 
+def _build_sigma_yaml(
+    *,
+    technique: str,
+    sid: int,
+    description: str,
+    dst_port: int,
+    proto: str,
+    sigma_tag: str,
+) -> str:
+    return (
+        f"title: ThreatFusion Hunt {technique}\n"
+        f"id: tf-hunt-{sid}\n"
+        f"status: experimental\n"
+        f"description: {description}\n"
+        f"logsource:\n"
+        f"  product: zeek\n"
+        f"  category: network_connection\n"
+        f"detection:\n"
+        f"  selection:\n"
+        f"    DestinationPort: {dst_port}\n"
+        f"    Protocol: {proto}\n"
+        f"  condition: selection\n"
+        f"level: medium\n"
+        f"tags:\n"
+        f"  - {sigma_tag}\n"
+        f"falsepositives:\n"
+        f"  - Legitimate service scans require analyst review\n"
+    )
+
+
 def draft_detection_rule(
     *,
     query: str = "",
@@ -449,13 +520,11 @@ def draft_detection_rule(
     proto = _normalize_token(flow.get("proto") or flow.get("flow_protocol") or "tcp") or "tcp"
     if proto not in {"tcp", "udp", "icmp", "ip"}:
         proto = "tcp"
-    dst_port_raw = flow.get("dst_port") or flow.get("service_or_port") or 0
-    try:
-        dst_port = int(float(dst_port_raw))
-    except (TypeError, ValueError):
-        dst_port = 0
-    if dst_port <= 0 or dst_port > 65535:
-        dst_port = 80
+    dst_port_raw = flow.get("dst_port")
+    if dst_port_raw in (None, "", 0) and not isinstance(dst_port_raw, bool):
+        dst_port_raw = flow.get("service_or_port")
+    parsed_port = _parse_valid_port(dst_port_raw, allow_zero=False)
+    dst_port = parsed_port if parsed_port is not None else 80
     raw_technique = (
         str(
             flow.get("technique_id")
@@ -469,7 +538,11 @@ def draft_detection_rule(
     technique = (
         raw_technique if re.fullmatch(r"(?:T\d{4}(?:\.\d{3})?|INV-\d+)", raw_technique) else "T1046"
     )
-    technique_tag = technique.lower()
+    sigma_tag = (
+        f"attack.{technique.lower()}"
+        if re.fullmatch(r"T\d{4}(?:\.\d{3})?", technique)
+        else "threatfusion.investigation"
+    )
     src_ip = (
         _flatten_rule_text(str(flow.get("src_ip") or flow.get("src_entity_id") or "any"))
         .replace('"', "")
@@ -490,57 +563,35 @@ def draft_detection_rule(
         .strip()[:120]
     )
     msg = raw_msg.replace("\\", "\\\\")
+    flow_clause = "flow:to_server,established; " if proto == "tcp" else ""
     suricata = (
         f"alert {proto} any any -> $HOME_NET {dst_port} "
-        f'(msg:"{msg}"; flow:to_server,established; '
+        f'(msg:"{msg}"; {flow_clause}'
         f"classtype:trojan-activity; sid:{sid}; rev:1;)"
     )
     import yaml
 
     description = _yaml_double_quoted(intent)
-    sigma = (
-        f"title: ThreatFusion Hunt {technique}\n"
-        f"id: tf-hunt-{sid}\n"
-        f"status: experimental\n"
-        f"description: {description}\n"
-        f"logsource:\n"
-        f"  product: zeek\n"
-        f"  category: network_connection\n"
-        f"detection:\n"
-        f"  selection:\n"
-        f"    DestinationPort: {dst_port}\n"
-        f"    Protocol: {proto}\n"
-        f"  condition: selection\n"
-        f"level: medium\n"
-        f"tags:\n"
-        f"  - attack.{technique_tag}\n"
-        f"falsepositives:\n"
-        f"  - Legitimate service scans require analyst review\n"
+    sigma = _build_sigma_yaml(
+        technique=technique,
+        sid=sid,
+        description=description,
+        dst_port=dst_port,
+        proto=proto,
+        sigma_tag=sigma_tag,
     )
     try:
         parsed_sigma = yaml.safe_load(sigma)
         if not isinstance(parsed_sigma, dict) or "detection" not in parsed_sigma:
             raise ValueError("sigma document rejected")
     except (ValueError, TypeError, yaml.YAMLError):
-        description = _yaml_double_quoted("sanitized hunt query")
-        sigma = (
-            f"title: ThreatFusion Hunt {technique}\n"
-            f"id: tf-hunt-{sid}\n"
-            f"status: experimental\n"
-            f"description: {description}\n"
-            f"logsource:\n"
-            f"  product: zeek\n"
-            f"  category: network_connection\n"
-            f"detection:\n"
-            f"  selection:\n"
-            f"    DestinationPort: {dst_port}\n"
-            f"    Protocol: {proto}\n"
-            f"  condition: selection\n"
-            f"level: medium\n"
-            f"tags:\n"
-            f"  - attack.{technique_tag}\n"
-            f"falsepositives:\n"
-            f"  - Legitimate service scans require analyst review\n"
+        sigma = _build_sigma_yaml(
+            technique=technique,
+            sid=sid,
+            description=_yaml_double_quoted("sanitized hunt query"),
+            dst_port=dst_port,
+            proto=proto,
+            sigma_tag=sigma_tag,
         )
     rule_name = "threatfusion_" + re.sub(r"[^a-z0-9_]", "_", technique.lower())
     spl = (
@@ -555,13 +606,14 @@ def draft_detection_rule(
         f'    technique = "{technique}"\n'
         '    deployment = "REVIEW_ONLY"\n'
         "  events:\n"
+        "    $ip = $e.principal.ip\n"
         '    $e.metadata.event_type = "NETWORK_CONNECTION"\n'
         f"    $e.target.port = {dst_port}\n"
         f'    $e.network.ip_protocol = "{proto.upper()}"\n'
         "  match:\n"
-        "    $e over 5m\n"
+        "    $ip over 5m\n"
         "  outcome:\n"
-        "    $risk_score = max($e.target.port)\n"
+        "    $risk_score = max(50)\n"
         "  condition:\n"
         "    $e\n"
         "}\n"
@@ -618,11 +670,8 @@ def mcp_readonly_tool_names() -> tuple[str, ...]:
     )
 
 
-def mcp_action_is_forbidden(name: str) -> bool:
-    """Hard read-only guard: Approve/Dispatch/Isolate/Rollback never exposed."""
-    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(name or "").strip())
-    tokens = set(re.findall(r"[a-z0-9]+", normalized.lower()))
-    forbidden = {
+_FORBIDDEN_MCP_TOKENS = frozenset(
+    {
         "approve",
         "dispatch",
         "isolate",
@@ -632,8 +681,35 @@ def mcp_action_is_forbidden(name: str) -> bool:
         "write",
         "delete",
         "mutate",
+        "quarantine",
+        "remediate",
+        "revoke",
+        "modify",
+        "destroy",
+        "purge",
+        "block",
+        "kill",
+        "terminate",
+        "exec",
+        "drop",
+        "overwrite",
+        "patch",
+        "deploy",
+        "shutdown",
     }
-    return bool(tokens & forbidden)
+)
+
+
+def mcp_action_is_forbidden(name: str) -> bool:
+    """Hard read-only guard: Approve/Dispatch/Isolate/Rollback never exposed."""
+    normalized_raw = unicodedata.normalize("NFKC", str(name or ""))
+    cleaned = _strip_cf_cc(normalized_raw, preserve_line_whitespace=False).strip()
+    if cleaned in mcp_readonly_tool_names():
+        return False
+    split_acronyms = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", cleaned)
+    split_camel = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", split_acronyms)
+    tokens = set(re.findall(r"[a-z0-9]+", split_camel.lower()))
+    return bool(tokens & _FORBIDDEN_MCP_TOKENS)
 
 
 def stable_tool_call_id(*parts: Any) -> str:

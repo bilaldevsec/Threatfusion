@@ -8,8 +8,13 @@ MDNS_PORT = 5353
 _BROADCAST = ipaddress.ip_address("255.255.255.255")
 _CLOUD_INFRA_IPS = frozenset(
     {
-        ipaddress.ip_address("168.63.129.16"),
         ipaddress.ip_address("169.254.169.254"),
+        ipaddress.ip_address("169.254.169.253"),
+        ipaddress.ip_address("169.254.169.123"),
+        ipaddress.ip_address("169.254.170.2"),
+        ipaddress.ip_address("168.63.129.16"),
+        ipaddress.ip_address("fd00:ec2::254"),
+        ipaddress.ip_address("100.100.100.200"),
     }
 )
 
@@ -23,6 +28,8 @@ def is_lab_bridge_noise(src: str, dst: str, src_port: int, dst_port: int) -> boo
             address = ipaddress.ip_address(str(raw).strip())
         except ValueError:
             return True
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
         if (
             address.is_multicast
             or address.is_link_local

@@ -12,7 +12,7 @@ cd "$ROOT"
 # Source the lab key only when this script starts the console (--up).
 load_gemini_dotenv() {
   local offline="${THREATFUSION_OFFLINE_ONLY:-}"
-  offline="${offline,,}"
+  offline="$(printf '%s' "$offline" | tr '[:upper:]' '[:lower:]')"
   if [[ "${THREATFUSION_IGNORE_DOTENV:-}" == "1" || "$offline" == "1" || "$offline" == "true" ]]; then
     return 0
   fi
@@ -52,7 +52,10 @@ else
   PYTHON="$(command -v python3 || command -v python)"
 fi
 SERVER="${ROOT}/scripts/run_misp_and_callback_contract_server.py"
-DEMO_DIR="${TMPDIR:-/tmp}/threatfusion-range-demo"
+TMP_BASE="${TMPDIR:-/tmp}"
+TMP_BASE="${TMP_BASE%/}"
+TMP_BASE="${TMP_BASE:-/}"
+DEMO_DIR="${TMP_BASE}/threatfusion-range-demo"
 export THREATFUSION_ENV="${THREATFUSION_ENV:-lab}"
 export THREATFUSION_DATA_DIR="${THREATFUSION_DATA_DIR:-$DEMO_DIR}"
 mkdir -p "$THREATFUSION_DATA_DIR"
@@ -123,7 +126,7 @@ stop_pidfile() {
 # created by mkdir -p is mode 0775, so enrollment must tighten that parent.
 prepare_operator_policy_dir() {
   local policy_dir="$1"
-  local parent mode uid
+  local parent sticky_root
   mkdir -p "$policy_dir"
   if [[ -L "$policy_dir" ]]; then
     die "refusing to chmod a symlink: ${policy_dir}"
@@ -133,13 +136,17 @@ prepare_operator_policy_dir() {
   if [[ "$parent" == "/" || "$parent" == "." ]]; then
     return 0
   fi
-  mode="$(stat -c '%a' "$parent")"
-  uid="$(stat -c '%u' "$parent")"
-  if [[ "$mode" == 1* && "$uid" == "0" ]]; then
+  sticky_root="$("$PYTHON" -c '
+import os, stat, sys
+info = os.stat(sys.argv[1])
+mode = stat.S_IMODE(info.st_mode)
+print("1" if ((mode & stat.S_ISVTX) and info.st_uid == 0) else "0")
+' "$parent")"
+  if [[ "$sticky_root" == "1" ]]; then
     return 0
   fi
   case "$parent" in
-    /tmp/*|/var/tmp/*)
+    /tmp/*|/var/tmp/*|/private/tmp/*|/private/var/tmp/*|/var/folders/*|/private/var/folders/*)
       if [[ -L "$parent" ]]; then
         die "refusing to chmod a symlink: ${parent}"
       fi
@@ -162,13 +169,23 @@ cmd_up() {
   local BIND_HOST="127.0.0.1"
   if command -v ip >/dev/null 2>&1; then
     local bridge_ip
-    bridge_ip="$(ip -4 -o addr show docker0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+    bridge_ip="$(ip -4 -o addr show docker0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
     if [[ "$bridge_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
       BIND_HOST="$bridge_ip"
     fi
   fi
   printf '%s\n' "$BIND_HOST" >"${DEMO_DIR}/bind-host"
-  if ss -ltn | awk '{print $4}' | grep -Eq "(^|:)${PORT}$"; then
+  if "$PYTHON" -c '
+import socket, sys
+host, port = sys.argv[1], int(sys.argv[2])
+sock = socket.socket()
+sock.settimeout(0.3)
+try:
+    busy = sock.connect_ex((host, port)) == 0
+finally:
+    sock.close()
+raise SystemExit(0 if busy else 1)
+' "$BIND_HOST" "$PORT"; then
     die "port ${PORT} is already in use"
   fi
   nohup env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 \
@@ -229,9 +246,14 @@ if parent != parent.parent:
     info = parent.stat()
     sticky_root = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
     parent_text = str(parent)
-    if info.st_mode & 0o022 and not sticky_root and (
-        parent_text.startswith("/tmp/") or parent_text.startswith("/var/tmp/")
-    ):
+    if info.st_mode & 0o022 and not sticky_root and parent_text.startswith((
+        "/tmp/",
+        "/var/tmp/",
+        "/private/tmp/",
+        "/private/var/tmp/",
+        "/var/folders/",
+        "/private/var/folders/",
+    )):
         os.chmod(parent, 0o700)
 stamp = enroll_lab_operator(directory, "lab_operator")
 accepted = stamp.get("evidence_state") == "verified" and stamp.get("reason") in {
@@ -246,6 +268,55 @@ PY
   echo "Suricata engine started. Follower pid $(cat "$FOLLOWER_PIDFILE")."
 }
 
+LAB_COOKIE_JAR=""
+LAB_CSRF_TOKEN=""
+LAB_SESSION_TOKEN=""
+
+cleanup_lab_session() {
+  if [[ -n "${LAB_COOKIE_JAR:-}" && -f "${LAB_COOKIE_JAR}" ]]; then
+    rm -f "${LAB_COOKIE_JAR}"
+  fi
+}
+
+login_lab_approver_session() {
+  local bind_host="$1"
+  local health_json csrf login_payload login_resp prev_umask
+  prev_umask="$(umask)"
+  umask 077
+  LAB_COOKIE_JAR="$(mktemp "${DEMO_DIR}/lab-cookies.XXXXXX")"
+  chmod 0600 "$LAB_COOKIE_JAR"
+  umask "$prev_umask"
+  trap cleanup_lab_session EXIT INT TERM
+
+  health_json="$(curl -fsS \
+    -H "Origin: http://${bind_host}:${PORT}" \
+    -H "Sec-Fetch-Site: same-origin" \
+    "http://${bind_host}:${PORT}/api/v1/live/health")"
+  csrf="$(printf '%s' "$health_json" | "$PYTHON" -c 'import json, sys; print(json.load(sys.stdin).get("csrf_token", ""))')"
+  [[ -n "$csrf" ]] || die "failed to retrieve CSRF token from live console"
+
+  login_payload="$("$PYTHON" -c '
+import json, sys
+print(json.dumps({"username": sys.argv[1], "access_code": sys.argv[2]}))
+' "${THREATFUSION_LAB_APPROVER_USER:-approver@threatfusion.local}" "${THREATFUSION_LAB_APPROVER_CODE:-TF-Lab-Approver-01!}")"
+
+  login_resp="$(curl -fsS -X POST "http://${bind_host}:${PORT}/api/rbac/login" \
+    -c "$LAB_COOKIE_JAR" \
+    -H 'Content-Type: application/json' \
+    -H "Origin: http://${bind_host}:${PORT}" \
+    -H "X-ThreatFusion-CSRF: ${csrf}" \
+    -d "$login_payload")" || die "lab approver login failed"
+
+  LAB_CSRF_TOKEN="$(printf '%s' "$login_resp" | "$PYTHON" -c 'import json, sys; print(json.load(sys.stdin).get("csrf_token") or "")')"
+  if [[ -z "$LAB_CSRF_TOKEN" ]]; then
+    LAB_CSRF_TOKEN="$csrf"
+  fi
+  LAB_SESSION_TOKEN="$(printf '%s' "$login_resp" | "$PYTHON" -c 'import json, sys; print(json.load(sys.stdin).get("session_token") or "")')"
+  if [[ -z "$LAB_SESSION_TOKEN" && -f "$LAB_COOKIE_JAR" ]]; then
+    LAB_SESSION_TOKEN="$(awk '$6 == "tf_session" || $6 == "__Host-tf_session" {print $7; exit}' "$LAB_COOKIE_JAR")"
+  fi
+}
+
 cmd_scan() {
   require_tools
   local BIND_HOST="127.0.0.1"
@@ -255,11 +326,19 @@ cmd_scan() {
   docker inspect -f '{{.State.Running}}' threatfusion_range_attacker | grep -qx true \
     || die "attacker container is not running; use --up first"
   echo "waiting for 172.29.0.10 -> 172.29.0.20 in eve.json and the live queue"
+  login_lab_approver_session "$BIND_HOST"
+  local -a auth_headers=(
+    -b "$LAB_COOKIE_JAR"
+    -H 'Content-Type: application/json'
+    -H "Origin: http://${BIND_HOST}:${PORT}"
+    -H "X-ThreatFusion-CSRF: ${LAB_CSRF_TOKEN}"
+  )
+  if [[ -n "${LAB_SESSION_TOKEN:-}" ]]; then
+    auth_headers+=(-H "X-ThreatFusion-Session: ${LAB_SESSION_TOKEN}")
+  fi
   local response
-  local csrf
-  csrf="$(curl -fsS -H "Origin: http://${BIND_HOST}:${PORT}" -H "Sec-Fetch-Site: same-origin" "http://${BIND_HOST}:${PORT}/api/v1/live/health" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin).get("csrf_token",""))')"
   response="$(curl -fsS -X POST "http://${BIND_HOST}:${PORT}/api/v1/live/range-scan" \
-    -H 'Content-Type: application/json' -H "X-ThreatFusion-CSRF: ${csrf}" -d '{}')" || die "range scan was not ingested"
+    ${auth_headers[@]+"${auth_headers[@]}"} -d '{}')" || die "range scan was not ingested"
   printf '%s\n' "$response"
   printf '%s\n' "$response" | grep -q '"ingested": true' \
     || die "range scan did not store 172.29.0.10 -> 172.29.0.20"
@@ -280,10 +359,19 @@ cmd_attack() {
   fi
   docker inspect -f '{{.State.Running}}' threatfusion_range_attacker | grep -qx true \
     || die "attacker container is not running; use --up first"
-  local csrf response
-  csrf="$(curl -fsS -H "Origin: http://${BIND_HOST}:${PORT}" -H "Sec-Fetch-Site: same-origin" "http://${BIND_HOST}:${PORT}/api/v1/live/health" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin).get("csrf_token",""))')"
+  login_lab_approver_session "$BIND_HOST"
+  local -a auth_headers=(
+    -b "$LAB_COOKIE_JAR"
+    -H 'Content-Type: application/json'
+    -H "Origin: http://${BIND_HOST}:${PORT}"
+    -H "X-ThreatFusion-CSRF: ${LAB_CSRF_TOKEN}"
+  )
+  if [[ -n "${LAB_SESSION_TOKEN:-}" ]]; then
+    auth_headers+=(-H "X-ThreatFusion-Session: ${LAB_SESSION_TOKEN}")
+  fi
+  local response
   response="$(curl -fsS -X POST "http://${BIND_HOST}:${PORT}/api/v1/live/range/launch-vector" \
-    -H 'Content-Type: application/json' -H "X-ThreatFusion-CSRF: ${csrf}" \
+    ${auth_headers[@]+"${auth_headers[@]}"} \
     -d "{\"vector_id\":\"${vector}\",\"src_ip\":\"172.29.0.10\",\"dst_ip\":\"172.29.0.20\"}")" \
     || die "range attack ${vector} was not ingested"
   printf '%s\n' "$response"
@@ -295,9 +383,16 @@ cmd_down() {
   require_tools
   stop_pidfile "$FOLLOWER_PIDFILE"
   stop_pidfile "$CONSOLE_PIDFILE"
+  local pids=""
   if command -v fuser >/dev/null 2>&1; then
+    pids="$(fuser "${PORT}/tcp" 2>/dev/null || true)"
+  fi
+  if [[ -z "$pids" ]] && command -v lsof >/dev/null 2>&1; then
+    pids="$(lsof -ti "tcp:${PORT}" -sTCP:LISTEN 2>/dev/null || true)"
+  fi
+  if [[ -n "$pids" ]]; then
     local pid
-    for pid in $(fuser "${PORT}/tcp" 2>/dev/null || true); do
+    for pid in $pids; do
       if [[ "$pid" =~ ^[0-9]+$ ]] && ps -p "$pid" -o args= 2>/dev/null | grep -Eq "threatfusion|run_misp_and_callback_contract_server"; then
         kill "$pid" 2>/dev/null || true
       fi

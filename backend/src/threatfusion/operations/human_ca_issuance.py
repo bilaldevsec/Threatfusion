@@ -33,6 +33,12 @@ from typing import Generator
 from uuid import uuid4
 
 from threatfusion.operations import human_credentials
+from threatfusion.operations._posix_safety import (
+    _resolve_openssl_bin,
+    _sterile_openssl_env,
+    normalize_darwin_system_prefix,
+    open_private_leaf_nofollow,
+)
 from threatfusion.schemas.analyst_state import valid_actor_id
 
 UTC = timezone.utc
@@ -84,6 +90,7 @@ def _directory_context(directory: Path, *, write: bool = True) -> Generator[int,
         directory = Path(directory)
     if not directory.is_absolute() or ".." in directory.parts:
         raise HumanCaIssuanceError("directory_invalid")
+    directory = normalize_darwin_system_prefix(directory)
 
     try:
         fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
@@ -133,7 +140,7 @@ def _directory_context(directory: Path, *, write: bool = True) -> Generator[int,
 def _check_file_stat(dir_fd: int, filename: str, max_bytes: int = MAX_BYTES) -> os.stat_result:
     """Verify regular file, ownership, mode 0600, single link, and byte bound."""
     try:
-        file_fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+        file_fd = open_private_leaf_nofollow(dir_fd, filename, os.O_RDONLY | os.O_NONBLOCK)
     except OSError as err:
         if err.errno in (errno.ELOOP, errno.ENOTDIR):
             raise HumanCaIssuanceError("symlink_rejected") from None
@@ -159,7 +166,7 @@ def _check_file_stat(dir_fd: int, filename: str, max_bytes: int = MAX_BYTES) -> 
 def _read_file(dir_fd: int, filename: str, max_bytes: int = MAX_BYTES) -> bytes:
     """Read a bounded regular file under directory descriptor checks."""
     try:
-        file_fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+        file_fd = open_private_leaf_nofollow(dir_fd, filename, os.O_RDONLY | os.O_NONBLOCK)
     except OSError as err:
         if err.errno in (errno.ELOOP, errno.ENOTDIR):
             raise HumanCaIssuanceError("symlink_rejected") from None
@@ -199,11 +206,11 @@ def _write_atomic_file(
 
     temp_name = f".tmp-{uuid4().hex}"
     try:
-        temp_fd = os.open(
+        temp_fd = open_private_leaf_nofollow(
+            dir_fd,
             temp_name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
             mode,
-            dir_fd=dir_fd,
         )
     except OSError:
         raise HumanCaIssuanceError("file_invalid") from None
@@ -241,14 +248,15 @@ def _run_openssl(
     timeout: float = 15.0,
 ) -> str:
     """Run an OpenSSL subprocess safely with bounded timeout and sterile environment."""
+    openssl_bin = _resolve_openssl_bin()
     try:
         proc = subprocess.run(
-            ["openssl", *args],
+            [openssl_bin, *args],
             input=input_bytes,
             capture_output=True,
             timeout=timeout,
             check=False,
-            env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+            env=_sterile_openssl_env(openssl_bin),
         )
     except (OSError, subprocess.SubprocessError):
         raise HumanCaIssuanceError("openssl_failed") from None
@@ -308,7 +316,7 @@ def init_human_ca(
         # Check if CA files already exist
         for fname in (CA_MANIFEST_FILENAME, CA_KEY_FILENAME, CA_CERT_FILENAME):
             try:
-                chk_fd = os.open(fname, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=ca_fd)
+                chk_fd = open_private_leaf_nofollow(ca_fd, fname, os.O_RDONLY)
                 os.close(chk_fd)
                 raise HumanCaIssuanceError("ca_already_exists")
             except FileNotFoundError:
@@ -397,6 +405,10 @@ def issue_human_client_bundle(
 
     ca_dir_path = Path(ca_dir) if not isinstance(ca_dir, Path) else ca_dir
     del_dir_path = Path(delivery_dir) if not isinstance(delivery_dir, Path) else delivery_dir
+    if ca_dir_path.is_absolute() and ".." not in ca_dir_path.parts:
+        ca_dir_path = normalize_darwin_system_prefix(ca_dir_path)
+    if del_dir_path.is_absolute() and ".." not in del_dir_path.parts:
+        del_dir_path = normalize_darwin_system_prefix(del_dir_path)
 
     # Deterministic lock ordering to prevent deadlocks
     dirs_to_lock = (
@@ -617,11 +629,11 @@ def issue_human_client_bundle(
             }
             journal_line = (json.dumps(journal_entry, sort_keys=True) + "\n").encode("utf-8")
 
-            j_fd = os.open(
+            j_fd = open_private_leaf_nofollow(
+                ca_fd,
                 CA_JOURNAL_FILENAME,
-                os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
+                os.O_WRONLY | os.O_APPEND | os.O_CREAT,
                 0o600,
-                dir_fd=ca_fd,
             )
             try:
                 os.fchmod(j_fd, 0o600)
@@ -655,6 +667,12 @@ def issue_and_enroll_human_credential(
     ca_dir_path = Path(ca_dir) if not isinstance(ca_dir, Path) else ca_dir
     delivery_dir_path = Path(delivery_dir) if not isinstance(delivery_dir, Path) else delivery_dir
     policy_dir_path = Path(policy_dir) if not isinstance(policy_dir, Path) else policy_dir
+    if ca_dir_path.is_absolute() and ".." not in ca_dir_path.parts:
+        ca_dir_path = normalize_darwin_system_prefix(ca_dir_path)
+    if delivery_dir_path.is_absolute() and ".." not in delivery_dir_path.parts:
+        delivery_dir_path = normalize_darwin_system_prefix(delivery_dir_path)
+    if policy_dir_path.is_absolute() and ".." not in policy_dir_path.parts:
+        policy_dir_path = normalize_darwin_system_prefix(policy_dir_path)
 
     bundle_manifest = issue_human_client_bundle(
         ca_dir=ca_dir_path,
@@ -751,8 +769,12 @@ def verify_client_bundle(
 ) -> dict[str, object]:
     """Verify delivery directory permissions, manifest integrity, and absence of private keys."""
     delivery_dir_path = Path(delivery_dir) if not isinstance(delivery_dir, Path) else delivery_dir
+    if delivery_dir_path.is_absolute() and ".." not in delivery_dir_path.parts:
+        delivery_dir_path = normalize_darwin_system_prefix(delivery_dir_path)
     if ca_dir is not None and ca_cert_path is None:
         ca_dir_path = Path(ca_dir) if not isinstance(ca_dir, Path) else ca_dir
+        if ca_dir_path.is_absolute() and ".." not in ca_dir_path.parts:
+            ca_dir_path = normalize_darwin_system_prefix(ca_dir_path)
         ca_cert_path = ca_dir_path / CA_CERT_FILENAME
     with _directory_context(delivery_dir_path, write=False) as del_fd:
         manifest_raw = _read_file(del_fd, BUNDLE_MANIFEST_FILENAME)
@@ -768,6 +790,8 @@ def verify_client_bundle(
 
         if ca_dir is not None:
             ca_dir_path = Path(ca_dir) if not isinstance(ca_dir, Path) else ca_dir
+            if ca_dir_path.is_absolute() and ".." not in ca_dir_path.parts:
+                ca_dir_path = normalize_darwin_system_prefix(ca_dir_path)
             ca_cert_raw = (ca_dir_path / CA_CERT_FILENAME).read_bytes()
             ca_der_val = ssl.PEM_cert_to_DER_cert(ca_cert_raw.decode("ascii"))
             ca_sha_val = hashlib.sha256(ca_der_val).hexdigest()

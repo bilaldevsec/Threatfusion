@@ -330,8 +330,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         db_path = self._soar_db_file()
         if not db_path or not Path(db_path).is_file():
             return False
+        from threatfusion.db.sqlite_permissions import harden_sqlite_permissions
+
+        target = Path(db_path)
         try:
-            conn = sqlite3.connect(str(db_path), timeout=5.0, isolation_level=None)
+            conn = sqlite3.connect(str(target), timeout=5.0, isolation_level=None)
             try:
                 conn.execute("PRAGMA busy_timeout = 5000")
                 conn.execute("PRAGMA journal_mode=WAL")
@@ -350,7 +353,8 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 return row is not None
             finally:
                 conn.close()
-        except sqlite3.Error:
+                harden_sqlite_permissions(target)
+        except (sqlite3.Error, OSError):
             return False
 
     def _idempotency_commit(self, scope: str, key: str) -> None:
@@ -358,35 +362,49 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         db_path = self._soar_db_file()
         if not db_path:
             return
+        from threatfusion.db.sqlite_permissions import (
+            ensure_secure_parent_dir,
+            harden_sqlite_permissions,
+            precreate_sqlite_0600,
+            scoped_umask_077,
+        )
+
+        target = Path(db_path)
         try:
-            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(str(db_path), timeout=5.0, isolation_level=None)
-            try:
-                conn.execute("PRAGMA busy_timeout = 5000")
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS contract_idempotency_keys (
-                        scope TEXT NOT NULL,
-                        idempotency_key TEXT NOT NULL,
-                        recorded_at_utc TEXT NOT NULL,
-                        PRIMARY KEY (scope, idempotency_key)
+            ensure_secure_parent_dir(target.parent)
+            if not target.exists() and not target.is_symlink():
+                precreate_sqlite_0600(target)
+            with scoped_umask_077():
+                conn = sqlite3.connect(str(target), timeout=5.0, isolation_level=None)
+                try:
+                    conn.execute("PRAGMA busy_timeout = 5000")
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS contract_idempotency_keys (
+                            scope TEXT NOT NULL,
+                            idempotency_key TEXT NOT NULL,
+                            recorded_at_utc TEXT NOT NULL,
+                            PRIMARY KEY (scope, idempotency_key)
+                        )
+                        """)
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO contract_idempotency_keys (
+                            scope, idempotency_key, recorded_at_utc
+                        ) VALUES (?, ?, ?)
+                        """,
+                        (scope, key, datetime.now(UTC).isoformat()),
                     )
-                    """)
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO contract_idempotency_keys (
-                        scope, idempotency_key, recorded_at_utc
-                    ) VALUES (?, ?, ?)
-                    """,
-                    (scope, key, datetime.now(UTC).isoformat()),
-                )
-            finally:
-                conn.close()
-        except sqlite3.Error:
+                finally:
+                    conn.close()
+                    harden_sqlite_permissions(target)
+        except (sqlite3.Error, OSError):
             return
 
     def _rejected_host_header(self) -> bool:
         """Refuse a Host that is not this console, the lab bridge, or the test client."""
+        from threatfusion.operations.commercial_hardening import configured_allowed_hosts
+
         host = _host_without_port(str(self.headers.get("Host") or ""))
         bind_host = str(self.server.server_address[0])
         if host == "172.17.0.1":
@@ -394,7 +412,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 return False
             self._send_json(403, {"error": "invalid_host_header"})
             return True
-        if host in _ALLOWED_HTTP_HOSTS:
+        if host in _ALLOWED_HTTP_HOSTS or host in configured_allowed_hosts():
             return False
         self._send_json(403, {"error": "invalid_host_header"})
         return True
@@ -431,8 +449,82 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         return False
 
     def _client_ip(self) -> str:
-        if self.client_address:
-            return str(self.client_address[0])
+        from threatfusion.operations.commercial_hardening import resolve_client_ip
+
+        peer = str(self.client_address[0]) if self.client_address else ""
+        return resolve_client_ip(peer, self.headers.get("X-Forwarded-For"))
+
+    def _is_trusted_proxy(self) -> bool:
+        from threatfusion.operations.commercial_hardening import is_trusted_proxy_ip
+
+        peer = str(self.client_address[0]) if self.client_address else ""
+        return is_trusted_proxy_ip(peer)
+
+    def _is_https_request(self) -> bool:
+        if getattr(self.server, "tls_enabled", False):
+            return True
+        if self._is_trusted_proxy():
+            forwarded_proto = (self.headers.get("X-Forwarded-Proto") or "").strip().lower()
+            if forwarded_proto == "https":
+                return True
+        return False
+
+    def _build_session_cookie_header(self, token: str, *, max_age: int = 43200) -> str:
+        from threatfusion.operations.commercial_hardening import threatfusion_environment
+
+        if threatfusion_environment() == "production" and self._is_https_request():
+            return (
+                f"__Host-tf_session={token}; HttpOnly; SameSite=Strict; "
+                f"Path=/; Max-Age={int(max_age)}; Secure"
+            )
+        return f"tf_session={token}; HttpOnly; SameSite=Strict; " f"Path=/; Max-Age={int(max_age)}"
+
+    def _clear_session_cookie_headers(self) -> list[tuple[str, str]]:
+        headers = [
+            ("Set-Cookie", "tf_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"),
+        ]
+        if self._is_https_request():
+            headers.append(
+                (
+                    "Set-Cookie",
+                    "__Host-tf_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0; Secure",
+                )
+            )
+        return headers
+
+    def _extract_session_cookie(self) -> str:
+        import http.cookies
+
+        raw_cookie = self.headers.get("Cookie")
+        if not raw_cookie:
+            return ""
+        from threatfusion.operations.commercial_hardening import threatfusion_environment
+
+        is_prod = threatfusion_environment() == "production"
+        is_https = self._is_https_request()
+        jar = http.cookies.SimpleCookie()
+        try:
+            jar.load(str(raw_cookie))
+        except (http.cookies.CookieError, ValueError):
+            for part in str(raw_cookie).split(";"):
+                if "=" not in part:
+                    continue
+                k, v = part.split("=", 1)
+                name = k.strip()
+                val = v.strip()
+                if name == "__Host-tf_session" and val and (is_https or not is_prod):
+                    return val
+                if name == "tf_session" and val:
+                    return val
+            return ""
+        if "__Host-tf_session" in jar and (is_https or not is_prod):
+            val = jar["__Host-tf_session"].value.strip()
+            if val:
+                return val
+        if "tf_session" in jar:
+            val = jar["tf_session"].value.strip()
+            if val:
+                return val
         return ""
 
     def _write_security_headers(self, *, cache_no_store: bool) -> None:
@@ -469,10 +561,90 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    _PUBLIC_GET_ALLOWLIST = frozenset(
+        {
+            "/",
+            "/index.html",
+            "/css/soc_unicorn.css",
+            "/css/soc_dashboard.css",
+            "/js/soc_dashboard.js",
+            "/health",
+            "/healthz",
+            "/api/v1/heartbeat",
+            "/api/status",
+            "/readyz",
+            "/api/v1/live/health",
+            "/api/v1/live/posture",
+            "/api/v1/live/advisory-status",
+            "/api/rbac/session",
+        }
+    )
+
+    _PUBLIC_POST_ALLOWLIST = frozenset(
+        {
+            "/api/rbac/login",
+            "/api/rbac/logout",
+            "/api/rbac/register",
+            "/api/v1/live/sensor",
+            "/api/v1/live/ingest",
+            "/attributes/restSearch",
+            "/api/v1/soar/verify-state",
+            "/api/v1/soar/callback",
+            "/api/v1/soar/audit-callback",
+        }
+    )
+
+    def _is_public_get_path(self, path: str) -> bool:
+        return path in self._PUBLIC_GET_ALLOWLIST or path.startswith("/static/")
+
+    def _production_auth_rejected(
+        self,
+        path: str,
+        *,
+        method: str,
+        req_data: Mapping[str, Any] | None = None,
+    ) -> bool:
+        """Require authenticated session or verified mTLS cert on all protected routes in production."""
+        from threatfusion.operations.commercial_hardening import threatfusion_environment
+
+        if threatfusion_environment() != "production":
+            return False
+        if method == "GET" and self._is_public_get_path(path):
+            return False
+        if method == "POST" and path in self._PUBLIC_POST_ALLOWLIST:
+            return False
+        protected_prefix = path.startswith(
+            (
+                "/api/v1/live/",
+                "/api/soar/",
+                "/api/range/",
+                "/api/cloud/",
+                "/api/azure/",
+                "/api/v1/metrics/",
+            )
+        )
+        if not protected_prefix:
+            return False
+        verified_actor, _role, _auth_method = self._verified_operator_identity(req_data)
+        if verified_actor:
+            return False
+        self._send_json(
+            401,
+            {
+                "error": "authentication_required",
+                "reason": "authentication_required",
+                "evidence_state": "unavailable",
+                "production_fusion_enabled": False,
+            },
+        )
+        return True
+
     def do_GET(self) -> None:
         if self._rejected_host_header():
             return
         path = self.path.split("?")[0]
+        if self._production_auth_rejected(path, method="GET"):
+            return
         if path in ("/", "/index.html"):
             self._send_console_index()
             return
@@ -492,8 +664,10 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             self._send_json(200, self._advisory_status_payload())
             return
         if path == "/api/v1/live/health":
+            from threatfusion.operations.commercial_hardening import threatfusion_environment
+
             payload: dict[str, Any] = {"status": "ok"}
-            if self._health_csrf_visible():
+            if threatfusion_environment() != "production" and self._health_csrf_visible():
                 payload["csrf_token"] = _LIVE_CSRF_TOKEN
             self._send_json(200, payload)
             return
@@ -509,7 +683,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 ),
             )
             return
-        if path in ("/healthz", "/api/v1/heartbeat", "/api/status"):
+        if path in ("/health", "/healthz", "/api/v1/heartbeat", "/api/status"):
             self._send_json(200, {"status": "ok", "service": "threatfusion_soc_contract_server"})
             return
         if path == "/readyz":
@@ -692,6 +866,31 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/live/range/telemetry":
             from threatfusion.api.live_soc_console import range_telemetry
 
+            verified_actor, role, _auth_method = self._verified_operator_identity()
+            if not verified_actor:
+                self._send_json(
+                    401,
+                    {
+                        "error": "authentication_required",
+                        "reason": "authentication_required",
+                        "evidence_state": "unavailable",
+                        "production_fusion_enabled": False,
+                    },
+                )
+                return
+            if role != "soc_approver":
+                self._send_json(
+                    403,
+                    {
+                        "error": "role_insufficient_for_range_telemetry",
+                        "reason": "role_insufficient_for_range_telemetry",
+                        "actor_id": verified_actor,
+                        "role": role or "unregistered",
+                        "evidence_state": "refused",
+                        "production_fusion_enabled": False,
+                    },
+                )
+                return
             self._send_json(200, range_telemetry(self._live_db_path()))
             return
         if path == "/api/v1/live/workspaces":
@@ -707,11 +906,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         if path == "/api/rbac/session":
             from threatfusion.api.live_soc_console import rbac_session_status
 
-            token = (self.headers.get("X-ThreatFusion-Session") or "").strip()
-            if not token:
-                authorization = self.headers.get("Authorization") or ""
-                if authorization.lower().startswith("bearer "):
-                    token = authorization[7:].strip()
+            token = self._extract_session_token()
             result = rbac_session_status(self._live_db_path(), token)
             self._send_json(int(result.get("http_status") or 200), result)
             return
@@ -798,6 +993,13 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         configured = os.environ.get("THREATFUSION_LIVE_CONSOLE_DB", "").strip()
         if configured:
             return Path(configured)
+        from threatfusion.operations.commercial_hardening import (
+            resolve_data_dir,
+            threatfusion_environment,
+        )
+
+        if threatfusion_environment() == "production":
+            return resolve_data_dir() / "threatfusion-live-console.sqlite3"
         return Path(os.environ.get("TMPDIR", "/tmp")) / "threatfusion-live-console.sqlite3"
 
     def _live_rag_path(self) -> Path:
@@ -813,9 +1015,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         return self._live_db_path().with_name("threatfusion-live-incidents.sqlite3")
 
     def _live_soar_path(self) -> Path:
-        configured = self.soar_db_path or os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH", "")
-        if configured and str(configured).strip():
-            return Path(str(configured).strip())
+        env_configured = os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH", "").strip()
+        if env_configured:
+            return Path(env_configured)
+        if self.soar_db_path and str(self.soar_db_path).strip():
+            return Path(str(self.soar_db_path).strip())
         return self._live_db_path().with_name("threatfusion-live-soar.sqlite3")
 
     def _presented_operator_fingerprint(self) -> str:
@@ -832,14 +1036,22 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         return http_client_certificate_fingerprint(self.headers)
 
     def _extract_session_token(self, req_data: Mapping[str, Any] | None = None) -> str:
-        token = (self.headers.get("X-ThreatFusion-Session") or "").strip()
+        from threatfusion.operations.commercial_hardening import threatfusion_environment
+
+        token = self._extract_session_cookie()
+        if not token:
+            token = (self.headers.get("X-ThreatFusion-Session") or "").strip()
         if not token:
             authorization = (self.headers.get("Authorization") or "").strip()
             if authorization.lower().startswith("bearer ") and not authorization.lower().startswith(
                 "bearer lab-"
             ):
                 token = authorization[7:].strip()
-        if not token and isinstance(req_data, Mapping):
+        if (
+            not token
+            and isinstance(req_data, Mapping)
+            and threatfusion_environment() != "production"
+        ):
             token = str(req_data.get("session_token") or "").strip()
         return token
 
@@ -925,8 +1137,22 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         return True
 
     def _live_write_authorized(self) -> bool:
-        """Accept the process CSRF token, the configured write token, or pytest's test header."""
+        """Accept the session/process CSRF token, configured write token, or non-prod pytest header."""
+        from threatfusion.api.live_soc_console import _session_row
+        from threatfusion.operations.commercial_hardening import threatfusion_environment
+
+        is_prod = threatfusion_environment() == "production"
         presented = (self.headers.get("X-ThreatFusion-CSRF") or "").strip()
+        session_token = self._extract_session_token()
+        session_row = _session_row(self._live_db_path(), session_token) if session_token else None
+        session_csrf = str((session_row or {}).get("csrf_token") or "").strip()
+        if (
+            presented
+            and session_csrf
+            and len(presented) == len(session_csrf)
+            and hmac.compare_digest(presented, session_csrf)
+        ):
+            return True
         if (
             presented
             and len(presented) == len(_LIVE_CSRF_TOKEN)
@@ -935,7 +1161,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return True
         if live_write_token_matches(self.headers.get("Authorization")):
             return True
-        if not os.environ.get("PYTEST_CURRENT_TEST"):
+        if is_prod or not os.environ.get("PYTEST_CURRENT_TEST") or ("pytest" not in sys.modules):
             return False
         test_client = (self.headers.get("X-ThreatFusion-Test-Client") or "").strip()
         return bool(
@@ -945,7 +1171,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         )
 
     def _expected_scheme(self) -> str:
-        return "https" if getattr(self.server, "tls_enabled", False) else "http"
+        return "https" if self._is_https_request() else "http"
 
     def _csrf_origin_rejected(self, path: str) -> bool:
         """Refuse a browser POST whose Origin is not this loopback listener."""
@@ -982,7 +1208,13 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         return False
 
     def _origin_host_allowed(self, hostname: str) -> bool:
-        allowed = set(_ALLOWED_HTTP_HOSTS) | {"127.0.0.1", "localhost", "::1"}
+        from threatfusion.operations.commercial_hardening import configured_allowed_hosts
+
+        allowed = (
+            set(_ALLOWED_HTTP_HOSTS)
+            | {"127.0.0.1", "localhost", "::1"}
+            | set(configured_allowed_hosts())
+        )
         bind_host = str(self.server.server_address[0])
         if _docker_bridge_host_allowed(bind_host):
             allowed.add("172.17.0.1")
@@ -1156,6 +1388,23 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             and not self._live_write_authorized()
         ):
             self._send_json(401, {"error": "write_token_required"})
+            return
+        if path == "/api/v1/live/operator/enroll":
+            from threatfusion.operations.commercial_hardening import threatfusion_environment
+
+            if threatfusion_environment() == "production":
+                self._send_json(
+                    403,
+                    {
+                        "error": "lab_enrollment_disabled_in_production",
+                        "reason": "lab_enrollment_disabled_in_production",
+                        "evidence_state": "unavailable",
+                        "identity_verified": False,
+                        "production_fusion_enabled": False,
+                    },
+                )
+                return
+        if self._production_auth_rejected(path, method="POST"):
             return
 
         if path == "/api/v1/live/purge-bridge-noise":
@@ -1348,6 +1597,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
         if path == "/api/v1/live/notes":
             from threatfusion.api.live_soc_console import add_analyst_note
+            from threatfusion.operations.commercial_hardening import threatfusion_environment
 
             try:
                 req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
@@ -1357,12 +1607,18 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if not isinstance(req_data, dict):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
+            verified_actor, _role, _method = self._verified_operator_identity(req_data)
+            author_id = (
+                (verified_actor or "")
+                if threatfusion_environment() == "production"
+                else (verified_actor or str(req_data.get("author_id") or ""))
+            )
             raw_flow = req_data.get("flow_id")
             flow_id = raw_flow if isinstance(raw_flow, int) else None
             result = add_analyst_note(
                 self._live_db_path(),
                 flow_id=flow_id,
-                author_id=str(req_data.get("author_id") or ""),
+                author_id=author_id,
                 note_text=str(req_data.get("note_text") or ""),
             )
             if result.get("http_status") == 403 or result.get("reason") == "role_readonly_auditor":
@@ -1489,6 +1745,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
         if path == "/api/v1/live/verdict":
             from threatfusion.api.live_soc_console import record_analyst_verdict
+            from threatfusion.operations.commercial_hardening import threatfusion_environment
 
             try:
                 req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
@@ -1499,7 +1756,12 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
             raw_flow = req_data.get("flow_id")
-            actor_id = str(req_data.get("actor_id") or "")
+            verified_actor, _role, _method = self._verified_operator_identity(req_data)
+            actor_id = (
+                (verified_actor or "")
+                if threatfusion_environment() == "production"
+                else str(req_data.get("actor_id") or verified_actor or "")
+            )
             if self._reject_actor_mismatch(actor_id):
                 return
             result = record_analyst_verdict(
@@ -1525,6 +1787,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
         if path == "/api/v1/live/context-memory":
             from threatfusion.api.live_soc_console import save_context_memory
+            from threatfusion.operations.commercial_hardening import threatfusion_environment
 
             try:
                 req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
@@ -1537,7 +1800,15 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             raw_flow = req_data.get("flow_id")
             entity = req_data.get("entity_ip_or_subnet")
             service = req_data.get("service_or_port")
-            operator_id = str(req_data.get("operator_id") or req_data.get("actor_id") or "")
+            verified_actor, _role, _method = self._verified_operator_identity(req_data)
+            if threatfusion_environment() == "production":
+                operator_id = verified_actor or ""
+                actor_arg = verified_actor or ""
+            else:
+                operator_id = str(
+                    req_data.get("operator_id") or req_data.get("actor_id") or verified_actor or ""
+                )
+                actor_arg = str(req_data.get("actor_id") or verified_actor or "")
             if self._reject_actor_mismatch(operator_id):
                 return
             result = save_context_memory(
@@ -1545,7 +1816,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 flow_id=raw_flow if isinstance(raw_flow, int) else 0,
                 rule=str(req_data.get("expected_behavior_rule") or ""),
                 operator_id=operator_id,
-                actor_id=str(req_data.get("actor_id") or ""),
+                actor_id=actor_arg,
                 entity_ip_or_subnet=entity if isinstance(entity, str) else None,
                 service_or_port=service if isinstance(service, str) else None,
             )
@@ -1640,6 +1911,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
         if path == "/api/v1/live/triage":
             from threatfusion.api.live_soc_console import record_triage_action
+            from threatfusion.operations.commercial_hardening import threatfusion_environment
 
             try:
                 req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
@@ -1650,11 +1922,17 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
             raw_flow = req_data.get("flow_id")
+            verified_actor, _role, _method = self._verified_operator_identity(req_data)
+            actor_id = (
+                (verified_actor or "")
+                if threatfusion_environment() == "production"
+                else str(req_data.get("actor_id") or verified_actor or "")
+            )
             result = record_triage_action(
                 self._live_db_path(),
                 flow_id=raw_flow if isinstance(raw_flow, int) else 0,
                 action=str(req_data.get("action") or ""),
-                actor_id=str(req_data.get("actor_id") or ""),
+                actor_id=actor_id,
                 policy_dir=_operator_policy_dir(),
                 presented_fingerprint=self._presented_operator_fingerprint(),
             )
@@ -2022,6 +2300,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
         if path == "/api/v1/live/workspaces/select":
             from threatfusion.api.live_soc_console import select_workspace
+            from threatfusion.operations.commercial_hardening import threatfusion_environment
 
             try:
                 req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
@@ -2031,16 +2310,25 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if not isinstance(req_data, dict):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
+            verified_actor, _role, _method = self._verified_operator_identity(req_data)
+            op_id = (
+                (verified_actor or "")
+                if threatfusion_environment() == "production"
+                else str(
+                    req_data.get("operator_id") or req_data.get("actor_id") or verified_actor or ""
+                )
+            )
             result = select_workspace(
                 self._live_db_path(),
                 workspace_id=str(req_data.get("workspace_id") or ""),
-                operator_id=str(req_data.get("operator_id") or req_data.get("actor_id") or ""),
+                operator_id=op_id,
             )
             self._send_json(int(result.get("http_status") or 400), result)
             return
 
         if path == "/api/v1/live/workspaces/create":
             from threatfusion.api.live_soc_console import create_workspace
+            from threatfusion.operations.commercial_hardening import threatfusion_environment
 
             try:
                 req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
@@ -2050,6 +2338,14 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if not isinstance(req_data, dict):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
+            verified_actor, _role, _method = self._verified_operator_identity(req_data)
+            op_id = (
+                (verified_actor or "")
+                if threatfusion_environment() == "production"
+                else str(
+                    req_data.get("operator_id") or req_data.get("actor_id") or verified_actor or ""
+                )
+            )
             result = create_workspace(
                 self._live_db_path(),
                 workspace_id=str(req_data.get("workspace_id") or ""),
@@ -2057,7 +2353,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 monitored_cidr=str(req_data.get("monitored_cidr") or ""),
                 default_service=str(req_data.get("default_service") or ""),
                 industry=str(req_data.get("industry") or "client"),
-                operator_id=str(req_data.get("operator_id") or req_data.get("actor_id") or ""),
+                operator_id=op_id,
             )
             self._send_json(int(result.get("http_status") or 400), result)
             return
@@ -2091,11 +2387,13 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 return
             client_ip = self._client_ip()
             if path == "/api/rbac/logout":
-                token = str(req_data.get("session_token") or "")
-                if not token:
-                    token = (self.headers.get("X-ThreatFusion-Session") or "").strip()
+                token = self._extract_session_token(req_data)
                 result = rbac_logout(self._live_db_path(), token)
-                self._send_json(int(result.get("http_status") or 401), result)
+                self._send_json(
+                    int(result.get("http_status") or 401),
+                    result,
+                    extra_headers=self._clear_session_cookie_headers(),
+                )
                 return
             if path == "/api/rbac/register":
                 session_token = self._extract_session_token(req_data)
@@ -2107,7 +2405,16 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                     role=str(req_data.get("role") or ""),
                     session_token=session_token,
                 )
-                self._send_json(int(result.get("http_status") or 401), result)
+                status = int(result.get("http_status") or 401)
+                extra_headers: list[tuple[str, str]] = []
+                http_result = dict(result)
+                raw_token = str(http_result.pop("session_token", "") or "").strip()
+                if status in (200, 201) and raw_token:
+                    extra_headers.append(
+                        ("Set-Cookie", self._build_session_cookie_header(raw_token))
+                    )
+                    http_result["session_cookie_set"] = True
+                self._send_json(status, http_result, extra_headers=extra_headers)
                 return
             from threatfusion.operations.commercial_hardening import (
                 LOGIN_RATE_LIMITER,
@@ -2149,10 +2456,19 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 client_ip=client_ip,
             )
             status = int(result.get("http_status") or 401)
+            extra_headers = []
             if status == 401:
                 LOGIN_RATE_LIMITER.record_failure(client_ip, rate_key)
-                result = uniform_invalid_credentials()
-            self._send_json(status, result)
+                http_result = uniform_invalid_credentials()
+            else:
+                http_result = dict(result)
+                raw_token = str(http_result.pop("session_token", "") or "").strip()
+                if status == 200 and raw_token:
+                    extra_headers.append(
+                        ("Set-Cookie", self._build_session_cookie_header(raw_token))
+                    )
+                    http_result["session_cookie_set"] = True
+            self._send_json(status, http_result, extra_headers=extra_headers)
             return
 
         if path == "/api/v1/live/operators/switch":
@@ -2166,7 +2482,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if not isinstance(req_data, dict):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
-            token = (self.headers.get("X-ThreatFusion-Session") or "").strip()
+            token = self._extract_session_token(req_data)
             session = rbac_session_status(self._live_db_path(), token)
             requested = str(req_data.get("actor_id") or "")
             if session.get("authenticated") is not True or session.get("actor_id") != requested:

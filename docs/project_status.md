@@ -2,6 +2,33 @@
 
 ## Snapshot
 
+On 2026-11-22 (Wave B: `WP-P0-04`, `WP-P0-05`, `WP-P0-06`, and Stage 5/6 hardening),
+production auth middleware, RFC-safe `HttpOnly` session cookies (`__Host-tf_session; Secure`
+in production over HTTPS or trusted proxy vs `tf_session` on plain `http://127.0.0.1` in
+`lab`/`dev`/`test`), 256-bit hashed session tokens with session-bound CSRF, trusted proxy
+and host allowlists (`THREATFUSION_ALLOWED_HOSTS`, `THREATFUSION_TRUSTED_PROXIES`), pure-stdlib
+RS256 Entra JWKS signature verification with a 5-minute single-flight unknown-`kid` cooldown,
+SSRF-hardened `http_egress.py` (`NoRedirectHandler`, DNS/IPv4-mapped IPv6/IMDS/CGNAT blocking,
+bounded reads), n8n workflow SSRF removal (`$env.THREATFUSION_CONTRACT_BASE_URL`), atomic
+`BEGIN IMMEDIATE` SOAR ledger transitions with `hmac.compare_digest` and non-null
+`sequence_id`/`canonical_entry_sha256` verification, authoritative `soar_repo` record reloads
+and `target_entity` IP validation, mode-`0600` SQLite/WAL/SHM permissions plus
+`scripts/bootstrap_secrets.py`, Stage 5 advisory hardening (`gemini_client.py` model validation,
+Dec 1 `gemini-2.5-flash` -> `gemini-3.5-flash-lite` cutover, `thinkingLevel: LOW` for Gemini 4,
+non-thought part selection, redirect refusal, bounded reads, true `groundedness_verified`, and
+thread-safe spend tracking; `telemetry_shield.py` NFKC/zero-width/BiDi stripping, single-line
+envelope escaping, allowlist-first acronym-aware MCP guard, TCP-only Suricata `flow:established`,
+valid YARA-L `$ip over 5m`, ATT&CK-only Sigma `attack.*` tags, and anchored `BurstDeduplicator`),
+and cross-OS (`macOS` + `Linux` PEP 508 `torch` markers preserving byte-identical Linux
+`torch==2.10.0+cpu` wheel hashes for `TF-015`, Homebrew OpenSSL 3/NSS resolution, Darwin
+root-firmlink normalization with `dir_fd` `O_NOFOLLOW`, POSIX shell launchers with
+`login_lab_approver_session()`) plus multi-cloud (`AWS`/`GCP`/`Azure`/`BYOH` SSH key isolation,
+intra-subnet SG/firewall rules, 24 GiB disks, Ubuntu 24.04 GCP image families, auto-detected
+Suricata primary NIC with `checksum-validation: no` and `ethtool` offload disable, and expanded
+multi-cloud IMDS `bridge_noise.py`) landed on `gemini/product-20260924`. All seven frozen
+model/preprocessor/fixture SHA-256 digests, Gate `G9`, `production_fusion_enabled = False`,
+and open gates `TF-008`, `TF-009`, `TF-010`, and `TF-011` remain unchanged.
+
 On 2026-11-22 (Wave A: `WP-P0-01`, `WP-P0-02`, `WP-P0-03`, and partial `WP-P0-10`),
 repository hygiene, commercial RBAC/UI de-branding, and CI portability landed on
 `gemini/product-20260924`: tracked `.cursor/rules/`, `docs/screenshots/`,

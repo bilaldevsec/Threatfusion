@@ -24,6 +24,12 @@ from threatfusion.api.analyst_tls_service import (
     HumanCredential,
     HumanCredentialRegistry,
 )
+from threatfusion.operations._posix_safety import (
+    _resolve_openssl_bin,
+    _sterile_openssl_env,
+    normalize_darwin_system_prefix,
+    open_private_leaf_nofollow,
+)
 from threatfusion.schemas.analyst_state import (
     AnalystAuthorizationRegistry,
     AnalystStateError,
@@ -102,6 +108,7 @@ def _directory(directory: Path, *, write=False):
     """Walk descriptors without symlinks; lock the private directory inode."""
     if not directory.is_absolute() or ".." in directory.parts:
         raise CredentialPolicyError()
+    directory = normalize_darwin_system_prefix(directory)
     fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
     try:
         for part in directory.parts[1:]:
@@ -142,7 +149,7 @@ def _validate(records, *, current):
 
 
 def _read(fd, *, current=True):
-    file_fd = os.open(FILENAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+    file_fd = open_private_leaf_nofollow(fd, FILENAME, os.O_RDONLY | os.O_NONBLOCK)
     with os.fdopen(file_fd, "rb") as stream:
         info = os.fstat(stream.fileno())
         if (
@@ -193,7 +200,7 @@ def _write(fd, records, *, create=False):
     if len(raw) > MAX_BYTES:
         raise CredentialPolicyError()
     name = ".human-policy-" + uuid4().hex
-    file_fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+    file_fd = open_private_leaf_nofollow(fd, name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(file_fd, "wb") as stream:
             os.fchmod(stream.fileno(), 0o600)
@@ -215,12 +222,13 @@ def _write(fd, records, *, create=False):
 
 
 def _openssl(*args):
+    openssl_bin = _resolve_openssl_bin()
     result = subprocess.run(
-        ["openssl", *args],
+        [openssl_bin, *args],
         capture_output=True,
         timeout=10,
         check=False,
-        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+        env=_sterile_openssl_env(openssl_bin),
     )
     if result.returncode:
         raise CredentialPolicyError()
@@ -281,7 +289,7 @@ def _certificate(certificate: Path, ca: Path, actor: str):
 
 def _read_journal(fd) -> list[dict[str, object]]:
     try:
-        file_fd = os.open(JOURNAL_FILENAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        file_fd = open_private_leaf_nofollow(fd, JOURNAL_FILENAME, os.O_RDONLY | os.O_NONBLOCK)
     except FileNotFoundError:
         return []
     with os.fdopen(file_fd, "rb") as stream:
@@ -423,9 +431,7 @@ def _append_journal(
     raw = (json.dumps(entry, sort_keys=True) + "\n").encode("utf-8")
     if len(existing_entries) == 0:
         name = ".journal-" + uuid4().hex
-        file_fd = os.open(
-            name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd
-        )
+        file_fd = open_private_leaf_nofollow(fd, name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             with os.fdopen(file_fd, "wb") as stream:
                 os.fchmod(stream.fileno(), 0o600)
@@ -441,7 +447,7 @@ def _append_journal(
             except FileNotFoundError:
                 pass
     else:
-        file_fd = os.open(JOURNAL_FILENAME, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW, dir_fd=fd)
+        file_fd = open_private_leaf_nofollow(fd, JOURNAL_FILENAME, os.O_WRONLY | os.O_APPEND)
         try:
             info = os.fstat(file_fd)
             if (
@@ -481,7 +487,7 @@ def rotate_journal(policy_dir: Path | str, archive_dir: Path | str) -> dict[str,
         with _directory(a_dir, write=True) as arch_fd:
             for check_name in (JOURNAL_FILENAME, JOURNAL_ARCHIVE_MANIFEST_FILENAME):
                 try:
-                    chk = os.open(check_name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=arch_fd)
+                    chk = open_private_leaf_nofollow(arch_fd, check_name, os.O_RDONLY)
                     os.close(chk)
                     raise CredentialPolicyError()
                 except FileNotFoundError:
@@ -492,8 +498,8 @@ def rotate_journal(policy_dir: Path | str, archive_dir: Path | str) -> dict[str,
                 raise CredentialPolicyError()
 
             try:
-                jfd = os.open(
-                    JOURNAL_FILENAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=pol_fd
+                jfd = open_private_leaf_nofollow(
+                    pol_fd, JOURNAL_FILENAME, os.O_RDONLY | os.O_NONBLOCK
                 )
             except FileNotFoundError:
                 raise CredentialPolicyError()
@@ -513,11 +519,11 @@ def rotate_journal(policy_dir: Path | str, archive_dir: Path | str) -> dict[str,
             record_count = len(entries)
             prev_archive = entries[0].get("previous_archive_sha256")
 
-            arch_jfd = os.open(
+            arch_jfd = open_private_leaf_nofollow(
+                arch_fd,
                 JOURNAL_FILENAME,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                 0o600,
-                dir_fd=arch_fd,
             )
             try:
                 os.fchmod(arch_jfd, 0o600)
@@ -542,11 +548,11 @@ def rotate_journal(policy_dir: Path | str, archive_dir: Path | str) -> dict[str,
                 "previous_archive_sha256": prev_archive,
             }
             manifest_bytes = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode("utf-8")
-            mfd = os.open(
+            mfd = open_private_leaf_nofollow(
+                arch_fd,
                 JOURNAL_ARCHIVE_MANIFEST_FILENAME,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                 0o600,
-                dir_fd=arch_fd,
             )
             try:
                 os.fchmod(mfd, 0o600)
@@ -580,8 +586,8 @@ def rotate_journal(policy_dir: Path | str, archive_dir: Path | str) -> dict[str,
             cp_raw = (json.dumps(checkpoint_entry, sort_keys=True) + "\n").encode("utf-8")
 
             tmp_name = ".journal-" + uuid4().hex
-            tmp_fd = os.open(
-                tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=pol_fd
+            tmp_fd = open_private_leaf_nofollow(
+                pol_fd, tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
             )
             try:
                 os.fchmod(tmp_fd, 0o600)
@@ -612,10 +618,10 @@ def verify_journal_archive(archive_dir: Path | str) -> dict[str, object]:
 
     with _boundary(), _directory(a_dir, write=False) as arch_fd:
         try:
-            mfd = os.open(
+            mfd = open_private_leaf_nofollow(
+                arch_fd,
                 JOURNAL_ARCHIVE_MANIFEST_FILENAME,
-                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                dir_fd=arch_fd,
+                os.O_RDONLY | os.O_NONBLOCK,
             )
         except FileNotFoundError:
             raise CredentialPolicyError()
@@ -638,9 +644,7 @@ def verify_journal_archive(archive_dir: Path | str) -> dict[str, object]:
             raise CredentialPolicyError()
 
         try:
-            jfd = os.open(
-                JOURNAL_FILENAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=arch_fd
-            )
+            jfd = open_private_leaf_nofollow(arch_fd, JOURNAL_FILENAME, os.O_RDONLY | os.O_NONBLOCK)
         except FileNotFoundError:
             raise CredentialPolicyError()
         try:
@@ -678,6 +682,8 @@ def verify_journal_archive(archive_dir: Path | str) -> dict[str, object]:
 def init_policy_directory(policy_dir: Path | str) -> Path:
     """Initialize a mode-0700 policy directory for operator credential enrollment."""
     p = Path(policy_dir) if not isinstance(policy_dir, Path) else policy_dir
+    if p.is_absolute() and ".." not in p.parts:
+        p = normalize_darwin_system_prefix(p)
     if p.is_symlink():
         raise CredentialPolicyError()
     p.mkdir(mode=0o700, parents=True, exist_ok=True)

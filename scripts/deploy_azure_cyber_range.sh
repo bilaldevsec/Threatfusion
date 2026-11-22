@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Backwards-compatible Azure entry. The default runs this file's Azure CLI
-# implementation, including --student-free-tier Standard_B1s / ARM64,
-# empty public IPs, and 23:59 PKT shutdown. Set TF_AZURE_RANGE_IMPL=0 to
-# delegate public flags to scripts/deploy_cloud_range.sh instead.
+# implementation, including --low-cost-tier (alias --student-free-tier)
+# Standard_B1s / ARM64, empty public IPs, and UTC auto-shutdown. Set
+# TF_AZURE_RANGE_IMPL=0 to delegate public flags to scripts/deploy_cloud_range.sh.
 TF_AZURE_RANGE_IMPL="${TF_AZURE_RANGE_IMPL:-1}"
 if [[ "${TF_AZURE_RANGE_IMPL}" != "1" ]]; then
   set -euo pipefail
@@ -22,7 +22,7 @@ if [[ "${TF_AZURE_RANGE_IMPL}" != "1" ]]; then
       --deallocate|--deallocate-vms)
         _mapped+=(--deallocate)
         ;;
-      --status|--pair-forwarder|--setup-entra-app|--dry-run|--student-free-tier|--help|-h)
+      --status|--pair-forwarder|--setup-entra-app|--dry-run|--low-cost-tier|--student-free-tier|--help|-h)
         _mapped+=("$_arg")
         ;;
       *)
@@ -30,7 +30,7 @@ if [[ "${TF_AZURE_RANGE_IMPL}" != "1" ]]; then
         ;;
     esac
   done
-  exec "${_root}/scripts/deploy_cloud_range.sh" --provider azure "${_mapped[@]}"
+  exec "${_root}/scripts/deploy_cloud_range.sh" --provider azure ${_mapped[@]+"${_mapped[@]}"}
 fi
 # ThreatFusion Azure 2-VM cyber range.
 #
@@ -59,7 +59,7 @@ VNET_PREFIX="172.29.0.0/16"
 SUBNET="tf-range-subnet"
 SUBNET_PREFIX="172.29.0.0/24"
 NSG="tf-range-nsg"
-LOCATION="${AZURE_LOCATION:-southeastasia}"
+LOCATION="${AZURE_LOCATION:-${CLOUD_REGION:-southeastasia}}"
 VICTIM_NAME="tf-soc-victim-vm"
 VICTIM_IP="172.29.0.20"
 ATTACKER_NAME="tf-attacker-redteam-vm"
@@ -73,7 +73,8 @@ ATTACKER_IMAGE=""
 OS_DISK_GB=""
 STORAGE_SKU=""
 STUDENT_FREE_TIER=0
-ADMIN_USER="${AZURE_ADMIN_USER:-threatfusion}"
+LIVE_ADMIN_USER="${AZURE_ADMIN_USER:-azureuser}"
+ADMIN_USER="${AZURE_ADMIN_USER:-${LIVE_ADMIN_USER:-azureuser}}"
 FORWARDER_SRC="scripts/follow_suricata_eve.py"
 FORWARDER_DST="/opt/threatfusion/suricata_eve_follower.py"
 EVE_LOG="/var/log/suricata/eve.json"
@@ -83,16 +84,16 @@ ACTION=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy_azure_cyber_range.sh [--dry-run] [--student-free-tier] (--help|--provision|--provision-live-azure|--pair-forwarder|--status|--deallocate|--deallocate-vms|--teardown-rg|--setup-entra-app)
+Usage: scripts/deploy_azure_cyber_range.sh [--dry-run] [--low-cost-tier] (--help|--provision|--provision-live-azure|--pair-forwarder|--status|--deallocate|--deallocate-vms|--teardown-rg|--setup-entra-app)
 
   --help             Show this text and exit 0.
   --dry-run          Print the az and remote steps without calling them.
-  --student-free-tier
-                     Azure for Students budget mode. Uses free-tier eligible
-                     Standard_B1s (x86 Ubuntu 24.04) and Standard_B2pts_v2
-                     (Arm64 Ubuntu 24.04), 64 GiB Premium_LRS disks, and an
-                     auto-shutdown at 23:59 Pakistan time so the $60 credit is
-                     not left running overnight.
+  --low-cost-tier
+                     Low-cost Azure budget mode (alias: --student-free-tier).
+                     Uses Standard_B1s (x86 Ubuntu 24.04) and Standard_B2pts_v2
+                     (Arm64 Ubuntu 24.04), 64 GiB Premium_LRS disks, and UTC
+                     auto-shutdown (default 21:00 UTC via AZURE_AUTO_SHUTDOWN_UTC)
+                     so compute is not left running overnight.
   --provision        Create the resource group, VNet, NSG, and both VMs.
   --provision-live-azure
                      Sign in with az when needed, register the ThreatFusion-SOC-Platform
@@ -209,7 +210,7 @@ provision_range() {
     --nsg "$NSG" \
     --private-ip-address "$VICTIM_IP" \
     --public-ip-address "" \
-    "${disk_args[@]}"
+    ${disk_args[@]+"${disk_args[@]}"}
   run az vm create \
     --resource-group "$RG" \
     --name "$ATTACKER_NAME" \
@@ -222,7 +223,7 @@ provision_range() {
     --nsg "$NSG" \
     --private-ip-address "$ATTACKER_IP" \
     --public-ip-address "" \
-    "${disk_args[@]}"
+    ${disk_args[@]+"${disk_args[@]}"}
   if [[ "$STUDENT_FREE_TIER" -eq 1 ]]; then
     schedule_student_shutdown "$VICTIM_NAME"
     schedule_student_shutdown "$ATTACKER_NAME"
@@ -234,8 +235,8 @@ schedule_student_shutdown() {
   run az vm auto-shutdown \
     --resource-group "$RG" \
     --name "$name" \
-    --time 2359 \
-    --timezone "Pakistan Standard Time"
+    --time "${AZURE_AUTO_SHUTDOWN_UTC:-2100}" \
+    --timezone "UTC"
 }
 
 deallocate_range() {
@@ -292,11 +293,67 @@ pair_forwarder() {
   remote=$(cat <<EOF
 set -euo pipefail
 sudo DEBIAN_FRONTEND=noninteractive apt-get update -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" suricata python3
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" suricata ethtool python3 python3-venv
+if [[ ! -x /opt/threatfusion-venv/bin/python ]]; then
+  sudo python3 -m venv /opt/threatfusion-venv
+fi
+PRIMARY_NIC="\$(ip -o -4 route show to default | awk '{print \$5; exit}')"
+PRIMARY_NIC="\${PRIMARY_NIC:-eth0}"
+ETHTOOL_BIN=""
+for _cand in /sbin/ethtool /usr/sbin/ethtool; do
+  if [[ -x "\$_cand" ]]; then
+    ETHTOOL_BIN="\$_cand"
+    break
+  fi
+done
+if [[ -z "\$ETHTOOL_BIN" ]]; then
+  ETHTOOL_BIN="\$(command -v ethtool || true)"
+fi
+ETHTOOL_BIN="\${ETHTOOL_BIN:-/sbin/ethtool}"
+sudo "\$ETHTOOL_BIN" -K "\$PRIMARY_NIC" gro off lro off tso off gso off 2>/dev/null || true
+if [[ -f /etc/suricata/suricata.yaml ]]; then
+  sudo python3 - "\$PRIMARY_NIC" <<'SURICATA_PY'
+import re
+import sys
+from pathlib import Path
+
+nic = sys.argv[1]
+cfg_path = Path("/etc/suricata/suricata.yaml")
+text = cfg_path.read_text(encoding="utf-8")
+text = re.sub(
+    r"(?ms)(^af-packet:\s*\n(?:[ \t]*#[^\n]*\n|[ \t]+[^\n]*\n)*?[ \t]*-\s*interface:\s*)([^\s#\n]+)",
+    rf"\g<1>{nic}",
+    text,
+    count=1,
+)
+if re.search(r"(?m)^[ \t]*checksum-validation:\s*", text):
+    text = re.sub(
+        r"(?m)^([ \t]*checksum-validation:\s*)[^\s#\n]+",
+        r"\g<1>no",
+        text,
+    )
+else:
+    text = re.sub(
+        r"(?m)^(stream:\s*\n)",
+        r"\1  checksum-validation: no\n",
+        text,
+        count=1,
+    )
+cfg_path.write_text(text, encoding="utf-8")
+SURICATA_PY
+fi
+sudo mkdir -p /etc/systemd/system/suricata.service.d
+sudo tee /etc/systemd/system/suricata.service.d/threatfusion-offload.conf >/dev/null <<DROPIN
+[Service]
+ExecStartPre=-\${ETHTOOL_BIN} -K \${PRIMARY_NIC} gro off lro off tso off gso off
+DROPIN
 sudo install -d -m 0750 /opt/threatfusion /etc/threatfusion
 sudo install -d -m 0755 /var/log/suricata
 if [[ ! -f ${EVE_LOG} ]]; then
   sudo touch ${EVE_LOG}
+fi
+if id -u suricata >/dev/null 2>&1; then
+  sudo chown -R suricata:suricata /var/log/suricata
 fi
 sudo tee /etc/systemd/system/threatfusion-eve-follower.service >/dev/null <<'UNIT'
 [Unit]
@@ -317,6 +374,7 @@ WantedBy=multi-user.target
 UNIT
 sudo systemctl daemon-reload
 sudo systemctl enable --now suricata
+sudo systemctl restart suricata || true
 sudo systemctl enable --now threatfusion-eve-follower.service
 EOF
 )
@@ -358,20 +416,20 @@ EOF
   # body as a remote script. Placeholders expand on the client before ssh.
   forwarder_env_body=$(render_forwarder_env "$console_url" "$sensor_token" "$hmac_secret")
   printf '%s\n' "$forwarder_env_body" | ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-    "${LIVE_ADMIN_USER}@${public_ip}" \
+    "${ADMIN_USER}@${public_ip}" \
     "sudo sh -c 'umask 077; cat > /etc/threatfusion/forwarder.env'"
   ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-    "${LIVE_ADMIN_USER}@${public_ip}" \
+    "${ADMIN_USER}@${public_ip}" \
     "sudo chmod 0600 /etc/threatfusion/forwarder.env"
   if [[ -n "${THREATFUSION_CLIENT_CERT:-}" && -n "${THREATFUSION_CLIENT_KEY:-}" && -f "$THREATFUSION_CLIENT_CERT" && -f "$THREATFUSION_CLIENT_KEY" ]]; then
     ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-      "${LIVE_ADMIN_USER}@${public_ip}" \
+      "${ADMIN_USER}@${public_ip}" \
       "sudo sh -c 'umask 077; cat > /etc/threatfusion/client.crt'" <"$THREATFUSION_CLIENT_CERT"
     ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-      "${LIVE_ADMIN_USER}@${public_ip}" \
+      "${ADMIN_USER}@${public_ip}" \
       "sudo sh -c 'umask 077; cat > /etc/threatfusion/client.key'" <"$THREATFUSION_CLIENT_KEY"
     ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-      "${LIVE_ADMIN_USER}@${public_ip}" \
+      "${ADMIN_USER}@${public_ip}" \
       "sudo chmod 0600 /etc/threatfusion/client.key /etc/threatfusion/forwarder.env"
   fi
 }
@@ -395,8 +453,7 @@ STATE_PATH="/tmp/threatfusion-range-demo/azure_portal_state.json"
 LIVE_VNET="ThreatFusion-VNet"
 LIVE_SUBNET="ThreatFusion-Subnet"
 LIVE_NSG="ThreatFusion-NSG"
-LIVE_ADMIN_USER="azureuser"
-AUTO_SHUTDOWN_UTC="2100"
+AUTO_SHUTDOWN_UTC="${AZURE_AUTO_SHUTDOWN_UTC:-2100}"
 
 is_arm_sku() {
   case "$1" in
@@ -535,8 +592,8 @@ pick_southeastasia_vm_size() {
     fi
     return 0
   fi
-  available="$(az vm list-skus --location southeastasia --resource-type virtualMachines --query "[?restrictions==\`[]\`].name" -o tsv)"
-  usage_json="$(az vm list-usage --location southeastasia -o json)"
+  available="$(az vm list-skus --location "$LOCATION" --resource-type virtualMachines --query "[?restrictions==\`[]\`].name" -o tsv)"
+  usage_json="$(az vm list-usage --location "$LOCATION" -o json)"
   regional_remaining="$(
     USAGE_JSON="$usage_json" python3 - <<'PY'
 import json, os
@@ -552,7 +609,7 @@ else:
 PY
   )"
   if [[ "$regional_remaining" -lt 4 ]]; then
-    echo "southeastasia Total Regional vCPUs remaining=${regional_remaining}; need 4 for two 2-vCPU VMs." >&2
+    echo "${LOCATION} Total Regional vCPUs remaining=${regional_remaining}; need 4 for two 2-vCPU VMs." >&2
     return 1
   fi
   if [[ -n "$forced" ]]; then
@@ -568,7 +625,7 @@ PY
       return 1
     fi
     if ! printf '%s\n' "$available" | grep -qx "$forced"; then
-      echo "AZURE_VM_SIZE=$forced is restricted or unavailable in southeastasia." >&2
+      echo "AZURE_VM_SIZE=$forced is restricted or unavailable in ${LOCATION}." >&2
       return 1
     fi
     family_remaining="$(family_quota_remaining "$forced" "$usage_json" || true)"
@@ -591,7 +648,7 @@ PY
     printf '%s\n' "$size"
     return 0
   done
-  echo "None of the verified 2-vCPU student-quota SKUs have both unrestricted SKU availability and family quota in southeastasia." >&2
+  echo "None of the verified 2-vCPU student-quota SKUs have both unrestricted SKU availability and family quota in ${LOCATION}." >&2
   echo "Tried: ${preferred[*]}" >&2
   return 1
 }
@@ -636,11 +693,11 @@ ensure_southeastasia_group() {
   local existing vm_count
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "dry-run: az group show --name $RG"
-    run az group create --name "$RG" --location southeastasia
+    run az group create --name "$RG" --location "$LOCATION"
     return 0
   fi
   existing="$(az group show --name "$RG" --query location -o tsv 2>/dev/null || true)"
-  if [[ -n "$existing" && "$existing" != "southeastasia" ]]; then
+  if [[ -n "$existing" && "$existing" != "$LOCATION" ]]; then
     vm_count="$(az vm list --resource-group "$RG" --query "length(@)" -o tsv 2>/dev/null || echo 0)"
     if [[ "$vm_count" != "0" ]]; then
       echo "ThreatFusion-RG exists in ${existing} and still has VMs. Refusing to recreate it." >&2
@@ -649,7 +706,7 @@ ensure_southeastasia_group() {
     az group delete --name "$RG" --yes --no-wait
     az group wait --name "$RG" --deleted || true
   fi
-  run az group create --name "$RG" --location southeastasia
+  run az group create --name "$RG" --location "$LOCATION"
 }
 
 ensure_live_nsg() {
@@ -799,7 +856,8 @@ schedule_utc_shutdown() {
   run az vm auto-shutdown \
     --resource-group "$RG" \
     --name "$name" \
-    --time "$AUTO_SHUTDOWN_UTC"
+    --time "${AZURE_AUTO_SHUTDOWN_UTC:-${AUTO_SHUTDOWN_UTC:-2100}}" \
+    --timezone "UTC"
 }
 
 write_azure_portal_state() {
@@ -904,7 +962,7 @@ provision_live_azure() {
   SELECTED_VM_IMAGE=""
   vm_size="$(pick_southeastasia_vm_size)"
   image="$(ubuntu_image_for_sku "$vm_size")"
-  echo "Preferred southeastasia SKU: $vm_size"
+  echo "Preferred ${LOCATION} SKU: $vm_size"
   echo "Preferred Ubuntu image: $image"
   local roles
   roles='[{"allowedMemberTypes":["User"],"description":"Tier-3 SOC approver who may sign SOAR playbooks","displayName":"SOC Approver","id":"c1a0b011-1111-4111-8111-000000000011","isEnabled":true,"value":"soc_approver"},{"allowedMemberTypes":["User"],"description":"Tier-1 analyst limited to triage","displayName":"Tier-1 Triage","id":"c1a0b012-2222-4222-8222-000000000012","isEnabled":true,"value":"tier1_triage"},{"allowedMemberTypes":["User"],"description":"Read-only compliance auditor","displayName":"Compliance Auditor","id":"c1a0b013-3333-4333-8333-000000000013","isEnabled":true,"value":"compliance_auditor"}]'
@@ -970,7 +1028,7 @@ while [[ $# -gt 0 ]]; do
       ACTION="provision-live"
       shift
       ;;
-    --student-free-tier)
+    --low-cost-tier|--student-free-tier)
       STUDENT_FREE_TIER=1
       VICTIM_SIZE="Standard_B1s"
       ATTACKER_SIZE="Standard_B2pts_v2"

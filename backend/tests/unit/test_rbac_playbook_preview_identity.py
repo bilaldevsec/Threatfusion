@@ -313,4 +313,6 @@ def test_header_has_one_chain_pill_and_one_operator_pill() -> None:
     assert "enterpriseWorkspaceDrawer" in script
     assert "labControlsDrawer" in script
     assert "classList.remove('is-open')" in script
-    assert "localStorage.setItem('threatfusion.rbac.session'" in script
+    assert "localStorage.setItem('threatfusion.rbac.session'" not in script
+    assert "sessionStorage.setItem('threatfusion.rbac.session'" not in script
+    assert "credentials: 'same-origin'" in script or "'same-origin'" in script

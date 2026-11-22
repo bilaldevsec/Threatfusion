@@ -350,7 +350,7 @@ class TestGeminiAdvisoryGroundednessAndOutageIsolation:
         config = GeminiAdvisoryConfig()
         assert config.model_name == "gemini-4-hydrogen"
         assert config.timeout_seconds == 5.0
-        assert config.max_output_tokens == 512
+        assert config.max_output_tokens == 4096
         assert config.api_key_env_var == "GEMINI_API_KEY"
 
         url = config.get_endpoint_url("secret_test_key")

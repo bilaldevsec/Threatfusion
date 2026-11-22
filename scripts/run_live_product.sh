@@ -88,7 +88,7 @@ done
 # flags keep the process on the environment it was given.
 load_gemini_dotenv() {
   local offline="${THREATFUSION_OFFLINE_ONLY:-}"
-  offline="${offline,,}"
+  offline="$(printf '%s' "$offline" | tr '[:upper:]' '[:lower:]')"
   if [[ "${THREATFUSION_IGNORE_DOTENV:-}" == "1" || "$offline" == "1" || "$offline" == "true" ]]; then
     return 0
   fi
@@ -159,7 +159,10 @@ for rel in frontend/index.html frontend/css/soc_unicorn.css frontend/js/soc_dash
   [[ -f "${ROOT}/${rel}" ]] || die "SOC console file missing: ${rel}"
 done
 
-LIVE_DB="${THREATFUSION_LIVE_CONSOLE_DB:-${TMPDIR:-/tmp}/threatfusion-live-console.sqlite3}"
+TMP_BASE="${TMPDIR:-/tmp}"
+TMP_BASE="${TMP_BASE%/}"
+TMP_BASE="${TMP_BASE:-/}"
+LIVE_DB="${THREATFUSION_LIVE_CONSOLE_DB:-${TMP_BASE}/threatfusion-live-console.sqlite3}"
 if [[ -z "$LIVE_DB" ]]; then
   die "THREATFUSION_LIVE_CONSOLE_DB is empty"
 fi
@@ -232,7 +235,7 @@ fi
 # /tmp is a root-owned sticky directory and stays unchanged.
 prepare_operator_policy_dir() {
   local policy_dir="$1"
-  local parent mode uid
+  local parent sticky_root
   mkdir -p "$policy_dir"
   if [[ -L "$policy_dir" ]]; then
     die "refusing to chmod a symlink: ${policy_dir}"
@@ -242,13 +245,17 @@ prepare_operator_policy_dir() {
   if [[ "$parent" == "/" || "$parent" == "." ]]; then
     return 0
   fi
-  mode="$(stat -c '%a' "$parent")"
-  uid="$(stat -c '%u' "$parent")"
-  if [[ "$mode" == 1* && "$uid" == "0" ]]; then
+  sticky_root="$("$PYTHON" -c '
+import os, stat, sys
+info = os.stat(sys.argv[1])
+mode = stat.S_IMODE(info.st_mode)
+print("1" if ((mode & stat.S_ISVTX) and info.st_uid == 0) else "0")
+' "$parent")"
+  if [[ "$sticky_root" == "1" ]]; then
     return 0
   fi
   case "$parent" in
-    /tmp/*|/var/tmp/*)
+    /tmp/*|/var/tmp/*|/private/tmp/*|/private/var/tmp/*|/var/folders/*|/private/var/folders/*)
       if [[ -L "$parent" ]]; then
         die "refusing to chmod a symlink: ${parent}"
       fi
@@ -314,7 +321,7 @@ on_signal() {
 trap on_signal INT TERM
 trap shutdown_child EXIT
 
-PIDFILE="${TMPDIR:-/tmp}/threatfusion-live-product-${PORT}.pid"
+PIDFILE="${TMP_BASE}/threatfusion-live-product-${PORT}.pid"
 env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 \
   "$PYTHON" "$SERVER" --host "$HOST" --port "$PORT" &
 CHILD_PID=$!
@@ -393,9 +400,14 @@ if parent != parent.parent:
     info = parent.stat()
     sticky_root = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
     parent_text = str(parent)
-    if info.st_mode & 0o022 and not sticky_root and (
-        parent_text.startswith("/tmp/") or parent_text.startswith("/var/tmp/")
-    ):
+    if info.st_mode & 0o022 and not sticky_root and parent_text.startswith((
+        "/tmp/",
+        "/var/tmp/",
+        "/private/tmp/",
+        "/private/var/tmp/",
+        "/var/folders/",
+        "/private/var/folders/",
+    )):
         os.chmod(parent, 0o700)
 sys.path.insert(0, str(Path(root) / "backend" / "src"))
 from threatfusion.api.live_soc_console import enroll_lab_operator

@@ -27,9 +27,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "scripts" / "run_misp_and_callback_contract_server.py"
 
 
-def _post(
+def _post_with_headers(
     base: str, path: str, payload: dict, headers: dict[str, str] | None = None
-) -> tuple[int, dict]:
+) -> tuple[int, dict, dict[str, str]]:
     request_headers = {"Content-Type": "application/json"}
     if headers:
         request_headers.update(headers)
@@ -42,14 +42,23 @@ def _post(
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             body = response.read().decode("utf-8")
-            return response.status, json.loads(body) if body else {}
+            resp_headers = {k.lower(): v for k, v in response.headers.items()}
+            return response.status, (json.loads(body) if body else {}), resp_headers
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8")
+        resp_headers = {k.lower(): v for k, v in exc.headers.items()} if exc.headers else {}
         try:
             parsed = json.loads(raw) if raw else {}
         except json.JSONDecodeError:
             parsed = {"error": raw}
-        return exc.code, parsed if isinstance(parsed, dict) else {}
+        return exc.code, (parsed if isinstance(parsed, dict) else {}), resp_headers
+
+
+def _post(
+    base: str, path: str, payload: dict, headers: dict[str, str] | None = None
+) -> tuple[int, dict]:
+    status, body, _resp_headers = _post_with_headers(base, path, payload, headers=headers)
+    return status, body
 
 
 def _get(base: str, path: str, headers: dict[str, str] | None = None) -> tuple[int, dict]:
@@ -161,7 +170,7 @@ def run_probes(
             raise RuntimeError("isolated approval failed: certificate was not presented")
 
     dispatch_headers = dict(live_headers)
-    login_status, login_body = _post(
+    login_status, login_body, login_resp_headers = _post_with_headers(
         base,
         "/api/rbac/login",
         {
@@ -170,8 +179,14 @@ def run_probes(
         },
         headers=live_headers,
     )
-    if login_status == 200 and login_body.get("session_token"):
-        dispatch_headers["X-ThreatFusion-Session"] = str(login_body["session_token"])
+    if login_status == 200:
+        set_cookie = str(login_resp_headers.get("set-cookie") or "").strip()
+        if set_cookie:
+            dispatch_headers["Cookie"] = set_cookie.split(";", 1)[0].strip()
+        if login_body.get("csrf_token"):
+            dispatch_headers["X-ThreatFusion-CSRF"] = str(login_body["csrf_token"])
+        if login_body.get("session_token"):
+            dispatch_headers["X-ThreatFusion-Session"] = str(login_body["session_token"])
 
     dispatch_status, dispatch = _post(
         base, "/api/v1/live/soar/dispatch", {"flow_id": other_id}, headers=dispatch_headers
