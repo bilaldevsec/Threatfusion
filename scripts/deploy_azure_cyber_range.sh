@@ -89,8 +89,8 @@ Usage: scripts/deploy_azure_cyber_range.sh [--dry-run] [--student-free-tier] (--
   --dry-run          Print the az and remote steps without calling them.
   --student-free-tier
                      Azure for Students budget mode. Uses free-tier eligible
-                     Standard_B1s (x86 Ubuntu 22.04) and Standard_B2pts_v2
-                     (Arm64 Ubuntu 22.04), 64 GiB Premium_LRS disks, and an
+                     Standard_B1s (x86 Ubuntu 24.04) and Standard_B2pts_v2
+                     (Arm64 Ubuntu 24.04), 64 GiB Premium_LRS disks, and an
                      auto-shutdown at 23:59 Pakistan time so the $60 credit is
                      not left running overnight.
   --provision        Create the resource group, VNet, NSG, and both VMs.
@@ -98,7 +98,7 @@ Usage: scripts/deploy_azure_cyber_range.sh [--dry-run] [--student-free-tier] (--
                      Sign in with az when needed, register the ThreatFusion-SOC-Platform
                      Entra app roles, reuse ThreatFusion-RG / ThreatFusion-VNet /
                      ThreatFusion-Subnet / ThreatFusion-NSG in southeastasia, and create
-                     two Ubuntu 22.04 VMs on verified 2-vCPU SKUs (6-core student quota).
+                     two Ubuntu 24.04 VMs on verified 2-vCPU SKUs (6-core student quota).
                      Victim 172.29.0.20, attacker 172.29.0.10, admin azureuser.
                      Auto-shutdown is 21:00 UTC, which is 02:00 PKT. Writes
                      /tmp/threatfusion-range-demo/azure_portal_state.json from az vm list.
@@ -389,8 +389,8 @@ STUDENT_QUOTA_SKUS=(
   "Standard_B2pls_v2"
 )
 
-X86_UBUNTU_IMAGE="Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest"
-ARM_UBUNTU_IMAGE="Canonical:0001-com-ubuntu-server-jammy:22_04-lts-arm64:latest"
+X86_UBUNTU_IMAGE="Canonical:ubuntu-24_04-lts:server:latest"
+ARM_UBUNTU_IMAGE="Canonical:ubuntu-24_04-lts:server-arm64:latest"
 STATE_PATH="/tmp/threatfusion-range-demo/azure_portal_state.json"
 LIVE_VNET="ThreatFusion-VNet"
 LIVE_SUBNET="ThreatFusion-Subnet"

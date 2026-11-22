@@ -222,6 +222,10 @@ def test_item3_deploy_cloud_hardening_and_wireserver_noise_filter() -> None:
 
     assert "/opt/threatfusion-venv/bin/python" in azure
     assert "/usr/bin/python3" not in azure
+    assert 'X86_UBUNTU_IMAGE="Canonical:ubuntu-24_04-lts:server:latest"' in azure
+    assert 'ARM_UBUNTU_IMAGE="Canonical:ubuntu-24_04-lts:server-arm64:latest"' in azure
+    assert "22_04-lts" not in azure
+    assert "ubuntu-server-jammy" not in azure
 
     for rel in (
         "scripts/deploy_cloud_range.sh",

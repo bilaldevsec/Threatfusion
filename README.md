@@ -2,194 +2,138 @@
 
 # 🛡️ ThreatFusion
 
-**Deterministic-First AI Security Operations Center (SOC) — Mitigating Alert Fatigue in Security Operations through a Unified Threat Intelligence and Analytics Interface**
+**Deterministic-First AI Network Detection & Response (NDR) and SecOps Triage Console**
 
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Ubuntu 24.04 LTS](https://img.shields.io/badge/Ubuntu-24.04%20LTS-E95420?logo=ubuntu&logoColor=white)](https://ubuntu.com/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Frozen Random Forest](https://img.shields.io/badge/Frozen%20Random%20Forest-bd2853a6-238636)](#section-8-benchmark)
-[![n8n Hash-Chained SOAR](https://img.shields.io/badge/n8n-Hash--Chained%20SOAR-EA4B71?logo=n8n&logoColor=white)](#analyst-workflow)
-[![MCP Server](https://img.shields.io/badge/MCP-Read--Only%20Server-8A2BE2)](#read-only-model-context-protocol-mcp-server)
 [![Backend quality](https://github.com/bilaldevsec/Threatfusion/actions/workflows/backend-quality.yml/badge.svg)](https://github.com/bilaldevsec/Threatfusion/actions/workflows/backend-quality.yml)
-[![Repository Integrity Gate](https://img.shields.io/badge/Repository%20Integrity%20Gate-GO-1f6feb)](#gate-g9--boundary-preflight)
+[![Release](https://img.shields.io/badge/Release-v1.1.0-1f6feb)](https://github.com/bilaldevsec/Threatfusion/releases/tag/v1.1.0)
+[![Python 3.11 | 3.12](https://img.shields.io/badge/Python-3.11%20%7C%203.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Ubuntu 24.04 LTS](https://img.shields.io/badge/Ubuntu-24.04%20LTS-E95420?logo=ubuntu&logoColor=white)](https://ubuntu.com/)
+[![Gate G9](https://img.shields.io/badge/Gate%20G9-0%20Advisory%20Decision%20Writes-238636)](#6-stage-deterministic-architecture--gate-g9)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[Product tour](#product-tour) · [Architecture](#architecture) · [MCP server](#read-only-model-context-protocol-mcp-server) · [Telemetry shield](#telemetry-shield--evidence-fence) · [Quickstart](#quickstart) · [Analyst workflow](#analyst-workflow) · [Section 8 benchmark](#section-8-benchmark) · [Verification & testing](#verification--testing) · [Governance](#governance) · [Acknowledgments](#acknowledgments)
+*Cryptographically pinned ML detection at the core · Fail-closed mTLS/HMAC SOAR execution · Grounded, zero-authority AI copilot.*
+
+[Architecture](#6-stage-deterministic-architecture--gate-g9) · [Live Product Tour](#live-product-tour) · [Benchmarks & Guarantees](#verified-benchmarks--security-guarantees) · [Quickstart](#quickstart) · [MCP & Telemetry Shield](#telemetry-shield--read-only-mcp-server) · [Enterprise Prerequisites](#enterprise-deployment-prerequisites)
 
 </div>
 
-ThreatFusion is a local security operations console. A frozen Random Forest is the only alert authority. Analysts record a separate verdict, assign a case, and approve a response. The autoencoder does not change the alert decision. Host containment stays unauthorized.
+---
 
-## Executive summary
+ThreatFusion is a deterministic-first NDR and SOC triage platform built to cut analyst alert fatigue without surrendering alert authority to probabilistic LLMs or uncalibrated anomaly detectors. Every network flow is scored exclusively by a SHA-256-verified frozen Random Forest (`bd2853a6`), correlated across `30.0s` burst and `600.0s` campaign windows, explained by a fenced Gemini/local copilot with `0` decision-write capability, and gated behind fail-closed RBAC + client-certificate mTLS + HMAC-SHA256 SOAR approval chains.
 
-- **Sole alert authority.** The frozen Random Forest scores each 14-feature flow. `production_fusion_enabled = False`.
-- **Secondary v2 autoencoder ranker.** The autoencoder can order a queue. It does not change the forest decision.
-- **Institutional context memory.** A grounded analyst verdict remembers an entity rule beside the score. The forest probability stays as stored.
-- **Cryptographic SOAR ledger.** Approval is an HMAC-SHA256 keyed hash chain. Dispatch records an HMAC callback. Containment of `172.29.0.10` runs only inside the lab victim after that chain and callback.
-- **Read-Only Model Context Protocol (MCP) Server.** Standardized JSON-RPC 2.0 interface for AI assistants with strict programmatic containment blocks.
-- **Stage-5 Telemetry Shield & Evidence Fence.** 64-bit SimHash burst compression and prompt injection mitigation to secure LLM forensic reasoning.
+![ThreatFusion Active Investigations Queue](docs/assets/screenshots/01-investigations-queue.png)
+*Live Azure Suricata EVE bridge triage queue (`1440×900` dark mode) showing Stage 1→4 pipeline compression, SimHash deduplication, and zero Azure WireServer (`168.63.129.16`) noise.*
 
-## Product tour
+---
 
-The console is four full-screen views. Simulation controls stay in the lab drawer.
+## 6-Stage Deterministic Architecture & Gate `G9`
 
-### Active Investigations Queue
-
-Stored rows, source filters, and the frozen-forest decision.
-
-![Active Investigations Queue](docs/screenshots/01_master_detail_dashboard.png)
-
-### Investigation Detail and Evidence Locker
-
-Sensor line, forest score, and the three stored SQL queries.
-
-![Investigation Detail and Evidence Locker](docs/screenshots/02_gemini_threat_copilot.png)
-
-### AI Action Graph and 5-column DAG
-
-Alert, understand, collect, analyze, and respond.
-
-![AI Action Graph and 5-column DAG](docs/screenshots/03_glassbox_evidence_checklist.png)
-
-### AI Threat Hunter and asset telemetry
-
-Queue mix and the digital asset inventory.
-
-![AI Threat Hunter and asset telemetry](docs/screenshots/04_n8n_soar_callback.png)
-
-### SOAR containment and reversible firewall drop
-
-Lab drop of `172.29.0.10` inside the victim namespace, then rollback.
-
-![SOAR containment and reversible firewall drop](docs/screenshots/05_victim_firewall_containment.png)
-
-### Adversarial red-team audit
-
-Five refusal probes against an isolated temporary database.
-
-![Adversarial red-team audit](docs/screenshots/06_agy_adversarial_audit.png)
-
-## Architecture
-
-One process on `127.0.0.1` serves the console and the contract routes. `scripts/run_live_product.sh` starts that process, waits for `GET /` and `GET /healthz`, and stops it on Ctrl-C or `SIGTERM`.
+Stages 1 through 4 execute with **zero LLM imports** (`Gate G9: PASS`). Deep-learning anomaly scores (v2 Autoencoder) and 9-class attack categorization run in a strictly unfused observatory (`production_fusion_enabled = False`), while Stage 5 advisory reasoning and Stage 6 response remain cryptographically isolated from alert verdicts.
 
 ```mermaid
 flowchart LR
-  subgraph stage12 [Stage 1 and 2 Telemetry]
-    sensor[Suricata or recorded 14-feature flow]
-    mtls[Admission and source identity]
+  subgraph S12["Stages 1–2 · Ingestion & Admission"]
+    S1["Suricata EVE / Registered 14-Feature Flow"]
+    S2["mTLS 1.3 & Schema Gate · WireServer Filter"]
   end
-  subgraph stage3 [Stage 3 Scoring]
-    forest[Frozen Random Forest]
-    gate[Gate G9]
-    ae[v2 autoencoder ranker]
+  subgraph S3["Stage 3 · Sole Alert Authority"]
+    RF["Frozen Random Forest (bd2853a6)"]
+    G9["Gate G9 AST Isolation"]
   end
-  subgraph stage45 [Stage 4 and 5 Correlation and RAG]
-    stitch["30.0s burst and 600.0s campaign"]
-    rag[Local MITRE and CVE retrieval]
-    memory[Context memory]
-    shield[Telemetry Shield & SimHash]
+  subgraph S4["Stage 4 · Correlation & Unfused DL Observatory"]
+    CORR["30.0s Burst / 600.0s Campaign Stitcher"]
+    AE["v2 Autoencoder (c8675d13) + 9-Class DNN (614850ad)"]
   end
-  subgraph stage6 [Stage 6 SOAR and Containment]
-    chain[SHA-256 approval chain]
-    callback[HMAC callback]
-    lab[Lab victim drop and rollback]
+  subgraph S5["Stage 5 · Grounded Advisory & Hunt"]
+    SHIELD["64-bit SimHash + Telemetry Evidence Fence"]
+    RAG["ChromaDB MITRE/CVE RAG + Gemini Copilot"]
   end
-  sensor --> mtls --> forest
-  gate --- forest
-  forest --> ae
-  forest --> stitch --> rag --> memory --> shield
-  memory --> chain --> callback --> lab
+  subgraph S6["Stage 6 · Fail-Closed SOAR"]
+    CHAIN["HMAC-SHA256 Hash-Chained Ledger"]
+    EXEC["Approval-Gated Callback & Reversible Lab Rollback"]
+  end
+  S1 --> S2 --> RF
+  G9 --- RF
+  RF --> CORR --> SHIELD --> RAG --> CHAIN --> EXEC
+  RF -. "Unfused (production_fusion_enabled=False)" .-> AE
 ```
 
-`production_fusion_enabled = False`. The autoencoder does not decide the alert. Host containment stays unauthorized until an analyst approves a hash-chained playbook and a callback is recorded. The lab drop still does not mark `containment_executed` on the approval route.
+### Gate `G9` & Boundary Preflight (`B0–B6`)
 
-```text
-Recorded 14-feature flow
-  -> frozen Random Forest decision
-  -> SQLite queue with live counts
-  -> analyst verdict, rationale, assignee, and review status
-  -> glass-box checklist from stored fields
-  -> correlation of Attack rows that share a verified entity key
-  -> grounded shift handoff
-  -> hash-chained approval, verify-state, and HMAC callback
-```
-
-Approval, verify-state, and the callback share one ledger file. A missing ledger fails closed.
-
-### Gate G9 & Boundary Preflight
-
-ThreatFusion enforces architectural decoupling via **Gate G9**:
-- **0 Advisory Decision Writes:** Advisory components (`threatfusion.advisory.*`), the Telemetry Shield, and the MCP server strictly observe telemetry and generate draft rules; they are programmatically barred from writing alert decisions or modifying forest probabilities.
-- **Deterministic Boundary Preflight:** Automated by `scripts/boundary_preflight.py`, checking 7 distinct isolation boundaries (`B0` through `B6`):
-  * **B0:** Workspace non-overlap.
-  * **B1:** Current Working Directory containment.
-  * **B2:** Workspace symlink non-escape check.
-  * **B3:** Virtualenv configuration and symlink isolation.
-  * **B4:** Git repository metadata (`.git`) boundary isolation.
-  * **B5:** Runtime code and configuration non-leakage.
-  * **B6:** Runtime import path isolation (`PYTHONPATH`, `sys.path`).
-
-Run boundary verification:
-```bash
-threatfusion-venv/bin/python3 scripts/boundary_preflight.py
-```
+- **Zero LLM Imports in Detection (Stages 1–4):** AST import-graph verification (`scripts/audit_repo_truth.py`) guarantees advisory modules (`threatfusion.advisory.*`) and MCP handlers have `0` write paths to `live_flows` decisions or frozen RF scores.
+- **Deterministic Boundary Preflight (`B0–B6`):** `scripts/boundary_preflight.py` enforces workspace non-overlap (`B0`), CWD containment (`B1`), symlink escape checks (`B2`), virtualenv isolation (`B3`), `.git` metadata isolation (`B4`), config non-leakage (`B5`), and `PYTHONPATH`/`sys.path` isolation (`B6`).
 
 ---
 
-## Read-Only Model Context Protocol (MCP) Server
+## Live Product Tour
 
-ThreatFusion provides a native Model Context Protocol (MCP) server implemented in `scripts/threatfusion_mcp_server.py`. The server exposes a JSON-RPC 2.0 transport over stdio, enabling external AI agents and coding tools (such as OpenAI Codex, Claude, or local assistants) to inspect security telemetry without bypassing human-in-the-loop authorization gates.
+Captured directly from a live 2-VM Azure cyber range (`Standard_B2pls_v2`, Ubuntu 24.04 LTS ARM64, Python 3.12, Suricata on `eth0`) under real unseen multi-stage attacker traffic (`172.29.0.10 → 172.29.0.20`).
 
-### Available Read-Only Tools
+### 1. Visual ML + DL Observatory (`Investigation Detail`)
 
-1. `threatfusion_list_queue`: Lists prioritized active incidents with scores from the Frozen Random Forest, Autoencoder, 9-Class DNN, and burst counts.
-2. `threatfusion_get_incident`: Retrieves complete forensic telemetry, stored feature vectors, and MITRE/CVE context for a given `flow_id`.
-3. `threatfusion_get_advisory_trace`: Inspects Gate G9 compliance proof, confirms zero advisory decision writes, and retrieves the Evidence Fence digest and Ledger Verification state.
-4. `threatfusion_draft_detection_rule`: Drafts review-only Suricata and Sigma rules for an investigated incident or threat query.
+![Investigation Detail ML Observatory](docs/assets/screenshots/02-investigation-detail-ml.png)
+*Frozen Random Forest (`0.5857` Attack, `bd2853a6`) stays sole alert authority alongside unfused PyTorch v2 Autoencoder (`0.071569` MSE vs `0.118136` threshold) 14-feature residual attribution and 9-Class DNN softmax distribution.*
 
-### Safety Guarantee: Containment Hard-Block
-The MCP server enforces a strict programmatic deny-list against destructive actions:
-- `threatfusion_approve`, `threatfusion_dispatch`, `threatfusion_isolate`, `threatfusion_rollback`, and `contain` are hard-blocked at the schema and handler layers. Containment actions remain strictly reserved for authorized human analysts via the signed HMAC ledger.
+### 2. Grounded Gemini Copilot & Telemetry Evidence Fence
 
-### Starting the MCP Server
-```bash
-threatfusion-venv/bin/python3 scripts/threatfusion_mcp_server.py
-```
+![Gemini Copilot Grounded Evidence](docs/assets/screenshots/03-gemini-copilot-grounded.png)
+*Live Gemini advisory grounded in `<untrusted_telemetry_envelope>` (`envelope_sha256: c3a6e6bf...`) with `ISO/IEC 42001` / `NIST AI RMF` / `OWASP LLM01` governance controls, `0` `[UNGROUNDED]` flags, `Decision writes: 0`, and poll-persistent evidence expansion.*
+
+### 3. AI Action Graph & Fail-Closed SOAR Refusal
+
+![AI Action Graph and Fail-Closed SOAR](docs/assets/screenshots/04-ai-action-graph-soar.png)
+*5-column investigation DAG (`Alert → Understand → Collect → Analyze → Report & Respond`) demonstrating fail-closed `HTTP 403` (`operator_not_enrolled`) refusal on plain HTTP without an enrolled client mTLS certificate.*
+
+### 4. Detection Engineering (`AI Threat Hunter`)
+
+![AI Threat Hunter Quad-Format Rules](docs/assets/screenshots/05-ai-threat-hunter-rules.png)
+*Read-only (`mode=ro`) SQLite rule verification (`VERIFY RULE · 7/108 Live Flows Matched`) drafting review-only **Suricata**, **Sigma YAML**, **SPL**, and **YARA-L** detections with clipboard toast feedback and zero DB mutation.*
+
+> Responsive layouts also verify at `390×844` mobile viewports with zero horizontal page overflow ([`06-mobile-console.png`](docs/assets/screenshots/06-mobile-console.png)).
 
 ---
 
-## Telemetry Shield & Evidence Fence
+## Verified Benchmarks & Security Guarantees
 
-The Stage-5 Telemetry Shield (`backend/src/threatfusion/advisory/telemetry_shield.py`) hardens LLM advisory operations against telemetry floods and prompt injection attacks:
+Evaluated on the registered **January UNSW-NB15 validation split (`216,568` flows: `4,358` attacks, `212,210` benign)** with frozen artifacts (`TP=4,045`, `FP=201`, `TN=212,009`, `FN=313`).
 
-1. **64-bit SimHash Burst Compression:**
-   - Aggregates high-frequency repetitive flows within a 60-second sliding window (`BURST_WINDOW_SECONDS = 60.0`, `SIMHASH_BITS = 64`).
-   - Compresses burst volume while preserving salient behavioral anomalies and signature tokens.
-2. **Untrusted Telemetry Envelope (Evidence Fencing):**
-   - Encloses unparsed network fields (`src_ip`, `dst_ip`, payload fragments, alert signatures) inside `<untrusted_telemetry_envelope>` tags.
-   - Instructs LLMs to treat enclosed text strictly as passive forensic evidence, preventing prompt injection payloads from hijacking analyst workflows.
-3. **Ledger Verification (`verify_advisory_against_ledger`):**
-   - Verifies all generated advisory insights against the tamper-evident HMAC-SHA256 ledger to prevent hallucinations during shift handoffs.
+| Metric / Guarantee | Verified Result | Scientific & Governance Boundary |
+|---|---|---|
+| **Frozen RF Precision / Recall** | **`95.266%`** precision · **`92.818%`** recall (`F1 94.026%`) | Sole alert authority (`P(Attack) >= 0.5000`); development-informed validation |
+| **Frozen RF False Positive Rate** | **`0.095%`** (`201 / 212,210` benign flows) | `98.0%` raw-to-alert volume reduction on Jan split |
+| **AE Observatory (`c8675d13`)** | Threshold `0.1181361214680695` (`14-8-3-8-14`) | Unfused (`production_fusion_enabled = False`); adds `+2.203 pp` recall at `1,574` extra FPs |
+| **Stage 1–4 LLM Coupling** | **`0` LLM imports** · **`0` decision writes** | Enforced by Gate `G9` AST check & runtime provenance trace |
+| **SOAR & Containment Security** | Fail-closed **mTLS + RBAC + HMAC-SHA256** ledger | Plain-HTTP approval refuses `403`; tampered ledger refuses `409`; containment stays off by default |
+| **Automated Verification** | **`1,740+` pytest cases** (`0` failed) · **`7/7` Repo Truth `GO`** · **`B0–B6` `GO`** | Verified across unit, API, mTLS, SOAR ledger, AST gate, and JS DOM suites |
+
+*Fusion disposition:* Combining RF with the v2 autoencoder achieves a +2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045), but costs 1,574 additional false positives (`1,775` total FPs, `69.997%` precision). Therefore `production_fusion_enabled = False` remains enforced across all product paths.
+
+### Cryptographically Pinned Model Registry
+
+| Model | Role | SHA-256 Digest |
+|---|---|---|
+| **Random Forest** | Sole alert authority | `bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9` |
+| **Logistic Regression** | Linear baseline | `2cf4de6686d937c485d4dbcbfa21d3e90f65bbb922087c8b31be4b012d7fb148` |
+| **Autoencoder v2** | Unfused anomaly ranker | `c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23` |
+| **9-Class DNN** | Multi-class observatory | `614850ad84fc4ab32dc6e6d2318900668d97cad6edba37290ed9fe2b2482df1f` |
+| **Rate-log1p Candidate** | `BLOCKED_preserve_baseline` | `1d02e5bba556cb28709bd0faefce5f29da424a419a2d95332ad27a8995b26f63` |
 
 ---
 
 ## Quickstart
 
-From the repository root, with `threatfusion-venv` installed:
+### 1. Local Workstation Setup & Demo Console
 
 ```bash
-uv python install 3.11 && uv venv threatfusion-venv --python 3.11 && UV_PROJECT_ENVIRONMENT=threatfusion-venv uv sync --locked --dev
-```
+uv python install 3.11
+uv venv threatfusion-venv --python 3.11
+UV_PROJECT_ENVIRONMENT=threatfusion-venv uv sync --locked --dev
 
-```bash
+# Launch local console with seeded benchmark & range scenarios at http://127.0.0.1:8766/
 ./scripts/run_live_product.sh --seed-demo
 ```
 
-Open `http://127.0.0.1:8766/`. `--seed-demo` stores four labeled scenarios and keeps serving. `--dry-run` checks the interpreter, the console files, the lab secret lengths, and a free port without binding. `--smoke` requires HTTP 200 from the page and from `/healthz`, then stops and checks that the port is free.
-
-The lab HMAC and MISP values are not production credentials. Replace them before any shared deployment.
-
-### Cyber range
+For local containerized attacker/victim simulation (no cloud account required):
 
 ```bash
 ./scripts/run_full_range_demo.sh --up
@@ -197,109 +141,70 @@ The lab HMAC and MISP values are not production credentials. Replace them before
 ./scripts/run_full_range_demo.sh --down
 ```
 
-`--up` starts the console, `docker/docker-compose.n8n.yml`, the private `172.29.0.0/24` range, and the eve follower. It waits until Suricata logs `Engine started`. The process listens beyond loopback so the n8n container can call `http://host.docker.internal:8766`. `--scan` runs non-interactive `curl` and `ssh -o BatchMode=yes` from `172.29.0.10` and waits until a new `172.29.0.10 -> 172.29.0.20` row is stored. Multicast, link-local, broadcast, and port 5353 are not ingested. `--down` stops the follower, the console, n8n, and the range. The host firewall is not changed. No Azure resources are created.
+### 2. One-Command Live Azure Cyber Range (`Ubuntu 24.04 LTS` · Python 3.12)
 
-### Cloud range, one command
+Provisions a private `172.29.0.0/24` 2-VM cyber range in `southeastasia` (`tf-soc-victim-vm` + `tf-attacker-redteam-vm`), locks SSH to your operator `/32` IP, deploys Docker Compose (`ChromaDB`, `MISP contract`, `n8n`, `callback`), installs `Suricata` + `threatfusion-eve-follower.service`, verifies `/readyz` (`HTTP 200`), and binds an SSH local tunnel to `http://127.0.0.1:8766/`:
 
 ```bash
 AZURE_VM_SIZE=Standard_B2pls_v2 ./scripts/deploy_cloud_range.sh --auto-ip --deploy-full-stack
 ```
 
-When `cloud_state.json` has no victim public address and `--victim-host` was not passed, a real run provisions the range, records `cloud_state.json`, and then deploys the console, ML engine, Suricata, and n8n. `--dry-run` prints the plan and does not provision or call a cloud API. `--provision-range`, `--teardown`, `--status`, and `--deallocate` keep their existing meanings.
+**Mandatory `$0.00` Idle-Burn Teardown:**
+
+```bash
+./scripts/deploy_cloud_range.sh --teardown
+az group exists --name ThreatFusion-RG   # returns: false
+```
+
+---
+
+## Telemetry Shield & Read-Only MCP Server
+
+- **Telemetry Evidence Fence (`backend/src/threatfusion/advisory/telemetry_shield.py`):** Compresses burst telemetry via 64-bit SimHash (`BURST_WINDOW_SECONDS = 60.0`), sanitizes control characters, wraps untrusted network fields inside `<untrusted_telemetry_envelope>` tags, and cross-checks advisory claims against the HMAC-SHA256 ledger.
+- **Read-Only MCP Server (`scripts/threatfusion_mcp_server.py`):** Exposes `threatfusion_list_queue`, `threatfusion_get_incident`, `threatfusion_get_advisory_trace`, and `threatfusion_draft_detection_rule` over JSON-RPC 2.0 stdio while hard-blocking `approve`, `dispatch`, `isolate`, `rollback`, and `contain`.
 
 ### v1.2 operator surface
 
-These paths stay on the existing console routes. `production_fusion_enabled` stays false. TF-008, TF-009, TF-010, and TF-011 stay open.
-
-| Surface | What the operator sees |
+| Surface | Capability & Fail-Closed Guardrail |
 |---|---|
-| Queue and workbench | Alert-fatigue strip: raw events, SimHash clusters, high-confidence incidents, noise reduction, and LLM token savings from burst reuse plus envelope pruning. Replay mode is `SIMHASH_ZERO_COST_REPLAY`. |
-| Investigations | Patient Zero asset scope, attack-story timeline, composite multi-stage chain pill, and decomposed CTI with a published CVSS ceiling. |
-| AI Threat Hunter | Five guides (T1046, T1110, T1190, T1498, INV-4), each with a falsifiable H1 hypothesis, source-byte z-score, and host prevalence. Drafts are review-only Suricata, Sigma YAML, SPL, and YARA-L. VERIFY RULE evaluates those predicates against stored flows and does not insert rows. |
-| SOAR / action graph | 3 A.M. policy: AI prepares enrichment and staging; a person decides host containment and credential revocation. Dry-run reports a non-destructive 94% estimated MTTR cut. The n8n v1.x schema is inspectable and copyable. |
-| Notes and handoff | Copy Portable Shift Handoff Brief copies incident id, patient zero, funnel and token savings, ledger status, and SOAR state. |
-| MCP | `prompts/list` and `prompts/get` expose `ioc_enrichment_runbook`, `alert_triage_runbook`, and `statistical_hunt_runbook`. Approve, Dispatch, Isolate, and Rollback stay blocked. |
-
-## Analyst workflow
-
-| Action | Route | What is stored |
-|---|---|---|
-| Ingest or replay | `POST /api/v1/live/ingest`, `POST /api/v1/live/replay`, `POST /api/v1/live/scenarios` | 14-feature flow scored by the frozen Random Forest |
-| Live sensor | `POST /api/v1/live/sensor` | One Suricata bridge flow. Optional `sensor_node` defaults to `suricata_bridge` and may be `aws_cloud_sensor`. A configured `THREATFUSION_SENSOR_INGEST_TOKEN` requires a matching bearer token. The observation line and the forest score stay separate |
-| Context memory | `POST /api/v1/live/context-memory`, `GET /api/v1/live/context-memory` | Institutional rule for a stored flow entity. A verified verdict writes one too. The frozen forest score stays unchanged |
-| Assets | `GET /api/v1/live/assets` | Observed source and destination entities, RFC1918 classification, and memory counts |
-| Verdict | `POST /api/v1/live/verdict` | `true_positive`, `false_positive`, or `inconclusive`, with a grounded rationale, beside the forest decision |
-| Assignment | `POST /api/v1/live/assignment` | Local assignee and `unassigned`, `in_review`, or `reviewed` |
-| Triage | `POST /api/v1/live/triage` | Acknowledge, escalate, or dismiss |
-| Handoff | `POST /api/v1/live/handoff` | Four blocks plus the verdict, assignee, and review status, only when the note stays inside stored evidence |
-| Hunter guides | `GET /api/v1/live/hunter/guides` | Five read-only hunting guides with live SQLite hit counts. `guide_id` adds the four-section hunt summary |
-| Hunter draft rule | `POST /api/v1/live/hunter/draft-rule` | Review-only Suricata and Sigma detection rules plus a ledger-checked four-section hunt summary |
-| Approve | `POST /api/v1/live/soar/approve` | Hash-chained approval. `containment_executed` stays false |
-| Dispatch | `POST /api/v1/live/soar/dispatch` | Signed callback. Uses live n8n when `THREATFUSION_N8N_WEBHOOK_URL` is set, otherwise `local_contract_fallback`. `containment_executed` stays false |
-| Contain | `POST /api/v1/live/soar/contain` | Drops `172.29.0.10` inside the victim container after an approved hash chain and a verified callback |
-| Rollback | `POST /api/v1/live/soar/rollback` | Removes that victim-namespace drop and requires the attacker path to succeed |
-| Stitch | `POST /api/v1/live/correlate` | Attack rows inside the 30.0 second burst window or the 600.0 second campaign window |
-
-The queue searches, filters, and sorts stored rows by source, forest decision, triage state, analyst verdict, and forest probability. Live sensor rows, the recorded UNSW study, and the labeled scenario replay do not share a campaign id. The hero cards show the live SQLite flow, campaign, and incident counts, plus how many stored rows came from the live bridge. The January 216,568-flow figures stay in the Frozen Benchmark Evaluation Baseline.
-
-## Section 8 benchmark
-
-January validation has 216,568 rows. The frozen Random Forest counts are TP 4,045, FP 201, TN 212,009, FN 313. FPR is 0.095% (201 / 212,210 benign).
-
-| Measure | Frozen Random Forest | Fusion candidate |
-|---|---|---|
-| Rows | 216,568 | same population |
-| Recall | 92.818% (4,045 / 4,358) | 95.021% |
-| Precision | 95.266% | 69.997% |
-| False positives | 201 | 1,775 |
-| False positive rate | 0.095% (201 / 212,210) | — |
-| Extra attacks | — | 96 |
-| Extra false alarms | — | 1,574 |
-
-That is a +2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045). `production_fusion_enabled = False` because those 96 extra attacks cost 1,574 extra false alarms.
-
-### Model Registry
-
-| Model | Role | SHA-256 |
-|---|---|---|
-| Random Forest | sole alert authority | `bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9` |
-| Logistic regression | linear baseline | `2cf4de6686d937c485d4dbcbfa21d3e90f65bbb922087c8b31be4b012d7fb148` |
-| Autoencoder v2 | unfused ranker | `c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23` |
-| 9-Class DNN (`artifacts/models/fyp2_dnn_same_split_v1/dnn_model.pt`) | multi-class classifier | `614850ad84fc4ab32dc6e6d2318900668d97cad6edba37290ed9fe2b2482df1f` |
-| Rate-log1p candidate | blocked baseline | `1d02e5bba556cb28709bd0faefce5f29da424a419a2d95332ad27a8995b26f63` |
+| **Queue & Funnel** | 12s non-overlapping poll, manual `Refresh Queue`, SimHash burst clusters, envelope compaction metrics, and Azure WireServer/IMDS noise filtering |
+| **Investigations** | Patient Zero asset scope, 30s/600s correlation timeline, Frozen RF + unfused AE/DNN observatory, and decomposed CTI |
+| **AI Threat Hunter** | Five hunting guides (`T1046`, `T1110`, `T1190`, `T1498`, `INV-4`), read-only `mode=ro` SQLite `VERIFY RULE`, and quad-format **Suricata / Sigma YAML / SPL / YARA-L** drafts |
+| **SOAR / Action Graph** | 5-column DAG, `3 A.M.` policy (`AI prepares, human decides`), n8n v1.x schema preview, and mTLS/HMAC-gated execution |
 
 ---
 
-## Verification & Testing
+## Verification & Governance Gates
 
-ThreatFusion enforces an automated, zero-regression test regime. To verify system integrity and reproduction:
-
-### 1. Run Protocol 0 Boundary Preflight (B0–B6)
-Ensures zero leaks between active development, virtual environments, and reference baselines:
 ```bash
-threatfusion-venv/bin/python3 scripts/boundary_preflight.py
-```
-*Expected: `BOUNDARY DECISION VERDICT: GO` (0 findings)*
+# 1. Boundary Preflight (B0–B6)
+./threatfusion-venv/bin/python3 scripts/boundary_preflight.py --venv threatfusion-venv --json
 
-### 2. Execute Pytest Regression Suite
-Executes unit, API, integration, and advisory shield tests:
-```bash
-threatfusion-venv/bin/pytest -q -o cache_dir=/tmp/.pytest_cache
+# 2. Deterministic Repository Truth Audit (7/7 GO)
+./threatfusion-venv/bin/python3 scripts/audit_repo_truth.py --json
+
+# 3. Full Test Suite (offline-safe, Gemini disabled)
+env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1 GEMINI_ENABLED=false \
+  ./threatfusion-venv/bin/pytest -q -o cache_dir=/tmp/.pytest_cache
 ```
-*Expected: `1,726+ tests collected, 0 failed; 1–11 environment-gated skips depending on local/Docker fixtures`.*
 
 ---
 
-## Governance
+## Enterprise Deployment Prerequisites
 
-- The frozen Random Forest scores a flow only when the artifact digest matches and the input width is 14.
-- The analyst verdict, rationale, assignee, and review status are stored separately from that decision.
-- A rationale that names an address the flow does not store is refused.
-- RFC1918, loopback, link-local, and IPv6 unique-local addresses are refused before any indicator lookup.
-- The SOAR ledger is an HMAC-SHA256 keyed hash chain. A failed timing write does not report the callback as recorded.
-- Host containment stays unauthorized.
-- TF-008, TF-009, TF-010, and TF-011 remain open. Scores on unseen traffic, a human cohort of at least 10, a signed jury form, and a live feed are not done.
+ThreatFusion enforces strict scientific and operational honesty before claiming production readiness. Accordingly, `TF-008, TF-009, TF-010, and TF-011 remain open.` as formal enterprise integration prerequisites:
 
-## Acknowledgments
+- **TF-008 — Independent External Holdout Benchmark:** Formal pre-registered evaluation on an untouched external dataset beyond inspected UNSW-NB15 splits.
+- **TF-009 — Human-Factors Analyst Cohort Study:** Controlled measurement (`min_human_trials >= 10`) comparing raw SIEM triage vs. ThreatFusion enriched triage.
+- **TF-010 — External Signed Jury / Compliance Rubric:** Formal attachment of the signed external review rubric (`AI-FYP-2006`).
+- **TF-011 — Live Enterprise SIEM & Production TI Feeds:** End-to-end production SIEM and authenticated commercial/community threat-intelligence stream ingestion beyond bounded range deployments.
 
-FAST-NUCES Karachi CS492 FYP-II (AI-FYP-2006). Muhammad Bilal (21K-3551), Muhammad Suhaib Shaikh (22K-4302), Muhammad Hasnain (22K-4718), Supervisor Sir Sameer Faisal. Documented evaluation checkpoint: 21 September 2026.
+---
+
+<details>
+<summary><strong>Credits & Academic Origin</strong></summary>
+
+Developed at **FAST-NUCES Karachi** — CS492 Final Year Project (`AI-FYP-2006`).
+**Team:** Muhammad Bilal (`21K-3551`), Muhammad Suhaib Shaikh (`22K-4302`), Muhammad Hasnain (`22K-4718`) · **Supervisor:** Sir Sameer Faisal.
+
+</details>
