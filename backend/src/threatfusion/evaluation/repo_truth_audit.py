@@ -1041,7 +1041,7 @@ def _check_6_functional_probe(expected_src_root: Path) -> CheckResult:
             summary_headline="Test",
             detection_rationale="Model scored 0.85",
             complementarity_and_fusion_note="Fusion disabled",
-            correlation_and_enrichment_context="Attacker at 99.88.77.66 probed the host.",
+            correlation_and_enrichment_context="Attacker at 198.51.100.66 probed the host.",
             recommended_analyst_checks=(),
             cited_evidence_keys=("candidate_id",),
             groundedness_verified=True,
@@ -1386,7 +1386,7 @@ def _check_6_functional_probe(expected_src_root: Path) -> CheckResult:
             # Once approved, dispatch/queueing succeeds
             approved_soar_rec = soar_probe_engine.decide_recommendation(
                 playbook_id=unapproved_soar_rec.playbook_id,
-                actor_id="analyst-bilal",
+                actor_id="soc-approver",
                 decision="approve",
                 reason="Probe approval",
                 expected_version=1,

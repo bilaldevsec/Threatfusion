@@ -886,10 +886,17 @@ def test_serving_lifecycle_worker_failure_timeout_and_cleanup(
                 os.killpg(executor.last_worker_process_group_id, 0)
 
 
+def _open_fd_count() -> int:
+    for fd_dir in ("/proc/self/fd", "/dev/fd"):
+        if os.path.isdir(fd_dir):
+            return len(os.listdir(fd_dir))
+    pytest.skip("Neither /proc/self/fd nor /dev/fd is available on this platform")
+
+
 def test_serving_lifecycle_bounded_resource_measurement(tmp_path, certificates):
     """Measure one short local workload without treating it as endurance evidence."""
     calls: list[tuple[str, int, object]] = []
-    baseline_fds = len(os.listdir("/proc/self/fd"))
+    baseline_fds = _open_fd_count()
     baseline_threads = len(threading.enumerate())
     peaks = {"fds": baseline_fds, "threads": baseline_threads, "children": 0, "db_bytes": 0}
     stop_sampling = Event()
@@ -898,7 +905,7 @@ def test_serving_lifecycle_bounded_resource_measurement(tmp_path, certificates):
 
     def sample() -> None:
         while not stop_sampling.is_set():
-            peaks["fds"] = max(peaks["fds"], len(os.listdir("/proc/self/fd")))
+            peaks["fds"] = max(peaks["fds"], _open_fd_count())
             peaks["threads"] = max(peaks["threads"], len(threading.enumerate()))
             peaks["children"] = max(peaks["children"], len(multiprocessing.active_children()))
             peaks["db_bytes"] = max(
@@ -928,7 +935,7 @@ def test_serving_lifecycle_bounded_resource_measurement(tmp_path, certificates):
         elapsed = time.monotonic() - started
         stop_sampling.set()
         sampler.join(1)
-    post_fds = len(os.listdir("/proc/self/fd"))
+    post_fds = _open_fd_count()
     post_threads = len(threading.enumerate())
     post_children = len(multiprocessing.active_children())
     measurement = {

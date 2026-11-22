@@ -1379,17 +1379,17 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             self._send_json(200, self._advisory_status_payload())
             return
 
-        if path == "/api/v1/live/agy-audit":
+        if path == "/api/v1/live/redteam-audit":
             audit_path = Path(
-                os.environ.get("THREATFUSION_AGY_AUDIT_PATH", "").strip()
-                or (Path(os.environ.get("TMPDIR", "/tmp")) / "threatfusion-agy-audit.json")
+                os.environ.get("THREATFUSION_REDTEAM_AUDIT_PATH", "").strip()
+                or (Path(os.environ.get("TMPDIR", "/tmp")) / "threatfusion-redteam-audit.json")
             )
             if not audit_path.is_file():
                 self._send_json(
                     200,
                     {
                         "evidence_state": "unavailable",
-                        "label": "External agy Red-Team Audit: not run",
+                        "label": "Automated Red-Team Boundary Audit: not run",
                         "passed": 0,
                         "total": 5,
                     },

@@ -308,22 +308,22 @@ def test_item4_range_endpoints_locked_to_soc_approver_rbac(
     tier1_token = str(
         rbac_login(
             live_db,
-            username="suhaib.22k4302@nu.edu.pk",
-            access_code="TF-Suhaib-4302!",
+            username="analyst@threatfusion.local",
+            access_code="TF-Lab-Analyst-02!",
         )["session_token"]
     )
     auditor_token = str(
         rbac_login(
             live_db,
-            username="hasnain.22k4718@nu.edu.pk",
-            access_code="TF-Hasnain-4718!",
+            username="auditor@threatfusion.local",
+            access_code="TF-Lab-Auditor-03!",
         )["session_token"]
     )
     approver_token = str(
         rbac_login(
             live_db,
-            username="bilal.21k3551@nu.edu.pk",
-            access_code="TF-Bilal-3551!",
+            username="approver@threatfusion.local",
+            access_code="TF-Lab-Approver-01!",
         )["session_token"]
     )
 
@@ -790,8 +790,8 @@ def test_item9_fuzzing_bool_cidr_icmp_and_tampered_dispatch_409(
     token = str(
         rbac_login(
             live_db,
-            username="bilal.21k3551@nu.edu.pk",
-            access_code="TF-Bilal-3551!",
+            username="approver@threatfusion.local",
+            access_code="TF-Lab-Approver-01!",
         )["session_token"]
     )
     srv = ThreadingHTTPServer(("127.0.0.1", 0), MispAndCallbackContractHandler)

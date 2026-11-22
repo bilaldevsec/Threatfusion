@@ -282,7 +282,7 @@ def test_milestone23_complete_product_spine() -> None:
         # 7c. Authorized analyst approves
         approved_rec = soar_engine.decide_recommendation(
             playbook_id=first_rec.playbook_id,
-            actor_id="analyst-bilal",
+            actor_id="soc-approver",
             decision="approve",
             reason="Verified lab attacker IP 10.0.0.4 with high attack probability.",
             expected_version=1,
@@ -293,7 +293,7 @@ def test_milestone23_complete_product_spine() -> None:
         # 7d. Execution succeeds
         executed_rec = soar_engine.execute_approved_action(
             playbook_id=first_rec.playbook_id,
-            actor_id="analyst-bilal",
+            actor_id="soc-approver",
             expected_version=2,
         )
         assert executed_rec.state == "executed_simulated"
@@ -302,7 +302,7 @@ def test_milestone23_complete_product_spine() -> None:
         # 7e. Reversible Rollback succeeds
         rolled_back_rec = soar_engine.rollback_executed_action(
             playbook_id=first_rec.playbook_id,
-            actor_id="analyst-bilal",
+            actor_id="soc-approver",
             rollback_reason="Lab containment exercise concluded; restoring state.",
             expected_version=3,
         )
@@ -324,7 +324,7 @@ def test_milestone23_complete_product_spine() -> None:
             stored_detector_decision="Attack",
             stored_score=infer_res.attack_probability,
             analyst_verified_outcome="confirmed_threat",
-            actor_id="analyst-bilal",
+            actor_id="soc-approver",
         )
         # Verify frozen model checksums are intact
         rf_sha, ae_sha = verify_frozen_models_unmodified(repo_root=repo_root)

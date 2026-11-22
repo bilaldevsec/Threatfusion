@@ -1,6 +1,6 @@
 /**
- * ThreatFusion SOC Unicorn Web Console & Interactive Walkthrough Engine
- * Document Identifier: SOP-UX-SOC-001 (Rev 1.0.0) | Project: AI-FYP-2006
+ * ThreatFusion Unified SecOps & NDR Console Engine
+ * Document Identifier: SOP-UX-SOC-001 (Rev 1.0.0) | Release: ThreatFusion-NDR-v1.1
  * 100% Offline / Zero CDN Dependencies / Strict Receipt & Forensic Evidence Verification
  */
 
@@ -59,7 +59,7 @@
   // 1. Exact Evaluation Pack Rev2 & Pipeline Invariant Constants
   // ========================================================================
   const EVAL_PACK_REV2 = {
-    projectId: 'AI-FYP-2006',
+    projectId: 'ThreatFusion-NDR-v1.1',
     checkpoint: '6a36dcd',
     rfArtifactSha256: 'bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9',
     aeArtifactSha256: 'c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23',
@@ -212,7 +212,7 @@
         targetEntity: '198.51.100.27',
         state: 'approved',
         version: 2,
-        actorId: 'analyst-bilal',
+        actorId: 'soc-approver',
         decisionReason: 'Verified C2 beacon IOC and rapid scan pattern; approved containment'
       },
       soarAuditChainVerified: true,
@@ -424,7 +424,7 @@
       evidenceSnippet: JSON.stringify({
         playbook_id: 'pb-isolate-host-01',
         state: 'approved',
-        actor_id: 'analyst-bilal',
+        actor_id: 'soc-approver',
         soar_hash_chain_verified: true,
         chain_head_sha256: '44d88612fea8a8f36de82e1278abb02f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d',
         thehive_case_id: 'case_azure_victim_001842',
@@ -720,7 +720,7 @@
     setupEventListeners();
     refreshOperationalVelocity();
     refreshAdvisoryStatus();
-    refreshAgyAudit();
+    refreshRedteamAudit();
     await refreshRbacSession();
     refreshPosture();
     refreshReadyz();
@@ -3640,21 +3640,21 @@
     }
   }
 
-  async function refreshAgyAudit() {
+  async function refreshRedteamAudit() {
     try {
-      const resp = await fetch('/api/v1/live/agy-audit', {
+      const resp = await fetch('/api/v1/live/redteam-audit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: '{}'
       });
       const data = await resp.json();
-      const node = document.getElementById('agyAuditStatus');
+      const node = document.getElementById('redteamAuditStatus');
       if (!node) return;
-      node.textContent = data.label || 'External agy Red-Team Audit: not run';
+      node.textContent = data.label || 'Automated Red-Team Boundary Audit: not run';
       node.setAttribute('data-evidence-state', data.passed === 5 ? 'verified' : 'unavailable');
     } catch (err) {
-      const node = document.getElementById('agyAuditStatus');
-      if (node) node.textContent = 'External agy Red-Team Audit: not run';
+      const node = document.getElementById('redteamAuditStatus');
+      if (node) node.textContent = 'Automated Red-Team Boundary Audit: not run';
     }
   }
 
@@ -3898,27 +3898,34 @@
     node.setAttribute('data-evidence-state', verified ? 'verified' : 'unavailable');
   }
 
-  const SESSION_AUTH_HEADER = 'Muhammad Bilal (21K-3551) · Tier-3 Approver | Session Auth (Tier-3 RBAC · Lab HTTP)';
-  const VERIFIED_MTLS_HEADER = 'Muhammad Bilal (21K-3551) · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)';
+  const SESSION_AUTH_SUFFIX = 'Tier-3 Approver | Session Auth (Tier-3 RBAC · Lab HTTP)';
+  const VERIFIED_MTLS_SUFFIX = 'Tier-3 Approver | verified mTLS cert (/CN=lab_operator)';
+
+  function operatorDisplayName(actor, explicitName) {
+    const clean = String(explicitName || '').trim();
+    if (clean) return clean;
+    return OPERATOR_LABELS[actor] || actor || 'Operator';
+  }
 
   function headerLineForSession(session) {
     if (!session) return 'unverified local label';
     const actor = String(session.actor_id || '');
+    const displayName = operatorDisplayName(actor, session.display_name);
     let line = String(session.header_identity || '');
     const mtls = actor === 'lab_operator'
       && session.identity_verified === true
       && session.identity_label === 'verified_mtls_lab_operator'
       && line.indexOf('verified mTLS cert (/CN=lab_operator)') !== -1;
-    if (mtls) return VERIFIED_MTLS_HEADER;
+    if (mtls) return displayName + ' · ' + VERIFIED_MTLS_SUFFIX;
     if (actor === 'lab_operator') {
       if (line && line.indexOf('verified mTLS') === -1) return line;
-      return SESSION_AUTH_HEADER;
+      return displayName + ' · ' + SESSION_AUTH_SUFFIX;
     }
     if (actor === 'tier1_analyst' || (line.indexOf('/CN=lab_operator') !== -1 && actor !== 'lab_operator' && actor !== 'compliance_auditor')) {
-      return 'Muhammad Suhaib (22K-4302) · Tier-1 Triage | No SOAR Cert (Triage Only)';
+      return displayName + ' · Tier-1 Triage | No SOAR Cert (Triage Only)';
     }
     if (actor === 'compliance_auditor') {
-      return 'Muhammad Hasnain (22K-4718) · Auditor | Read-Only Compliance Token';
+      return displayName + ' · Auditor | Read-Only Compliance Token';
     }
     if (line.indexOf('/CN=lab_operator') !== -1) return 'unverified local label';
     return line || 'unverified local label';
@@ -3960,7 +3967,8 @@
     const subject = stamp.certificate_subject || stamp.certificateSubject || '';
     if (verified && label !== 'unverified_local_label' && prefix && subject === '/CN=lab_operator') {
       node.setAttribute('title', 'verified operator certificate');
-      paintOperatorBadge('Muhammad Bilal (21K-3551) · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)', true);
+      const stampName = String(stamp.display_name || '').trim() || activeOperatorLabel || OPERATOR_LABELS.lab_operator;
+      paintOperatorBadge(stampName + ' · ' + VERIFIED_MTLS_SUFFIX, true);
       return;
     }
     paintOperatorBadge('unverified local label', false);
@@ -3993,15 +4001,17 @@
         && data.identity_verified === true
         && data.identity_label === 'verified_mtls_lab_operator';
       if (sessionIdentity && sessionIdentity.actor_id === 'lab_operator' && mtlsEnrolled) {
+        const approverName = operatorDisplayName('lab_operator', sessionIdentity.display_name);
         sessionIdentity.identity_verified = true;
         sessionIdentity.identity_label = 'verified_mtls_lab_operator';
-        sessionIdentity.header_identity = VERIFIED_MTLS_HEADER;
+        sessionIdentity.header_identity = approverName + ' · ' + VERIFIED_MTLS_SUFFIX;
         sessionIdentity.certificate_subject = '/CN=lab_operator';
         paintSessionIdentity(sessionIdentity);
       } else if (sessionIdentity && sessionIdentity.actor_id === 'lab_operator') {
+        const approverName = operatorDisplayName('lab_operator', sessionIdentity.display_name);
         sessionIdentity.identity_verified = false;
         sessionIdentity.identity_label = 'session_authenticated';
-        sessionIdentity.header_identity = SESSION_AUTH_HEADER;
+        sessionIdentity.header_identity = approverName + ' · ' + SESSION_AUTH_SUFFIX;
         sessionIdentity.certificate_subject = '';
         paintSessionIdentity(sessionIdentity);
       } else if (!(sessionIdentity && sessionIdentity.authenticated)) {
@@ -5672,9 +5682,9 @@
     'Generic', 'Reconnaissance', 'Shellcode', 'Worms'
   ];
   const OPERATOR_LABELS = {
-    lab_operator: 'Muhammad Bilal (21K-3551)',
-    tier1_analyst: 'Muhammad Suhaib (22K-4302)',
-    compliance_auditor: 'Muhammad Hasnain (22K-4718)'
+    lab_operator: 'Tier-3 SOC Approver',
+    tier1_analyst: 'Tier-1 Triage Analyst',
+    compliance_auditor: 'Compliance Auditor'
   };
 
   function openEnterpriseDrawer(open) {
@@ -5883,7 +5893,7 @@
     setLiveText('entraTenantId', (status && status.entra_tenant_id) || 'unavailable', status && status.entra_tenant_id ? 'verified' : 'unavailable');
     setLiveText(
       'entraSubscriptionTier',
-      (status && status.azure_subscription_tier) || 'Azure for Students · $60 Credit Active · Free Entra ID P1/OIDC',
+      (status && status.azure_subscription_tier) || 'Microsoft Entra ID (OIDC + X.509 mTLS) · Zero-Trust Tier',
       'verified'
     );
   }

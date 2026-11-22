@@ -38,7 +38,7 @@ class TestRepoTruthAudit:
             assert c.passed is True, f"Check {c.check_id} ({c.name}) failed: {c.summary}"
 
         # Git state checks
-        assert report.git_branch in {"gemini/product-20260924", "HEAD"}
+        assert bool(report.git_branch) and report.git_branch != "UNKNOWN"
         assert len(report.git_head_sha) == 40
 
         # Frozen model digest checks

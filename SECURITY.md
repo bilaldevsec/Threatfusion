@@ -13,14 +13,14 @@ ThreatFusion enforces cryptographic verification, boundary preflight isolation, 
 
 The ThreatFusion team takes security and vulnerability reports seriously. If you discover a security vulnerability in ThreatFusion, please disclose it responsibly.
 
-### Contact Information
-- **Security Contact:** `bilaljvd2000@gmail.com`
-- **Subject Line:** `[Vulnerability Report] ThreatFusion - <Component>`
+### Private Reporting Channel
+- **GitHub Private Vulnerability Reporting:** Report vulnerabilities privately at https://github.com/bilaldevsec/Threatfusion/security/advisories/new
+- Please do not open public GitHub issues, pull requests, or discussions for suspected security vulnerabilities.
 
-### Response SLA
+### Response & Disclosure SLA
 - **Initial Acknowledgment:** Within **48 hours** of report receipt.
 - **Triage & Status Update:** Within **5 business days** with reproduction status and severity classification.
-- **Remediation & Advisory:** Security patches will be issued and credited upon verification.
+- **Coordinated Disclosure:** **90-day coordinated disclosure SLA** from report receipt; security patches and advisories will be issued and credited upon verification.
 
 ## Scope
 

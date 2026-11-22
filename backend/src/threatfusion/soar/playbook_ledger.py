@@ -627,7 +627,9 @@ class SoarPlaybookSqliteRepository:
                 previous = SOAR_AUDIT_GENESIS_HASH
                 for index, row in enumerate(rows):
                     sequence_id = index + 1
-                    candidate_id = str(row["candidate_id"] or "") if "candidate_id" in row.keys() else ""
+                    candidate_id = (
+                        str(row["candidate_id"] or "") if "candidate_id" in row.keys() else ""
+                    )
                     entry_hash = compute_soar_audit_entry_hash(
                         event_id=row["event_id"],
                         playbook_id=row["playbook_id"],

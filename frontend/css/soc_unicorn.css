@@ -1,6 +1,6 @@
 /* ==========================================================================
-   ThreatFusion "Unicorn" SOC Interface — Master Stylesheet
-   SOP Identifier: SOP-UX-SOC-001 (Rev 1.0.0) | Project: AI-FYP-2006
+   ThreatFusion Unified SecOps & NDR Interface — Master Stylesheet
+   SOP Identifier: SOP-UX-SOC-001 (Rev 1.0.0) | Release: ThreatFusion-NDR-v1.1
    100% Air-Gapped / Zero External Dependencies / Glassmorphic Dark Architecture
    ========================================================================== */
 
@@ -2048,7 +2048,7 @@ label[for="shiftHandoffNote"],
 #liveQueueStatus,
 #liveCopilotAnswer,
 #constitutionalHealth,
-#agyAuditStatus,
+#redteamAuditStatus,
 #liveDriftStatus,
 #liveWorkbenchStatus,
 #actionStatusBanner,

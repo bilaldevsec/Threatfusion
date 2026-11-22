@@ -754,9 +754,7 @@ def answer_citation_locked_followup(
     allowed_mitre = {key.split(":", 1)[1] for key in allowed if key.startswith("mitre:")}
     unknown_mitre = sorted(set(_FOLLOWUP_MITRE_ID.findall(question or "")) - allowed_mitre)
     asks_execution = _FOLLOWUP_EXECUTION_REQUEST.search(question or "") is not None
-    fusion_sentence = (
-        "Production authority remains the frozen Random Forest and production_fusion_enabled is false."
-    )
+    fusion_sentence = "Production authority remains the frozen Random Forest and production_fusion_enabled is false."
     if unknown_ips or unknown_mitre or asks_execution:
         answer = (
             "Follow-up unavailable. The question asks for an entity, technique, or containment "

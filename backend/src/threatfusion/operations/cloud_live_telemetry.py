@@ -27,7 +27,6 @@ from threatfusion.datasets.adapters.suricata_flow import (
 UTC = timezone.utc
 
 
-
 @dataclass(frozen=True, slots=True)
 class DeadLetterQuarantineRecord:
     """Record of a quarantined malformed or invalid Suricata telemetry line."""
@@ -83,8 +82,7 @@ def _persist_dead_letter_records(
     try:
         conn.execute("PRAGMA busy_timeout = 5000")
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS suricata_dead_letters (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 line_number INTEGER NOT NULL,
@@ -93,8 +91,7 @@ def _persist_dead_letter_records(
                 raw_excerpt TEXT NOT NULL,
                 recorded_at_utc TEXT NOT NULL
             )
-            """
-        )
+            """)
         conn.executemany(
             """
             INSERT INTO suricata_dead_letters (

@@ -270,16 +270,16 @@ def test_azure_victim_address_rejects_missing_and_private_values(tmp_path: Path)
     path = tmp_path / "azure_portal_state.json"
     path.write_text(json.dumps({"victim_public_ip": "10.0.0.5"}), encoding="utf-8")
     assert read_azure_victim_public_ip(path) == ""
-    path.write_text(json.dumps({"victim_public_ip": "52.230.32.81"}), encoding="utf-8")
-    assert read_azure_victim_public_ip(path) == "52.230.32.81"
+    path.write_text(json.dumps({"victim_public_ip": "93.184.216.34"}), encoding="utf-8")
+    assert read_azure_victim_public_ip(path) == "93.184.216.34"
     link = tmp_path / "linked.json"
     link.symlink_to(path)
     assert read_azure_victim_public_ip(link) == ""
 
 
 def test_azure_ssh_commands_match_the_victim_kernel_filter() -> None:
-    isolate = azure_victim_ssh_argv("52.230.32.81", "isolate")
-    rollback = azure_victim_ssh_argv("52.230.32.81", "rollback")
+    isolate = azure_victim_ssh_argv("93.184.216.34", "isolate")
+    rollback = azure_victim_ssh_argv("93.184.216.34", "rollback")
     assert isolate[:6] == (
         "ssh",
         "-o",
@@ -288,7 +288,7 @@ def test_azure_ssh_commands_match_the_victim_kernel_filter() -> None:
         "ConnectTimeout=3",
         "-o",
     )
-    assert isolate[-2] == "azureuser@52.230.32.81"
+    assert isolate[-2] == "azureuser@93.184.216.34"
     assert (
         isolate[-1] == "sudo iptables -C INPUT -s 172.29.0.10 -j DROP 2>/dev/null "
         "|| sudo iptables -I INPUT 1 -s 172.29.0.10 -j DROP"
@@ -300,7 +300,7 @@ def test_unreachable_azure_ssh_falls_back_without_raising(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "azure_portal_state.json"
-    path.write_text(json.dumps({"victim_public_ip": "52.230.32.81"}), encoding="utf-8")
+    path.write_text(json.dumps({"victim_public_ip": "93.184.216.34"}), encoding="utf-8")
 
     def unreachable(*_args: object, **_kwargs: object) -> None:
         raise subprocess.TimeoutExpired(cmd="ssh", timeout=8)
@@ -310,14 +310,14 @@ def test_unreachable_azure_ssh_falls_back_without_raising(
     assert result["attempted"] is True
     assert result["applied"] is False
     assert result["reason"] == "azure_ssh_unreachable"
-    assert result["victim_public_ip"] == "52.230.32.81"
+    assert result["victim_public_ip"] == "93.184.216.34"
 
 
 def test_local_drop_still_applies_when_azure_ssh_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "azure_portal_state.json"
-    path.write_text(json.dumps({"victim_public_ip": "52.230.32.81"}), encoding="utf-8")
+    path.write_text(json.dumps({"victim_public_ip": "93.184.216.34"}), encoding="utf-8")
     monkeypatch.setattr(
         "threatfusion.api.live_soc_console.AZURE_PORTAL_STATE_PATH",
         path,
@@ -342,7 +342,7 @@ def test_local_drop_still_applies_when_azure_ssh_fails(
     assert dropped["applied"] is True
     assert dropped["azure_kernel"]["applied"] is False
     assert dropped["azure_kernel"]["reason"] == "azure_ssh_unreachable"
-    assert any(item[0] == "ssh" and item[-2] == "azureuser@52.230.32.81" for item in seen)
+    assert any(item[0] == "ssh" and item[-2] == "azureuser@93.184.216.34" for item in seen)
     restored = _run_range_action("rollback")
     assert restored["removed"] is True
     assert restored["azure_kernel"]["reason"] == "azure_ssh_unreachable"
@@ -352,7 +352,7 @@ def test_dual_probe_badge_requires_local_and_azure_drops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "azure_portal_state.json"
-    path.write_text(json.dumps({"victim_public_ip": "52.230.32.81"}), encoding="utf-8")
+    path.write_text(json.dumps({"victim_public_ip": "93.184.216.34"}), encoding="utf-8")
 
     class _Completed:
         def __init__(self, code: int) -> None:
@@ -387,7 +387,7 @@ def test_containment_response_carries_the_azure_and_local_badge(tmp_path: Path) 
                 result["azure_kernel"] = {
                     "attempted": True,
                     "applied": True,
-                    "victim_public_ip": "52.230.32.81",
+                    "victim_public_ip": "93.184.216.34",
                 }
             return result
 

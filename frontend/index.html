@@ -5,7 +5,7 @@
   <link rel="icon" href="data:,">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="ThreatFusion SOC console for recorded network-flow triage">
-  <title>ThreatFusion &mdash; SOC Unicorn Web Console (AI-FYP-2006)</title>
+  <title>ThreatFusion &mdash; Unified SecOps &amp; NDR Console</title>
   <link rel="stylesheet" href="css/soc_unicorn.css">
   <link rel="stylesheet" href="css/soc_dashboard.css">
   <style>
@@ -978,8 +978,8 @@
       </section>
 
       <footer class="soc-footer">
-        <span>ThreatFusion &mdash; Fast-NUCES FYP-II Master Defense (AI-FYP-2006)</span>
-        <span>Supervisor: Sir Sameer Faisal &middot; Team: 21K-3551, 22K-4302, 22K-4718</span>
+        <span>ThreatFusion &mdash; Unified SecOps &amp; NDR Console</span>
+        <span>Approval-Gated SOAR &middot; Frozen Random Forest Authoritative</span>
         <span>Strict Scientific Governance: TF-008, TF-009, TF-010, TF-011 Honestly OPEN</span>
       </footer>
     </div>
@@ -1013,7 +1013,7 @@
             <div id="startupIntegrityDigest" data-evidence-state="unavailable">Startup integrity check: unavailable</div>
           </aside>
         </div>
-        <div id="agyAuditStatus" data-evidence-state="unavailable">External agy Red-Team Audit: not run</div>
+        <div id="redteamAuditStatus" data-evidence-state="unavailable">Automated Red-Team Boundary Audit: not run</div>
         <button id="btnStitchWindows" type="button">Stitch verified windows</button>
         <button id="btnPrivateIpGuard" type="button">Check private IP guard</button>
         <button id="btnRefreshDrift" type="button">Refresh drift and workbench</button>
@@ -1070,7 +1070,7 @@
           <div><b>App role:</b> <span class="entra-role-badge" id="entraAppRole">waiting</span></div>
           <div><b>X.509 mTLS:</b> <span id="entraMtlsStatus">waiting</span></div>
           <div><b>Tenant:</b> <code id="entraTenantId">waiting</code></div>
-          <div id="entraSubscriptionTier">Azure for Students · $60 Credit Active · Free Entra ID P1/OIDC</div>
+          <div id="entraSubscriptionTier">Microsoft Entra ID (OIDC + X.509 mTLS) · Zero-Trust Tier</div>
         </div>
         <h3>Active Operator Session</h3>
         <div class="active-session-card" id="activeSessionCard">
@@ -1081,9 +1081,9 @@
         </div>
         <label for="operatorRoleSelect" hidden>Operator</label>
         <select id="operatorRoleSelect" hidden>
-          <option value="lab_operator">Muhammad Bilal (21K-3551) · soc_approver</option>
-          <option value="tier1_analyst">Muhammad Suhaib (22K-4302) · tier1_triage</option>
-          <option value="compliance_auditor">Muhammad Hasnain (22K-4718) · auditor_readonly</option>
+          <option value="lab_operator">Tier-3 SOC Approver · soc_approver</option>
+          <option value="tier1_analyst">Tier-1 Triage Analyst · tier1_triage</option>
+          <option value="compliance_auditor">Compliance Auditor · auditor_readonly</option>
         </select>
         <button id="btnSwitchOperator" type="button">Switch Operator / Sign Out</button>
         <button id="btnEnrollWorkspaceOperator" type="button">Enroll X.509 certificate</button>
@@ -1167,17 +1167,17 @@
       <p class="zt-emblem-sub">Zero-Trust Identity &amp; Microsoft Entra ID (OIDC + X.509 mTLS) Gate</p>
       <p class="badge badge-neutral posture-pill" id="loginPosturePill" data-posture-pill data-posture="lab">POSTURE: LAB DEMO</p>
       <div id="demoQuickFill" class="demo-credential-box role-quick-grid" aria-label="Role quick-fill cards">
-        <button type="button" class="role-quick-card" data-demo-user="bilal.21k3551@nu.edu.pk" data-demo-code="TF-Bilal-3551!" data-demo-actor="lab_operator">
-          <span class="role-name">Muhammad Bilal (21K-3551)</span>
-          <span class="role-pill">Tier-3 SOC Approver</span>
+        <button type="button" class="role-quick-card" data-demo-user="approver@threatfusion.local" data-demo-code="TF-Lab-Approver-01!" data-demo-actor="lab_operator">
+          <span class="role-name">Tier-3 SOC Approver</span>
+          <span class="role-pill">soc_approver</span>
         </button>
-        <button type="button" class="role-quick-card" data-demo-user="suhaib.22k4302@nu.edu.pk" data-demo-code="TF-Suhaib-4302!" data-demo-actor="tier1_analyst">
-          <span class="role-name">Muhammad Suhaib (22K-4302)</span>
-          <span class="role-pill">Tier-1 Triage Analyst</span>
+        <button type="button" class="role-quick-card" data-demo-user="analyst@threatfusion.local" data-demo-code="TF-Lab-Analyst-02!" data-demo-actor="tier1_analyst">
+          <span class="role-name">Tier-1 Triage Analyst</span>
+          <span class="role-pill">tier1_triage</span>
         </button>
-        <button type="button" class="role-quick-card" data-demo-user="hasnain.22k4718@nu.edu.pk" data-demo-code="TF-Hasnain-4718!" data-demo-actor="compliance_auditor">
-          <span class="role-name">Muhammad Hasnain (22K-4718)</span>
-          <span class="role-pill">Compliance Auditor</span>
+        <button type="button" class="role-quick-card" data-demo-user="auditor@threatfusion.local" data-demo-code="TF-Lab-Auditor-03!" data-demo-actor="compliance_auditor">
+          <span class="role-name">Compliance Auditor</span>
+          <span class="role-pill">auditor_readonly</span>
         </button>
       </div>
       <label for="rbacUsername">Email</label>

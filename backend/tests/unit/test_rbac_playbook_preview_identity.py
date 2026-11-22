@@ -18,12 +18,10 @@ from threatfusion.api.live_soc_console import (
     rollback_range_source,
 )
 
-_BILAL = "Muhammad Bilal (21K-3551) · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)"
-_BILAL_SESSION = (
-    "Muhammad Bilal (21K-3551) · Tier-3 Approver | Session Auth (Tier-3 RBAC · Lab HTTP)"
-)
-_SUHAIB = "Muhammad Suhaib (22K-4302) · Tier-1 Triage | No SOAR Cert (Triage Only)"
-_HASNAIN = "Muhammad Hasnain (22K-4718) · Auditor | Read-Only Compliance Token"
+_APPROVER = "Tier-3 SOC Approver · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)"
+_APPROVER_SESSION = "Tier-3 SOC Approver · Tier-3 Approver | Session Auth (Tier-3 RBAC · Lab HTTP)"
+_ANALYST = "Tier-1 Triage Analyst · Tier-1 Triage | No SOAR Cert (Triage Only)"
+_AUDITOR = "Compliance Auditor · Auditor | Read-Only Compliance Token"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -93,40 +91,48 @@ def _identity(db_path: Path, flow_id: int) -> int:
 def test_seeded_logins_bind_the_header_to_the_signed_in_role(tmp_path: Path, monkeypatch) -> None:
     live = tmp_path / "live.sqlite3"
     monkeypatch.delenv("THREATFUSION_OPERATOR_POLICY_DIR", raising=False)
-    refused = rbac_login(live, username="bilal.21k3551@nu.edu.pk", access_code="wrong-code")
+    refused = rbac_login(live, username="approver@threatfusion.local", access_code="wrong-code")
     assert refused["http_status"] == 401
     assert refused["authenticated"] is False
-    bilal = rbac_login(live, username="bilal.21k3551@nu.edu.pk", access_code="TF-Bilal-3551!")
-    assert bilal["authenticated"] is True
-    assert bilal["actor_id"] == "lab_operator"
-    assert "/CN=lab_operator" not in bilal["header_identity"]
+    approver = rbac_login(
+        live, username="approver@threatfusion.local", access_code="TF-Lab-Approver-01!"
+    )
+    assert approver["authenticated"] is True
+    assert approver["actor_id"] == "lab_operator"
+    assert "/CN=lab_operator" not in approver["header_identity"]
     policy = tmp_path / "operator-policy"
     assert enroll_lab_operator(policy, "lab_operator")["identity_verified"] is True
     monkeypatch.setenv("THREATFUSION_OPERATOR_POLICY_DIR", str(policy))
-    enrolled = rbac_login(live, username="bilal.21k3551@nu.edu.pk", access_code="TF-Bilal-3551!")
-    assert enrolled["header_identity"] == _BILAL_SESSION
+    enrolled = rbac_login(
+        live, username="approver@threatfusion.local", access_code="TF-Lab-Approver-01!"
+    )
+    assert enrolled["header_identity"] == _APPROVER_SESSION
     assert "verified mTLS" not in enrolled["header_identity"]
     assert enrolled["identity_verified"] is False
     assert enrolled["evidence_state"] == "session_authenticated"
     assert enrolled["certificate_subject"] == ""
-    suhaib = rbac_login(live, username="suhaib.22k4302@nu.edu.pk", access_code="TF-Suhaib-4302!")
-    assert suhaib["header_identity"] == _SUHAIB
-    assert "/CN=lab_operator" not in suhaib["header_identity"]
-    assert suhaib["certificate_subject"] == ""
-    assert suhaib["identity_verified"] is False
-    hasnain = rbac_login(live, username="hasnain.22k4718@nu.edu.pk", access_code="TF-Hasnain-4718!")
-    assert hasnain["header_identity"] == _HASNAIN
-    assert "/CN=lab_operator" not in hasnain["header_identity"]
-    anonymous = rbac_logout(live, str(hasnain["session_token"]))
+    analyst = rbac_login(
+        live, username="analyst@threatfusion.local", access_code="TF-Lab-Analyst-02!"
+    )
+    assert analyst["header_identity"] == _ANALYST
+    assert "/CN=lab_operator" not in analyst["header_identity"]
+    assert analyst["certificate_subject"] == ""
+    assert analyst["identity_verified"] is False
+    auditor = rbac_login(
+        live, username="auditor@threatfusion.local", access_code="TF-Lab-Auditor-03!"
+    )
+    assert auditor["header_identity"] == _AUDITOR
+    assert "/CN=lab_operator" not in auditor["header_identity"]
+    anonymous = rbac_logout(live, str(auditor["session_token"]))
     assert anonymous["authenticated"] is False
-    assert rbac_session_status(live, str(hasnain["session_token"]))["authenticated"] is False
+    assert rbac_session_status(live, str(auditor["session_token"]))["authenticated"] is False
 
 
 def test_custom_account_does_not_receive_the_lab_certificate(tmp_path: Path) -> None:
     live = tmp_path / "live.sqlite3"
     created = rbac_register(
         live,
-        username="analyst.new@nu.edu.pk",
+        username="analyst.new@example.com",
         access_code="TF-Custom-9000!",
         display_name="New Analyst",
         role="tier1_triage",
@@ -137,7 +143,7 @@ def test_custom_account_does_not_receive_the_lab_certificate(tmp_path: Path) -> 
     assert "No SOAR Cert (Triage Only)" in created["header_identity"]
 
 
-def test_rollback_keeps_verified_identity_and_suhaib_has_no_lab_cert(
+def test_rollback_keeps_verified_identity_and_analyst_has_no_lab_cert(
     tmp_path: Path, monkeypatch
 ) -> None:
     live = tmp_path / "live.sqlite3"
@@ -153,29 +159,33 @@ def test_rollback_keeps_verified_identity_and_suhaib_has_no_lab_cert(
     policy = tmp_path / "operator-policy"
     assert enroll_lab_operator(policy, "lab_operator")["identity_verified"] is True
     monkeypatch.setenv("THREATFUSION_OPERATOR_POLICY_DIR", str(policy))
-    bilal = rbac_login(live, username="bilal.21k3551@nu.edu.pk", access_code="TF-Bilal-3551!")
+    approver = rbac_login(
+        live, username="approver@threatfusion.local", access_code="TF-Lab-Approver-01!"
+    )
     kept = rollback_range_source(
         live,
         soar,
         flow_id=flow_id,
         actor_id="lab_operator",
-        session_token=str(bilal["session_token"]),
+        session_token=str(approver["session_token"]),
     )
     assert _identity(live, flow_id) == 1
     assert kept["flow_identity_preserved"] is True
-    assert kept["header_identity"] == _BILAL_SESSION
+    assert kept["header_identity"] == _APPROVER_SESSION
     assert "verified mTLS" not in kept["header_identity"]
     assert kept["identity_verified"] is False
-    suhaib = rbac_login(live, username="suhaib.22k4302@nu.edu.pk", access_code="TF-Suhaib-4302!")
+    analyst = rbac_login(
+        live, username="analyst@threatfusion.local", access_code="TF-Lab-Analyst-02!"
+    )
     switched = rollback_range_source(
         live,
         soar,
         flow_id=flow_id,
         actor_id="tier1_analyst",
-        session_token=str(suhaib["session_token"]),
+        session_token=str(analyst["session_token"]),
     )
     assert _identity(live, flow_id) == 1
-    assert switched["header_identity"] == _SUHAIB
+    assert switched["header_identity"] == _ANALYST
     assert "/CN=lab_operator" not in json.dumps(switched["header_identity"])
     assert switched["certificate_subject"] == ""
     assert switched["identity_verified"] is False

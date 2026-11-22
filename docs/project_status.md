@@ -2,6 +2,24 @@
 
 ## Snapshot
 
+On 2026-11-22 (Wave A: `WP-P0-01`, `WP-P0-02`, `WP-P0-03`, and partial `WP-P0-10`),
+repository hygiene, commercial RBAC/UI de-branding, and CI portability landed on
+`gemini/product-20260924`: tracked `.cursor/rules/`, `docs/screenshots/`,
+`scripts/prepare_threatfusion_oss.sh`, and `scripts/run_adversarial_redteam_range_audit.py`
+were removed; `GEMINI.md`, `AGENTS.md`, and the four 122 MB `.npy` matrices were untracked
+while keeping the three preprocessing JSON sidecars and `NUSW-NB15_features.csv` tracked;
+`.gitignore` and `SECURITY.md` (GitHub Private Vulnerability Reporting + 90-day disclosure
+SLA) were hardened; runtime RBAC/Entra seeds, frontend headers/quick-fill, and tests were
+switched to commercial role personas (`approver@threatfusion.local`, `analyst@threatfusion.local`,
+`auditor@threatfusion.local`) with zero lab seeds and fail-closed `.edu`/lab-seed rejection
+when `THREATFUSION_ENV=production` plus dynamic `display_name` headers; the legacy red-team
+audit endpoint was renamed to `/api/v1/live/redteam-audit`; CI (`.github/workflows/backend-quality.yml`)
+dropped workstation bind-mounts, unmasked all Ruff/Black exclusions, and added
+`boundary_preflight.py` + `audit_repo_truth.py` steps with cross-OS `/dev/fd` and `/proc`
+test guards. All seven frozen model/preprocessor/fixture SHA-256 digests, Gate `G9`,
+`production_fusion_enabled = False`, and open gates `TF-008`, `TF-009`, `TF-010`, and
+`TF-011` remain unchanged.
+
 The following baseline snapshot is dated 2026-09-24 on `main`; later Gemini-branch milestones appear
 below. On 2026-11-14 the console gained a lab/production posture, login rate limiting,
 immutable auth audit events, isolation IP guards, a cold-boot data directory, and `GET /readyz`.

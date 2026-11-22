@@ -165,8 +165,8 @@ def run_probes(
         base,
         "/api/rbac/login",
         {
-            "username": "bilal.21k3551@nu.edu.pk",
-            "access_code": "TF-Bilal-3551!",
+            "username": "approver@threatfusion.local",
+            "access_code": "TF-Lab-Approver-01!",
         },
         headers=live_headers,
     )
@@ -242,9 +242,9 @@ def _write_audit(passed: int, audit_path: Path) -> None:
         "passed": passed,
         "total": 5,
         "label": (
-            "External agy Red-Team Audit: 5/5 Boundaries Held"
+            "Automated Red-Team Boundary Audit: 5/5 Boundaries Held"
             if passed == 5
-            else f"External agy Red-Team Audit: {passed}/5 Boundaries Held"
+            else f"Automated Red-Team Boundary Audit: {passed}/5 Boundaries Held"
         ),
     }
     audit_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -254,9 +254,9 @@ def _write_audit(passed: int, audit_path: Path) -> None:
 def run_isolated_audit(audit_path: Path | None = None) -> int:
     """Start a private console, run the five probes, and stop it."""
     destination = audit_path or (
-        Path(os.environ.get("TMPDIR", "/tmp")) / "threatfusion-agy-audit.json"
+        Path(os.environ.get("TMPDIR", "/tmp")) / "threatfusion-redteam-audit.json"
     )
-    with tempfile.TemporaryDirectory(prefix="threatfusion-agy-") as raw:
+    with tempfile.TemporaryDirectory(prefix="threatfusion-redteam-") as raw:
         work = Path(raw)
         port = _free_port()
         env = os.environ.copy()
@@ -309,7 +309,7 @@ def run_isolated_audit(audit_path: Path | None = None) -> int:
     print(
         _paint(
             passed == 5,
-            f"[AGY RED-TEAM AUDIT] {passed}/5 Adversarial Bypasses Defeated by ThreatFusion",
+            f"[RED-TEAM AUDIT] {passed}/5 Adversarial Bypasses Defeated by ThreatFusion",
         )
     )
     _write_audit(passed, destination)

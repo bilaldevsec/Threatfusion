@@ -99,12 +99,37 @@ logs/
 docker/range/eve/*
 !docker/range/eve/.gitkeep
 
-# Local agent notes. Product docs and AGENTS.md stay tracked.
-CLAUDE.md
-SKILL.md
-MIGRATE_TO_ANTIGRAVITY.md
-.agents/
-.cursor/autonomous_backlog.md
-.cursor/agents/
-.cursor/BUGBOT.md
-.cursor/config/
+# Secrets, keys & certificates
+.hmac_secret
+.ledger_hmac_key
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+*.jks
+id_rsa*
+id_ed25519*
+cert9.db
+key4.db
+operator-policy/
+
+# Databases & runtime state
+*.sqlite*
+*.db*
+docker/data/
+cloud_state.json
+*portal_state.json
+*.tfstate*
+.terraform/
+
+# Archives & binary matrices
+*.tar*
+*.npy
+
+# Local IDE / AI tooling
+.cursor/
+.gemini/
+.codex/
+.claude/

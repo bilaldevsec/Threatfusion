@@ -343,7 +343,7 @@ def test_c2_entra_forged_jwt_and_production_register_blocked(
         {
             "tid": "00000000-0000-0000-0000-000000000001",
             "oid": "8f3c1a20-6b4e-4d11-9c2a-71e0b5d4a101",
-            "upn": "muhammad.bilal@nu.edu.pk",
+            "upn": "approver@threatfusion.local",
             "roles": ["SOC.Commander.Approver"],
             "exp": int(time.time()) + 3600,
         }
@@ -358,7 +358,7 @@ def test_c2_entra_forged_jwt_and_production_register_blocked(
         {
             "tid": "00000000-0000-0000-0000-000000000001",
             "oid": "4c2e9b11-1a77-4e08-8d55-22b6c0e8f202",
-            "upn": "suhaib.shaikh@nu.edu.pk",
+            "upn": "analyst@threatfusion.local",
             "roles": ["SOC.Analyst.Tier1"],
             "exp": int(time.time()) - 10,
         }
@@ -381,6 +381,7 @@ def test_c2_entra_forged_jwt_and_production_register_blocked(
     # 4. Production mode refuses unsigned Entra parsing and unauthenticated registration
     monkeypatch.setenv("THREATFUSION_ENV", "production")
     monkeypatch.setenv("THREATFUSION_DATA_DIR", str(tmp_path / "prod"))
+    monkeypatch.setenv("TF_ADMIN_EMAIL", "admin@threatfusion.local")
     monkeypatch.setenv("TF_ADMIN_SECRET", "Prod-Admin-Secret-2026!")
     prod_entra = verify_entra_token(live_db, forged)
     assert prod_entra["http_status"] == 401
@@ -408,7 +409,7 @@ def test_c2_entra_forged_jwt_and_production_register_blocked(
     # 5. Authenticated production admin CAN register a new operator
     admin = rbac_login(
         live_db,
-        username="muhammad.bilal@nu.edu.pk",
+        username="admin@threatfusion.local",
         access_code="Prod-Admin-Secret-2026!",
     )
     assert admin["authenticated"] is True
@@ -436,7 +437,7 @@ def test_c2_entra_login_is_rate_limited(tmp_path: Path, monkeypatch: pytest.Monk
         {
             "tid": "00000000-0000-0000-0000-000000000001",
             "oid": "8f3c1a20-6b4e-4d11-9c2a-71e0b5d4a101",
-            "upn": "muhammad.bilal@nu.edu.pk",
+            "upn": "approver@threatfusion.local",
             "roles": ["SOC.Commander.Approver"],
         }
     )
@@ -839,12 +840,13 @@ def test_h6_production_lock_is_cached_across_connects(
 ) -> None:
     monkeypatch.setenv("THREATFUSION_ENV", "production")
     monkeypatch.setenv("THREATFUSION_DATA_DIR", str(tmp_path / "prod"))
+    monkeypatch.setenv("TF_ADMIN_EMAIL", "admin@threatfusion.local")
     monkeypatch.setenv("TF_ADMIN_SECRET", "Prod-Cache-Secret-2026!")
     live_db = tmp_path / "live.sqlite3"
     # First login initializes DB and caches hash + DB lock
     res = rbac_login(
         live_db,
-        username="muhammad.bilal@nu.edu.pk",
+        username="admin@threatfusion.local",
         access_code="Prod-Cache-Secret-2026!",
     )
     assert res["authenticated"] is True
@@ -997,8 +999,8 @@ def test_m1_to_m7_and_l2_polish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("THREATFUSION_ENV", "production")
     html_src = (REPO_ROOT / "frontend/index.html").read_text(encoding="utf-8")
     rendered = apply_posture_to_index(html_src)
-    assert "TF-Bilal-3551!" not in rendered
-    assert "TF-Suhaib-4302!" not in rendered
+    assert "TF-Lab-Approver-01!" not in rendered
+    assert "TF-Lab-Analyst-02!" not in rendered
 
     # M7: /0 CIDR refused; ICMP flow without ports accepted; NaN/negative clock skew rejected
     assert isolation_refusal_reason("0.0.0.0/0") == "protected_infrastructure_ip"

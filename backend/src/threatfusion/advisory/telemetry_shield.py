@@ -415,9 +415,7 @@ def verify_advisory_against_ledger(
     annotated = text
     for fake in ungrounded:
         pattern = re.compile(
-            r"(?<![0-9A-Za-z_:])(?<![0-9]\.)"
-            + re.escape(fake)
-            + r"(?![0-9A-Za-z_:])(?!\.[0-9])",
+            r"(?<![0-9A-Za-z_:])(?<![0-9]\.)" + re.escape(fake) + r"(?![0-9A-Za-z_:])(?!\.[0-9])",
             flags=re.IGNORECASE,
         )
 
@@ -469,14 +467,15 @@ def draft_detection_rule(
         .upper()
     )
     technique = (
-        raw_technique
-        if re.fullmatch(r"(?:T\d{4}(?:\.\d{3})?|INV-\d+)", raw_technique)
-        else "T1046"
+        raw_technique if re.fullmatch(r"(?:T\d{4}(?:\.\d{3})?|INV-\d+)", raw_technique) else "T1046"
     )
     technique_tag = technique.lower()
-    src_ip = _flatten_rule_text(
-        str(flow.get("src_ip") or flow.get("src_entity_id") or "any")
-    ).replace('"', "").replace(";", "") or "any"
+    src_ip = (
+        _flatten_rule_text(str(flow.get("src_ip") or flow.get("src_entity_id") or "any"))
+        .replace('"', "")
+        .replace(";", "")
+        or "any"
+    )
     vector = _flatten_rule_text(
         str(flow.get("vector") or flow.get("vector_id") or query or technique)
     )

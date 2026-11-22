@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import re
 import sqlite3
 import stat
 import subprocess
@@ -30,10 +33,27 @@ from threatfusion.models.multi_signal_risk import evaluate_multi_signal_risk
 
 ROOT = Path(__file__).resolve().parents[3]
 SRC = ROOT / "backend" / "src"
-_PERSONAL_CLOUD_IDS = (
-    "72f988bf" + "-86f1-41af-91ab-2d7cd011db47",
-    "7fb77266-5bb4-4d03-8a91-a744fd38db5c",
+_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
 )
+_PERSONAL_CLOUD_ID_SHA256S = frozenset(
+    {
+        "2ae8f8066baab9e36c122f5eb5425f33ab2f5ffbea767ea5a7d9f82de680faec",
+        "31e1bddf07588df826af3fd9c53dc67c0bf62fec4a4ab81bbf2a770c64df4161",
+    }
+)
+
+
+def _matching_personal_cloud_id_digests(text: str) -> list[str]:
+    matches: list[str] = []
+    for match in _UUID_RE.finditer(text):
+        digest = hashlib.sha256(match.group(0).lower().encode("utf-8")).hexdigest()
+        if digest in _PERSONAL_CLOUD_ID_SHA256S:
+            matches.append(digest)
+    return matches
+
+
 _FROZEN_DIGESTS = {
     "random_forest": "bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9",
     "logistic_regression": "2cf4de6686d937c485d4dbcbfa21d3e90f65bbb922087c8b31be4b012d7fb148",
@@ -200,9 +220,8 @@ def test_no_hardcoded_personal_cloud_ids() -> None:
                 text = path.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 continue
-            for needle in _PERSONAL_CLOUD_IDS:
-                if needle in text:
-                    offenders.append(f"{path}: {needle}")
+            for digest in _matching_personal_cloud_id_digests(text):
+                offenders.append(f"{path}: {digest}")
     assert offenders == []
     cloud = (ROOT / "scripts/deploy_cloud_range.sh").read_text(encoding="utf-8")
     azure = (ROOT / "scripts/deploy_azure_cyber_range.sh").read_text(encoding="utf-8")
@@ -243,7 +262,7 @@ def test_cloud_status_reads_operator_state(tmp_path: Path) -> None:
     assert status["account_id"] == "operator-account"
     assert status["victim_host"]["public_ip"] == "203.0.113.20"
     assert status["ssh_user"] == "ubuntu"
-    assert "72f988bf" not in str(status)
+    assert _matching_personal_cloud_id_digests(str(status)) == []
     azure = azure_portal_status(path)
     assert azure["terminal_snippet"] == "scripts/deploy_azure_cyber_range.sh --provision-live-azure"
     assert azure["connected"] is False
@@ -307,6 +326,7 @@ def test_production_mode_disables_demo_quickfill(
 ) -> None:
     monkeypatch.setenv("THREATFUSION_ENV", "production")
     monkeypatch.setenv("THREATFUSION_DATA_DIR", str(tmp_path / "prod-data"))
+    monkeypatch.delenv("TF_ADMIN_EMAIL", raising=False)
     from threatfusion.api.live_soc_console import rbac_login
     from threatfusion.operations.commercial_hardening import (
         apply_posture_to_index,
@@ -321,15 +341,19 @@ def test_production_mode_disables_demo_quickfill(
     page = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
     rendered = apply_posture_to_index(page)
     assert 'id="demoQuickFill" class="demo-credential-box role-quick-grid" hidden' in rendered
-    assert 'data-demo-code="TF-Bilal-3551!"' not in rendered
+    assert 'data-demo-code="TF-Lab-Approver-01!"' not in rendered
+    live_db = tmp_path / "live.sqlite3"
     refused = rbac_login(
-        tmp_path / "live.sqlite3",
-        username="bilal.21k3551@nu.edu.pk",
-        access_code="TF-Bilal-3551!",
+        live_db,
+        username="approver@threatfusion.local",
+        access_code="TF-Lab-Approver-01!",
     )
     assert refused["http_status"] == 401
     assert refused["message"] == "Invalid credentials"
     assert refused["authenticated"] is False
+    with sqlite3.connect(live_db) as conn:
+        account_count = conn.execute("SELECT COUNT(*) FROM rbac_accounts").fetchone()[0]
+    assert account_count == 0
 
 
 def test_login_rate_limiting_429(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -346,7 +370,7 @@ def test_login_rate_limiting_429(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
             last_status, last_headers, body = _http_json(
                 "POST",
                 url,
-                {"username": "bilal.21k3551@nu.edu.pk", "access_code": "wrong-code"},
+                {"username": "approver@threatfusion.local", "access_code": "wrong-code"},
             )
         assert last_status == 429
         assert body["message"] == "Too Many Requests"
@@ -375,7 +399,7 @@ def test_uniform_invalid_credentials_no_enumeration(
         wrong_status, _headers, wrong = _http_json(
             "POST",
             url,
-            {"username": "bilal.21k3551@nu.edu.pk", "access_code": "wrong-code"},
+            {"username": "approver@threatfusion.local", "access_code": "wrong-code"},
         )
     finally:
         server.shutdown()
@@ -397,15 +421,15 @@ def test_auth_events_audited(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("THREATFUSION_DATA_DIR", str(tmp_path))
     refused = rbac_login(
         database,
-        username="bilal.21k3551@nu.edu.pk",
+        username="approver@threatfusion.local",
         access_code="wrong-code",
         client_ip="203.0.113.8",
     )
     assert refused["http_status"] == 401
     signed_in = rbac_login(
         database,
-        username="bilal.21k3551@nu.edu.pk",
-        access_code="TF-Bilal-3551!",
+        username="approver@threatfusion.local",
+        access_code="TF-Lab-Approver-01!",
         client_ip="203.0.113.8",
     )
     assert signed_in["authenticated"] is True
@@ -466,8 +490,8 @@ def test_protected_allowlist_blocks_self_isolation(
 
     session = rbac_login(
         live_db,
-        username="bilal.21k3551@nu.edu.pk",
-        access_code="TF-Bilal-3551!",
+        username="approver@threatfusion.local",
+        access_code="TF-Lab-Approver-01!",
     )
     assert session["authenticated"] is True
     try:
@@ -576,7 +600,13 @@ def test_no_hardcoded_personal_paths_or_cloud_ids() -> None:
     personal = "/home/" + "muhammad-bilal"
     offenders: list[str] = []
     suffixes = {".py", ".sh", ".js", ".html", ".css", ".yml", ".yaml"}
-    for base in (ROOT / "backend" / "src", ROOT / "frontend", ROOT / "scripts"):
+    for base in (
+        ROOT / "backend" / "src",
+        ROOT / "frontend",
+        ROOT / "scripts",
+        ROOT / ".github",
+        ROOT / "docker",
+    ):
         for path in base.rglob("*"):
             if not path.is_file() or path.suffix not in suffixes:
                 continue
@@ -586,9 +616,8 @@ def test_no_hardcoded_personal_paths_or_cloud_ids() -> None:
                 continue
             if personal in text:
                 offenders.append(f"{path}: personal path")
-            for needle in _PERSONAL_CLOUD_IDS:
-                if needle in text:
-                    offenders.append(f"{path}: {needle}")
+            for digest in _matching_personal_cloud_id_digests(text):
+                offenders.append(f"{path}: {digest}")
     assert offenders == []
     index = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
     assert "http://" not in index
@@ -631,16 +660,25 @@ def test_frontend_favicon_data_uri() -> None:
 
 
 def test_personal_tenant_uuid_absent_from_repo() -> None:
-    needle = "72f988bf" + "-86f1-41af-91ab-2d7cd011db47"
-    skip = {".git", "threatfusion-venv", ".venv", "venv", "__pycache__", "node_modules"}
+    skip = {
+        ".git",
+        "threatfusion-venv",
+        ".venv",
+        "venv",
+        "__pycache__",
+        "node_modules",
+        "data",
+        "artifacts",
+    }
     offenders: list[str] = []
-    for path in ROOT.rglob("*"):
-        if not path.is_file() or any(part in skip for part in path.parts):
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue
-        if needle in text:
-            offenders.append(str(path.relative_to(ROOT)))
+    for dirpath, dirs, filenames in os.walk(ROOT):
+        dirs[:] = [name for name in dirs if name not in skip]
+        for filename in filenames:
+            path = Path(dirpath) / filename
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            if _matching_personal_cloud_id_digests(text):
+                offenders.append(str(path.relative_to(ROOT)))
     assert offenders == []

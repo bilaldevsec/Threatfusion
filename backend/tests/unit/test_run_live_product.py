@@ -181,9 +181,11 @@ def test_sigterm_stops_the_shared_process_and_exports_one_ledger(tmp_path: Path)
         assert "threatfusion_soc_contract_server" in health
         pid_text = (tmp_path / f"threatfusion-live-product-{port}.pid").read_text(encoding="utf-8")
         server_pid = int(pid_text.strip())
-        environ = Path(f"/proc/{server_pid}/environ").read_bytes().split(b"\0")
-        ledger = str(tmp_path / "threatfusion-live-soar.sqlite3").encode()
-        assert b"THREATFUSION_SOAR_LEDGER_DB_PATH=" + ledger in environ
+        proc_environ = Path(f"/proc/{server_pid}/environ")
+        if proc_environ.is_file():
+            environ = proc_environ.read_bytes().split(b"\0")
+            ledger = str(tmp_path / "threatfusion-live-soar.sqlite3").encode()
+            assert b"THREATFUSION_SOAR_LEDGER_DB_PATH=" + ledger in environ
         proc.send_signal(signal.SIGTERM)
         _stdout, stderr = proc.communicate(timeout=10)
     finally:

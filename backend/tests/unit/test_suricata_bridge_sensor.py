@@ -515,8 +515,8 @@ def test_range_scan_http_returns_503_json_when_sqlite_fails(
     monkeypatch.setenv("THREATFUSION_ENV", "lab")
     session = rbac_login(
         Path(os.environ["THREATFUSION_LIVE_CONSOLE_DB"]),
-        username="bilal.21k3551@nu.edu.pk",
-        access_code="TF-Bilal-3551!",
+        username="approver@threatfusion.local",
+        access_code="TF-Lab-Approver-01!",
     )
     token = str(session["session_token"])
 
@@ -545,6 +545,7 @@ def test_range_scan_http_returns_503_json_when_sqlite_fails(
     assert body["ingested"] is False
     assert body["evidence_state"] == "unavailable"
 
+
 def test_follower_post_sensor_sends_bearer_ingest_token(monkeypatch: pytest.MonkeyPatch) -> None:
     from scripts.follow_suricata_eve import post_sensor
 
@@ -567,7 +568,9 @@ def test_follower_post_sensor_sends_bearer_ingest_token(monkeypatch: pytest.Monk
         captured["headers"] = dict(request.headers)
         return _Response()
 
-    monkeypatch.setattr("scripts.follow_suricata_eve._console_csrf", lambda url, timeout: "csrf-token")
+    monkeypatch.setattr(
+        "scripts.follow_suricata_eve._console_csrf", lambda url, timeout: "csrf-token"
+    )
     monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
     status, body = post_sensor("http://127.0.0.1:8766/api/v1/live/sensor", {"features": {}}, 1.0)
     assert status == 200

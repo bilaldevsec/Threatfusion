@@ -37,7 +37,6 @@ from http.server import ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
-import re
 import sqlite3
 import subprocess
 import sys
@@ -139,7 +138,9 @@ def _sanitize_data(data: Any) -> Any:
         return [_sanitize_data(x) for x in data]
     elif isinstance(data, dict):
         return {
-            (k.replace(protected_str, "[PROTECTED_WORKSPACE]") if isinstance(k, str) else k): _sanitize_data(v)
+            (
+                k.replace(protected_str, "[PROTECTED_WORKSPACE]") if isinstance(k, str) else k
+            ): _sanitize_data(v)
             for k, v in data.items()
         }
     return data
@@ -148,6 +149,7 @@ def _sanitize_data(data: Any) -> Any:
 # ===========================================================================
 # 1. Red Team Adversarial Suite
 # ===========================================================================
+
 
 def run_red_team_suite() -> dict[str, Any]:
     """Execute Probes 1 through 8 in adversarial red-team testing."""
@@ -174,21 +176,29 @@ def run_red_team_suite() -> dict[str, Any]:
         ("Probe 1", "Unapproved SOAR Playbook Dispatch Guard", "unapproved dispatch", 403),
         ("Probe 2", "Forged HMAC Signature Callback Guard", "forged HMAC", 403),
         ("Probe 3", "RFC1918 Private IP Intelligence Lookup Guard", "private IP", 422),
-        ("Probe 4", "Hallucinated Explanation Handoff Grounding Guard", "hallucinated handoff", 400),
+        (
+            "Probe 4",
+            "Hallucinated Explanation Handoff Grounding Guard",
+            "hallucinated handoff",
+            400,
+        ),
         ("Probe 5", "Unenrolled Identity Local Triage Guard", "unenrolled identity", 200),
     ]
 
     for probe_id, title, key, code in probe_names:
-        matched_line = next((l for l in probe_lines if key in l), "")
+        matched_line = next((line for line in probe_lines if key in line), "")
         is_pass = "[PASS]" in matched_line if matched_line else p1_5_passed
-        probes_results.append({
-            "probe_id": probe_id,
-            "name": title,
-            "passed": is_pass,
-            "expected_http_status": code,
-            "detail": matched_line or ("PASS" if is_pass else "FAIL: Probe did not report pass"),
-            "evidence_state": "verified" if is_pass else "unavailable",
-        })
+        probes_results.append(
+            {
+                "probe_id": probe_id,
+                "name": title,
+                "passed": is_pass,
+                "expected_http_status": code,
+                "detail": matched_line
+                or ("PASS" if is_pass else "FAIL: Probe did not report pass"),
+                "evidence_state": "verified" if is_pass else "unavailable",
+            }
+        )
 
     # --- Probes 6, 7, and 8 via ephemeral server and policy guards ---
     print("\n[*] Starting ephemeral server for Probes 6, 7, and 8...")
@@ -265,19 +275,28 @@ def run_red_team_suite() -> dict[str, Any]:
             with sqlite3.connect(live_db) as conn:
                 p6_rows = conn.execute("SELECT COUNT(*) FROM live_flows").fetchone()[0]
 
-            p6_passed = p6_status == 401 and p6_error == "sensor_ingest_unauthorized" and p6_rows == 0
+            p6_passed = (
+                p6_status == 401 and p6_error == "sensor_ingest_unauthorized" and p6_rows == 0
+            )
             mark_p6 = "PASS" if p6_passed else "FAIL"
             color_p6 = "green" if p6_passed else "red"
-            print(_paint(color_p6, f"    [{mark_p6}] Probe 6: HTTP {p6_status} {p6_error} (live_flows rows: {p6_rows})"))
-            probes_results.append({
-                "probe_id": "Probe 6",
-                "name": "Remote Sensor Bearer Token Auth Guard",
-                "passed": p6_passed,
-                "expected_http_status": 401,
-                "actual_http_status": p6_status,
-                "detail": f"HTTP {p6_status} {p6_error}; live_flows count={p6_rows}",
-                "evidence_state": "verified" if p6_passed else "unavailable",
-            })
+            print(
+                _paint(
+                    color_p6,
+                    f"    [{mark_p6}] Probe 6: HTTP {p6_status} {p6_error} (live_flows rows: {p6_rows})",
+                )
+            )
+            probes_results.append(
+                {
+                    "probe_id": "Probe 6",
+                    "name": "Remote Sensor Bearer Token Auth Guard",
+                    "passed": p6_passed,
+                    "expected_http_status": 401,
+                    "actual_http_status": p6_status,
+                    "detail": f"HTTP {p6_status} {p6_error}; live_flows count={p6_rows}",
+                    "evidence_state": "verified" if p6_passed else "unavailable",
+                }
+            )
 
             # Probe 7: POST /api/v1/live/context-memory with unstored entity -> 422 & 0 rows
             print("[*] Running Probe 7: Context memory ungrounded entity guard...")
@@ -303,8 +322,8 @@ def run_red_team_suite() -> dict[str, Any]:
             p7_payload = {
                 "flow_id": flow_id,
                 "operator_id": "lab_operator",
-                "entity_ip_or_subnet": "99.88.77.66",
-                "expected_behavior_rule": "Host 99.88.77.66 is authorized external partner traffic",
+                "entity_ip_or_subnet": "198.51.100.66",
+                "expected_behavior_rule": "Host 198.51.100.66 is authorized external partner traffic",
                 "service_or_port": "80",
             }
             req_p7 = urllib.request.Request(
@@ -325,19 +344,30 @@ def run_red_team_suite() -> dict[str, Any]:
             with sqlite3.connect(live_db) as conn:
                 p7_rows = conn.execute("SELECT COUNT(*) FROM context_memory").fetchone()[0]
 
-            p7_passed = p7_status == 422 and p7_reason in ("entity_not_on_flow", "explanation_not_grounded") and p7_rows == 0
+            p7_passed = (
+                p7_status == 422
+                and p7_reason in ("entity_not_on_flow", "explanation_not_grounded")
+                and p7_rows == 0
+            )
             mark_p7 = "PASS" if p7_passed else "FAIL"
             color_p7 = "green" if p7_passed else "red"
-            print(_paint(color_p7, f"    [{mark_p7}] Probe 7: HTTP {p7_status} {p7_reason} (context_memory rows: {p7_rows})"))
-            probes_results.append({
-                "probe_id": "Probe 7",
-                "name": "Context Memory Ungrounded Entity Guard",
-                "passed": p7_passed,
-                "expected_http_status": 422,
-                "actual_http_status": p7_status,
-                "detail": f"HTTP {p7_status} {p7_reason}; context_memory count={p7_rows}",
-                "evidence_state": "verified" if p7_passed else "unavailable",
-            })
+            print(
+                _paint(
+                    color_p7,
+                    f"    [{mark_p7}] Probe 7: HTTP {p7_status} {p7_reason} (context_memory rows: {p7_rows})",
+                )
+            )
+            probes_results.append(
+                {
+                    "probe_id": "Probe 7",
+                    "name": "Context Memory Ungrounded Entity Guard",
+                    "passed": p7_passed,
+                    "expected_http_status": 422,
+                    "actual_http_status": p7_status,
+                    "detail": f"HTTP {p7_status} {p7_reason}; context_memory count={p7_rows}",
+                    "evidence_state": "verified" if p7_passed else "unavailable",
+                }
+            )
 
             # Probe 8: Operator identity check: analyst_a is unverified, lab_operator verified after enrollment
             print("[*] Running Probe 8: Operator identity verification guard...")
@@ -365,18 +395,25 @@ def run_red_team_suite() -> dict[str, Any]:
             )
             mark_p8 = "PASS" if p8_passed else "FAIL"
             color_p8 = "green" if p8_passed else "red"
-            print(_paint(color_p8, f"    [{mark_p8}] Probe 8: analyst_a unverified (verified={post_analyst['identity_verified']}), lab_operator verified={post_lab['identity_verified']}"))
-            probes_results.append({
-                "probe_id": "Probe 8",
-                "name": "Operator Identity Verification Guard",
-                "passed": p8_passed,
-                "expected_http_status": "X.509/mTLS",
-                "detail": (
-                    f"analyst_a identity_verified={post_analyst['identity_verified']} ({post_analyst['identity_label']}); "
-                    f"lab_operator identity_verified={post_lab['identity_verified']} ({post_lab['identity_label']}, cert_prefix={post_lab.get('cert_sha256_prefix')})"
-                ),
-                "evidence_state": "verified" if p8_passed else "unavailable",
-            })
+            print(
+                _paint(
+                    color_p8,
+                    f"    [{mark_p8}] Probe 8: analyst_a unverified (verified={post_analyst['identity_verified']}), lab_operator verified={post_lab['identity_verified']}",
+                )
+            )
+            probes_results.append(
+                {
+                    "probe_id": "Probe 8",
+                    "name": "Operator Identity Verification Guard",
+                    "passed": p8_passed,
+                    "expected_http_status": "X.509/mTLS",
+                    "detail": (
+                        f"analyst_a identity_verified={post_analyst['identity_verified']} ({post_analyst['identity_label']}); "
+                        f"lab_operator identity_verified={post_lab['identity_verified']} ({post_lab['identity_label']}, cert_prefix={post_lab.get('cert_sha256_prefix')})"
+                    ),
+                    "evidence_state": "verified" if p8_passed else "unavailable",
+                }
+            )
 
         finally:
             server.shutdown()
@@ -407,6 +444,7 @@ def run_red_team_suite() -> dict[str, Any]:
 # 2. Jury Governance Suite
 # ===========================================================================
 
+
 def run_jury_governance_suite() -> dict[str, Any]:
     """Execute all governance, boundary, model SHA, AST, and policy truth checks."""
     print(_paint("bold", "\n========================================================"))
@@ -419,7 +457,13 @@ def run_jury_governance_suite() -> dict[str, Any]:
 
     # 1. Boundary Preflight B0-B6
     print("[*] Running Boundary Preflight (B0-B6)...")
-    cmd_bp = [str(python_bin), str(ROOT / "scripts" / "boundary_preflight.py"), "--venv", "threatfusion-venv", "--json"]
+    cmd_bp = [
+        str(python_bin),
+        str(ROOT / "scripts" / "boundary_preflight.py"),
+        "--venv",
+        "threatfusion-venv",
+        "--json",
+    ]
     res_bp = subprocess.run(cmd_bp, cwd=str(ROOT), capture_output=True, text=True)
     bp_data = {}
     try:
@@ -434,7 +478,12 @@ def run_jury_governance_suite() -> dict[str, Any]:
     )
     if not bp_passed:
         suite_passed = False
-    print(_paint("green" if bp_passed else "red", f"    [{'PASS' if bp_passed else 'FAIL'}] Boundary Preflight B0-B6: verdict={bp_data.get('decision_verdict', 'UNKNOWN')}"))
+    print(
+        _paint(
+            "green" if bp_passed else "red",
+            f"    [{'PASS' if bp_passed else 'FAIL'}] Boundary Preflight B0-B6: verdict={bp_data.get('decision_verdict', 'UNKNOWN')}",
+        )
+    )
     checks_results["boundary_preflight"] = {
         "passed": bp_passed,
         "decision_verdict": bp_data.get("decision_verdict"),
@@ -459,7 +508,12 @@ def run_jury_governance_suite() -> dict[str, Any]:
     )
     if not truth_passed:
         suite_passed = False
-    print(_paint("green" if truth_passed else "red", f"    [{'PASS' if truth_passed else 'FAIL'}] Repo Truth Audit: decision={truth_data.get('repository_integrity_decision', 'UNKNOWN')}, receipt={str(truth_data.get('receipt_digest'))[:16]}..."))
+    print(
+        _paint(
+            "green" if truth_passed else "red",
+            f"    [{'PASS' if truth_passed else 'FAIL'}] Repo Truth Audit: decision={truth_data.get('repository_integrity_decision', 'UNKNOWN')}, receipt={str(truth_data.get('receipt_digest'))[:16]}...",
+        )
+    )
     checks_results["repo_truth_audit"] = {
         "passed": truth_passed,
         "repository_integrity_decision": truth_data.get("repository_integrity_decision"),
@@ -475,7 +529,12 @@ def run_jury_governance_suite() -> dict[str, Any]:
     g9_ok, g9_violations = verify_gate_g9_ast_import_graph(BACKEND_SRC)
     if not g9_ok:
         suite_passed = False
-    print(_paint("green" if g9_ok else "red", f"    [{'PASS' if g9_ok else 'FAIL'}] Gate G9 AST Isolation: zero advisory imports in detection pipeline (violations: {len(g9_violations)})"))
+    print(
+        _paint(
+            "green" if g9_ok else "red",
+            f"    [{'PASS' if g9_ok else 'FAIL'}] Gate G9 AST Isolation: zero advisory imports in detection pipeline (violations: {len(g9_violations)})",
+        )
+    )
     checks_results["gate_g9_ast_isolation"] = {
         "passed": g9_ok,
         "violations": g9_violations,
@@ -501,7 +560,9 @@ def run_jury_governance_suite() -> dict[str, Any]:
         matched = actual_sha == expected_sha
         if not matched:
             models_ok = False
-        print(f"    - {meta['label']}: expected {expected_sha[:16]}... actual {actual_sha[:16]}... ({'MATCH' if matched else 'MISMATCH'})")
+        print(
+            f"    - {meta['label']}: expected {expected_sha[:16]}... actual {actual_sha[:16]}... ({'MATCH' if matched else 'MISMATCH'})"
+        )
         model_results[model_key] = {
             "label": meta["label"],
             "path": meta["rel_path"],
@@ -511,7 +572,12 @@ def run_jury_governance_suite() -> dict[str, Any]:
         }
     if not models_ok:
         suite_passed = False
-    print(_paint("green" if models_ok else "red", f"    [{'PASS' if models_ok else 'FAIL'}] Frozen Model Artifacts: 4/4 hashes verified byte-identical"))
+    print(
+        _paint(
+            "green" if models_ok else "red",
+            f"    [{'PASS' if models_ok else 'FAIL'}] Frozen Model Artifacts: 4/4 hashes verified byte-identical",
+        )
+    )
     checks_results["frozen_model_sha256"] = {
         "passed": models_ok,
         "models": model_results,
@@ -540,14 +606,18 @@ def run_jury_governance_suite() -> dict[str, Any]:
     try:
         evaluate_multi_signal_risk(production_fusion_enabled=True)
         fusion_guard_passed = False
-        fusion_errors.append("evaluate_multi_signal_risk(production_fusion_enabled=True) did not raise ValueError")
+        fusion_errors.append(
+            "evaluate_multi_signal_risk(production_fusion_enabled=True) did not raise ValueError"
+        )
     except ValueError:
         pass
 
     try:
         rank_rf_alerts_for_triage_queue([], production_fusion_enabled=True)
         fusion_guard_passed = False
-        fusion_errors.append("rank_rf_alerts_for_triage_queue(production_fusion_enabled=True) did not raise ValueError")
+        fusion_errors.append(
+            "rank_rf_alerts_for_triage_queue(production_fusion_enabled=True) did not raise ValueError"
+        )
     except ValueError:
         pass
 
@@ -561,13 +631,23 @@ def run_jury_governance_suite() -> dict[str, Any]:
         fusion_guard_passed = False
         fusion_errors.append(f"assert_fusion_disabled_invariant() raised exception: {e}")
 
-    if CANONICAL_EVALUATION_PACK_REV2.section_8_complementarity.production_fusion_enabled is not False:
+    if (
+        CANONICAL_EVALUATION_PACK_REV2.section_8_complementarity.production_fusion_enabled
+        is not False
+    ):
         fusion_guard_passed = False
-        fusion_errors.append("CANONICAL_EVALUATION_PACK_REV2.section_8_complementarity.production_fusion_enabled is not False")
+        fusion_errors.append(
+            "CANONICAL_EVALUATION_PACK_REV2.section_8_complementarity.production_fusion_enabled is not False"
+        )
 
     if not fusion_guard_passed:
         suite_passed = False
-    print(_paint("green" if fusion_guard_passed else "red", f"    [{'PASS' if fusion_guard_passed else 'FAIL'}] Section 8 Invariant: production_fusion_enabled = False strictly locked"))
+    print(
+        _paint(
+            "green" if fusion_guard_passed else "red",
+            f"    [{'PASS' if fusion_guard_passed else 'FAIL'}] Section 8 Invariant: production_fusion_enabled = False strictly locked",
+        )
+    )
     checks_results["section_8_fusion_disabled"] = {
         "passed": fusion_guard_passed,
         "production_fusion_enabled": False,
@@ -583,7 +663,9 @@ def run_jury_governance_suite() -> dict[str, Any]:
 
     if RECALL_GAIN_BADGE != CANONICAL_RECALL_GAIN_STRING:
         recall_passed = False
-        recall_errors.append(f"RECALL_GAIN_BADGE mismatch: '{RECALL_GAIN_BADGE}' != '{CANONICAL_RECALL_GAIN_STRING}'")
+        recall_errors.append(
+            f"RECALL_GAIN_BADGE mismatch: '{RECALL_GAIN_BADGE}' != '{CANONICAL_RECALL_GAIN_STRING}'"
+        )
 
     frontend_index = ROOT / "frontend" / "index.html"
     if frontend_index.is_file():
@@ -597,7 +679,12 @@ def run_jury_governance_suite() -> dict[str, Any]:
 
     if not recall_passed:
         suite_passed = False
-    print(_paint("green" if recall_passed else "red", f"    [{'PASS' if recall_passed else 'FAIL'}] Canonical Recall String: \"{CANONICAL_RECALL_GAIN_STRING}\""))
+    print(
+        _paint(
+            "green" if recall_passed else "red",
+            f"    [{'PASS' if recall_passed else 'FAIL'}] Canonical Recall String: \"{CANONICAL_RECALL_GAIN_STRING}\"",
+        )
+    )
     checks_results["canonical_recall_gain_string"] = {
         "passed": recall_passed,
         "expected_string": CANONICAL_RECALL_GAIN_STRING,
@@ -634,13 +721,23 @@ def run_jury_governance_suite() -> dict[str, Any]:
 
     if not issues_ok:
         suite_passed = False
-    print(_paint("green" if issues_ok else "red", f"    [{'PASS' if issues_ok else 'FAIL'}] Issue Register Honesty: TF-008..TF-011 strictly verified OPEN"))
+    print(
+        _paint(
+            "green" if issues_ok else "red",
+            f"    [{'PASS' if issues_ok else 'FAIL'}] Issue Register Honesty: TF-008..TF-011 strictly verified OPEN",
+        )
+    )
     checks_results["issue_register_open_status"] = {
         "passed": issues_ok,
         "verified_issues": {k: issue_statuses.get(k) for k in REQUIRED_OPEN_ISSUES},
     }
 
-    print(_paint("green" if suite_passed else "red", f"\n[JURY GOVERNANCE AUDIT VERDICT] {'GO (All 7 Governance Checks Passed)' if suite_passed else 'NO-GO (Governance Check Failed)'}"))
+    print(
+        _paint(
+            "green" if suite_passed else "red",
+            f"\n[JURY GOVERNANCE AUDIT VERDICT] {'GO (All 7 Governance Checks Passed)' if suite_passed else 'NO-GO (Governance Check Failed)'}",
+        )
+    )
 
     return {
         "suite_name": "jury_governance_suite",
@@ -652,6 +749,7 @@ def run_jury_governance_suite() -> dict[str, Any]:
 # ===========================================================================
 # 3. Investor E2E Suite
 # ===========================================================================
+
 
 def _is_range_console_ready(port: int = 8766) -> bool:
     try:
@@ -670,7 +768,12 @@ def run_investor_e2e_suite(full_e2e: bool) -> dict[str, Any]:
     print(_paint("bold", "========================================================"))
 
     if not full_e2e:
-        print(_paint("yellow", "[-] Investor E2E Suite SKIPPED (quick / default mode). Use --full-e2e to execute."))
+        print(
+            _paint(
+                "yellow",
+                "[-] Investor E2E Suite SKIPPED (quick / default mode). Use --full-e2e to execute.",
+            )
+        )
         return {
             "suite_name": "investor_e2e_suite",
             "status": "SKIPPED",
@@ -690,16 +793,22 @@ def run_investor_e2e_suite(full_e2e: bool) -> dict[str, Any]:
         # Step 1: Start range demo if not running
         print("[*] Step 1: Checking range demo status...")
         if not _is_range_console_ready():
-            print("[*] Range demo not running. Starting with ./scripts/run_full_range_demo.sh --up...")
-            res_up = subprocess.run(["bash", str(range_script), "--up"], cwd=str(ROOT), capture_output=True, text=True)
+            print(
+                "[*] Range demo not running. Starting with ./scripts/run_full_range_demo.sh --up..."
+            )
+            res_up = subprocess.run(
+                ["bash", str(range_script), "--up"], cwd=str(ROOT), capture_output=True, text=True
+            )
             up_ok = res_up.returncode == 0 and _is_range_console_ready()
             started_by_us = True
-            steps.append({
-                "step": "run_full_range_demo_up",
-                "passed": up_ok,
-                "stdout": res_up.stdout[-300:] if res_up.stdout else "",
-                "stderr": res_up.stderr[-300:] if res_up.stderr else "",
-            })
+            steps.append(
+                {
+                    "step": "run_full_range_demo_up",
+                    "passed": up_ok,
+                    "stdout": res_up.stdout[-300:] if res_up.stdout else "",
+                    "stderr": res_up.stderr[-300:] if res_up.stderr else "",
+                }
+            )
             if not up_ok:
                 e2e_passed = False
                 print(_paint("red", "    [FAIL] Failed to start range demo"))
@@ -712,18 +821,24 @@ def run_investor_e2e_suite(full_e2e: bool) -> dict[str, Any]:
             print(_paint("green", "    [PASS] Range demo started successfully"))
         else:
             print(_paint("green", "    [PASS] Range demo already running on 127.0.0.1:8766"))
-            steps.append({"step": "range_demo_precheck", "passed": True, "detail": "Already running"})
+            steps.append(
+                {"step": "range_demo_precheck", "passed": True, "detail": "Already running"}
+            )
 
         # Step 2: Trigger range scan
         print("[*] Step 2: Triggering range scan with ./scripts/run_full_range_demo.sh --scan...")
-        res_scan = subprocess.run(["bash", str(range_script), "--scan"], cwd=str(ROOT), capture_output=True, text=True)
+        res_scan = subprocess.run(
+            ["bash", str(range_script), "--scan"], cwd=str(ROOT), capture_output=True, text=True
+        )
         scan_ok = res_scan.returncode == 0
-        steps.append({
-            "step": "run_full_range_demo_scan",
-            "passed": scan_ok,
-            "stdout": res_scan.stdout[-300:] if res_scan.stdout else "",
-            "stderr": res_scan.stderr[-300:] if res_scan.stderr else "",
-        })
+        steps.append(
+            {
+                "step": "run_full_range_demo_scan",
+                "passed": scan_ok,
+                "stdout": res_scan.stdout[-300:] if res_scan.stdout else "",
+                "stderr": res_scan.stderr[-300:] if res_scan.stderr else "",
+            }
+        )
         if not scan_ok:
             e2e_passed = False
             print(_paint("red", "    [FAIL] Range scan failed"))
@@ -734,7 +849,9 @@ def run_investor_e2e_suite(full_e2e: bool) -> dict[str, Any]:
         print("[*] Step 3: Verifying flow ingestion into live console...")
         ingest_ok = False
         try:
-            req_camp = urllib.request.Request("http://127.0.0.1:8766/api/v1/live/campaigns", method="GET")
+            req_camp = urllib.request.Request(
+                "http://127.0.0.1:8766/api/v1/live/campaigns", method="GET"
+            )
             with urllib.request.urlopen(req_camp, timeout=10) as resp:
                 camp_data = json.loads(resp.read().decode("utf-8"))
                 campaigns = camp_data.get("campaigns", [])
@@ -744,7 +861,9 @@ def run_investor_e2e_suite(full_e2e: bool) -> dict[str, Any]:
         except Exception as exc:
             detail_ingest = f"Query error: {exc}"
 
-        steps.append({"step": "verify_flow_ingestion", "passed": ingest_ok, "detail": detail_ingest})
+        steps.append(
+            {"step": "verify_flow_ingestion", "passed": ingest_ok, "detail": detail_ingest}
+        )
         if not ingest_ok:
             e2e_passed = False
             print(_paint("red", f"    [FAIL] Flow ingestion check failed: {detail_ingest}"))
@@ -752,26 +871,44 @@ def run_investor_e2e_suite(full_e2e: bool) -> dict[str, Any]:
             print(_paint("green", f"    [PASS] {detail_ingest}"))
 
         # Step 4: Capture demo screenshots
-        print("[*] Step 4: Capturing 6 full-resolution screenshots with capture_demo_screenshots.py...")
-        res_shots = subprocess.run([str(python_bin), str(screenshots_script)], cwd=str(ROOT), capture_output=True, text=True)
+        print(
+            "[*] Step 4: Capturing 6 full-resolution screenshots with capture_demo_screenshots.py..."
+        )
+        res_shots = subprocess.run(
+            [str(python_bin), str(screenshots_script)],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+        )
         shots_ok = res_shots.returncode == 0
-        steps.append({
-            "step": "capture_demo_screenshots",
-            "passed": shots_ok,
-            "stdout": res_shots.stdout[-300:] if res_shots.stdout else "",
-            "stderr": res_shots.stderr[-300:] if res_shots.stderr else "",
-        })
+        steps.append(
+            {
+                "step": "capture_demo_screenshots",
+                "passed": shots_ok,
+                "stdout": res_shots.stdout[-300:] if res_shots.stdout else "",
+                "stderr": res_shots.stderr[-300:] if res_shots.stderr else "",
+            }
+        )
         if not shots_ok:
             e2e_passed = False
             print(_paint("red", "    [FAIL] Screenshot capture failed"))
         else:
-            print(_paint("green", "    [PASS] 6 full-resolution screenshots captured in docs/screenshots/"))
+            print(
+                _paint(
+                    "green",
+                    "    [PASS] 6 full-resolution screenshots captured in docs/assets/screenshots/",
+                )
+            )
 
     finally:
         # Step 5: Teardown range demo if we started it
         if started_by_us:
-            print("[*] Step 5: Bringing down range demo with ./scripts/run_full_range_demo.sh --down...")
-            res_down = subprocess.run(["bash", str(range_script), "--down"], cwd=str(ROOT), capture_output=True, text=True)
+            print(
+                "[*] Step 5: Bringing down range demo with ./scripts/run_full_range_demo.sh --down..."
+            )
+            res_down = subprocess.run(
+                ["bash", str(range_script), "--down"], cwd=str(ROOT), capture_output=True, text=True
+            )
             down_ok = res_down.returncode == 0
             steps.append({"step": "run_full_range_demo_down", "passed": down_ok})
             if down_ok:
@@ -779,7 +916,12 @@ def run_investor_e2e_suite(full_e2e: bool) -> dict[str, Any]:
             else:
                 print(_paint("red", "    [WARN] Range demo down command exited non-zero"))
 
-    print(_paint("green" if e2e_passed else "red", f"\n[INVESTOR E2E VERDICT] {'PASSED' if e2e_passed else 'FAILED'}"))
+    print(
+        _paint(
+            "green" if e2e_passed else "red",
+            f"\n[INVESTOR E2E VERDICT] {'PASSED' if e2e_passed else 'FAILED'}",
+        )
+    )
 
     return {
         "suite_name": "investor_e2e_suite",
@@ -792,6 +934,7 @@ def run_investor_e2e_suite(full_e2e: bool) -> dict[str, Any]:
 # ===========================================================================
 # 4. Report Generation & Main Runner
 # ===========================================================================
+
 
 def generate_reports(audit_data: dict[str, Any], output_dir: Path) -> tuple[Path, Path]:
     """Generate both AUTONOMOUS_PRODUCT_AUDIT_REPORT.json and .md."""
@@ -843,30 +986,32 @@ def generate_reports(audit_data: dict[str, Any], output_dir: Path) -> tuple[Path
             f"| **{p.get('probe_id')}** | {p.get('name')} | `{status_label}` | **`{mark}`** | {p.get('detail')} |"
         )
 
-    md_lines.extend([
-        "",
-        "---",
-        "",
-        "## 2. Jury Governance & Integrity Audit Results",
-        "",
-        "### A. Protocol 0 Boundary Preflight (B0 through B6)",
-        f"- **Decision Verdict:** `{jg.get('checks', {}).get('boundary_preflight', {}).get('decision_verdict', 'N/A')}`",
-        f"- **Findings Count:** `{len(jg.get('checks', {}).get('boundary_preflight', {}).get('findings', []))}`",
-        "- **B0–B6 Checks:** Active and protected workspace isolation, clean symlinks, venv isolation, git alternates clean, runtime code zero literal leaks, and sys.path isolation verified.",
-        "",
-        "### B. Deterministic Zero-Trust Repo Truth Audit",
-        f"- **Integrity Decision:** `{jg.get('checks', {}).get('repo_truth_audit', {}).get('repository_integrity_decision', 'N/A')}`",
-        f"- **Receipt Digest:** `{jg.get('checks', {}).get('repo_truth_audit', {}).get('receipt_digest', 'N/A')}`",
-        f"- **All 7 Truth Checks Passed:** `{jg.get('checks', {}).get('repo_truth_audit', {}).get('all_checks_passed')}`",
-        "",
-        "### C. Gate G9 AST Import-Graph Isolation",
-        f"- **Status:** `{'PASS (Decoupled)' if jg.get('checks', {}).get('gate_g9_ast_isolation', {}).get('passed') else 'FAIL'}`",
-        f"- **Advisory Patterns in Stages 1–4:** Zero (`threatfusion.advisory`, `gemini_client`, `explanation_engine`, `chromadb` completely absent from Stage 1–4 AST).",
-        "",
-        "### D. Frozen Model Artifact SHA-256 Invariance",
-        "| Model Family | Rel Path | Expected SHA-256 | Actual SHA-256 | Verified |",
-        "| :--- | :--- | :--- | :--- | :---: |",
-    ])
+    md_lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "## 2. Jury Governance & Integrity Audit Results",
+            "",
+            "### A. Protocol 0 Boundary Preflight (B0 through B6)",
+            f"- **Decision Verdict:** `{jg.get('checks', {}).get('boundary_preflight', {}).get('decision_verdict', 'N/A')}`",
+            f"- **Findings Count:** `{len(jg.get('checks', {}).get('boundary_preflight', {}).get('findings', []))}`",
+            "- **B0–B6 Checks:** Active and protected workspace isolation, clean symlinks, venv isolation, git alternates clean, runtime code zero literal leaks, and sys.path isolation verified.",
+            "",
+            "### B. Deterministic Zero-Trust Repo Truth Audit",
+            f"- **Integrity Decision:** `{jg.get('checks', {}).get('repo_truth_audit', {}).get('repository_integrity_decision', 'N/A')}`",
+            f"- **Receipt Digest:** `{jg.get('checks', {}).get('repo_truth_audit', {}).get('receipt_digest', 'N/A')}`",
+            f"- **All 7 Truth Checks Passed:** `{jg.get('checks', {}).get('repo_truth_audit', {}).get('all_checks_passed')}`",
+            "",
+            "### C. Gate G9 AST Import-Graph Isolation",
+            f"- **Status:** `{'PASS (Decoupled)' if jg.get('checks', {}).get('gate_g9_ast_isolation', {}).get('passed') else 'FAIL'}`",
+            "- **Advisory Patterns in Stages 1–4:** Zero (`threatfusion.advisory`, `gemini_client`, `explanation_engine`, `chromadb` completely absent from Stage 1–4 AST).",
+            "",
+            "### D. Frozen Model Artifact SHA-256 Invariance",
+            "| Model Family | Rel Path | Expected SHA-256 | Actual SHA-256 | Verified |",
+            "| :--- | :--- | :--- | :--- | :---: |",
+        ]
+    )
 
     models_info = jg.get("checks", {}).get("frozen_model_sha256", {}).get("models", {})
     for m_key, m_val in models_info.items():
@@ -875,48 +1020,56 @@ def generate_reports(audit_data: dict[str, Any], output_dir: Path) -> tuple[Path
             f"| **{m_val.get('label')}** | `{m_val.get('path')}` | `{m_val.get('expected_sha256')[:16]}...` | `{m_val.get('actual_sha256')[:16]}...` | **`{v_mark}`** |"
         )
 
-    md_lines.extend([
-        "",
-        "### E. Section 8 Runtime Lock & Canonical Recall String",
-        f"- **`production_fusion_enabled`:** strictly `False`. Passing `True` to risk evaluators or queue rankers raises `ValueError` (Fail-Closed).",
-        f"- **Canonical Recall Badge:** `{CANONICAL_RECALL_GAIN_STRING}` verified exact match in python advisory engine and `frontend/index.html`.",
-        "",
-        "### F. Issue Register Honesty (TF-008 through TF-011 strictly OPEN)",
-        "| Issue ID | Status | Title / Description |",
-        "| :--- | :---: | :--- |",
-        "| **TF-008** | `OPEN` | Independent Model Benchmark Beyond Inspected January/February UNSW Splits |",
-        "| **TF-009** | `OPEN` | Live Analyst Cohort Workload Trial (>=10 trials, empirical MTTR/FPR study) |",
-        "| **TF-010** | `OPEN` | Official FAST-NUCES FYP-II Jury Defense Rubric & Signed Evaluation Alignment |",
-        "| **TF-011** | `OPEN` | Live Suricata / Enterprise SIEM Cloud Production Deployment |",
-        "",
-        "---",
-        "",
-        "## 3. Investor End-to-End Suite Results",
-        f"- **Execution Status:** `{e2e.get('status')}`",
-    ])
+    md_lines.extend(
+        [
+            "",
+            "### E. Section 8 Runtime Lock & Canonical Recall String",
+            "- **`production_fusion_enabled`:** strictly `False`. Passing `True` to risk evaluators or queue rankers raises `ValueError` (Fail-Closed).",
+            f"- **Canonical Recall Badge:** `{CANONICAL_RECALL_GAIN_STRING}` verified exact match in python advisory engine and `frontend/index.html`.",
+            "",
+            "### F. Issue Register Honesty (TF-008 through TF-011 strictly OPEN)",
+            "| Issue ID | Status | Title / Description |",
+            "| :--- | :---: | :--- |",
+            "| **TF-008** | `OPEN` | Independent Model Benchmark Beyond Inspected January/February UNSW Splits |",
+            "| **TF-009** | `OPEN` | Live Analyst Cohort Workload Trial (>=10 trials, empirical MTTR/FPR study) |",
+            "| **TF-010** | `OPEN` | Official FAST-NUCES FYP-II Jury Defense Rubric & Signed Evaluation Alignment |",
+            "| **TF-011** | `OPEN` | Live Suricata / Enterprise SIEM Cloud Production Deployment |",
+            "",
+            "---",
+            "",
+            "## 3. Investor End-to-End Suite Results",
+            f"- **Execution Status:** `{e2e.get('status')}`",
+        ]
+    )
 
     if e2e.get("steps"):
-        md_lines.extend([
-            "",
-            "| Step | Status | Details |",
-            "| :--- | :---: | :--- |",
-        ])
+        md_lines.extend(
+            [
+                "",
+                "| Step | Status | Details |",
+                "| :--- | :---: | :--- |",
+            ]
+        )
         for s in e2e.get("steps", []):
-            md_lines.append(f"| `{s.get('step')}` | `{'PASS' if s.get('passed') else 'FAIL'}` | {s.get('detail') or s.get('stdout', '')[:80]} |")
+            md_lines.append(
+                f"| `{s.get('step')}` | `{'PASS' if s.get('passed') else 'FAIL'}` | {s.get('detail') or s.get('stdout', '')[:80]} |"
+            )
     else:
         md_lines.append(f"- Note: {e2e.get('reason')}")
 
-    md_lines.extend([
-        "",
-        "---",
-        "",
-        "## Cryptographic Ground-Truth Certification",
-        "",
-        f"This audit report was autonomously generated by `scripts/run_autonomous_product_audit.py` on `{audit_data.get('timestamp_utc')}`.",
-        f"All model weights, runtime AST import graphs, boundary parameters, and refusal handlers were evaluated deterministically.",
-        f"Overall Audit Decision: **`{overall_verdict}`**.",
-        "",
-    ])
+    md_lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "## Cryptographic Ground-Truth Certification",
+            "",
+            f"This audit report was autonomously generated by `scripts/run_autonomous_product_audit.py` on `{audit_data.get('timestamp_utc')}`.",
+            "All model weights, runtime AST import graphs, boundary parameters, and refusal handlers were evaluated deterministically.",
+            f"Overall Audit Decision: **`{overall_verdict}`**.",
+            "",
+        ]
+    )
 
     md_lines = [line.rstrip() for line in md_lines]
     md_path.write_text("\n".join(md_lines), encoding="utf-8")
@@ -924,9 +1077,7 @@ def generate_reports(audit_data: dict[str, Any], output_dir: Path) -> tuple[Path
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="ThreatFusion Autonomous Product Audit Master CLI"
-    )
+    parser = argparse.ArgumentParser(description="ThreatFusion Autonomous Product Audit Master CLI")
     parser.add_argument(
         "--full-e2e",
         action="store_true",
@@ -958,8 +1109,12 @@ def main(argv: list[str] | None = None) -> int:
     git_head = "unknown"
     git_branch = "unknown"
     try:
-        git_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True).strip()
-        git_branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(ROOT), text=True).strip()
+        git_head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True
+        ).strip()
+        git_branch = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(ROOT), text=True
+        ).strip()
     except Exception:
         pass
 
@@ -996,12 +1151,17 @@ def main(argv: list[str] | None = None) -> int:
     # Generate Reports
     json_path, md_path = generate_reports(audit_payload, args.output_dir)
     print(_paint("bold", "\n=================================================================="))
-    print(_paint("cyan", f"  REPORTS GENERATED:"))
+    print(_paint("cyan", "  REPORTS GENERATED:"))
     print(f"  - JSON Report: {json_path}")
     print(f"  - Markdown Report: {md_path}")
     print(_paint("bold", "=================================================================="))
     verdict_color = "green" if all_suites_passed else "red"
-    print(_paint(verdict_color, f"\nFINAL PRODUCT AUDIT VERDICT: {overall_decision} (Exit Code: {0 if all_suites_passed else 1})\n"))
+    print(
+        _paint(
+            verdict_color,
+            f"\nFINAL PRODUCT AUDIT VERDICT: {overall_decision} (Exit Code: {0 if all_suites_passed else 1})\n",
+        )
+    )
 
     return 0 if all_suites_passed else 1
 

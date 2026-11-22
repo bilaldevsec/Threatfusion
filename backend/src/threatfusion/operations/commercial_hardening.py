@@ -43,19 +43,19 @@ CONTENT_SECURITY_POLICY = (
 )
 DEMO_ACCESS_CODES = frozenset(
     {
-        "TF-Bilal-3551!",
-        "TF-Suhaib-4302!",
-        "TF-Hasnain-4718!",
+        "TF-Lab-Approver-01!",
+        "TF-Lab-Analyst-02!",
+        "TF-Lab-Auditor-03!",
     }
 )
 KNOWN_DEMO_PASSWORD_HASHES = frozenset(
     {
-        "pbkdf2_sha256$200000$d283503ed41d21060378e6b7ef6a2419$"
-        "d9f6ec94ab33018220a30e221f64b314c73a7180baeacc7bb6dc71a191702e3c",
-        "pbkdf2_sha256$200000$9171434638ae2e75de01dece752454f7$"
-        "9a22959b9157c4cd18d8b9128acb70b07109f83dcc7fe2d86b7cde12573f9ad2",
-        "pbkdf2_sha256$200000$cff7d4adbff740379d5de2ca263fb9f0$"
-        "ab4e39aed30043977308f150fffbc18433ba98b91b54c2384f2af1a3c20c7d78",
+        "pbkdf2_sha256$200000$a1b2c3d4e5f60718293a4b5c6d7e8f01$"
+        "e755437ff24fb46c96364866dab0eeeed62add6c311369e16b4ae0fc86bbb84d",
+        "pbkdf2_sha256$200000$b2c3d4e5f60718293a4b5c6d7e8f0112$"
+        "8f52ab32fea493677fcf7343231728ea72b2c480b9876c90251f18672536beea",
+        "pbkdf2_sha256$200000$c3d4e5f60718293a4b5c6d7e8f011223$"
+        "7b0cda81e7b49d2a54148e63d0934e88c360584f3e4a63571338c0c2478aecd2",
     }
 )
 _AUTH_EVENTS = frozenset(

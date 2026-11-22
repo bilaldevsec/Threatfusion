@@ -1,18 +1,18 @@
-# ThreatFusion SOC Unicorn Web Console & Interactive Walkthrough Bundle
+# ThreatFusion Unified SecOps & NDR Console Bundle
 
-**Document Identifier:** `README-FRONTEND-UNICORN-001`  
-**Revision:** 1.0.0  
-**Project:** ThreatFusion (`AI-FYP-2006`)  
-**Standard:** `design_guidelines/soc_unicorn_interface_sop.md` (`SOP-UX-SOC-001`)  
-**Architecture:** Zero-CDN, 100% Offline Air-Gapped Glassmorphic Dark Console  
+**Document Identifier:** `README-FRONTEND-NDR-001`
+**Revision:** 1.0.0
+**Release:** `ThreatFusion-NDR-v1.1`
+**Standard:** `design_guidelines/soc_unicorn_interface_sop.md` (`SOP-UX-SOC-001`)
+**Architecture:** Zero-CDN, 100% Offline Air-Gapped Dark Console
 
 ---
 
 ## 1. Overview & Architecture
 
-The **ThreatFusion SOC Unicorn Web Console** provides the production-grade, human-in-the-loop analyst presentation layer for the ThreatFusion intrusion detection and autonomous response pipeline. 
+The **ThreatFusion Unified SecOps & NDR Console** provides the human-in-the-loop analyst presentation layer for the ThreatFusion intrusion detection and approval-gated response pipeline.
 
-Designed specifically for air-gapped academic defense laboratories and high-security enterprise environments:
+Designed specifically for air-gapped and high-security enterprise SOC environments:
 - **Zero External Dependencies:** Contains 0 external CDN links, web fonts, or remote JavaScript libraries. Works 100% offline from the local filesystem or air-gapped container networks.
 - **Progressive Disclosure Visual Hierarchy (`SOP-UX-SOC-001`):** Resolves operational alert fatigue by dividing telemetry into 3 distinct cognitive tiers:
   1. **Tier 1 (Instant Glance / < 3s):** Authoritative Frozen Random Forest verdict (`P(Attack) >= 0.50`, 95.266% precision, 0.095% FPR).
@@ -25,9 +25,9 @@ Designed specifically for air-gapped academic defense laboratories and high-secu
 
 | File Path | Description | Zero-CDN Status |
 |:---|:---|:---:|
-| [`frontend/index.html`](index.html) | Complete SOC Unicorn Web Console & 5-Minute Walkthrough UI | 100% Local |
+| [`frontend/index.html`](index.html) | Unified SecOps & NDR Console UI & 6-Stage Pipeline Review | 100% Local |
 | [`frontend/css/soc_unicorn.css`](css/soc_unicorn.css) | Dark-mode glassmorphic styling, emerald RF and amber AE badges | 100% Local |
-| [`frontend/js/soc_dashboard.js`](js/soc_dashboard.js) | Deterministic receipt verifiers, queue filtering, and walkthrough engine | 100% Local |
+| [`frontend/js/soc_dashboard.js`](js/soc_dashboard.js) | Deterministic receipt verifiers, queue filtering, and pipeline walkthrough engine | 100% Local |
 | [`frontend/README.md`](README.md) | Operational execution instructions and architecture documentation | N/A |
 
 ---
@@ -52,8 +52,6 @@ To serve the static bundle locally without installing external Node.js or web se
 ```bash
 # Serve frontend/ on port 8000 via python3 stdlib
 python3 -m http.server 8000 --directory frontend
-
-# Navigate to http://localhost:8000 in your browser
 ```
 
 ### Method C: Programmatic Python Bundle Verification
@@ -87,14 +85,14 @@ Client-side JavaScript strictly validates evidence receipts:
 
 ---
 
-## 5. 5-Minute Guided Real-World Scenario Walkthrough
+## 5. Guided 6-Stage Pipeline Review
 
-The bottom panel provides an interactive step-by-step playback of the entire 6-stage ThreatFusion incident lifecycle:
-1. **Stage 1 (00:00 - 00:45):** Suricata Flow Telemetry & 14-Feature Ingestion (Azure VM 10.0.0.5, port 80).
-2. **Stage 2 (00:45 - 01:30):** Frozen Random Forest Fast-Path Inference (95.266% Precision, 0.095% FPR).
-3. **Stage 3 (01:30 - 02:15):** Dual-Window Graph Incident Correlation (30.0s Burst / 600.0s Campaign).
-4. **Stage 4 (02:15 - 03:00):** ChromaDB 64-Dim MITRE Vector RAG & MISP RFC1918 Private IP Guard.
-5. **Stage 5 (03:00 - 03:45):** Evidence-Bound Grounded Advisory Debrief & Anti-Hallucination Guard.
-6. **Stage 6 (03:45 - 05:00):** Approval-Gated Reversible SOAR Ledger Execution & TheHive / n8n Dispatch.
+The console includes an interactive step-by-step playback of the entire 6-stage ThreatFusion incident lifecycle:
+1. **Stage 1:** Suricata Flow Telemetry & 14-Feature Ingestion (`172.29.0.20`, port 80).
+2. **Stage 2:** Frozen Random Forest Fast-Path Inference (95.266% Precision, 0.095% FPR).
+3. **Stage 3:** Dual-Window Graph Incident Correlation (30.0s Burst / 600.0s Campaign).
+4. **Stage 4:** ChromaDB 64-Dim MITRE Vector RAG & MISP RFC1918 Private IP Guard.
+5. **Stage 5:** Evidence-Bound Grounded Advisory Debrief & Anti-Hallucination Guard.
+6. **Stage 6:** Approval-Gated Reversible SOAR Ledger Execution & TheHive / n8n Dispatch.
 
-Click **"Play 5-Min Walkthrough"** to auto-advance through the stages every 5 seconds, or use **"Next Stage"** / **"Previous Stage"** for manual step-by-step inspection.
+Click **"Play pipeline review"** to auto-advance through the stages every 5 seconds, or use **"Next Stage"** / **"Previous Stage"** for manual step-by-step inspection.

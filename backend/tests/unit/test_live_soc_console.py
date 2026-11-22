@@ -893,9 +893,9 @@ def test_four_scenario_replay_uses_the_frozen_forest(tmp_path: Path) -> None:
     # Offline unit runs keep the lab pair; a live range rebinds to 172.29.0.10/20.
     assert by_id["web_exploit"]["src_entity_id"] in {"10.0.0.4", "172.29.0.10"}
     assert by_id["web_exploit"]["dst_entity_id"] in {"10.0.0.5", "172.29.0.20"}
-    assert (
-        by_id["web_exploit"]["src_entity_id"] == "10.0.0.4"
-    ) == (by_id["web_exploit"]["dst_entity_id"] == "10.0.0.5")
+    assert (by_id["web_exploit"]["src_entity_id"] == "10.0.0.4") == (
+        by_id["web_exploit"]["dst_entity_id"] == "10.0.0.5"
+    )
     on_range = by_id["web_exploit"]["src_entity_id"] == "172.29.0.10"
     assert by_id["web_exploit"]["service_or_port"] == ("80" if on_range else "443")
     assert by_id["ssh_brute"]["service_or_port"] == "22"
@@ -919,7 +919,9 @@ def test_four_scenario_replay_uses_the_frozen_forest(tmp_path: Path) -> None:
     assert "/api/v1/live/scenarios" in script
 
 
-def test_range_active_scenarios_bind_live_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_range_active_scenarios_bind_live_endpoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(
         "threatfusion.api.live_soc_console._range_lab_active",
         lambda: True,
@@ -932,7 +934,6 @@ def test_range_active_scenarios_bind_live_endpoints(tmp_path: Path, monkeypatch:
         assert by_id[scenario_id]["dst_entity_id"] == "172.29.0.20"
     again = replay_live_scenarios(db, repo_root=REPO_ROOT)
     assert again["flows"][0]["src_entity_id"] == "172.29.0.10"
-
 
 
 class _BenignWidth14Model:
@@ -1095,13 +1096,13 @@ def test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr(
     base = f"http://127.0.0.1:{server.server_address[1]}"
     from threatfusion.api.live_soc_console import rbac_login
 
-    bilal_session = rbac_login(
+    approver_session = rbac_login(
         live_db,
-        username="bilal.21k3551@nu.edu.pk",
-        access_code="TF-Bilal-3551!",
+        username="approver@threatfusion.local",
+        access_code="TF-Lab-Approver-01!",
     )
-    assert bilal_session["authenticated"] is True
-    auth_headers = {"X-ThreatFusion-Session": str(bilal_session["session_token"])}
+    assert approver_session["authenticated"] is True
+    auth_headers = {"X-ThreatFusion-Session": str(approver_session["session_token"])}
     try:
         missing_status, missing = _post_json(
             f"{base}/api/v1/live/soar/dispatch",
@@ -1640,9 +1641,7 @@ def test_range_launch_scores_raw_three_models_and_observatory(tmp_path: Path) ->
     assert summary["frozen_autoencoder_v2"]["recall_gain_percentage_points"] == 2.203
     assert summary["production_fusion_enabled"] is False
 
-    observatory = run_model_observatory(
-        live_db, flow_id=launched["flow_id"], repo_root=REPO_ROOT
-    )
+    observatory = run_model_observatory(live_db, flow_id=launched["flow_id"], repo_root=REPO_ROOT)
     assert observatory["schema_version"] == "live_model_observatory_v1"
     assert len(observatory["dnn_class_distribution"]) >= 10
     assert len(observatory["feature_error_breakdown"]) == 14
@@ -1765,12 +1764,14 @@ def test_workspaces_rbac_sensors_and_compliance_dossier(tmp_path: Path) -> None:
     assert dossier["http_status"] == 200
     assert dossier["production_fusion_enabled"] is False
     assert dossier["active_workspace_id"] == "finbank-pci-core"
-    assert "bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9" in dossier[
-        "dossier_markdown"
-    ]
-    assert "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23" in dossier[
-        "dossier_markdown"
-    ]
+    assert (
+        "bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9"
+        in dossier["dossier_markdown"]
+    )
+    assert (
+        "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23"
+        in dossier["dossier_markdown"]
+    )
     dnn_digest = hashlib.sha256(
         (REPO_ROOT / "artifacts/models/fyp2_dnn_same_split_v1/dnn_model.pt").read_bytes()
     ).hexdigest()
@@ -1868,8 +1869,9 @@ def test_launched_attack_vectors_match_nine_class_and_frozen_scores(tmp_path: Pa
         assert f"DPORT = {dport!r}" in preview["rendered_python_code"]
 
 
-def test_approve_unlocks_snapshot_and_repeat_click_stays_authorized(tmp_path: Path, monkeypatch) -> None:
-    import json
+def test_approve_unlocks_snapshot_and_repeat_click_stays_authorized(
+    tmp_path: Path, monkeypatch
+) -> None:
     import threading
     from http.server import ThreadingHTTPServer
 
@@ -1956,10 +1958,10 @@ def test_approve_unlocks_snapshot_and_repeat_click_stays_authorized(tmp_path: Pa
         assert entra["oidc"] is True
         assert entra["entra_tenant_id"]
         active = entra["active_operator"]
-        assert active["entra_upn"].endswith("@nu.edu.pk")
+        assert active["entra_upn"].endswith("@threatfusion.local")
         assert active["entra_object_id"]
         assert active["entra_app_roles"]
-        assert entra["azure_subscription_tier"].startswith("Azure for Students")
+        assert entra["azure_subscription_tier"].startswith("Microsoft Entra ID")
         soar_db = live_db.with_name("threatfusion-live-soar.sqlite3")
         dispatched = dispatch_approved_callback(
             live_db,
@@ -2036,7 +2038,7 @@ def test_entra_token_syncs_app_role(tmp_path: Path) -> None:
                 {
                     "tid": "00000000-0000-0000-0000-000000000001",
                     "oid": "4c2e9b11-1a77-4e08-8d55-22b6c0e8f202",
-                    "upn": "suhaib.shaikh@nu.edu.pk",
+                    "upn": "analyst@threatfusion.local",
                     "roles": ["SOC.Analyst.Tier1"],
                 }
             ),
@@ -2045,13 +2047,15 @@ def test_entra_token_syncs_app_role(tmp_path: Path) -> None:
     )
     status = entra_identity_status(live_db)
     assert status["http_status"] == 200
-    assert any(item["entra_app_roles"] == ["SOC.Commander.Approver"] for item in status["operators"])
+    assert any(
+        item["entra_app_roles"] == ["SOC.Commander.Approver"] for item in status["operators"]
+    )
     verified = verify_entra_token(live_db, token)
     assert verified["http_status"] == 200
     assert verified["token_structure_valid"] is True
     assert verified["actor_id"] == "tier1_analyst"
     assert verified["roles"] == ["SOC.Analyst.Tier1"]
-    assert verified["upn"] == "suhaib.shaikh@nu.edu.pk"
+    assert verified["upn"] == "analyst@threatfusion.local"
 
 
 def _get_json(url: str) -> tuple[int, dict]:

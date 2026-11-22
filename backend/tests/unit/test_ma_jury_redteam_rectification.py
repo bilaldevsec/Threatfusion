@@ -69,46 +69,75 @@ def test_lowercase_hallucinated_ids_are_annotated() -> None:
 def test_password_lock_reads_tuple_rows_and_admin_aliases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert _account_username_and_hash(("bilal.21k3551@nu.edu.pk", "hash")) == (
-        "bilal.21k3551@nu.edu.pk",
+    from threatfusion.api.live_soc_console import operator_header_identity
+
+    assert _account_username_and_hash(("approver@threatfusion.local", "hash")) == (
+        "approver@threatfusion.local",
         "hash",
     )
     monkeypatch.setenv("THREATFUSION_ENV", "production")
     monkeypatch.setenv("TF_ADMIN_SECRET", "range-admin-secret-value")
-    monkeypatch.setenv("TF_ADMIN_EMAIL", "bilal.alias@nu.edu.pk")
+    monkeypatch.setenv("TF_ADMIN_EMAIL", "admin@threatfusion.local")
+    monkeypatch.setenv("TF_ADMIN_DISPLAY_NAME", "SecOps Lead")
     monkeypatch.setenv("THREATFUSION_DATA_DIR", str(tmp_path / "data"))
     live = tmp_path / "live.sqlite3"
-    muhammad = rbac_login(
+    admin = rbac_login(
         live,
-        username="muhammad.bilal@nu.edu.pk",
+        username="admin@threatfusion.local",
         access_code="range-admin-secret-value",
     )
-    alias = rbac_login(
-        live,
-        username="bilal.alias@nu.edu.pk",
-        access_code="range-admin-secret-value",
+    assert admin["authenticated"] is True
+    assert admin["actor_id"] == "lab_operator"
+    assert admin["display_name"] == "SecOps Lead"
+    assert (
+        admin["header_identity"]
+        == "SecOps Lead · Tier-3 Approver | Session Auth (Tier-3 RBAC · Lab HTTP)"
     )
-    original = rbac_login(
-        live,
-        username="bilal.21k3551@nu.edu.pk",
-        access_code="range-admin-secret-value",
+    assert "verified mTLS" not in admin["header_identity"]
+    for rejected_user, rejected_code in (
+        ("approver@threatfusion.local", "TF-Lab-Approver-01!"),
+        ("analyst@threatfusion.local", "TF-Lab-Analyst-02!"),
+        ("auditor@threatfusion.local", "TF-Lab-Auditor-03!"),
+        ("legacy.user@example.edu.pk", "range-admin-secret-value"),
+    ):
+        denied = rbac_login(live, username=rejected_user, access_code=rejected_code)
+        assert denied["authenticated"] is False
+        assert denied["http_status"] == 401
+    with sqlite3.connect(live) as conn:
+        seeded_users = [
+            row[0] for row in conn.execute("SELECT username FROM rbac_accounts").fetchall()
+        ]
+    assert seeded_users == ["admin@threatfusion.local"]
+    custom_mtls = operator_header_identity(
+        actor_id="lab_operator",
+        display_name="SecOps Lead",
+        role="soc_approver",
+        mtls_verified=True,
     )
-    assert muhammad["authenticated"] is True
-    assert alias["authenticated"] is True
-    assert original["authenticated"] is True
-    assert muhammad["actor_id"] == "lab_operator"
-    assert "verified mTLS" not in muhammad["header_identity"]
+    assert (
+        custom_mtls["header_identity"]
+        == "SecOps Lead · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)"
+    )
     bare = sqlite3.connect(":memory:")
     bare.execute("CREATE TABLE rbac_accounts (username TEXT, password_hash TEXT)")
     bare.execute(
         "INSERT INTO rbac_accounts VALUES (?, ?)",
-        ("bilal.21k3551@nu.edu.pk", "not-a-demo-hash"),
+        ("legacy.user@example.edu.pk", "not-a-demo-hash"),
+    )
+    bare.execute(
+        "INSERT INTO rbac_accounts VALUES (?, ?)",
+        ("approver@threatfusion.local", "not-a-demo-hash"),
+    )
+    bare.execute(
+        "INSERT INTO rbac_accounts VALUES (?, ?)",
+        ("admin@threatfusion.local", "__pending_prod_lock__"),
     )
     _lock_demo_passwords_for_production(bare)
-    row = bare.execute("SELECT username, password_hash FROM rbac_accounts").fetchone()
-    username, current_hash = _account_username_and_hash(row)
-    assert username == "bilal.21k3551@nu.edu.pk"
-    assert current_hash != "not-a-demo-hash"
+    rows = bare.execute("SELECT username, password_hash FROM rbac_accounts").fetchall()
+    assert len(rows) == 1
+    username, current_hash = _account_username_and_hash(rows[0])
+    assert username == "admin@threatfusion.local"
+    assert current_hash != "__pending_prod_lock__"
 
 
 def test_forensic_scope_uses_nested_endpoints_and_dedupes_techniques() -> None:

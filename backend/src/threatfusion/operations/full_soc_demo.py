@@ -372,7 +372,7 @@ def run_full_soc_demo(output_dir: Path | str) -> dict[str, Any]:
     # Human analyst approves
     approved_action = soar_engine.decide_recommendation(
         playbook_id=soar_action.playbook_id,
-        actor_id="analyst-bilal",
+        actor_id="soc-approver",
         decision="approve",
         reason="Approved containment following verified 10.0.0.4 attacker activity.",
         expected_version=1,
@@ -383,7 +383,7 @@ def run_full_soc_demo(output_dir: Path | str) -> dict[str, Any]:
     # Execution (simulated)
     executed_action = soar_engine.execute_approved_action(
         playbook_id=soar_action.playbook_id,
-        actor_id="analyst-bilal",
+        actor_id="soc-approver",
         expected_version=2,
     )
     assert executed_action.state == "executed_simulated"
@@ -392,7 +392,7 @@ def run_full_soc_demo(output_dir: Path | str) -> dict[str, Any]:
     # Reversible Rollback
     rolled_back_action = soar_engine.rollback_executed_action(
         playbook_id=soar_action.playbook_id,
-        actor_id="analyst-bilal",
+        actor_id="soc-approver",
         rollback_reason="Lab exercise complete; unblocking attacker VM.",
         expected_version=3,
     )
@@ -657,7 +657,7 @@ Simulated live attacker (`10.0.0.4:54322`) targeting victim web server (`10.0.0.
 ### SOAR Ledger Audit Trail (`track_b_soar.sqlite3`)
 - **Action Type:** `{soar_action.action_type}`
 - **Target Entity:** `{soar_action.target_entity}`
-- **Lifecycle Progression:** `pending_approval` $\\rightarrow$ `approved` (by analyst-bilal) $\\rightarrow$ `executed_simulated` $\\rightarrow$ `rolled_back`
+- **Lifecycle Progression:** `pending_approval` $\\rightarrow$ `approved` (by soc-approver) $\\rightarrow$ `executed_simulated` $\\rightarrow$ `rolled_back`
 - **Audit Entries Recorded:** `{len(soar_audit)}`
 - **Cryptographic Audit Chain Integrity:** `VERIFIED` (SHA-256 Linked)
 - **Chain Head SHA-256:** `{chain_head_sha256[:16]}...`

@@ -9,7 +9,6 @@ from __future__ import annotations
 import html
 from html.parser import HTMLParser
 import json
-import os
 from pathlib import Path
 import sqlite3
 import threading
@@ -261,12 +260,12 @@ def test_probe_7_context_memory_grounding_guard(audit_http_server: tuple[str, Pa
     with sqlite3.connect(live_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM context_memory").fetchone()[0] == 0
 
-    # Attempt POST /api/v1/live/context-memory with unstored IP "99.88.77.66"
+    # Attempt POST /api/v1/live/context-memory with unstored IP "198.51.100.66"
     unstored_payload = {
         "flow_id": flow_id,
         "operator_id": "lab_operator",
-        "entity_ip_or_subnet": "99.88.77.66",
-        "expected_behavior_rule": "Host 99.88.77.66 is authorized external partner traffic",
+        "entity_ip_or_subnet": "198.51.100.66",
+        "expected_behavior_rule": "Host 198.51.100.66 is authorized external partner traffic",
         "service_or_port": "80",
     }
     req = urllib.request.Request(
@@ -296,7 +295,7 @@ def test_probe_7_context_memory_grounding_guard(audit_http_server: tuple[str, Pa
         "flow_id": flow_id,
         "operator_id": "lab_operator",
         "entity_ip_or_subnet": "198.51.100.27",
-        "expected_behavior_rule": "Traffic from 198.51.100.27 routing via 99.88.77.66 is expected",
+        "expected_behavior_rule": "Traffic from 198.51.100.27 routing via 198.51.100.66 is expected",
         "service_or_port": "80",
     }
     req2 = urllib.request.Request(

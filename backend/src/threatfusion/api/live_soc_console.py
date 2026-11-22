@@ -5282,7 +5282,7 @@ def publish_lab_enrollment(
     published.pop("verified_operator", None)
     header = str(published.get("header_identity") or "")
     if not header or "verified mTLS" in header:
-        published["header_identity"] = _BILAL_SESSION_HEADER
+        published["header_identity"] = _DEFAULT_APPROVER_SESSION_HEADER
     return published
 
 
@@ -8243,25 +8243,25 @@ _WORKSPACE_SEEDS: tuple[tuple[str, str, str, str, str, int], ...] = (
     ),
 )
 _OPERATOR_SEEDS: tuple[tuple[str, str, str, int], ...] = (
-    ("lab_operator", "Muhammad Bilal (21K-3551)", "soc_approver", 1),
-    ("tier1_analyst", "Muhammad Suhaib (22K-4302)", "tier1_triage", 0),
-    ("compliance_auditor", "Muhammad Hasnain (22K-4718)", "auditor_readonly", 0),
+    ("lab_operator", "Tier-3 SOC Approver", "soc_approver", 1),
+    ("tier1_analyst", "Tier-1 Triage Analyst", "tier1_triage", 0),
+    ("compliance_auditor", "Compliance Auditor", "auditor_readonly", 0),
 )
-_AZURE_STUDENT_TIER = "Azure for Students · $60 Credit Active · Free Entra ID P1/OIDC"
+_ENTRA_TIER_LABEL = "Microsoft Entra ID (OIDC + X.509 mTLS) · Zero-Trust Tier"
 _ENTRA_DIRECTORY: dict[str, dict[str, Any]] = {
     "lab_operator": {
         "entra_object_id": "8f3c1a20-6b4e-4d11-9c2a-71e0b5d4a101",
-        "entra_upn": "muhammad.bilal@nu.edu.pk",
+        "entra_upn": "approver@threatfusion.local",
         "entra_app_roles": ["SOC.Commander.Approver"],
     },
     "tier1_analyst": {
         "entra_object_id": "4c2e9b11-1a77-4e08-8d55-22b6c0e8f202",
-        "entra_upn": "suhaib.shaikh@nu.edu.pk",
+        "entra_upn": "analyst@threatfusion.local",
         "entra_app_roles": ["SOC.Analyst.Tier1"],
     },
     "compliance_auditor": {
         "entra_object_id": "b71d0e44-90c3-4f6a-a1d8-55e9a7c3b303",
-        "entra_upn": "muhammad.hasnain@nu.edu.pk",
+        "entra_upn": "auditor@threatfusion.local",
         "entra_app_roles": ["SOC.Compliance.Auditor"],
     },
 }
@@ -8659,7 +8659,7 @@ def _entra_profile(actor_id: str, role: str) -> dict[str, Any]:
         "entra_object_id": str(known.get("entra_object_id") or ""),
         "entra_upn": str(known.get("entra_upn") or ""),
         "entra_app_roles": roles,
-        "azure_subscription_tier": _AZURE_STUDENT_TIER,
+        "azure_subscription_tier": _ENTRA_TIER_LABEL,
         "mtls_status": "X.509 client certificate required for SOAR approval",
     }
 
@@ -8678,7 +8678,7 @@ def _workspace_public(row: sqlite3.Row | Mapping[str, Any]) -> dict[str, Any]:
         "default_service": str(row["default_service"]),
         "active": bool(row["active"]),
         "entra_tenant_id": _entra_tenant_public(),
-        "azure_subscription_tier": _AZURE_STUDENT_TIER,
+        "azure_subscription_tier": _ENTRA_TIER_LABEL,
     }
 
 
@@ -8909,7 +8909,7 @@ def entra_identity_status(db_path: Path) -> dict[str, Any]:
         "provider": "microsoft_entra_id",
         "oidc": True,
         "entra_tenant_id": _entra_tenant_public(),
-        "azure_subscription_tier": _AZURE_STUDENT_TIER,
+        "azure_subscription_tier": _ENTRA_TIER_LABEL,
         "tenant_binding": "bound" if _entra_tenant_id() else "unbound",
         "active_operator": active,
         "operators": rows,
@@ -9125,49 +9125,61 @@ _RBAC_ITERATIONS = 200_000
 _RBAC_EMAIL = re.compile(r"^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,120}$")
 _RESERVED_ACTORS = frozenset({"lab_operator", "tier1_analyst", "compliance_auditor"})
 _SESSION_AUTH_LABEL = "Session Auth (Tier-3 RBAC · Lab HTTP)"
-_BILAL_HEADER = (
-    "Muhammad Bilal (21K-3551) · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)"
+_DEFAULT_ACTOR_DISPLAY_NAMES = {
+    "lab_operator": "Tier-3 SOC Approver",
+    "tier1_analyst": "Tier-1 Triage Analyst",
+    "compliance_auditor": "Compliance Auditor",
+}
+_DEFAULT_APPROVER_MTLS_HEADER = (
+    "Tier-3 SOC Approver · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)"
 )
-_BILAL_SESSION_HEADER = (
-    "Muhammad Bilal (21K-3551) · Tier-3 Approver | Session Auth (Tier-3 RBAC · Lab HTTP)"
+_DEFAULT_APPROVER_SESSION_HEADER = f"Tier-3 SOC Approver · Tier-3 Approver | {_SESSION_AUTH_LABEL}"
+_LAB_SEED_USERNAMES = frozenset(
+    {
+        "approver@threatfusion.local",
+        "analyst@threatfusion.local",
+        "auditor@threatfusion.local",
+    }
 )
-_ADMIN_EMAIL_ALIASES = (
-    "bilal.21k3551@nu.edu.pk",
-    "muhammad.bilal@nu.edu.pk",
-)
-_SUHAIB_HEADER = "Muhammad Suhaib (22K-4302) · Tier-1 Triage | No SOAR Cert (Triage Only)"
-_HASNAIN_HEADER = "Muhammad Hasnain (22K-4718) · Auditor | Read-Only Compliance Token"
+_EDU_EMAIL_RE = re.compile(r"@[^@\s]+\.edu(?:\.[a-z]{2,})?$", re.IGNORECASE)
+
+
+def _is_disallowed_production_username(username: str) -> bool:
+    normalized = str(username or "").strip().lower()
+    return normalized in _LAB_SEED_USERNAMES or _EDU_EMAIL_RE.search(normalized) is not None
+
+
 _RBAC_SEEDS: tuple[dict[str, str], ...] = (
     {
-        "username": "bilal.21k3551@nu.edu.pk",
-        "display_name": "Muhammad Bilal (21K-3551)",
+        "username": "approver@threatfusion.local",
+        "display_name": "Tier-3 SOC Approver",
         "actor_id": "lab_operator",
         "role": "soc_approver",
         "password_hash": (
-            "pbkdf2_sha256$200000$d283503ed41d21060378e6b7ef6a2419$"
-            "d9f6ec94ab33018220a30e221f64b314c73a7180baeacc7bb6dc71a191702e3c"
+            "pbkdf2_sha256$200000$a1b2c3d4e5f60718293a4b5c6d7e8f01$"
+            "e755437ff24fb46c96364866dab0eeeed62add6c311369e16b4ae0fc86bbb84d"
         ),
         "certificate_subject": "/CN=lab_operator",
     },
     {
-        "username": "suhaib.22k4302@nu.edu.pk",
-        "display_name": "Muhammad Suhaib (22K-4302)",
+        "username": "analyst@threatfusion.local",
+        "display_name": "Tier-1 Triage Analyst",
         "actor_id": "tier1_analyst",
         "role": "tier1_triage",
         "password_hash": (
-            "pbkdf2_sha256$200000$9171434638ae2e75de01dece752454f7$"
-            "9a22959b9157c4cd18d8b9128acb70b07109f83dcc7fe2d86b7cde12573f9ad2"
+            "pbkdf2_sha256$200000$b2c3d4e5f60718293a4b5c6d7e8f0112$"
+            "8f52ab32fea493677fcf7343231728ea72b2c480b9876c90251f18672536beea"
         ),
         "certificate_subject": "",
     },
     {
-        "username": "hasnain.22k4718@nu.edu.pk",
-        "display_name": "Muhammad Hasnain (22K-4718)",
+        "username": "auditor@threatfusion.local",
+        "display_name": "Compliance Auditor",
         "actor_id": "compliance_auditor",
         "role": "compliance_auditor",
         "password_hash": (
-            "pbkdf2_sha256$200000$cff7d4adbff740379d5de2ca263fb9f0$"
-            "ab4e39aed30043977308f150fffbc18433ba98b91b54c2384f2af1a3c20c7d78"
+            "pbkdf2_sha256$200000$c3d4e5f60718293a4b5c6d7e8f011223$"
+            "7b0cda81e7b49d2a54148e63d0934e88c360584f3e4a63571338c0c2478aecd2"
         ),
         "certificate_subject": "",
     },
@@ -9175,7 +9187,9 @@ _RBAC_SEEDS: tuple[dict[str, str], ...] = (
 
 
 def _ensure_rbac_accounts(conn: sqlite3.Connection) -> None:
-    """Create the account and session tables and seed the three jury logins."""
+    """Create account and session tables; seed lab accounts outside production only."""
+    from threatfusion.operations.commercial_hardening import threatfusion_environment
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS rbac_accounts (
             username TEXT PRIMARY KEY,
@@ -9204,27 +9218,29 @@ def _ensure_rbac_accounts(conn: sqlite3.Connection) -> None:
         )
         """)
     created = datetime.now(UTC).isoformat()
-    conn.executemany(
-        """
-        INSERT OR IGNORE INTO rbac_accounts (
-            username, display_name, actor_id, role, password_hash,
-            certificate_subject, created_at_utc
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        [
-            (
-                seed["username"],
-                seed["display_name"],
-                seed["actor_id"],
-                seed["role"],
-                seed["password_hash"],
-                seed["certificate_subject"],
-                created,
-            )
-            for seed in _RBAC_SEEDS
-        ],
-    )
-    _ensure_admin_email_aliases(conn, created)
+    if threatfusion_environment() == "production":
+        _ensure_production_admin_account(conn, created)
+    else:
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO rbac_accounts (
+                username, display_name, actor_id, role, password_hash,
+                certificate_subject, created_at_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    seed["username"],
+                    seed["display_name"],
+                    seed["actor_id"],
+                    seed["role"],
+                    seed["password_hash"],
+                    seed["certificate_subject"],
+                    created,
+                )
+                for seed in _RBAC_SEEDS
+            ],
+        )
     _lock_demo_passwords_for_production(conn)
 
 
@@ -9241,12 +9257,15 @@ def _lab_operator_certificate_enrolled() -> bool:
 
 
 def _production_admin_usernames() -> tuple[str, ...]:
-    """Institutional admin aliases plus an optional TF_ADMIN_EMAIL."""
-    names: list[str] = list(_ADMIN_EMAIL_ALIASES)
+    """Configured TF_ADMIN_EMAIL when valid and allowed in production."""
     extra = os.environ.get("TF_ADMIN_EMAIL", "").strip().lower()
-    if extra and extra not in names:
-        names.append(extra)
-    return tuple(names)
+    if (
+        extra
+        and _RBAC_EMAIL.fullmatch(extra) is not None
+        and not _is_disallowed_production_username(extra)
+    ):
+        return (extra,)
+    return ()
 
 
 def _session_evidence_state(header: Mapping[str, Any]) -> str:
@@ -9266,7 +9285,7 @@ def operator_header_identity(
 ) -> dict[str, Any]:
     """One header line per signed-in operator. Password login is not a client certificate."""
     actor = str(actor_id or "").strip()
-    name = str(display_name or "").strip() or actor
+    name = str(display_name or "").strip() or _DEFAULT_ACTOR_DISPLAY_NAMES.get(actor, actor)
     chosen = str(role or "").strip()
     enrolled = actor == "lab_operator" and _lab_operator_certificate_enrolled()
     subject = ""
@@ -9274,28 +9293,20 @@ def operator_header_identity(
     label = "unverified_local_label"
     auth_label = "unverified local label"
     if actor == "lab_operator" and mtls_verified:
-        line = _BILAL_HEADER
+        line = f"{name} · Tier-3 Approver | verified mTLS cert (/CN=lab_operator)"
         subject = "/CN=lab_operator"
         verified = True
         label = "verified_mtls_lab_operator"
         auth_label = "verified mTLS cert (/CN=lab_operator)"
     elif actor == "lab_operator":
-        line = _BILAL_SESSION_HEADER
+        line = f"{name} · Tier-3 Approver | {_SESSION_AUTH_LABEL}"
         label = "session_authenticated"
         auth_label = _SESSION_AUTH_LABEL
-    elif actor == "tier1_analyst":
-        line = _SUHAIB_HEADER
-        label = "no_soar_cert_triage_only"
-        auth_label = "No SOAR Cert (Triage Only)"
-    elif actor == "compliance_auditor":
-        line = _HASNAIN_HEADER
-        label = "read_only_compliance_token"
-        auth_label = "Read-Only Compliance Token"
-    elif chosen == "tier1_triage":
+    elif actor == "tier1_analyst" or chosen == "tier1_triage":
         line = f"{name} · Tier-1 Triage | No SOAR Cert (Triage Only)"
         label = "no_soar_cert_triage_only"
         auth_label = "No SOAR Cert (Triage Only)"
-    elif chosen in _READONLY_ROLES:
+    elif actor == "compliance_auditor" or chosen in _READONLY_ROLES:
         line = f"{name} · Auditor | Read-Only Compliance Token"
         label = "read_only_compliance_token"
         auth_label = "Read-Only Compliance Token"
@@ -9327,30 +9338,10 @@ def _account_username_and_hash(row: Any) -> tuple[str, str]:
     return str(row[0]), str(row[1])
 
 
-def _ensure_admin_email_aliases(conn: sqlite3.Connection, created: str) -> None:
-    """Keep every institutional admin alias on the same lab_operator account."""
-    primary = conn.execute(
-        """
-        SELECT display_name, actor_id, role, password_hash, certificate_subject
-        FROM rbac_accounts WHERE username = ?
-        """,
-        ("bilal.21k3551@nu.edu.pk",),
-    ).fetchone()
-    if primary is None:
-        return
-    if isinstance(primary, (sqlite3.Row, dict)):
-        copied = (
-            str(primary["display_name"]),
-            str(primary["actor_id"]),
-            str(primary["role"]),
-            str(primary["password_hash"]),
-            str(primary["certificate_subject"] or ""),
-        )
-    else:
-        copied = tuple(str(item or "") for item in primary)
+def _ensure_production_admin_account(conn: sqlite3.Connection, created: str) -> None:
+    """Seed only the explicitly configured production admin account."""
     for username in _production_admin_usernames():
-        if username == "bilal.21k3551@nu.edu.pk":
-            continue
+        display_name = os.environ.get("TF_ADMIN_DISPLAY_NAME", "").strip() or username
         conn.execute(
             """
             INSERT OR IGNORE INTO rbac_accounts (
@@ -9358,7 +9349,15 @@ def _ensure_admin_email_aliases(conn: sqlite3.Connection, created: str) -> None:
                 certificate_subject, created_at_utc
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (username, *copied, created),
+            (
+                username,
+                display_name,
+                "lab_operator",
+                "soc_approver",
+                "__pending_prod_lock__",
+                "/CN=lab_operator",
+                created,
+            ),
         )
 
 
@@ -9385,7 +9384,7 @@ def _sqlite_main_db_identity(conn: sqlite3.Connection) -> tuple[str, int] | None
 
 
 def _lock_demo_passwords_for_production(conn: sqlite3.Connection) -> None:
-    """Replace the lab hashes with TF_ADMIN_SECRET or a one-time bootstrap secret."""
+    """Strip lab/edu accounts and lock admin or known demo hashes in production."""
     global _PROD_LOCKED_RANDOM_HASH
     from threatfusion.operations.commercial_hardening import (
         KNOWN_DEMO_PASSWORD_HASHES,
@@ -9414,11 +9413,25 @@ def _lock_demo_passwords_for_production(conn: sqlite3.Connection) -> None:
         _PROD_ADMIN_HASH_CACHE[secret_digest] = admin_hash
     admin_set = set(admin_users)
     rows = conn.execute("SELECT username, password_hash FROM rbac_accounts").fetchall()
+    disallowed: list[str] = []
+    retained: list[tuple[str, str]] = []
     for row in rows:
         username, current_hash = _account_username_and_hash(row)
+        if _is_disallowed_production_username(username):
+            disallowed.append(username)
+        else:
+            retained.append((username, current_hash))
+    for username in disallowed:
+        conn.execute("DELETE FROM rbac_accounts WHERE username = ?", (username,))
+        try:
+            conn.execute("DELETE FROM rbac_sessions WHERE username = ?", (username,))
+        except sqlite3.OperationalError:
+            pass
+    for username, current_hash in retained:
+        pending_lock = current_hash == "__pending_prod_lock__"
         known_demo = current_hash in KNOWN_DEMO_PASSWORD_HASHES
         force_admin = bool(explicit) and username in admin_set
-        if not known_demo and not force_admin:
+        if not pending_lock and not known_demo and not force_admin:
             continue
         if username in admin_set:
             replacement = admin_hash
@@ -9430,7 +9443,7 @@ def _lock_demo_passwords_for_production(conn: sqlite3.Connection) -> None:
             "UPDATE rbac_accounts SET password_hash = ? WHERE username = ?",
             (replacement, username),
         )
-    if cache_key is not None and rows:
+    if cache_key is not None and not disallowed and retained:
         _PROD_LOCKED_DB_CACHE.add(cache_key)
 
 
@@ -9557,6 +9570,8 @@ def _issue_session(conn: sqlite3.Connection, row: sqlite3.Row) -> str:
 
 
 def _session_row(db_path: Path, token: str) -> dict[str, str] | None:
+    from threatfusion.operations.commercial_hardening import threatfusion_environment
+
     parts = _session_parts(token)
     if parts is None or not db_path.is_file():
         return None
@@ -9578,6 +9593,10 @@ def _session_row(db_path: Path, token: str) -> dict[str, str] | None:
         if row is None:
             return None
         copied = {key: str(row[key] or "") for key in row.keys()}
+    if threatfusion_environment() == "production" and _is_disallowed_production_username(
+        copied["username"]
+    ):
+        return None
     try:
         expires = datetime.fromisoformat(copied["expires_at_utc"])
     except ValueError:
@@ -9665,6 +9684,9 @@ def rbac_login(
     client_ip: str = "",
 ) -> dict[str, Any]:
     """Authenticate with an access code or a Microsoft Entra ID token, then open a session."""
+    from threatfusion.operations.commercial_hardening import threatfusion_environment
+
+    is_production = threatfusion_environment() == "production"
     presented = str(entra_token or "").strip()
     if presented:
         verified = verify_entra_token(db_path, presented)
@@ -9686,7 +9708,9 @@ def rbac_login(
                 "SELECT * FROM rbac_accounts WHERE actor_id = ?",
                 (actor,),
             ).fetchone()
-            if row is None:
+            if row is None or (
+                is_production and _is_disallowed_production_username(str(row["username"]))
+            ):
                 _audit_auth(
                     db_path,
                     "login_failed",
@@ -9703,7 +9727,11 @@ def rbac_login(
         public["reason"] = "entra_token_verified"
         return public
     user = str(username or email or "").strip().lower()
-    if _RBAC_EMAIL.fullmatch(user) is None or not str(access_code or ""):
+    if (
+        _RBAC_EMAIL.fullmatch(user) is None
+        or not str(access_code or "")
+        or (is_production and _is_disallowed_production_username(user))
+    ):
         _audit_auth(db_path, "login_failed", user, client_ip, "invalid_credentials")
         return _rbac_refused("invalid_credentials", 401)
     with _connect(db_path) as conn:
@@ -9711,7 +9739,11 @@ def rbac_login(
             "SELECT * FROM rbac_accounts WHERE username = ?",
             (user,),
         ).fetchone()
-        if row is None or not _verify_password(str(row["password_hash"]), access_code):
+        if (
+            row is None
+            or (is_production and _is_disallowed_production_username(str(row["username"])))
+            or not _verify_password(str(row["password_hash"]), access_code)
+        ):
             _audit_auth(db_path, "login_failed", user, client_ip, "invalid_credentials", conn)
             return _rbac_refused("invalid_credentials", 401)
         token = _issue_session(conn, row)
@@ -9772,7 +9804,8 @@ def rbac_register(
     if chosen == "soc_approver" and not is_admin_caller:
         return _rbac_refused("approver_registration_forbidden", 403)
     if (
-        _RBAC_EMAIL.fullmatch(user) is None
+        (threatfusion_environment() == "production" and _is_disallowed_production_username(user))
+        or _RBAC_EMAIL.fullmatch(user) is None
         or len(secret) < 8
         or len(secret) > 128
         or not name
@@ -9861,7 +9894,7 @@ def _attach_rollback_identity(
         if preserved.get("operator_id") == "lab_operator":
             result["certificate_subject"] = "/CN=lab_operator"
             result["operator_auth_label"] = "verified mTLS cert (/CN=lab_operator)"
-            result["header_identity"] = _BILAL_HEADER
+            result["header_identity"] = _DEFAULT_APPROVER_MTLS_HEADER
     return result
 
 

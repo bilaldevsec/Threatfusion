@@ -474,11 +474,6 @@ def build_five_tab_investigation_inspector(
         or (item.get("alert_candidate_id") if isinstance(item, dict) else None)
         or (candidate.alert_candidate_id if candidate is not None else "cand_m37_inspector_01")
     )
-    camp_id = (
-        getattr(item, "campaign_id", None)
-        or (item.get("campaign_id") if isinstance(item, dict) else None)
-        or "camp_m37_001"
-    )
     src_ip = str(
         getattr(item, "source_ip", None)
         or (item.get("source_ip") if isinstance(item, dict) else "10.0.0.4")

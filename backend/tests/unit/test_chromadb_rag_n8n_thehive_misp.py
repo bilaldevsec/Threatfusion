@@ -11,13 +11,23 @@ Covers:
 
 from __future__ import annotations
 
+import http.server
 import json
 import os
 from pathlib import Path
+import sqlite3
 import stat
+import threading
+import urllib.error
+import urllib.request
 
 import pytest
 
+from scripts.run_misp_and_callback_contract_server import (
+    MispAndCallbackContractHandler,
+    is_rfc1918_or_loopback_ip as contract_is_rfc1918,
+    verify_hmac_signature,
+)
 from threatfusion.advisory.chromadb_mitre_rag import (
     CANONICAL_MITRE_AND_PLAYBOOK_CORPUS,
     ChromaDbMitrePlaybookRag,
@@ -38,6 +48,23 @@ from threatfusion.api.analyst_dashboard import (
     load_frontend_unicorn_bundle,
     receipt_hmac_sha256,
     render_dashboard_html,
+)
+from threatfusion.operations.full_soc_demo import run_full_soc_demo
+from threatfusion.operations.storage_backup import (
+    StorageBackupError,
+    create_soc_response_plane_snapshot,
+)
+from threatfusion.soar.n8n_thehive_misp_stack import (
+    MispDeterministicClient,
+    N8nDeterministicPlaybookClient,
+    TheHiveDeterministicClient,
+    is_rfc1918_or_loopback_ip,
+    lookup_durable_dispatch,
+)
+from threatfusion.soar.playbook_ledger import (
+    ApprovalGatedSoarEngine,
+    SoarPlaybookSqliteRepository,
+    SoarStateTransitionError,
 )
 
 
@@ -81,35 +108,6 @@ def _canonical_ledger_chain(secret: str, candidate_id: str) -> tuple[dict[str, o
     entry["entry_sha256"] = compute_canonical_audit_entry_hash(**fields, ledger_secret=secret)
     return (entry,)
 
-
-import http.server
-import sqlite3
-import threading
-import urllib.error
-import urllib.request
-
-from scripts.run_misp_and_callback_contract_server import (
-    MispAndCallbackContractHandler,
-    is_rfc1918_or_loopback_ip as contract_is_rfc1918,
-    verify_hmac_signature,
-)
-from threatfusion.operations.full_soc_demo import run_full_soc_demo
-from threatfusion.operations.storage_backup import (
-    StorageBackupError,
-    create_soc_response_plane_snapshot,
-)
-from threatfusion.soar.n8n_thehive_misp_stack import (
-    MispDeterministicClient,
-    N8nDeterministicPlaybookClient,
-    TheHiveDeterministicClient,
-    is_rfc1918_or_loopback_ip,
-    lookup_durable_dispatch,
-)
-from threatfusion.soar.playbook_ledger import (
-    ApprovalGatedSoarEngine,
-    SoarPlaybookSqliteRepository,
-    SoarStateTransitionError,
-)
 
 TEST_SOAR_HMAC_SECRET = "threatfusion_soc_test_secret_key_v1"
 
@@ -326,7 +324,7 @@ class TestMispDeterministicClient:
         outbox_db = tmp_path / "misp_outbox.sqlite3"
         client = MispDeterministicClient(outbox_db_path=outbox_db)
 
-        res = client.query_indicator("99.88.77.66", indicator_type="ip-dst")
+        res = client.query_indicator("93.184.216.34", indicator_type="ip-dst")
         assert res.matched is False
         assert res.threat_level == "undefined"
         assert len(res.tags) == 0
@@ -392,7 +390,7 @@ class TestTheHiveDeterministicClient:
         recs = engine.recommend_actions_for_alert("cand_hive_tamper", contract)
         approved = engine.decide_recommendation(
             playbook_id=recs[0].playbook_id,
-            actor_id="analyst-bilal",
+            actor_id="soc-approver",
             decision="approve",
             reason="Approved",
             expected_version=1,
@@ -432,7 +430,7 @@ class TestTheHiveDeterministicClient:
         recs = engine.recommend_actions_for_alert("cand_hive_valid", contract)
         approved = engine.decide_recommendation(
             playbook_id=recs[0].playbook_id,
-            actor_id="analyst-bilal",
+            actor_id="soc-approver",
             decision="approve",
             reason="Approved valid containment",
             expected_version=1,
@@ -507,7 +505,7 @@ class TestN8nDeterministicPlaybookClient:
         recs = engine.recommend_actions_for_alert("cand_n8n_valid", contract)
         approved = engine.decide_recommendation(
             playbook_id=recs[0].playbook_id,
-            actor_id="analyst-bilal",
+            actor_id="soc-approver",
             decision="approve",
             reason="Approved valid playbook",
             expected_version=1,
@@ -814,7 +812,7 @@ class TestMispAndCallbackContractServer:
             # 5c. Approve the playbook in SQLite ledger
             approved_rec = soar_engine.decide_recommendation(
                 test_pb_id,
-                actor_id="analyst-bilal",
+                actor_id="soc-approver",
                 decision="approve",
                 reason="Legitimate probe containment",
                 expected_version=1,
@@ -959,7 +957,7 @@ class TestMispAndCallbackContractServer:
         valid_pb_id = recs[0].playbook_id
         soar_engine.decide_recommendation(
             valid_pb_id,
-            actor_id="analyst-bilal",
+            actor_id="soc-approver",
             decision="approve",
             reason="Approved valid containment",
             expected_version=1,
@@ -1445,7 +1443,7 @@ class TestMilestone36ArchitecturalElevation:
         pb_id = recs[0].playbook_id
         soar_engine.decide_recommendation(
             pb_id,
-            actor_id="analyst-bilal",
+            actor_id="soc-approver",
             decision="approve",
             reason="containment",
             expected_version=1,
@@ -1711,7 +1709,7 @@ class TestMilestone36ArchitecturalElevation:
         pb_id = recs[0].playbook_id
         soar_engine.decide_recommendation(
             pb_id,
-            actor_id="analyst-bilal",
+            actor_id="soc-approver",
             decision="approve",
             reason="containment",
             expected_version=1,
@@ -2219,7 +2217,7 @@ class TestMegaMilestone38FailClosedEvidence:
         playbook_id = recs[0].playbook_id
         engine.decide_recommendation(
             playbook_id,
-            actor_id="analyst-bilal",
+            actor_id="soc-approver",
             decision="approve",
             reason="milestone 38 replay",
             expected_version=1,
@@ -2344,7 +2342,7 @@ class TestMegaMilestone38FailClosedEvidence:
                     "observed_at": "2026-10-26T00:00:03Z",
                     "from_state": "new",
                     "to_state": "in_review",
-                    "actor_id": "analyst-bilal",
+                    "actor_id": "soc-approver",
                 },
             ),
             soar_ledger_entries=(
