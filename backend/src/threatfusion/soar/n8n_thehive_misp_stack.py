@@ -34,6 +34,7 @@ import sqlite3
 import stat
 from typing import TYPE_CHECKING, Any
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -74,6 +75,12 @@ _INTERNAL_HOST_SUFFIXES: tuple[str, ...] = (".local", ".internal", ".localhost",
 
 def _allow_loopback_egress() -> bool:
     return os.environ.get("THREATFUSION_ENV", "lab").strip().lower() != "production"
+
+
+def _configured_endpoint_allowlist(url: str) -> tuple[str, ...]:
+    """Return explicit allowlist tuple for an operator-configured service endpoint host."""
+    hostname = (urllib.parse.urlsplit(str(url or "")).hostname or "").strip().lower().rstrip(".")
+    return (hostname,) if hostname else ()
 
 
 def _is_placeholder_or_empty_key(api_key: str | None) -> bool:
@@ -332,6 +339,7 @@ class MispDeterministicClient:
                 timeout=1.0,
                 max_bytes=1_048_576,
                 allow_loopback=_allow_loopback_egress(),
+                allowed_hosts=_configured_endpoint_allowlist(self.misp_url),
             ) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 attrs = data.get("response", {}).get("Attribute", [])
@@ -528,39 +536,10 @@ class TheHiveDeterministicClient:
                 f"TheHive case creation rejected: SOAR record '{soar_record.playbook_id}' "
                 "fields do not match authoritative repository record"
             )
-        has_verified_approval_history = db_record.state in (
-            "approved",
-            "executed_simulated",
-        ) or (
-            db_record.state == "rolled_back"
-            and any(
-                ev.get("new_state") == "approved"
-                for ev in soar_repo.list_audit_events(db_record.playbook_id)
-            )
-        )
-        if not has_verified_approval_history:
+        if db_record.state not in ("approved", "executed_simulated"):
             raise SoarStateTransitionError(
                 f"TheHive case creation rejected: SOAR record '{db_record.playbook_id}' "
                 f"state is '{db_record.state}' (must be approved or executed_simulated)"
-            )
-        if db_record.state == "rolled_back":
-            db_record = SoarPlaybookRecord(
-                playbook_id=db_record.playbook_id,
-                candidate_id=db_record.candidate_id,
-                action_type=db_record.action_type,
-                target_entity=db_record.target_entity,
-                state=soar_record.state,
-                version=soar_record.version,
-                actor_id=db_record.actor_id,
-                decision_reason=db_record.decision_reason,
-                pre_action_snapshot=db_record.pre_action_snapshot,
-                execution_evidence=db_record.execution_evidence,
-                rollback_reason=db_record.rollback_reason,
-                created_at_utc=db_record.created_at_utc,
-                updated_at_utc=db_record.updated_at_utc,
-                t_approval_queued=db_record.t_approval_queued,
-                t_callback_verified=db_record.t_callback_verified,
-                t_response=db_record.t_response,
             )
 
         # 2. Enforce Cryptographic Audit Hash Chain Gate
@@ -674,6 +653,7 @@ class TheHiveDeterministicClient:
                     timeout=1.0,
                     max_bytes=1_048_576,
                     allow_loopback=_allow_loopback_egress(),
+                    allowed_hosts=_configured_endpoint_allowlist(self.thehive_url),
                 ) as resp:
                     if resp.status in (200, 201):
                         status = "created_live"
@@ -857,39 +837,10 @@ class N8nDeterministicPlaybookClient:
                 f"Cannot trigger n8n playbook: record '{soar_record.playbook_id}' "
                 "fields do not match authoritative repository record"
             )
-        has_verified_approval_history = db_record.state in (
-            "approved",
-            "executed_simulated",
-        ) or (
-            db_record.state == "rolled_back"
-            and any(
-                ev.get("new_state") == "approved"
-                for ev in soar_repo.list_audit_events(db_record.playbook_id)
-            )
-        )
-        if not has_verified_approval_history:
+        if db_record.state not in ("approved", "executed_simulated"):
             raise SoarStateTransitionError(
                 f"Cannot trigger n8n playbook: record '{db_record.playbook_id}' "
                 f"state is '{db_record.state}' (must be approved or executed_simulated)"
-            )
-        if db_record.state == "rolled_back":
-            db_record = SoarPlaybookRecord(
-                playbook_id=db_record.playbook_id,
-                candidate_id=db_record.candidate_id,
-                action_type=db_record.action_type,
-                target_entity=db_record.target_entity,
-                state=soar_record.state,
-                version=soar_record.version,
-                actor_id=db_record.actor_id,
-                decision_reason=db_record.decision_reason,
-                pre_action_snapshot=db_record.pre_action_snapshot,
-                execution_evidence=db_record.execution_evidence,
-                rollback_reason=db_record.rollback_reason,
-                created_at_utc=db_record.created_at_utc,
-                updated_at_utc=db_record.updated_at_utc,
-                t_approval_queued=db_record.t_approval_queued,
-                t_callback_verified=db_record.t_callback_verified,
-                t_response=db_record.t_response,
             )
 
         # 2. Enforce Cryptographic Audit Hash Chain Gate
@@ -951,6 +902,7 @@ class N8nDeterministicPlaybookClient:
                 timeout=1.0,
                 max_bytes=1_048_576,
                 allow_loopback=_allow_loopback_egress(),
+                allowed_hosts=_configured_endpoint_allowlist(target_endpoint),
             ) as resp:
                 if resp.status in (200, 201, 204):
                     status = "dispatched_live"

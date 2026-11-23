@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import http.client
 import ipaddress
 import socket
 import ssl
@@ -11,19 +12,25 @@ import urllib.parse
 import urllib.request
 
 _DEFAULT_MAX_BYTES = 1_048_576
-_ALWAYS_BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
+# Cloud metadata / IMDS / link-local / unspecified ranges are NEVER allowed,
+# even when a hostname is explicitly listed in allowed_hosts.
+_METADATA_IMDS_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
     ipaddress.ip_network("0.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("100.64.0.0/10"),
     ipaddress.ip_network("100.100.100.200/32"),
     ipaddress.ip_network("168.63.129.16/32"),
     ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("fc00::/7"),
     ipaddress.ip_network("fe80::/10"),
     ipaddress.ip_network("fd00:ec2::254/128"),
     ipaddress.ip_network("::/128"),
+)
+# RFC1918 / CGNAT / ULA ranges are blocked by default and permitted ONLY for
+# operator-configured hosts explicitly passed via allowed_hosts.
+_PRIVATE_INTERNAL_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("fc00::/7"),
 )
 _INTERNAL_HOST_SUFFIXES: tuple[str, ...] = (
     ".local",
@@ -72,27 +79,34 @@ def _check_ip_allowed(
     addr: ipaddress.IPv4Address | ipaddress.IPv6Address,
     *,
     allow_loopback: bool,
+    allow_private_internal: bool = False,
 ) -> None:
     ip = _unwrap_ip(addr)
-    if ip.is_loopback:
-        if allow_loopback:
-            return
-        raise EgressBlockedError("egress_loopback_blocked")
+    # Cloud metadata / IMDS / link-local / multicast / reserved / unspecified are NEVER allowed.
+    for net in _METADATA_IMDS_NETWORKS:
+        if ip.version == net.version and ip in net:
+            raise EgressBlockedError("egress_metadata_imds_blocked")
     if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
         raise EgressBlockedError("egress_non_global_ip_blocked")
-    for net in _ALWAYS_BLOCKED_NETWORKS:
+    if ip.is_loopback:
+        if allow_loopback or allow_private_internal:
+            return
+        raise EgressBlockedError("egress_loopback_blocked")
+    for net in _PRIVATE_INTERNAL_NETWORKS:
         if ip.version == net.version and ip in net:
+            if allow_private_internal:
+                return
             raise EgressBlockedError("egress_blocked_ip_range")
 
 
-def validate_egress_url(
+def _validate_and_resolve_egress(
     url: str,
     *,
     allowed_schemes: tuple[str, ...] = ("https", "http"),
     allow_loopback: bool = False,
     allowed_hosts: Iterable[str] = (),
-) -> str:
-    """Validate scheme, host, and resolved IPs against SSRF/IMDS/private networks."""
+) -> tuple[str, str, int, list[tuple[int, str]]]:
+    """Validate scheme, host, and resolved IPs, returning pinned (family, ip) targets."""
     raw = str(url or "").strip()
     if not raw or any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
         raise EgressBlockedError("egress_url_invalid")
@@ -116,10 +130,11 @@ def validate_egress_url(
         raise EgressBlockedError("egress_port_invalid") from exc
 
     allowlist = {str(h).strip().lower().rstrip(".") for h in allowed_hosts if str(h).strip()}
-    if allowlist and host_lower not in allowlist:
+    host_in_allowlist = bool(allowlist) and (host_lower in allowlist)
+    if allowlist and not host_in_allowlist:
         raise EgressBlockedError("egress_host_not_allowlisted")
 
-    if host_lower.endswith(_INTERNAL_HOST_SUFFIXES):
+    if host_lower.endswith(_INTERNAL_HOST_SUFFIXES) and not host_in_allowlist:
         raise EgressBlockedError("egress_internal_hostname_blocked")
 
     direct_ip: ipaddress.IPv4Address | ipaddress.IPv6Address | None = None
@@ -129,14 +144,18 @@ def validate_egress_url(
         direct_ip = None
 
     if direct_ip is not None:
-        _check_ip_allowed(direct_ip, allow_loopback=allow_loopback)
+        _check_ip_allowed(
+            direct_ip,
+            allow_loopback=allow_loopback,
+            allow_private_internal=host_in_allowlist,
+        )
     else:
-        if host_lower == "localhost" and not allow_loopback:
+        if host_lower == "localhost" and not (allow_loopback or host_in_allowlist):
             raise EgressBlockedError("egress_loopback_blocked")
         if (
             "." not in host_lower
             and not (allow_loopback and host_lower == "localhost")
-            and not allowlist
+            and not host_in_allowlist
         ):
             raise EgressBlockedError("egress_single_label_host_blocked")
 
@@ -147,7 +166,11 @@ def validate_egress_url(
         raise EgressBlockedError("egress_dns_resolution_failed") from exc
     if not addr_infos:
         raise EgressBlockedError("egress_dns_resolution_failed")
+
+    pinned_addrs: list[tuple[int, str]] = []
+    seen_addrs: set[tuple[int, str]] = set()
     for info in addr_infos:
+        family = int(info[0])
         sockaddr = info[4]
         if not sockaddr:
             continue
@@ -156,8 +179,35 @@ def validate_egress_url(
             resolved_ip = ipaddress.ip_address(resolved_str)
         except ValueError as exc:
             raise EgressBlockedError("egress_dns_resolution_failed") from exc
-        _check_ip_allowed(resolved_ip, allow_loopback=allow_loopback)
+        _check_ip_allowed(
+            resolved_ip,
+            allow_loopback=allow_loopback,
+            allow_private_internal=host_in_allowlist,
+        )
+        key = (family, str(resolved_ip))
+        if key not in seen_addrs:
+            seen_addrs.add(key)
+            pinned_addrs.append(key)
 
+    if not pinned_addrs:
+        raise EgressBlockedError("egress_dns_resolution_failed")
+    return raw, host_lower, lookup_port, pinned_addrs
+
+
+def validate_egress_url(
+    url: str,
+    *,
+    allowed_schemes: tuple[str, ...] = ("https", "http"),
+    allow_loopback: bool = False,
+    allowed_hosts: Iterable[str] = (),
+) -> str:
+    """Validate scheme, host, and resolved IPs against SSRF/IMDS/private networks."""
+    raw, _host, _port, _pinned = _validate_and_resolve_egress(
+        url,
+        allowed_schemes=allowed_schemes,
+        allow_loopback=allow_loopback,
+        allowed_hosts=allowed_hosts,
+    )
     return raw
 
 
@@ -201,6 +251,92 @@ class _BoundedHttpResponse:
         self.close()
 
 
+def _connect_pinned_socket(
+    pinned_addrs: list[tuple[int, str]],
+    port: int,
+    timeout: Any,
+    source_address: tuple[str, int] | None,
+) -> socket.socket:
+    """Open a TCP socket directly to a pre-validated IP without re-resolving DNS."""
+    last_err: OSError | None = None
+    for family, ip_str in pinned_addrs:
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            if family == socket.AF_INET6:
+                sock.connect((ip_str, int(port), 0, 0))
+            else:
+                sock.connect((ip_str, int(port)))
+            return sock
+        except OSError as exc:
+            last_err = exc
+            try:
+                sock.close()
+            except OSError:
+                pass
+    if last_err is not None:
+        raise last_err
+    raise OSError("egress_no_pinned_addresses")
+
+
+def _normalize_conn_host(host: str) -> str:
+    cleaned = str(host or "").strip().lower()
+    if cleaned.startswith("[") and cleaned.endswith("]"):
+        cleaned = cleaned[1:-1]
+    return cleaned.rstrip(".")
+
+
+def _build_pinned_handlers(
+    *,
+    pinned_host: str,
+    pinned_port: int,
+    pinned_addrs: list[tuple[int, str]],
+    ssl_context: ssl.SSLContext | None,
+) -> tuple[urllib.request.HTTPHandler, urllib.request.HTTPSHandler]:
+    """Create HTTP/HTTPS handlers that connect only to validated pinned IPs."""
+
+    class _PinnedHTTPConnection(http.client.HTTPConnection):
+        def connect(self) -> None:
+            if _normalize_conn_host(self.host) != pinned_host or int(self.port) != pinned_port:
+                raise EgressBlockedError("egress_pinned_host_mismatch")
+            self.sock = _connect_pinned_socket(
+                pinned_addrs, self.port, self.timeout, self.source_address
+            )
+
+    class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+        def connect(self) -> None:
+            if _normalize_conn_host(self.host) != pinned_host or int(self.port) != pinned_port:
+                raise EgressBlockedError("egress_pinned_host_mismatch")
+            raw_sock = _connect_pinned_socket(
+                pinned_addrs, self.port, self.timeout, self.source_address
+            )
+            server_hostname = self._tunnel_host if self._tunnel_host else self.host
+            try:
+                self.sock = self._context.wrap_socket(raw_sock, server_hostname=server_hostname)
+            except Exception:
+                try:
+                    raw_sock.close()
+                except OSError:
+                    pass
+                raise
+
+    class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+        def http_open(self, req: urllib.request.Request) -> Any:
+            return self.do_open(_PinnedHTTPConnection, req)
+
+    class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+        def __init__(self, context: ssl.SSLContext | None = None) -> None:
+            super().__init__(context=context)
+
+        def https_open(self, req: urllib.request.Request) -> Any:
+            return self.do_open(_PinnedHTTPSConnection, req, context=self._context)
+
+    return _PinnedHTTPHandler(), _PinnedHTTPSHandler(context=ssl_context)
+
+
 def safe_urlopen(
     req: urllib.request.Request | str,
     *,
@@ -211,19 +347,25 @@ def safe_urlopen(
     allowed_hosts: Iterable[str] = (),
     ssl_context: ssl.SSLContext | None = None,
 ) -> _BoundedHttpResponse:
-    """Validate egress URL, disable redirects/proxies, and enforce bounded response reads."""
+    """Validate egress URL, pin resolved IP, disable redirects/proxies, and cap reads."""
     request = req if isinstance(req, urllib.request.Request) else urllib.request.Request(req)
-    validate_egress_url(
+    _raw_url, pinned_host, pinned_port, pinned_addrs = _validate_and_resolve_egress(
         request.full_url,
         allowed_schemes=allowed_schemes,
         allow_loopback=allow_loopback,
         allowed_hosts=allowed_hosts,
     )
+    pinned_http, pinned_https = _build_pinned_handlers(
+        pinned_host=pinned_host,
+        pinned_port=pinned_port,
+        pinned_addrs=pinned_addrs,
+        ssl_context=ssl_context,
+    )
     handlers: list[urllib.request.BaseHandler] = [
         NoRedirectHandler(),
         urllib.request.ProxyHandler({}),
-        urllib.request.HTTPHandler(),
-        urllib.request.HTTPSHandler(context=ssl_context),
+        pinned_http,
+        pinned_https,
     ]
     opener = urllib.request.build_opener(*handlers)
     resp = opener.open(request, timeout=timeout)

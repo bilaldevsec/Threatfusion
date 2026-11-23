@@ -652,6 +652,9 @@ class SoarPlaybookSqliteRepository:
         actor_id: str,
         reason: str | None = None,
         snapshot: str | None = None,
+        reject_if_sibling_rejected: bool = False,
+        expected_actor_id: str | None = None,
+        verify_audit_chain_in_tx: bool = False,
     ) -> SoarAuditEntry:
         """Atomically CAS-update a playbook record and append its audit event + seal."""
         with self._append_lock:
@@ -659,6 +662,51 @@ class SoarPlaybookSqliteRepository:
             try:
                 conn.isolation_level = None
                 conn.execute("BEGIN IMMEDIATE")
+                if reject_if_sibling_rejected:
+                    sibling_rows = conn.execute(
+                        "SELECT state, version, updated_at_utc FROM soar_playbook_records "
+                        "WHERE candidate_id = ?",
+                        (updated.candidate_id,),
+                    ).fetchall()
+                    if sibling_rows:
+                        latest = max(
+                            sibling_rows,
+                            key=lambda r: (int(r["version"]), str(r["updated_at_utc"] or "")),
+                        )
+                        if str(latest["state"]) == "rejected":
+                            raise ValueError("playbook_already_rejected")
+                if expected_actor_id is not None:
+                    current_row = conn.execute(
+                        "SELECT state, version, actor_id FROM soar_playbook_records "
+                        "WHERE playbook_id = ?",
+                        (updated.playbook_id,),
+                    ).fetchone()
+                    if current_row is None:
+                        raise KeyError(f"Playbook record {updated.playbook_id} not found")
+                    if str(current_row["state"]) != expected_state:
+                        raise SoarStateTransitionError(
+                            f"Cannot transition action {updated.playbook_id} in state "
+                            f"'{current_row['state']}'; expected '{expected_state}'."
+                        )
+                    if int(current_row["version"]) != expected_version:
+                        raise SoarOptimisticConcurrencyError(
+                            f"Optimistic lock conflict on {updated.playbook_id}: "
+                            f"expected version {expected_version}, found {current_row['version']}"
+                        )
+                    if str(current_row["actor_id"] or "") != expected_actor_id:
+                        raise SoarStateTransitionError(
+                            f"Cannot rollback action {updated.playbook_id}: "
+                            "actor does not match the executor."
+                        )
+                if verify_audit_chain_in_tx:
+                    chain_ok, chain_message = self._verify_audit_chain_in_tx(
+                        conn, updated.playbook_id, require_non_empty=True
+                    )
+                    if not chain_ok:
+                        raise SoarStateTransitionError(
+                            f"Cannot rollback action {updated.playbook_id}: "
+                            f"audit chain verification failed ({chain_message})."
+                        )
                 cur = conn.execute(
                     """
                     UPDATE soar_playbook_records
@@ -884,6 +932,14 @@ class SoarPlaybookSqliteRepository:
                         """,
                         (len(rows), previous, seal),
                     )
+                # Recreate append-only update trigger atomically BEFORE COMMIT so it is never absent.
+                conn.execute("""
+                    CREATE TRIGGER IF NOT EXISTS soar_audit_events_append_only_update
+                    BEFORE UPDATE ON soar_audit_events
+                    BEGIN
+                        SELECT RAISE(ABORT, 'soar_audit_ledger_append_only');
+                    END
+                    """)
                 conn.execute("COMMIT")
             except Exception:
                 try:
@@ -892,20 +948,33 @@ class SoarPlaybookSqliteRepository:
                     pass
                 raise
             finally:
-                try:
-                    conn.execute("""
-                        CREATE TRIGGER IF NOT EXISTS soar_audit_events_append_only_update
-                        BEFORE UPDATE ON soar_audit_events
-                        BEGIN
-                            SELECT RAISE(ABORT, 'soar_audit_ledger_append_only');
-                        END
-                        """)
-                    conn.commit()
-                except sqlite3.Error:
-                    pass
                 conn.close()
+                harden_sqlite_permissions(self.db_path)
         verified, _message = self.verify_audit_chain_integrity(require_non_empty=False)
         return verified or _message == "empty ledger"
+
+    def _verify_audit_chain_in_tx(
+        self,
+        conn: sqlite3.Connection,
+        playbook_id: str | None = None,
+        *,
+        require_non_empty: bool = True,
+    ) -> tuple[bool, str]:
+        """Verify keyed hash chain and head seal on an active transaction connection."""
+        if not self._ledger_secret:
+            return False, "missing_ledger_secret"
+        cursor = conn.execute("SELECT * FROM soar_audit_events ORDER BY rowid ASC")
+        all_rows = cursor.fetchall()
+        seal_row = conn.execute(
+            "SELECT expected_count, head_entry_sha256, head_seal_hmac "
+            "FROM soar_ledger_head_seal WHERE seal_id = 1"
+        ).fetchone()
+        return self._evaluate_audit_chain_rows(
+            all_rows,
+            seal_row,
+            playbook_id=playbook_id,
+            require_non_empty=require_non_empty,
+        )
 
     def verify_audit_chain_integrity(
         self,
@@ -925,12 +994,11 @@ class SoarPlaybookSqliteRepository:
             try:
                 conn.isolation_level = None
                 conn.execute("BEGIN DEFERRED")
-                cursor = conn.execute("SELECT * FROM soar_audit_events ORDER BY rowid ASC")
-                all_rows = cursor.fetchall()
-                seal_row = conn.execute(
-                    "SELECT expected_count, head_entry_sha256, head_seal_hmac "
-                    "FROM soar_ledger_head_seal WHERE seal_id = 1"
-                ).fetchone()
+                result = self._verify_audit_chain_in_tx(
+                    conn,
+                    playbook_id=playbook_id,
+                    require_non_empty=require_non_empty,
+                )
                 conn.execute("COMMIT")
             except Exception:
                 try:
@@ -940,7 +1008,16 @@ class SoarPlaybookSqliteRepository:
                 raise
             finally:
                 conn.close()
+        return result
 
+    def _evaluate_audit_chain_rows(
+        self,
+        all_rows: list[sqlite3.Row],
+        seal_row: sqlite3.Row | None,
+        *,
+        playbook_id: str | None = None,
+        require_non_empty: bool = True,
+    ) -> tuple[bool, str]:
         if not all_rows:
             return False, "empty ledger"
         if require_non_empty and seal_row is None:
@@ -1302,6 +1379,7 @@ class ApprovalGatedSoarEngine:
             action=f"analyst_{decision}",
             actor_id=actor_id,
             reason=reason,
+            reject_if_sibling_rejected=(decision == "approve"),
         )
         return updated
 
@@ -1463,5 +1541,7 @@ class ApprovalGatedSoarEngine:
             actor_id=actor_id,
             reason=rollback_reason,
             snapshot=record.pre_action_snapshot,
+            expected_actor_id=actor_id.strip(),
+            verify_audit_chain_in_tx=True,
         )
         return updated

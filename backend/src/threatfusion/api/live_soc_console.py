@@ -9122,16 +9122,17 @@ def _resolve_entra_jwk(kid: str) -> tuple[dict[str, Any] | None, str]:
 
         # If cache is already warm for this source and an unknown kid arrives within the
         # 5-minute single-flight cooldown window, refuse upstream refetch to prevent DoS.
+        is_unknown_kid_refresh = (
+            not source_changed and _ENTRA_JWKS_LOADED_AT > 0.0 and not ttl_expired
+        )
         if (
-            not source_changed
-            and _ENTRA_JWKS_LOADED_AT > 0.0
-            and not ttl_expired
+            is_unknown_kid_refresh
             and (now_mono - _ENTRA_JWKS_LAST_UNKNOWN_KID_REFRESH)
             < _ENTRA_JWKS_UNKNOWN_KID_COOLDOWN_SECONDS
         ):
             return None, "entra_jwks_kid_not_found"
 
-        if not source_changed and _ENTRA_JWKS_LOADED_AT > 0.0:
+        if is_unknown_kid_refresh:
             _ENTRA_JWKS_LAST_UNKNOWN_KID_REFRESH = now_mono
 
         try:
@@ -9146,12 +9147,12 @@ def _resolve_entra_jwk(kid: str) -> tuple[dict[str, Any] | None, str]:
         ):
             return None, "entra_jwks_fetch_failed"
 
+        if source_changed:
+            _ENTRA_JWKS_LAST_UNKNOWN_KID_REFRESH = -1000.0
         _ENTRA_JWKS_KEYS_BY_KID.clear()
         _ENTRA_JWKS_KEYS_BY_KID.update(loaded)
         _ENTRA_JWKS_SOURCE = source_key
         _ENTRA_JWKS_LOADED_AT = now_mono
-        if _ENTRA_JWKS_LAST_UNKNOWN_KID_REFRESH < 0.0:
-            _ENTRA_JWKS_LAST_UNKNOWN_KID_REFRESH = now_mono
         found = _ENTRA_JWKS_KEYS_BY_KID.get(clean_kid)
         if found is None:
             _ENTRA_JWKS_LAST_UNKNOWN_KID_REFRESH = now_mono
@@ -9246,16 +9247,26 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
             refused["reason"] = "entra_token_not_yet_valid"
             return refused
     expected_iss = os.environ.get("THREATFUSION_ENTRA_ISSUER", "").strip()
+    if is_prod and not expected_iss:
+        refused["reason"] = "entra_issuer_unconfigured"
+        return refused
     if expected_iss and str(claims.get("iss") or "").strip() != expected_iss:
         refused["reason"] = "entra_issuer_mismatch"
         return refused
     expected_aud = os.environ.get("THREATFUSION_ENTRA_AUDIENCE", "").strip()
+    if is_prod and not expected_aud:
+        refused["reason"] = "entra_audience_unconfigured"
+        return refused
     if expected_aud:
         aud = claims.get("aud")
         aud_values = [aud] if isinstance(aud, str) else (aud if isinstance(aud, list) else [])
         if expected_aud not in [str(item).strip() for item in aud_values]:
             refused["reason"] = "entra_audience_mismatch"
             return refused
+    expected_tenant = _entra_tenant_id()
+    if is_prod and not expected_tenant:
+        refused["reason"] = "entra_tenant_unconfigured"
+        return refused
 
     jwks_signature_checked = False
     if jwks_configured:

@@ -493,8 +493,6 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         return headers
 
     def _extract_session_cookie(self) -> str:
-        import http.cookies
-
         raw_cookie = self.headers.get("Cookie")
         if not raw_cookie:
             return ""
@@ -502,29 +500,27 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
 
         is_prod = threatfusion_environment() == "production"
         is_https = self._is_https_request()
-        jar = http.cookies.SimpleCookie()
-        try:
-            jar.load(str(raw_cookie))
-        except (http.cookies.CookieError, ValueError):
-            for part in str(raw_cookie).split(";"):
-                if "=" not in part:
-                    continue
-                k, v = part.split("=", 1)
-                name = k.strip()
-                val = v.strip()
-                if name == "__Host-tf_session" and val and (is_https or not is_prod):
-                    return val
-                if name == "tf_session" and val:
-                    return val
-            return ""
-        if "__Host-tf_session" in jar and (is_https or not is_prod):
-            val = jar["__Host-tf_session"].value.strip()
-            if val:
-                return val
-        if "tf_session" in jar:
-            val = jar["tf_session"].value.strip()
-            if val:
-                return val
+        strict_host_only = is_prod and is_https
+        host_val = ""
+        plain_val = ""
+        # Parse semicolon-delimited Cookie pairs directly so an unrelated malformed
+        # cookie cannot cause http.cookies.SimpleCookie.load() to silently truncate.
+        for part in str(raw_cookie).split(";"):
+            if "=" not in part:
+                continue
+            k, v = part.split("=", 1)
+            name = k.strip()
+            val = v.strip()
+            if len(val) >= 2 and val[0] == '"' and val[-1] == '"':
+                val = val[1:-1].strip()
+            if name == "__Host-tf_session" and val and not host_val:
+                host_val = val
+            elif name == "tf_session" and val and not plain_val:
+                plain_val = val
+        if host_val and (is_https or not is_prod):
+            return host_val
+        if plain_val and not strict_host_only:
+            return plain_val
         return ""
 
     def _write_security_headers(self, *, cache_no_store: bool) -> None:
@@ -1137,7 +1133,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         return True
 
     def _live_write_authorized(self) -> bool:
-        """Accept the session/process CSRF token, configured write token, or non-prod pytest header."""
+        """Accept per-session CSRF (strict in production), configured write token, or non-prod tokens."""
         from threatfusion.api.live_soc_console import _session_row
         from threatfusion.operations.commercial_hardening import threatfusion_environment
 
@@ -1153,6 +1149,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             and hmac.compare_digest(presented, session_csrf)
         ):
             return True
+        if is_prod:
+            # In production, never fall back to static process-wide _LIVE_CSRF_TOKEN.
+            if session_row is not None and session_csrf:
+                return False
+            return live_write_token_matches(self.headers.get("Authorization"))
         if (
             presented
             and len(presented) == len(_LIVE_CSRF_TOKEN)
@@ -1161,7 +1162,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return True
         if live_write_token_matches(self.headers.get("Authorization")):
             return True
-        if is_prod or not os.environ.get("PYTEST_CURRENT_TEST") or ("pytest" not in sys.modules):
+        if not os.environ.get("PYTEST_CURRENT_TEST") or ("pytest" not in sys.modules):
             return False
         test_client = (self.headers.get("X-ThreatFusion-Test-Client") or "").strip()
         return bool(
@@ -1271,21 +1272,25 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         return self._explicit_browser_origin_allowed()
 
     def _send_console_index(self) -> None:
-        """Serve the console page with the process CSRF token embedded for this browser."""
+        """Serve the console page; embed process CSRF only outside production."""
         index_path = REPO_ROOT / "frontend" / "index.html"
         if not index_path.is_file():
             self._send_json(404, {"error": "Not Found", "path": str(index_path)})
             return
         page = index_path.read_text(encoding="utf-8")
-        from threatfusion.operations.commercial_hardening import apply_posture_to_index
+        from threatfusion.operations.commercial_hardening import (
+            apply_posture_to_index,
+            threatfusion_environment,
+        )
 
         page = apply_posture_to_index(page)
-        token = html.escape(_LIVE_CSRF_TOKEN, quote=True)
-        meta = f'<meta name="threatfusion-csrf-token" content="{token}">'
-        if "<head>" in page:
-            page = page.replace("<head>", "<head>\n  " + meta, 1)
-        else:
-            page = meta + page
+        if threatfusion_environment() != "production":
+            token = html.escape(_LIVE_CSRF_TOKEN, quote=True)
+            meta = f'<meta name="threatfusion-csrf-token" content="{token}">'
+            if "<head>" in page:
+                page = page.replace("<head>", "<head>\n  " + meta, 1)
+            else:
+                page = meta + page
         content = page.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1380,15 +1385,6 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
         if self._rejected_duplicate_json_keys(body_bytes):
             return
-        if self._csrf_origin_rejected(path):
-            return
-        if (
-            path.startswith(("/api/v1/live/", "/api/soar/", "/api/range/", "/api/rbac/"))
-            and path != "/api/v1/live/sensor"
-            and not self._live_write_authorized()
-        ):
-            self._send_json(401, {"error": "write_token_required"})
-            return
         if path == "/api/v1/live/operator/enroll":
             from threatfusion.operations.commercial_hardening import threatfusion_environment
 
@@ -1404,6 +1400,15 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                     },
                 )
                 return
+        if self._csrf_origin_rejected(path):
+            return
+        if (
+            path.startswith(("/api/v1/live/", "/api/soar/", "/api/range/", "/api/rbac/"))
+            and path not in {"/api/v1/live/sensor", "/api/rbac/login"}
+            and not self._live_write_authorized()
+        ):
+            self._send_json(401, {"error": "write_token_required"})
+            return
         if self._production_auth_rejected(path, method="POST"):
             return
 

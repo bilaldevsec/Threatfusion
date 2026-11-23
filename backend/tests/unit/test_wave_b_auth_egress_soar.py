@@ -227,19 +227,22 @@ def test_http_only_cookie_localhost_vs_production_and_route_auth(
             urllib.request.urlopen(pytest_bypass_req, timeout=5.0)
         assert exc_info.value.code == 401
 
-        # /api/v1/live/operator/enroll is disabled (403) in production
+        # /api/v1/live/operator/enroll is disabled (403) in production (no CSRF token needed)
         enroll_req = urllib.request.Request(
             f"{base}/api/v1/live/operator/enroll",
             data=json.dumps({"actor_id": "lab_operator"}).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "X-ThreatFusion-CSRF": mod._LIVE_CSRF_TOKEN,
-            },
+            headers={"Content-Type": "application/json"},
             method="POST",
         )
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(enroll_req, timeout=5.0)
         assert exc_info.value.code == 403
+
+        # GET / in production must NOT embed static _LIVE_CSRF_TOKEN
+        with urllib.request.urlopen(f"{base}/", timeout=5.0) as resp:
+            index_html = resp.read().decode("utf-8")
+        assert 'name="threatfusion-csrf-token"' not in index_html
+        assert mod._LIVE_CSRF_TOKEN not in index_html
 
         # Production login behind trusted HTTPS proxy sets __Host-tf_session; Secure
         prod_login_req = urllib.request.Request(
@@ -252,7 +255,7 @@ def test_http_only_cookie_localhost_vs_production_and_route_auth(
             ).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
-                "X-ThreatFusion-CSRF": mod._LIVE_CSRF_TOKEN,
+                "Origin": f"https://127.0.0.1:{port}",
                 "X-Forwarded-Proto": "https",
             },
             method="POST",
@@ -265,7 +268,10 @@ def test_http_only_cookie_localhost_vs_production_and_route_auth(
         assert "HttpOnly" in prod_cookie
         assert "SameSite=Strict" in prod_cookie
         assert "session_token" not in prod_body
+        prod_csrf = str(prod_body.get("csrf_token") or "")
+        assert prod_csrf
         prod_cookie_pair = prod_cookie.split(";", 1)[0]
+        prod_raw_token = prod_cookie_pair.split("=", 1)[1]
 
         # Authenticated production GET succeeds with __Host-tf_session cookie
         prod_queue_req = urllib.request.Request(
@@ -273,6 +279,57 @@ def test_http_only_cookie_localhost_vs_production_and_route_auth(
             headers={"Cookie": prod_cookie_pair, "X-Forwarded-Proto": "https"},
         )
         with urllib.request.urlopen(prod_queue_req, timeout=5.0) as resp:
+            assert resp.status == 200
+
+        # Cookie downgrade rejected: plain tf_session is refused on production HTTPS
+        downgraded_req = urllib.request.Request(
+            f"{base}/api/v1/live/queue",
+            headers={"Cookie": f"tf_session={prod_raw_token}", "X-Forwarded-Proto": "https"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(downgraded_req, timeout=5.0)
+        assert exc_info.value.code == 401
+
+        # Fallback cookie parser prioritizes __Host-tf_session over tossed plain tf_session
+        tossed_req = urllib.request.Request(
+            f"{base}/api/v1/live/queue",
+            headers={
+                "Cookie": f"bad cookie=1; tf_session=attacker_tok; {prod_cookie_pair}",
+                "X-Forwarded-Proto": "https",
+            },
+        )
+        with urllib.request.urlopen(tossed_req, timeout=5.0) as resp:
+            assert resp.status == 200
+
+        # Per-session CSRF in production: static _LIVE_CSRF_TOKEN is rejected (401),
+        # while the session-bound csrf_token succeeds (200)
+        static_csrf_post = urllib.request.Request(
+            f"{base}/api/v1/live/purge-bridge-noise",
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "Cookie": prod_cookie_pair,
+                "X-Forwarded-Proto": "https",
+                "X-ThreatFusion-CSRF": mod._LIVE_CSRF_TOKEN,
+            },
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(static_csrf_post, timeout=5.0)
+        assert exc_info.value.code == 401
+
+        session_csrf_post = urllib.request.Request(
+            f"{base}/api/v1/live/purge-bridge-noise",
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "Cookie": prod_cookie_pair,
+                "X-Forwarded-Proto": "https",
+                "X-ThreatFusion-CSRF": prod_csrf,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(session_csrf_post, timeout=5.0) as resp:
             assert resp.status == 200
     finally:
         server.shutdown()
@@ -367,7 +424,7 @@ def test_rs256_entra_jwks_verification_and_unknown_kid_cooldown(
         assert bad_alg["http_status"] == 401
         assert bad_alg["reason"] == "entra_alg_rejected"
 
-        # Unknown kid storm is blocked by 5-minute single-flight cooldown (0 extra HTTP fetches)
+        # Unknown kid storm triggers at most 1 single-flight refresh, then cooldown blocks the rest
         for idx in range(5):
             unknown_jwt = _sign_rs256_jwt(
                 key_path,
@@ -377,7 +434,7 @@ def test_rs256_entra_jwks_verification_and_unknown_kid_cooldown(
             res = verify_entra_token(live_db, unknown_jwt)
             assert res["http_status"] == 401
             assert res["reason"] == "entra_jwks_kid_not_found"
-        assert fetch_counter["count"] == 1
+        assert fetch_counter["count"] == 2
     finally:
         server.shutdown()
         server.server_close()
@@ -611,3 +668,331 @@ def test_sqlite_0600_permissions_and_bootstrap_secrets(
         text=True,
     )
     assert bad_proc.returncode != 0
+
+
+def test_wave_b1_allowlisted_internal_docker_egress_imds_block_and_dns_pinning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import socket
+
+    # 1. Explicit allowed_hosts permits .internal and RFC1918 Docker service hosts,
+    # while STILL blocking IMDS/cloud metadata even if placed in allowed_hosts.
+    def _fake_getaddrinfo_docker(host: str, port: int, *args: object, **kwargs: object) -> list:
+        mapping = {
+            "host.docker.internal": "172.17.0.1",
+            "n8n": "172.29.0.50",
+            "imds-alias.internal": "169.254.169.254",
+            "ecs-imds.internal": "169.254.170.2",
+            "azure-wire.internal": "168.63.129.16",
+            "ali-imds.internal": "100.100.100.200",
+        }
+        ip = mapping.get(host, host)
+        family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+        return [(family, socket.SOCK_STREAM, 6, "", (ip, int(port)))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo_docker)
+
+    assert (
+        validate_egress_url(
+            "http://host.docker.internal:8766/api/v1/soar/callback",
+            allowed_hosts=("host.docker.internal",),
+        )
+        == "http://host.docker.internal:8766/api/v1/soar/callback"
+    )
+    assert (
+        validate_egress_url(
+            "http://n8n:5678/webhook/threatfusion-live-console",
+            allowed_hosts=("n8n",),
+        )
+        == "http://n8n:5678/webhook/threatfusion-live-console"
+    )
+
+    for imds_url, imds_host in (
+        ("http://imds-alias.internal/latest/meta-data", "imds-alias.internal"),
+        ("http://ecs-imds.internal/v2/credentials", "ecs-imds.internal"),
+        ("http://azure-wire.internal/machine", "azure-wire.internal"),
+        ("http://ali-imds.internal/latest/meta-data", "ali-imds.internal"),
+        ("http://169.254.169.254/latest/meta-data", "169.254.169.254"),
+        ("http://[fd00:ec2::254]/latest/meta-data", "fd00:ec2::254"),
+    ):
+        with pytest.raises(EgressBlockedError, match="egress_metadata_imds_blocked"):
+            validate_egress_url(imds_url, allowed_hosts=(imds_host,), allow_loopback=True)
+
+    # 2. DNS-rebinding protection: safe_urlopen resolves DNS strictly once and pins the IP
+    # while preserving the original Host header.
+    seen_host_headers: list[str] = []
+
+    class _EchoHostHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            seen_host_headers.append(str(self.headers.get("Host") or ""))
+            payload = b'{"pinned":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            return
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _EchoHostHandler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    port = int(srv.server_address[1])
+    dns_calls = {"count": 0}
+
+    def _rebinding_getaddrinfo(host: str, p: int, *args: object, **kwargs: object) -> list:
+        dns_calls["count"] += 1
+        # Call #1 returns allowlisted 127.0.0.1; a second lookup would rebind to IMDS!
+        target_ip = "127.0.0.1" if dns_calls["count"] == 1 else "169.254.169.254"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (target_ip, int(p)))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _rebinding_getaddrinfo)
+    try:
+        with safe_urlopen(
+            f"http://rebind-test.example:{port}/check",
+            allow_loopback=True,
+            allowed_hosts=("rebind-test.example",),
+        ) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        assert data == {"pinned": True}
+        assert dns_calls["count"] == 1
+        assert seen_host_headers == [f"rebind-test.example:{port}"]
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)
+
+
+def test_wave_b1_entra_first_rotation_and_production_claim_enforcement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reset_entra_jwks_cache()
+    live_db = tmp_path / "entra_rot.sqlite3"
+    key1_path, jwk1 = _generate_rsa_keypair_and_jwk(tmp_path, kid="kid-rot-1")
+    key2_path, jwk2 = _generate_rsa_keypair_and_jwk(tmp_path, kid="kid-rot-2")
+    active_jwks = {"keys": [jwk1]}
+    fetch_count = {"n": 0}
+
+    class _RotatingJwksHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            fetch_count["n"] += 1
+            body = json.dumps(active_jwks).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            return
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _RotatingJwksHandler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    port = int(srv.server_address[1])
+    try:
+        monkeypatch.setenv("THREATFUSION_ENV", "lab")
+        monkeypatch.setenv("THREATFUSION_ENTRA_JWKS_URL", f"http://127.0.0.1:{port}/keys")
+        now = int(time.time())
+        tenant_id = "00000000-0000-0000-0000-000000000001"
+        issuer = f"https://login.microsoftonline.com/{tenant_id}/v2.0"
+        audience = "api://threatfusion-soc-prod"
+        claims = {
+            "tid": tenant_id,
+            "oid": "9a1f8c22-3b88-4d19-9e66-33c7d1f9e101",
+            "upn": "approver@threatfusion.local",
+            "roles": ["SOC.Commander.Approver"],
+            "exp": now + 600,
+            "nbf": now - 10,
+            "iss": issuer,
+            "aud": audience,
+        }
+        jwt1 = _sign_rs256_jwt(
+            key1_path, {"alg": "RS256", "typ": "JWT", "kid": "kid-rot-1"}, claims
+        )
+        res1 = verify_entra_token(live_db, jwt1)
+        assert res1["http_status"] == 200
+        assert fetch_count["n"] == 1
+
+        # Immediately rotate signing key within 5 min of warm-up: MUST refresh once and succeed
+        active_jwks["keys"] = [jwk1, jwk2]
+        jwt2 = _sign_rs256_jwt(
+            key2_path, {"alg": "RS256", "typ": "JWT", "kid": "kid-rot-2"}, claims
+        )
+        res2 = verify_entra_token(live_db, jwt2)
+        assert res2["http_status"] == 200
+        assert res2["jwks_signature_checked"] is True
+        assert fetch_count["n"] == 2
+
+        # Production mode requires issuer, audience, and tenant_id to be explicitly configured
+        monkeypatch.setenv("THREATFUSION_ENV", "production")
+        monkeypatch.setenv("THREATFUSION_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("THREATFUSION_ENTRA_JWKS_JSON", json.dumps(active_jwks))
+        monkeypatch.delenv("THREATFUSION_ENTRA_JWKS_URL", raising=False)
+        monkeypatch.delenv("THREATFUSION_ENTRA_ISSUER", raising=False)
+        monkeypatch.delenv("THREATFUSION_ENTRA_AUDIENCE", raising=False)
+        monkeypatch.delenv("THREATFUSION_ENTRA_TENANT_ID", raising=False)
+        monkeypatch.delenv("AZURE_TENANT_ID", raising=False)
+
+        no_iss = verify_entra_token(live_db, jwt2)
+        assert no_iss["http_status"] == 401
+        assert no_iss["reason"] == "entra_issuer_unconfigured"
+
+        monkeypatch.setenv("THREATFUSION_ENTRA_ISSUER", issuer)
+        no_aud = verify_entra_token(live_db, jwt2)
+        assert no_aud["http_status"] == 401
+        assert no_aud["reason"] == "entra_audience_unconfigured"
+
+        monkeypatch.setenv("THREATFUSION_ENTRA_AUDIENCE", audience)
+        no_tid = verify_entra_token(live_db, jwt2)
+        assert no_tid["http_status"] == 401
+        assert no_tid["reason"] == "entra_tenant_unconfigured"
+
+        monkeypatch.setenv("THREATFUSION_ENTRA_TENANT_ID", tenant_id)
+        prod_ok = verify_entra_token(live_db, jwt2)
+        assert prod_ok["http_status"] == 200
+        assert prod_ok["jwks_signature_checked"] is True
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)
+        reset_entra_jwks_cache()
+
+
+def test_wave_b1_soar_atomic_reseal_trigger_and_rolled_back_redispatch_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    soar_db = tmp_path / "soar_b1.sqlite3"
+    repo = SoarPlaybookSqliteRepository(soar_db, ledger_secret="wave_b1_initial_hmac_secret_32by")
+    engine = ApprovalGatedSoarEngine(repo)
+    rec = engine.recommend_actions_for_alert("cand_b1_1", None)[0]
+    approved = engine.decide_recommendation(
+        rec.playbook_id,
+        actor_id="approver_b1",
+        decision="approve",
+        reason="Verified attack for Wave B.1",
+        expected_version=1,
+    )
+    executed = engine.execute_approved_action(
+        rec.playbook_id,
+        actor_id="approver_b1",
+        expected_version=2,
+    )
+
+    # Atomic reseal under new secret preserves append-only UPDATE trigger immediately after commit
+    repo_rotated = SoarPlaybookSqliteRepository(
+        soar_db, ledger_secret="wave_b1_rotated_hmac_secret_32by"
+    )
+    assert repo_rotated.reseal_audit_chain_with_current_secret() is True
+    with sqlite3.connect(soar_db) as conn:
+        trig = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' "
+            "AND name='soar_audit_events_append_only_update'"
+        ).fetchone()
+        assert trig is not None
+        with pytest.raises(sqlite3.IntegrityError, match="soar_audit_ledger_append_only"):
+            conn.execute("UPDATE soar_audit_events SET reason = 'tampered' WHERE rowid = 1")
+
+    # Rollback closes the playbook; stale approved/executed records must NEVER re-dispatch
+    engine_rot = ApprovalGatedSoarEngine(repo_rotated)
+    rolled_back = engine_rot.rollback_executed_action(
+        rec.playbook_id,
+        actor_id="approver_b1",
+        rollback_reason="Containment lifted",
+        expected_version=3,
+    )
+    assert rolled_back.state == "rolled_back"
+
+    hive = TheHiveDeterministicClient(outbox_db_path=tmp_path / "outbox_b1.sqlite3")
+    n8n = N8nDeterministicPlaybookClient(
+        secret_key="wave_b1_rotated_hmac_secret_32by",
+        outbox_db_path=tmp_path / "outbox_b1.sqlite3",
+    )
+    for stale_record in (approved, executed):
+        with pytest.raises(SoarStateTransitionError, match="rolled_back"):
+            hive.create_case_from_soar(
+                soar_record=stale_record,
+                soar_repo=repo_rotated,
+                rf_confidence_pct=94.0,
+            )
+        with pytest.raises(SoarStateTransitionError, match="rolled_back"):
+            n8n.trigger_soar_playbook(
+                soar_record=stale_record,
+                soar_repo=repo_rotated,
+                rf_confidence_pct=94.0,
+            )
+
+    # Production configured loopback endpoints for MISP/TheHive/n8n succeed via explicit allowlist
+    received_paths: list[str] = []
+
+    class _SoarStackStub(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            received_paths.append(self.path)
+            _len = int(self.headers.get("Content-Length") or 0)
+            if _len:
+                self.rfile.read(_len)
+            body = json.dumps({"response": {"Attribute": []}}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            return
+
+    stub_srv = ThreadingHTTPServer(("127.0.0.1", 0), _SoarStackStub)
+    stub_thread = threading.Thread(target=stub_srv.serve_forever, daemon=True)
+    stub_thread.start()
+    stub_port = int(stub_srv.server_address[1])
+    try:
+        monkeypatch.setenv("THREATFUSION_ENV", "production")
+        rec2 = engine_rot.recommend_actions_for_alert("cand_b1_2", None)[0]
+        approved2 = engine_rot.decide_recommendation(
+            rec2.playbook_id,
+            actor_id="approver_b1",
+            decision="approve",
+            reason="Production loopback endpoint test",
+            expected_version=1,
+        )
+        misp_prod = MispDeterministicClient(
+            misp_url=f"http://127.0.0.1:{stub_port}",
+            api_key="prod_misp_real_key_32_characters_ok",
+            outbox_db_path=tmp_path / "outbox_b1.sqlite3",
+        )
+        misp_res = misp_prod.query_indicator(
+            "44d88612fea8a8f36de82e1278abb02f", indicator_type="md5"
+        )
+        assert misp_res.query_mode == "rest_api"
+
+        hive_prod = TheHiveDeterministicClient(
+            thehive_url=f"http://127.0.0.1:{stub_port}",
+            api_key="prod_thehive_real_key_32_chars_ok",
+            outbox_db_path=tmp_path / "outbox_b1.sqlite3",
+        )
+        hive_res = hive_prod.create_case_from_soar(
+            soar_record=approved2,
+            soar_repo=repo_rotated,
+            rf_confidence_pct=92.0,
+        )
+        assert hive_res.status == "created_live"
+
+        n8n_prod = N8nDeterministicPlaybookClient(
+            webhook_url=f"http://127.0.0.1:{stub_port}",
+            secret_key="wave_b1_rotated_hmac_secret_32by",
+            outbox_db_path=tmp_path / "outbox_b1.sqlite3",
+        )
+        n8n_res = n8n_prod.trigger_soar_playbook(
+            soar_record=approved2,
+            soar_repo=repo_rotated,
+            rf_confidence_pct=92.0,
+        )
+        assert n8n_res.status == "dispatched_live"
+        assert "/attributes/restSearch" in received_paths
+        assert "/api/v1/case" in received_paths
+        assert "/webhook/threatfusion-soar-approved" in received_paths
+    finally:
+        stub_srv.shutdown()
+        stub_srv.server_close()
+        stub_thread.join(timeout=5)

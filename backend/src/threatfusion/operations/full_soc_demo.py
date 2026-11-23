@@ -389,23 +389,6 @@ def run_full_soc_demo(output_dir: Path | str) -> dict[str, Any]:
     assert executed_action.state == "executed_simulated"
     assert executed_action.version == 3
 
-    # Reversible Rollback
-    rolled_back_action = soar_engine.rollback_executed_action(
-        playbook_id=soar_action.playbook_id,
-        actor_id="soc-approver",
-        rollback_reason="Lab exercise complete; unblocking attacker VM.",
-        expected_version=3,
-    )
-    assert rolled_back_action.state == "rolled_back"
-    assert rolled_back_action.version == 4
-
-    soar_audit = track_b_soar_repo.list_audit_entries(soar_action.playbook_id)
-
-    # High-Leverage M30: Cryptographic SOAR Hash Chain Verification
-    chain_ok, chain_msg = track_b_soar_repo.verify_audit_chain_integrity(soar_action.playbook_id)
-    assert chain_ok is True
-    chain_head_sha256 = soar_audit[-1].entry_sha256 if soar_audit else ("0" * 64)
-
     # High-Leverage M30: Non-Fused AE Queue Priority Ranker
     triage_alerts_b = [
         {
@@ -444,10 +427,10 @@ def run_full_soc_demo(output_dir: Path | str) -> dict[str, Any]:
         assert misp_hash_res.query_mode == "offline_snapshot_unverified"
         assert misp_hash_res.matched is False
 
-    # Milestone #32: Deterministic TheHive Case Creation (Approval-Gated)
+    # Milestone #32: Deterministic TheHive Case Creation (Approval-Gated, before rollback)
     thehive_client = TheHiveDeterministicClient(outbox_db_path=soar_outbox_db)
     thehive_case = thehive_client.create_case_from_soar(
-        soar_record=approved_action,
+        soar_record=executed_action,
         soar_repo=track_b_soar_repo,
         rf_confidence_pct=prob_b * 100.0,
         queue_priority_rank=ranked_triage_queue_b[0]["queue_priority_rank"],
@@ -466,7 +449,7 @@ def run_full_soc_demo(output_dir: Path | str) -> dict[str, Any]:
         secret_key=soar_hmac_secret, outbox_db_path=soar_outbox_db
     )
     n8n_receipt = n8n_client.trigger_soar_playbook(
-        soar_record=approved_action,
+        soar_record=executed_action,
         soar_repo=track_b_soar_repo,
         rf_confidence_pct=prob_b * 100.0,
         queue_priority_rank=ranked_triage_queue_b[0]["queue_priority_rank"],
@@ -477,6 +460,23 @@ def run_full_soc_demo(output_dir: Path | str) -> dict[str, Any]:
     assert n8n_receipt.execution_id.startswith("exec_")
     assert n8n_receipt.status in ("dispatched_live", "queued_durable_outbox")
     assert len(n8n_receipt.signature_sha256) == 64
+
+    # Reversible Rollback (closes lab exercise; subsequent dispatches fail closed)
+    rolled_back_action = soar_engine.rollback_executed_action(
+        playbook_id=soar_action.playbook_id,
+        actor_id="soc-approver",
+        rollback_reason="Lab exercise complete; unblocking attacker VM.",
+        expected_version=3,
+    )
+    assert rolled_back_action.state == "rolled_back"
+    assert rolled_back_action.version == 4
+
+    soar_audit = track_b_soar_repo.list_audit_entries(soar_action.playbook_id)
+
+    # High-Leverage M30: Cryptographic SOAR Hash Chain Verification
+    chain_ok, chain_msg = track_b_soar_repo.verify_audit_chain_integrity(soar_action.playbook_id)
+    assert chain_ok is True
+    chain_head_sha256 = soar_audit[-1].entry_sha256 if soar_audit else ("0" * 64)
 
     # B8: Section 13.F Alert-Fatigue Compression Report
     track_b_compression = evaluate_alert_fatigue_compression(
