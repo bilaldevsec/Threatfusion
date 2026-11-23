@@ -238,6 +238,27 @@
   display: block;
   width: 100%;
   margin: 0.35rem 0 0.7rem;
+  background: #151923;
+  color: #f8fafc;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 0.35rem 0.55rem;
+  color-scheme: dark;
+}
+
+.identity-modal-card button {
+  background: #151923;
+  color: #f8fafc;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  min-height: 30px;
+  padding: 0.3rem 0.65rem;
+  cursor: pointer;
+}
+
+.identity-modal-card button:hover {
+  background: #1d2331;
+  border-color: #06B6D4;
 }
 
 .demo-credential-box {

@@ -1697,9 +1697,9 @@ class TestMilestone36ArchitecturalElevation:
             "10.0.0.5",
         }
 
-        # Hallucinated MITRE ID rejected -> falls back closed to canonical indexed technique
-        assert hallucinated_anatomy.block_3_mitre_mapping.technique_id != "T9999"
-        assert hallucinated_anatomy.block_3_mitre_mapping.technique_id == "T1071.001"
+        # Hallucinated MITRE ID rejected -> fails closed to unavailable (never fabricates T1071.001 / 0.924)
+        assert hallucinated_anatomy.block_3_mitre_mapping.technique_id == "unavailable"
+        assert hallucinated_anatomy.block_3_mitre_mapping.cosine_similarity == 0.0
 
         # 3. Case C: TheHive Case Integration attaches 4-block anatomy
         soar_db = tmp_path / "test_soar_hive.sqlite3"
@@ -1968,17 +1968,31 @@ class TestMilestone36ArchitecturalElevation:
         assert "#090D16" in html
         assert "#111827" in html
 
-        # Layer 1 Hero Strip hooks
+        # Layer 1 Hero Strip hooks (tucked in collapsible reference details)
+        assert '<details class="dashboard-context-collapse"' in html
         assert 'data-layer="hero-investor-hook"' in html
-        assert "99%+ Alert Noise Eliminated" in html
+        assert "98.039% Raw-to-Alert Volume Reduction" in html
         assert (
             "TTD (Time to Detect, ms) + TTA (Time to Acknowledge, ms) + TTI (Time to Investigate, s) = Total Time to Conclusion"
             in html
         )
-        assert "900.0s" in html
-        assert "mTLS 1.3 Active" in html
+        assert "TF-009" in html
+        assert "mTLS 1.3 Active (Verify at Listener)" in html
+        assert (
+            '<span class="badge" data-evidence-state="unavailable">mTLS 1.3 Active (Verify at Listener)</span>'
+            in html
+        )
+        assert (
+            '<span class="badge" data-evidence-state="unavailable">14-Feature PSI Drift Monitor: Static / Unmeasured</span>'
+            in html
+        )
+        assert (
+            '<span class="badge" data-evidence-state="unavailable">SOAR Audit Ledger: Verified Per-Alert Only</span>'
+            in html
+        )
         assert "Model Weights Frozen &amp; Verified" in html
-        assert "SOAR Audit Ledger: Intact" in html
+        assert "Approve Playbook" not in html
+        assert "Approve Playbook" in render_dashboard_html(snap, actor_role="analyst")
 
         # Layer 2 Architecture Ribbon hooks
         assert 'data-layer="architecture-ribbon"' in html
@@ -2067,7 +2081,7 @@ class TestMegaMilestone38FailClosedEvidence:
         assert registry in html
         assert "bd2853a6fc1dd1d2fd0fddeac4fd77fb1ef5b0d62abfb03fa6c5bc0bb47d0a63" not in html
         assert "Reference Benchmark (Inspected January Split)" in html
-        assert "99%+ Alert Noise Eliminated" in html
+        assert "98.039% Raw-to-Alert Volume Reduction" in html
 
         linked = (
             {"entry_sha256": "a" * 64, "prev_entry_sha256": "0" * 64},

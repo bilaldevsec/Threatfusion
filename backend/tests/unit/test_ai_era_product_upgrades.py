@@ -734,7 +734,8 @@ def test_queue_workbench_and_n8n_schema_contracts(tmp_path: Path) -> None:
     assert schema["http_status"] == 200
     assert schema["node_count"] >= 1
     assert schema["dry_run_simulation"]["simulation_mode"] == "DRY_RUN_NON_DESTRUCTIVE"
-    assert schema["dry_run_simulation"]["est_mttr_reduction_pct"] == 94
+    assert schema["dry_run_simulation"]["est_mttr_reduction_pct"] is None
+    assert schema["dry_run_simulation"]["mttr_measurement_status"] == "unmeasured_tf009_open"
     assert schema["dry_run_simulation"]["status"] == "READY"
     assert schema["three_am_policy"]["headline"] == "AI Prepares · Tier-3 Human Decides"
     assert schema["execution_authorized"] is False

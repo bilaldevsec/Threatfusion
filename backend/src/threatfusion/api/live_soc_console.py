@@ -350,6 +350,12 @@ _AE_PREPROCESSOR_RELATIVE = (
 _DNN_MODEL_RELATIVE = "artifacts/models/fyp2_dnn_same_split_v1/dnn_model.pt"
 _DNN_REPORT_RELATIVE = "artifacts/models/fyp2_dnn_same_split_v1/evaluation_report.json"
 _DNN_MODEL_SHA256 = "614850ad84fc4ab32dc6e6d2318900668d97cad6edba37290ed9fe2b2482df1f"
+_DNN_CLASSIFICATION = (
+    "Exploratory Non-Comparable Unfused Auxiliary "
+    "(39.3% CSV duplicate overlap; 8/14 Argus features median-imputed on Suricata; "
+    "Does not override Stage 3 Frozen RF)"
+)
+_DNN_ROLE = "exploratory_non_comparable_unfused_auxiliary"
 _AE_INPUT_NAMES: tuple[str, ...] = (
     "duration_ms__zscore",
     "fwd_packets__zscore",
@@ -644,8 +650,6 @@ def _score_same_split_dnn(raw_features: Mapping[str, float], repo_root: Path) ->
         for index, name in enumerate(_DNN_CATEGORIES):
             joint = probability * float(class_probabilities[index].item())
             distribution[name] = joint
-            if name == "Backdoor":
-                distribution["Backdoors"] = joint
         distribution["Normal"] = normal_probability
         labels = dnn_display_labels(
             attack_probability=probability,
@@ -661,19 +665,6 @@ def _score_same_split_dnn(raw_features: Mapping[str, float], repo_root: Path) ->
         }
     except (OSError, ValueError, RuntimeError, TypeError, ImportError, KeyError, IndexError):
         return empty
-
-
-def _consensus_score(
-    rf_probability: float | None,
-    dnn_probability: float | None,
-    ae_loss: float | None,
-) -> float | None:
-    if rf_probability is None or dnn_probability is None or ae_loss is None:
-        return None
-    if not all(math.isfinite(value) for value in (rf_probability, dnn_probability, ae_loss)):
-        return None
-    ae_score = min(1.0, max(0.0, ae_loss / _AE_THRESHOLD))
-    return (0.5 * rf_probability) + (0.3 * dnn_probability) + (0.2 * ae_score)
 
 
 def dnn_features_from_flow(features: Mapping[str, Any], repo_root: Path) -> dict[str, float] | None:
@@ -826,11 +817,6 @@ def _advisory_model_fields(
     dnn["imputed_features"] = list(imputed_features)
     dnn["dnn_imputed_feature_count"] = len(imputed_features)
     dnn["dnn_imputed_features"] = list(imputed_features)
-    consensus = _consensus_score(
-        rf_probability,
-        dnn.get("dnn_attack_probability"),
-        ae.get("ae_loss"),
-    )
     scored_raw = (
         _finite_number(ae.get("ae_loss")) is not None
         or _finite_number(dnn.get("dnn_attack_probability")) is not None
@@ -850,13 +836,13 @@ def _advisory_model_fields(
         "top_attack_class": dnn.get("top_attack_class"),
         "top_attack_probability": dnn.get("top_attack_probability"),
         "dnn_class_distribution": dnn.get("dnn_class_distribution") or {},
+        "dnn_classification": _DNN_CLASSIFICATION,
+        "dnn_role": _DNN_ROLE,
         "imputed_feature_count": dnn.get("imputed_feature_count", 0),
         "imputed_features": dnn.get("imputed_features") or [],
-        "dnn_imputed_feature_count": dnn.get("dnn_imputed_feature_count", 0),
+        "dnn_imputed_feature_count": dnn.get("imputed_feature_count", 0),
         "dnn_imputed_features": dnn.get("dnn_imputed_features") or [],
         "ae_feature_errors": ae.get("ae_feature_errors") or [],
-        "threatfusion_consensus_score": consensus,
-        "consensus_label": "advisory_consensus",
         "measurement_source": "raw_model_inference" if scored_raw else "unavailable",
         "authority": "advisory_non_governing",
         "ae_changes_alert_decision": False,
@@ -894,8 +880,8 @@ def _model_proof_block(
         "ae_loss": advisory.get("ae_loss"),
         "ae_anomaly_flag": advisory.get("ae_anomaly_flag"),
         "ae_top_features": advisory.get("ae_top_features"),
-        "threatfusion_consensus_score": advisory.get("threatfusion_consensus_score"),
-        "consensus_label": "advisory_consensus",
+        "dnn_classification": _DNN_CLASSIFICATION,
+        "dnn_role": _DNN_ROLE,
         "alert_authority": "frozen_random_forest",
         "production_fusion_enabled": False,
         "dnn_class_distribution": advisory.get("dnn_class_distribution") or {},
@@ -1013,7 +999,8 @@ def run_live_model_proof(
         "evidence_state": "advisory_simulation",
         "production_fusion_enabled": False,
         "alert_authority": "frozen_random_forest",
-        "consensus_label": "advisory_consensus",
+        "dnn_classification": _DNN_CLASSIFICATION,
+        "dnn_role": _DNN_ROLE,
         "flow_id": flow_id,
         "original": original,
         "perturbed": perturbed,
@@ -3158,8 +3145,8 @@ def _flow_rows(db_path: Path, *, limit: int, flow_id: int | None = None) -> list
                     "dnn_class",
                     "predicted_class",
                     "predicted_class_probability",
-                    "threatfusion_consensus_score",
-                    "consensus_label",
+                    "dnn_classification",
+                    "dnn_role",
                 ):
                     item[key] = scored.get(key)
         if isinstance(raw_observation, str) and raw_observation:
@@ -4363,20 +4350,10 @@ def _scenario_provenance(port: int, protocol: str) -> dict[str, Any]:
 
 
 def _seed_scenario_provenance(spec: Mapping[str, Any]) -> dict[str, Any]:
-    """Bind a seeded scenario. Range rows use the technique's transport metadata."""
-    label = spec.get("scenario_label")
+    """Bind a seeded scenario using its stored transport metadata."""
     protocol = str(spec.get("protocol") or ("tcp" if int(spec.get("protocol_tcp") or 0) else "udp"))
     port = int(spec["dst_port"])
-    provenance = _scenario_provenance(port, protocol)
-    display = _RANGE_DISPLAY_TRANSPORT.get(str(label or ""))
-    if (
-        display is not None
-        and provenance.get("src_entity_id") == RANGE_CONTAINMENT_SOURCE
-        and provenance.get("dst_entity_id") == RANGE_VICTIM_ADDRESS
-    ):
-        protocol, port = display
-        return _range_scenario_provenance(port, protocol)
-    return provenance
+    return _scenario_provenance(port, protocol)
 
 
 # The technique id is the scenario label. The frozen forest does not emit it.
@@ -8386,13 +8363,6 @@ _RANGE_ATTACK_CATALOG: tuple[dict[str, str], ...] = (
     },
 )
 _RANGE_VECTOR_IDS = frozenset(item["vector_id"] for item in _RANGE_ATTACK_CATALOG)
-# Display and playbook transport only. The 14 scored features stay on the raw row.
-_RANGE_DISPLAY_TRANSPORT: dict[str, tuple[str, int]] = {
-    "T1190": ("tcp", 80),
-    "T1110": ("tcp", 22),
-    "T1046": ("tcp", 445),
-    "T1498": ("udp", 4433),
-}
 _BENIGN_WEB_CANONICAL: dict[str, float] = {
     "duration_ms": 180.0,
     "fwd_packets": 8.0,
@@ -8427,7 +8397,8 @@ _BENIGN_WEB_RAW: dict[str, float] = {
 }
 _RF_BENCHMARK = {
     "january_unsw_flows": 216568,
-    "volume_reduction_percent": 98.0,
+    "rf_alerts_january": 4246,
+    "volume_reduction_percent": 98.039,
     "precision_percent": 95.266,
     "recall_percent": 92.818,
     "fpr_percent": 0.095,
@@ -8468,7 +8439,7 @@ def _feature_error_breakdown(errors: Sequence[Mapping[str, Any]]) -> list[dict[s
 
 
 def _display_attack_class(name: str) -> str:
-    return "Backdoors" if name == "Backdoor" else name
+    return str(name)
 
 
 def _per_class_metrics(matrix: Any, classes: Sequence[str]) -> list[dict[str, Any]]:
@@ -8562,6 +8533,8 @@ def _benchmark_scorecard(repo_root: Path) -> dict[str, Any]:
         "frozen_random_forest": dict(_RF_BENCHMARK),
         "frozen_autoencoder_v2": dict(_AE_BENCHMARK),
         "same_split_dnn_sha256": _DNN_MODEL_SHA256,
+        "dnn_classification": _DNN_CLASSIFICATION,
+        "dnn_role": _DNN_ROLE,
         "production_fusion_enabled": False,
         "alert_authority": "frozen_random_forest",
     }
@@ -8583,6 +8556,8 @@ def run_model_observatory(
             "evidence_state": "verified",
             "production_fusion_enabled": False,
             "alert_authority": "frozen_random_forest",
+            "dnn_classification": _DNN_CLASSIFICATION,
+            "dnn_role": _DNN_ROLE,
             "benchmark_scorecard": scorecard,
             "dnn_evaluation_summary": scorecard,
             "dnn_class_distribution": {},
@@ -10582,9 +10557,9 @@ _PUBLISHED_CVSS_V3: dict[str, float] = {
     "CVE-2023-44487": 7.5,
 }
 
-# Published dry-run estimate for the non-destructive n8n simulation.
-# This is not a measured analyst cohort and does not close TF-009.
-N8N_DRY_RUN_EST_MTTR_REDUCTION_PCT = 94
+# Non-destructive n8n dry-run estimate metadata.
+# MTTR reduction remains unmeasured until empirical analyst trials close TF-009.
+N8N_DRY_RUN_MTTR_STATUS = "unmeasured_tf009_open"
 
 _HUNT_PROGRESSION: dict[str, tuple[str, str, str, str]] = {
     "T1046": (
@@ -11889,7 +11864,8 @@ def read_n8n_workflow_schema(workflow_path: Path) -> dict[str, Any]:
         "node_count": len(nodes),
         "dry_run_simulation": {
             "simulation_mode": "DRY_RUN_NON_DESTRUCTIVE",
-            "est_mttr_reduction_pct": N8N_DRY_RUN_EST_MTTR_REDUCTION_PCT,
+            "est_mttr_reduction_pct": None,
+            "mttr_measurement_status": N8N_DRY_RUN_MTTR_STATUS,
             "status": "READY",
         },
         "three_am_policy": {
@@ -12085,7 +12061,7 @@ def build_compliance_dossier(
             "## Three-model digests and benchmarks",
             f"- Frozen Random Forest SHA-256: {registry['random_forest']}",
             (
-                "- January UNSW flows: 216,568; volume reduction 98.0%; "
+                "- January UNSW flows: 216,568; 4,246 RF alerts (98.039% volume reduction); "
                 "precision 95.266%; recall 92.818%; FPR 0.095%"
             ),
             f"- Frozen v2 Autoencoder SHA-256: {registry['autoencoder_v2']}",
@@ -12449,21 +12425,16 @@ def ingest_live_flow(
         protocol = "icmp"
     else:
         protocol = "tcp"
-    display = _RANGE_DISPLAY_TRANSPORT.get(str(vector_id or ""))
-    if (
-        display is not None
-        and src_ip == RANGE_CONTAINMENT_SOURCE
-        and dst_ip == RANGE_VICTIM_ADDRESS
-    ):
-        protocol, dst_port = display
-        service = str(dst_port)
+    profile_kind = (
+        "unsw_benchmark_replay_profile"
+        if source_label == "unsw_benchmark_replay_profile"
+        else f"range vector {vector_id or 'flow'}"
+    )
     observation = {
         "proto": protocol,
         "src_port": 0,
         "dst_port": dst_port,
-        "suricata_line": (
-            f"{protocol} {src_ip}:0 -> {dst_ip}:{dst_port}, range vector {vector_id or 'flow'}"
-        ),
+        "suricata_line": (f"{protocol} {src_ip}:0 -> {dst_ip}:{dst_port}, {profile_kind}"),
         "forest_line": (
             f"{score.get('decision')}, {_probability_text(score.get('rf_attack_probability'))}"
         ),
@@ -12569,11 +12540,12 @@ def launch_range_vector(
         repo_root=root,
         src_ip=source,
         dst_ip=destination,
-        source_label="suricata_eve_bridge",
+        source_label="unsw_benchmark_replay_profile",
         case_title=title,
         vector_id=vector,
     )
     stored["range_probe"] = probe
     stored["attack_catalog_title"] = title
     stored["scenario_label"] = scenario_label
+    stored["replay_profile"] = "unsw_benchmark_replay_profile"
     return stored

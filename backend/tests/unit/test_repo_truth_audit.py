@@ -41,15 +41,22 @@ class TestRepoTruthAudit:
         assert bool(report.git_branch) and report.git_branch != "UNKNOWN"
         assert len(report.git_head_sha) == 40
 
-        # Frozen model digest checks
-        assert report.model_digests["random_forest"]["matched"] is True
+        # Frozen artifact digest checks (all 7 immutable digests)
+        assert len(report.model_digests) == 7
+        for key in (
+            "random_forest",
+            "logistic_regression",
+            "autoencoder_v2",
+            "rate_log1p_candidate",
+            "preprocessor_state",
+            "exploratory_9class_dnn",
+            "calibrated_runtime_fixtures",
+        ):
+            assert report.model_digests[key]["matched"] is True
         assert (
             report.model_digests["random_forest"]["actual_sha256"]
             == "bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9"
         )
-        assert report.model_digests["logistic_regression"]["matched"] is True
-        assert report.model_digests["autoencoder_v2"]["matched"] is True
-        assert report.model_digests["rate_log1p_candidate"]["matched"] is True
 
         # Receipt banner checks
         banner = report.render_receipt_banner()

@@ -524,11 +524,15 @@
           if (conclusionEl && decomp.total_time_to_conclusion_seconds !== undefined) {
             conclusionEl.textContent = `${Number(decomp.total_time_to_conclusion_seconds).toFixed(3)}s`;
           }
-          if (toilSavedEl && decomp.analyst_toil_saved_seconds !== undefined) {
-            toilSavedEl.textContent = `${Number(decomp.analyst_toil_saved_seconds).toFixed(3)}s`;
+          if (toilSavedEl) {
+            toilSavedEl.textContent = measured && decomp.analyst_toil_saved_seconds !== undefined
+              ? `${Number(decomp.analyst_toil_saved_seconds).toFixed(3)}s`
+              : 'unmeasured (TF-009 open)';
           }
-          if (toilBadgeEl && decomp.analyst_toil_saved_pct !== undefined) {
-            toilBadgeEl.textContent = `${Number(decomp.analyst_toil_saved_pct).toFixed(2)}% Analyst Toil Saved`;
+          if (toilBadgeEl) {
+            toilBadgeEl.textContent = measured && decomp.analyst_toil_saved_pct !== undefined
+              ? `${Number(decomp.analyst_toil_saved_pct).toFixed(2)}% Analyst Toil Saved`
+              : 'Analyst Toil Cut: Unmeasured (TF-009 Open)';
           }
           if (formulaEl && decomp.velocity_formula) {
             formulaEl.textContent = decomp.velocity_formula;
@@ -624,7 +628,20 @@
     const drawer = document.getElementById('labControlsDrawer');
     if (open) {
       const other = document.getElementById('enterpriseWorkspaceDrawer');
+      const health = document.getElementById('healthGovernanceDrawer');
       if (other) other.classList.remove('is-open');
+      if (health) health.classList.remove('is-open');
+    }
+    if (drawer) drawer.classList.toggle('is-open', Boolean(open));
+  }
+
+  function openHealthDrawer(open) {
+    const drawer = document.getElementById('healthGovernanceDrawer');
+    if (open) {
+      const lab = document.getElementById('labControlsDrawer');
+      const ent = document.getElementById('enterpriseWorkspaceDrawer');
+      if (lab) lab.classList.remove('is-open');
+      if (ent) ent.classList.remove('is-open');
     }
     if (drawer) drawer.classList.toggle('is-open', Boolean(open));
   }
@@ -807,7 +824,7 @@
       return;
     }
 
-    const sourceOrder = ['suricata_bridge', 'recorded_unsw_nb15', 'live_scenario_replay', 'other'];
+    const sourceOrder = ['suricata_bridge', 'unsw_benchmark_replay_profile', 'recorded_unsw_nb15', 'live_scenario_replay', 'other'];
     sourceOrder.forEach(bucket => {
       const members = incidents.filter(inc => {
         const label = sourceOrder.includes(inc.sourceLabel) ? inc.sourceLabel : 'other';
@@ -819,6 +836,7 @@
 
   function sourceHeading(label) {
     if (label === 'suricata_bridge') return 'Live sensor, this Docker bridge';
+    if (label === 'unsw_benchmark_replay_profile') return 'UNSW benchmark replay profile';
     if (label === 'recorded_unsw_nb15') return 'Recorded UNSW study';
     if (label === 'live_scenario_replay') return 'Labeled scenario replay';
     return 'Other stored flows';
@@ -826,6 +844,7 @@
 
   function sourceDisplayName(label) {
     if (label === 'suricata_bridge') return 'Suricata EVE Bridge';
+    if (label === 'unsw_benchmark_replay_profile') return 'UNSW Benchmark Replay';
     if (label === 'recorded_unsw_nb15') return 'UNSW-NB15 Study';
     if (label === 'live_scenario_replay') return 'Scenario Replay';
     return 'Stored flow';
@@ -1623,8 +1642,26 @@
     }
   }
 
+  let latestCopilotModelUsed = '';
+  let latestCopilotProvider = '';
+
+  function syncGraphCopilotLabel(modelUsed, provider) {
+    if (modelUsed) latestCopilotModelUsed = String(modelUsed);
+    if (provider) latestCopilotProvider = String(provider);
+    const labelNode = document.getElementById('graphCopilotNodeLabel');
+    if (!labelNode) return;
+    if (latestCopilotModelUsed) {
+      labelNode.textContent = 'AI Advisory (' + latestCopilotModelUsed + ')';
+    } else if (latestCopilotProvider === 'gemini') {
+      labelNode.textContent = 'Gemini Advisory Copilot';
+    } else {
+      labelNode.textContent = 'Grounded AI Advisory Copilot (Local)';
+    }
+  }
+
   function renderActionGraph() {
     renderEntityTopology();
+    syncGraphCopilotLabel(latestCopilotModelUsed, latestCopilotProvider);
     const inc = selectedIncident();
     const entities = document.getElementById('kpiEntities');
     const receipts = document.getElementById('kpiSoarReceipts');
@@ -1952,8 +1989,9 @@
     if (conclusion) conclusion.setAttribute('data-decision', String(inc.decision || 'withheld'));
     const src = inc.provenance && inc.provenance.srcIp ? String(inc.provenance.srcIp) : '';
     const dst = inc.provenance && inc.provenance.dstIp ? String(inc.provenance.dstIp) : '';
+    const rfProbNum = Number(inc.uncalibratedScore);
     setInspectorText('inspectorDecision', String(inc.decision || 'withheld'));
-    setInspectorText('inspectorScore', scoreText);
+    setInspectorText('inspectorScore', Number.isFinite(rfProbNum) ? rfProbNum.toFixed(4) : 'unavailable');
     const sensor = inc.sensorObservation;
     if (inc.sourceLabel === 'suricata_bridge' && sensor) {
       setInspectorText('inspectorSensorLine', 'Suricata: ' + (sensor.suricata_line || 'flow only, no signature'));
@@ -2024,7 +2062,9 @@
         rangeBadge.setAttribute('data-connectivity', 'reachable');
         rangeBadge.setAttribute('data-evidence-state', 'verified');
       } else {
-        rangeBadge.textContent = src + ' -> ' + dst;
+        rangeBadge.textContent = (src && dst)
+          ? (src + ' -> ' + dst)
+          : 'Dataset flow (UNSW-NB15) · no live firewall endpoint';
         rangeBadge.setAttribute('data-connectivity', 'waiting');
         rangeBadge.setAttribute('data-evidence-state', inc.containmentState ? 'verified' : 'unavailable');
       }
@@ -2173,14 +2213,17 @@
     const docs = Array.isArray(inspected.rag_doc_ids) ? inspected.rag_doc_ids.join(', ') : '';
     const verified = Array.isArray(ledger.verified_indicators) ? ledger.verified_indicators.join(', ') : '';
     const ungrounded = Array.isArray(ledger.ungrounded_indicators) ? ledger.ungrounded_indicators.join(', ') : '';
-    evidence.textContent = [
-      String(inspected.untrusted_telemetry_envelope || ''),
-      '',
-      'envelope_sha256: ' + String(inspected.envelope_sha256 || ''),
-      'rag_doc_ids: ' + docs,
-      'verified_indicators: ' + verified,
-      'ungrounded_indicators: ' + ungrounded
-    ].join('\n');
+    const cleanedEnvelope = String(inspected.untrusted_telemetry_envelope || '')
+      .split('\n')
+      .map(line => line.split(/\s+/).filter(token => !/^[a-zA-Z0-9_.-]+=$/.test(token)).join(' '))
+      .filter(line => line.trim() && !/^[a-zA-Z0-9_.-]+\s*[=:]\s*$/.test(line.trim()))
+      .join('\n');
+    const detailLines = [cleanedEnvelope];
+    if (inspected.envelope_sha256) detailLines.push('envelope_sha256: ' + String(inspected.envelope_sha256));
+    if (docs) detailLines.push('rag_doc_ids: ' + docs);
+    if (verified) detailLines.push('verified_indicators: ' + verified);
+    if (ungrounded) detailLines.push('ungrounded_indicators: ' + ungrounded);
+    evidence.textContent = detailLines.filter(Boolean).join('\n');
     evidence.setAttribute('data-evidence-state', inspected.envelope_sha256 ? 'verified' : 'unavailable');
   }
 
@@ -2197,6 +2240,7 @@
     const bar = document.getElementById('advisoryAuthorityBar');
     const body = document.getElementById('advisoryTraceBody');
     const gaps = document.getElementById('advisoryTraceGaps');
+    const gapsDetails = document.getElementById('advisoryTraceGapsDetails');
     if (!body) return;
     const payload = trace && Array.isArray(trace.components) ? trace : null;
     if (!payload) {
@@ -2209,7 +2253,11 @@
       if (bar) bar.textContent = 'Advisory authority loads with the selected flow.';
       body.innerHTML = '<tr><td colspan="5">Select a stored flow to read the advisory trace.</td></tr>';
       if (gaps) gaps.textContent = '';
+      if (gapsDetails) gapsDetails.hidden = true;
       return;
+    }
+    if (payload.model_used || payload.provider) {
+      syncGraphCopilotLabel(payload.model_used || '', payload.provider || '');
     }
     const badge = String(payload.completeness_badge || 'PENDING ADVISORY');
     if (pill) {
@@ -2239,7 +2287,9 @@
     }).join('');
     if (gaps) {
       const listed = Array.isArray(payload.completeness_gaps) ? payload.completeness_gaps : [];
-      gaps.textContent = badge === 'PARTIAL' && listed.length ? listed.join(' · ') : '';
+      const gapText = badge === 'PARTIAL' && listed.length ? listed.join(' · ') : '';
+      gaps.textContent = gapText;
+      if (gapsDetails) gapsDetails.hidden = !gapText;
     }
   }
 
@@ -2734,6 +2784,23 @@
     const closeLab = document.getElementById('btnCloseLabDrawer');
     if (openLab) openLab.addEventListener('click', () => openLabDrawer(true));
     if (closeLab) closeLab.addEventListener('click', () => openLabDrawer(false));
+    const openHealth = document.getElementById('btnOpenHealthDrawer');
+    const closeHealth = document.getElementById('btnCloseHealthDrawer');
+    if (openHealth) openHealth.addEventListener('click', () => openHealthDrawer(true));
+    if (closeHealth) closeHealth.addEventListener('click', () => openHealthDrawer(false));
+    document.querySelectorAll('.rule-tab-btn[data-rule-tab]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const target = btn.getAttribute('data-rule-tab');
+        document.querySelectorAll('.rule-tab-btn[data-rule-tab]').forEach(other => {
+          const active = other === btn;
+          other.classList.toggle('is-active', active);
+          other.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        document.querySelectorAll('.rule-tab-pane[data-rule-pane]').forEach(pane => {
+          pane.classList.toggle('is-active', pane.getAttribute('data-rule-pane') === target);
+        });
+      });
+    });
     const backButton = document.getElementById('btnBackToInvestigations');
     if (backButton) backButton.addEventListener('click', () => showSocView('investigations'));
     const graphButton = document.getElementById('btnOpenActionGraph');
@@ -3429,8 +3496,6 @@
       dnnAttackProbability: finiteOrNull(flow.dnn_attack_probability),
       dnnBinaryDecision: flow.dnn_binary_decision || '',
       unswAttackCategory: flow.unsw_attack_category || '',
-      consensusScore: finiteOrNull(flow.threatfusion_consensus_score),
-      consensusLabel: flow.consensus_label || 'advisory_consensus',
       dnnFeatures: flow.dnn_features && typeof flow.dnn_features === 'object' ? flow.dnn_features : null,
       advisory: {
         summaryHeadline: flow.source_label === 'suricata_bridge' && flow.sensor_observation
@@ -3632,6 +3697,7 @@
         badge.textContent = copilotBadgeLabel(data.provider);
         badge.setAttribute('data-evidence-state', data.provider === 'gemini' ? 'verified' : 'unavailable');
       }
+      syncGraphCopilotLabel(data.model_used || data.model || '', data.provider || '');
     } catch (err) {
       const badge = document.getElementById('copilotProviderBadge');
       if (badge) badge.textContent = 'Local Air-Gapped Engine';
@@ -3735,7 +3801,10 @@
         }
         bindSelectedFlowId(selectedIncident());
         const badge = document.getElementById('queueCountBadge');
-        if (badge) badge.textContent = views.length + ' stored rows';
+        if (badge) {
+          badge.textContent = String(data.flow_count != null ? data.flow_count : flowViews.length)
+            + ' Flows + ' + String(data.campaign_count || 0) + ' Correlated Incidents';
+        }
         const flowCount = document.getElementById('liveHeroFlowCount');
         const campaignCount = document.getElementById('liveHeroCampaignCount');
         const incidentCount = document.getElementById('liveHeroIncidentCount');
@@ -4674,18 +4743,15 @@
   function proofScoreLine(block) {
     if (!block) return 'unavailable';
     const rf = Number(block.rf_attack_probability);
-    const dnn = Number(block.dnn_attack_probability);
     const ae = Number(block.ae_loss);
-    const consensus = Number(block.threatfusion_consensus_score);
     return [
       'Random Forest (ML): ' + String(block.rf_decision || 'withheld') + ' '
         + (Number.isFinite(rf) ? rf.toFixed(4) : 'unavailable'),
-      'PyTorch DNN (Binary + 9-Class Category): '
+      'PyTorch DNN (Exploratory Unfused Auxiliary): '
         + dnnClassLabel(block),
       'PyTorch v2 Autoencoder (MSE Loss): '
         + (Number.isFinite(ae) ? formatMse(ae) : 'unavailable') + ' '
-        + (block.ae_anomaly_flag ? 'Anomaly' : 'Normal'),
-      'Advisory Consensus: ' + (Number.isFinite(consensus) ? consensus.toFixed(4) : 'unavailable')
+        + (block.ae_anomaly_flag ? 'Anomaly' : 'Normal')
     ].join('\n');
   }
 
@@ -5091,6 +5157,10 @@
     if (indicators) {
       indicators.innerHTML = rows.length ? rows.map(function (item) {
         const scores = item && item.model_scores && typeof item.model_scores === 'object' ? item.model_scores : {};
+        const fmtScore = function (val, decimals) {
+          const n = Number(val);
+          return Number.isFinite(n) ? n.toFixed(decimals) : 'unavailable';
+        };
         return '<li>'
           + escapeHtml(String(item.src_ip || 'unavailable'))
           + ' \u2192 '
@@ -5102,11 +5172,11 @@
           + ' simhash '
           + escapeHtml(String(item.simhash_signature || ''))
           + ' Frozen RF '
-          + escapeHtml(String(scores['Frozen RF']))
+          + escapeHtml(fmtScore(scores['Frozen RF'], 4))
           + ' Autoencoder MSE '
-          + escapeHtml(String(scores['Autoencoder MSE']))
+          + escapeHtml(fmtScore(scores['Autoencoder MSE'], 6))
           + ' 9-Class DNN '
-          + escapeHtml(String(scores['9-Class DNN']))
+          + escapeHtml(fmtScore(scores['9-Class DNN'], 4))
           + '</li>';
       }).join('') : '<li>No matched indicators in the current queue.</li>';
     }
@@ -5408,8 +5478,10 @@
       const dry = data.dry_run_simulation && typeof data.dry_run_simulation === 'object'
         ? data.dry_run_simulation
         : {};
-      if (dryButton && dry.est_mttr_reduction_pct != null) {
-        dryButton.textContent = 'Dry-Run Simulation (' + String(dry.est_mttr_reduction_pct) + '% Est. MTTR Cut)';
+      if (dryButton) {
+        dryButton.textContent = dry.est_mttr_reduction_pct != null
+          ? ('Dry-Run Simulation (' + String(dry.est_mttr_reduction_pct) + '% Est. MTTR Cut)')
+          : 'Dry-Run Simulation (Non-Destructive · TF-009 Open)';
       }
       latestN8nSchemaText = JSON.stringify(data.workflow || {}, null, 2);
       if (preview) {
@@ -5487,6 +5559,7 @@
         badge.textContent = copilotBadgeLabel(data.provider);
         badge.setAttribute('data-evidence-state', data.provider === 'gemini' ? 'verified' : 'unavailable');
       }
+      syncGraphCopilotLabel(data.model_used || '', data.provider || '');
     } catch (err) {
       if (requestSerial !== copilotRequestSerial) return;
       setLiveText('liveCopilotAnswer', 'Copilot unavailable.', 'unavailable');
@@ -5676,9 +5749,35 @@
   }
 
   const OBSERVATORY_CLASSES = [
-    'Normal', 'Analysis', 'Backdoors', 'DoS', 'Exploits', 'Fuzzers',
+    'Normal', 'Analysis', 'Backdoor', 'DoS', 'Exploits', 'Fuzzers',
     'Generic', 'Reconnaissance', 'Shellcode', 'Worms'
   ];
+  const AE_FEATURE_HUMAN_LABELS = {
+    duration_ms: 'Flow Duration (ms)',
+    fwd_packets: 'Forward Packets',
+    bwd_packets: 'Backward Packets',
+    fwd_bytes: 'Forward Bytes',
+    bwd_bytes: 'Backward Bytes',
+    packets_per_second: 'Packets / sec',
+    bytes_per_second: 'Bytes / sec',
+    fwd_packet_length_mean: 'Fwd Packet Len Mean',
+    bwd_packet_length_mean: 'Bwd Packet Len Mean',
+    dst_port: 'Destination Port',
+    protocol_tcp: 'TCP Protocol Flag',
+    protocol_udp: 'UDP Protocol Flag',
+    protocol_icmp: 'ICMP Protocol Flag',
+    protocol_other: 'Other L4 Flag',
+    dur: 'Flow Duration (ms)',
+    spkts: 'Forward Packets',
+    dpkts: 'Backward Packets',
+    sbytes: 'Forward Bytes',
+    dbytes: 'Backward Bytes',
+    rate: 'Packets / sec',
+    sload: 'Source Load (bps)',
+    dload: 'Dest Load (bps)',
+    sttl: 'Source TTL',
+    dttl: 'Dest TTL'
+  };
   const OPERATOR_LABELS = {
     lab_operator: 'Tier-3 SOC Approver',
     tier1_analyst: 'Tier-1 Triage Analyst',
@@ -5689,7 +5788,9 @@
     const drawer = document.getElementById('enterpriseWorkspaceDrawer');
     if (open) {
       const other = document.getElementById('labControlsDrawer');
+      const health = document.getElementById('healthGovernanceDrawer');
       if (other) other.classList.remove('is-open');
+      if (health) health.classList.remove('is-open');
     }
     if (drawer) drawer.classList.toggle('is-open', Boolean(open));
     if (open) {
@@ -5718,20 +5819,38 @@
     if (text) text.textContent = label;
   }
 
-  function renderHorizontalBars(container, rows) {
-    if (!container) return;
-    if (!rows.length) {
-      container.textContent = 'Waiting for a scored flow.';
-      return;
-    }
-    const max = Math.max.apply(null, rows.map(row => Number(row.value) || 0).concat([1e-9]));
-    container.innerHTML = rows.map(row => {
+  function renderHbarRowsHtml(rows, max) {
+    return rows.map(row => {
       const value = Number(row.value) || 0;
       const width = Math.max(0, Math.min(100, (value / max) * 100));
       return '<div class="hbar-row"><span class="hbar-label">' + escapeHtml(row.label)
         + '</span><span class="hbar-track"><span class="hbar-fill" style="width:' + width.toFixed(2)
         + '%"></span></span><span class="hbar-value">' + escapeHtml(row.text) + '</span></div>';
     }).join('');
+  }
+
+  function renderHorizontalBars(container, rows, collapseThreshold) {
+    if (!container) return;
+    if (!rows.length) {
+      container.textContent = 'Waiting for a scored flow.';
+      return;
+    }
+    const max = Math.max.apply(null, rows.map(row => Number(row.value) || 0).concat([1e-9]));
+    if (Number.isFinite(collapseThreshold) && collapseThreshold > 0) {
+      const sorted = rows.slice().sort((a, b) => (Number(b.value) || 0) - (Number(a.value) || 0));
+      let active = sorted.filter(row => (Number(row.value) || 0) >= collapseThreshold);
+      if (!active.length && sorted.length) active = [sorted[0]];
+      const activeSet = new Set(active);
+      const inactive = sorted.filter(row => !activeSet.has(row));
+      let html = renderHbarRowsHtml(active, max);
+      if (inactive.length) {
+        html += '<details class="inactive-classes-details"><summary>Show inactive classes ('
+          + inactive.length + ')</summary>' + renderHbarRowsHtml(inactive, max) + '</details>';
+      }
+      container.innerHTML = html;
+      return;
+    }
+    container.innerHTML = renderHbarRowsHtml(rows, max);
   }
 
   function renderVisualObservatory(data) {
@@ -5775,13 +5894,16 @@
       ? block.dnn_attack_probability
       : data.dnn_attack_probability);
     const softmaxRows = jointSoftmaxRows(distribution, attackProbability);
-    renderHorizontalBars(document.getElementById('dnnSoftmaxChart'), softmaxRows);
+    renderHorizontalBars(document.getElementById('dnnSoftmaxChart'), softmaxRows, 0.01);
     const errors = data.feature_error_breakdown || block.feature_error_breakdown || [];
-    const errorRows = Array.isArray(errors) ? errors.map(row => ({
-      label: String(row.feature || row.ae_input || 'feature'),
-      value: Number(row.squared_error) || 0,
-      text: formatMse(row.squared_error)
-    })) : [];
+    const errorRows = Array.isArray(errors) ? errors.map(row => {
+      const rawKey = String(row.feature || row.ae_input || 'feature');
+      return {
+        label: AE_FEATURE_HUMAN_LABELS[rawKey] || rawKey,
+        value: Number(row.squared_error) || 0,
+        text: formatMse(row.squared_error)
+      };
+    }) : [];
     renderHorizontalBars(document.getElementById('aeFeatureErrorChart'), errorRows);
     const scorecard = data.benchmark_scorecard || data.dnn_evaluation_summary;
     renderBenchmarkScorecard(scorecard);

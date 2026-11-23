@@ -1,7 +1,9 @@
 """Jury Requirements Traceability Registry (TF-010).
 
-Maintains an immutable, authoritative, verifiable matrix of all jury-approved
-dataset dispositions and model family dispositions, resolving TF-010.
+Maintains an immutable, authoritative, verifiable matrix of registered
+dataset dispositions and model family dispositions for internal governance.
+This internal registry does NOT close TF-010: `tf010_signed_rubric_attached`
+remains False until the external signed FAST-NUCES FYP-II rubric is attached.
 Enforces non-substitution invariants, leakage boundaries, and artifact checksum
 verification.
 """
@@ -29,10 +31,10 @@ UTC = timezone.utc
 
 
 JURY_TRACEABILITY_SCHEMA_VERSION = "jury_traceability_matrix_v1"
+TF010_SIGNED_RUBRIC_ATTACHED = False
 
-# Approved dataset identifiers
+# Registered dataset identifiers
 DATASET_UNSW_NB15 = "UNSW-NB15"
-DATASET_CIC_IDS2017 = "CIC-IDS2017"
 DATASET_CSE_CIC_IDS2018_SUBSET = "CSE-CIC-IDS2018_subset"
 DATASET_MORDOR_SCENARIOS = "Mordor_scenarios"
 DATASET_SYNTHETIC_UEBA = "Synthetic_UEBA"
@@ -40,7 +42,6 @@ DATASET_AUTHORIZED_LAB_SENSOR = "Authorized_Lab_Sensor"
 
 REQUIRED_JURY_DATASETS: tuple[str, ...] = (
     DATASET_UNSW_NB15,
-    DATASET_CIC_IDS2017,
     DATASET_CSE_CIC_IDS2018_SUBSET,
     DATASET_MORDOR_SCENARIOS,
     DATASET_SYNTHETIC_UEBA,
@@ -132,7 +133,7 @@ class JuryModelFamilyDisposition:
 
 @dataclass(frozen=True, slots=True)
 class JuryTraceabilityVerificationResult:
-    """Verification outcome asserting zero gaps in jury traceability matrix."""
+    """Verification outcome for internal jury traceability registry (TF-010 remains open)."""
 
     schema_version: str
     is_complete: bool
@@ -140,7 +141,12 @@ class JuryTraceabilityVerificationResult:
     verified_datasets: tuple[str, ...]
     verified_model_families: tuple[str, ...]
     artifact_checksums_verified: bool
-    details: dict[str, Any]
+    tf010_signed_rubric_attached: bool = TF010_SIGNED_RUBRIC_ATTACHED
+    details: dict[str, Any] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.details is None:
+            object.__setattr__(self, "details", {})
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -150,6 +156,7 @@ class JuryTraceabilityVerificationResult:
             "verified_datasets": list(self.verified_datasets),
             "verified_model_families": list(self.verified_model_families),
             "artifact_checksums_verified": self.artifact_checksums_verified,
+            "tf010_signed_rubric_attached": self.tf010_signed_rubric_attached,
             "details": self.details,
         }
 
@@ -167,33 +174,28 @@ JURY_DATASET_DISPOSITIONS: dict[str, JuryDatasetDisposition] = {
             "cross-split capture duplicate risk recorded under TF-006; "
             "Feb outcome development-informing under TF-007."
         ),
-        notes="Frozen baseline network dataset with 42 Argus features.",
+        notes=(
+            "Frozen baseline network dataset: 49 raw CSV columns projected onto "
+            "11 raw source fields / 14 canonical features "
+            "(10 numeric z-scores + 4 protocol indicators)."
+        ),
     ),
-    DATASET_CIC_IDS2017: JuryDatasetDisposition(
-        identifier=DATASET_CIC_IDS2017,
+    DATASET_CSE_CIC_IDS2018_SUBSET: JuryDatasetDisposition(
+        identifier=DATASET_CSE_CIC_IDS2018_SUBSET,
         role="cross_source_evaluation_candidate",
         disposition_status="BLOCKED_SEMANTIC_MISMATCH",
         temporal_split_isolation=False,
         artifact_reference="docs/network_feature_comparability_audit.md",
         contract_reference="network_behavior_v1",
         leakage_boundary=(
-            "Blocked for direct 42-feature cross-evaluation due to 5-byte-layer semantic "
-            "mismatch and extractor divergence (Argus vs CICFlowMeter) per TF-001, TF-006, TF-012."
+            "Blocked for direct cross-source evaluation due to 5-byte-layer semantic mismatch "
+            "and extractor divergence (Argus transaction bytes vs CICFlowMeter payload bytes) "
+            "per TF-001, TF-002, TF-003, TF-012; pooled RF F1 is 0.542%."
         ),
-        notes="Preserved as negative comparability finding; direct evaluation rejected.",
-    ),
-    DATASET_CSE_CIC_IDS2018_SUBSET: JuryDatasetDisposition(
-        identifier=DATASET_CSE_CIC_IDS2018_SUBSET,
-        role="future_network_telemetry_source",
-        disposition_status="REQUIRES_ISOLATED_ADAPTER",
-        temporal_split_isolation=True,
-        artifact_reference="docs/GEMINI_PROJECT_MASTER.md#section-9",
-        contract_reference="cse_cic_ids2018_adapter_contract_v1",
-        leakage_boundary=(
-            "Requires isolated schema adapter; cannot consume UNSW weights without "
-            "explicit common byte-layer mapping and holdout protocol."
+        notes=(
+            "Registered external benchmark; blocked from cross-source UNSW model evaluation "
+            "until a reviewed common byte-layer and flow-termination contract exists."
         ),
-        notes="Planned Phase P3 secondary network telemetry source.",
     ),
     DATASET_MORDOR_SCENARIOS: JuryDatasetDisposition(
         identifier=DATASET_MORDOR_SCENARIOS,
@@ -371,9 +373,11 @@ def verify_jury_traceability_completeness(
         verified_datasets=REQUIRED_JURY_DATASETS,
         verified_model_families=REQUIRED_JURY_MODEL_FAMILIES,
         artifact_checksums_verified=verify_checksums,
+        tf010_signed_rubric_attached=TF010_SIGNED_RUBRIC_ATTACHED,
         details={
             "datasets_count": len(REQUIRED_JURY_DATASETS),
             "model_families_count": len(REQUIRED_JURY_MODEL_FAMILIES),
+            "tf010_signed_rubric_attached": TF010_SIGNED_RUBRIC_ATTACHED,
             "verified_checksums": checksum_details,
         },
     )
@@ -381,7 +385,6 @@ def verify_jury_traceability_completeness(
 
 __all__ = [
     "DATASET_AUTHORIZED_LAB_SENSOR",
-    "DATASET_CIC_IDS2017",
     "DATASET_CSE_CIC_IDS2018_SUBSET",
     "DATASET_MORDOR_SCENARIOS",
     "DATASET_SYNTHETIC_UEBA",
@@ -403,6 +406,7 @@ __all__ = [
     "REQUIRED_JURY_MODEL_FAMILIES",
     "RetrainingFeedbackError",
     "RetrainingFeedbackRecord",
+    "TF010_SIGNED_RUBRIC_ATTACHED",
     "verify_frozen_models_unmodified",
     "verify_jury_traceability_completeness",
 ]

@@ -1481,7 +1481,7 @@ def test_presentation_polish_contracts() -> None:
     )[0]
     assert 'id="telemetryReductionFunnel"' in investigations
     assert (
-        "Jan Benchmark: 216,568 flows -> 4,246 RF alerts | 98.0% volume reduction | 0.095% FPR"
+        "Jan Benchmark: 216,568 flows -> 4,246 RF alerts | 98.039% volume reduction | 0.095% FPR"
     ) in investigations
     assert "flows === 0 ? '0.0%'" in script
     assert "(1 - attackCampaigns / flows)" in script
@@ -1526,7 +1526,7 @@ def test_presentation_polish_contracts() -> None:
 
 _DNN_CLASS_NAMES = (
     "Analysis",
-    "Backdoors",
+    "Backdoor",
     "DoS",
     "Exploits",
     "Fuzzers",
@@ -1583,7 +1583,8 @@ def test_range_launch_scores_raw_three_models_and_observatory(tmp_path: Path) ->
         repo_root=REPO_ROOT,
     )
     assert launched["http_status"] == 200
-    assert launched["source_label"] == "suricata_eve_bridge"
+    assert launched["source_label"] == "unsw_benchmark_replay_profile"
+    assert launched["replay_profile"] == "unsw_benchmark_replay_profile"
     assert launched["scenario_label"] == "T1046"
     assert "scenario label T1046" in launched["case_title"]
     assert launched["src_ip"] == "172.29.0.10"
@@ -1593,7 +1594,10 @@ def test_range_launch_scores_raw_three_models_and_observatory(tmp_path: Path) ->
     assert isinstance(launched["rf_attack_probability"], float)
     assert isinstance(launched["ae_loss"], float)
     assert isinstance(launched["dnn_attack_probability"], float)
+    assert launched["dnn_classification"].startswith("Exploratory Non-Comparable Unfused Auxiliary")
+    assert "threatfusion_consensus_score" not in launched
     distribution = launched["dnn_class_distribution"]
+    assert "Backdoors" not in distribution
     for name in _DNN_CLASS_NAMES:
         assert name in distribution
         assert isinstance(distribution[name], float)
@@ -1837,15 +1841,17 @@ def test_launched_attack_vectors_match_nine_class_and_frozen_scores(tmp_path: Pa
         assert float(launched["ae_loss"]) >= 0.118136
         assert launched["unsw_attack_category"] == expected
         assert launched["scenario_label"] == vector_id
-        proto, dport = {
-            "T1190": ("tcp", 80),
-            "T1110": ("tcp", 22),
-            "T1046": ("tcp", 445),
-            "T1498": ("udp", 4433),
-        }[vector_id]
+        profile = _attack_study_profile(vector_id)
+        proto = (
+            "udp"
+            if float(profile["protocol_udp"]) >= 1.0
+            else ("icmp" if float(profile["protocol_icmp"]) >= 1.0 else "tcp")
+        )
+        dport = int(float(profile["dst_port"]))
         observation = launched.get("sensor_observation") or {}
         assert observation.get("proto") == proto
         assert int(observation.get("dst_port")) == dport
+        assert "unsw_benchmark_replay_profile" in str(observation.get("suricata_line") or "")
         with sqlite3.connect(live_db) as conn:
             raw_features, flow_protocol, service = conn.execute(
                 """
@@ -1855,7 +1861,6 @@ def test_launched_attack_vectors_match_nine_class_and_frozen_scores(tmp_path: Pa
                 (launched["flow_id"],),
             ).fetchone()
         scored = json.loads(raw_features)
-        profile = _attack_study_profile(vector_id)
         assert flow_protocol == proto
         assert service == str(dport)
         assert float(scored["dst_port"]) == float(profile["dst_port"])
@@ -1864,9 +1869,13 @@ def test_launched_attack_vectors_match_nine_class_and_frozen_scores(tmp_path: Pa
         assert float(scored["protocol_icmp"]) == float(profile["protocol_icmp"])
         preview = preview_soar_playbook(live_db, flow_id=int(launched["flow_id"]))
         assert preview["proto"] == proto
-        assert preview["dport"] == dport
+        expected_preview_dport = dport if dport > 0 else int(preview["dport"])
+        if dport > 0:
+            assert preview["dport"] == dport
+        else:
+            assert 1 <= int(preview["dport"]) <= 65535
         assert f"PROTO = {proto!r}" in preview["rendered_python_code"]
-        assert f"DPORT = {dport!r}" in preview["rendered_python_code"]
+        assert f"DPORT = {expected_preview_dport!r}" in preview["rendered_python_code"]
 
 
 def test_approve_unlocks_snapshot_and_repeat_click_stays_authorized(

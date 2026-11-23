@@ -13,6 +13,7 @@ from threatfusion.db.retraining_feedback_ledger import (
     verify_frozen_models_unmodified,
 )
 from threatfusion.models.jury_traceability import (
+    DATASET_CSE_CIC_IDS2018_SUBSET,
     DATASET_UNSW_NB15,
     FAMILY_AUTOENCODER_V2,
     FAMILY_RANDOM_FOREST,
@@ -22,6 +23,7 @@ from threatfusion.models.jury_traceability import (
     JuryTraceabilityError,
     REQUIRED_JURY_DATASETS,
     REQUIRED_JURY_MODEL_FAMILIES,
+    TF010_SIGNED_RUBRIC_ATTACHED,
     verify_jury_traceability_completeness,
 )
 
@@ -36,6 +38,10 @@ class TestJuryRequirementsTraceability:
         assert result.schema_version == JURY_TRACEABILITY_SCHEMA_VERSION
         assert result.is_complete is True
         assert result.artifact_checksums_verified is True
+        assert TF010_SIGNED_RUBRIC_ATTACHED is False
+        assert result.tf010_signed_rubric_attached is False
+        assert result.to_dict()["tf010_signed_rubric_attached"] is False
+        assert "CIC-IDS2017" not in REQUIRED_JURY_DATASETS
         assert len(result.verified_datasets) == len(REQUIRED_JURY_DATASETS)
         assert len(result.verified_model_families) == len(REQUIRED_JURY_MODEL_FAMILIES)
 
@@ -45,6 +51,11 @@ class TestJuryRequirementsTraceability:
         assert unsw.temporal_split_isolation is True
         assert "TF-006" in unsw.leakage_boundary
         assert "TF-007" in unsw.leakage_boundary
+        assert "11 raw source fields / 14 canonical features" in unsw.notes
+
+        cic18 = JURY_DATASET_DISPOSITIONS[DATASET_CSE_CIC_IDS2018_SUBSET]
+        assert cic18.disposition_status == "BLOCKED_SEMANTIC_MISMATCH"
+        assert cic18.temporal_split_isolation is False
 
         # Check Random Forest baseline family
         rf = JURY_MODEL_FAMILY_DISPOSITIONS[FAMILY_RANDOM_FOREST]

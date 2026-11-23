@@ -990,10 +990,27 @@ def test_m1_to_m7_and_l2_polish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
             rf_attack_probability=0.9,
             rf_threshold=0.5,
             top_feature_signals={},
+            ae_v2_reconstruction_error=0.1181361214680695,
         )
     )
+    assert anatomy.block_1_executive_summary.affected_network_assets == ()
+    assert anatomy.block_1_executive_summary.autoencoder_anomaly_rank == 2
+    assert anatomy.block_3_mitre_mapping.technique_id == "unavailable"
+    assert anatomy.block_3_mitre_mapping.cosine_similarity == 0.0
     assert anatomy.block_4_cryptographic_soar_status.playbook_id == "unavailable"
     assert anatomy.block_4_cryptographic_soar_status.entry_sha256 == ""
+    anatomy_above = build_four_block_investigation_anatomy(
+        AdvisoryEvidenceBundle(
+            candidate_id="c1",
+            record_id="r1",
+            rf_model_version="v1",
+            rf_attack_probability=0.9,
+            rf_threshold=0.5,
+            top_feature_signals={},
+            ae_v2_reconstruction_error=0.1181361214680695 + 1e-9,
+        )
+    )
+    assert anatomy_above.block_1_executive_summary.autoencoder_anomaly_rank == 1
 
     # M6: Production HTML strips demo codes
     monkeypatch.setenv("THREATFUSION_ENV", "production")

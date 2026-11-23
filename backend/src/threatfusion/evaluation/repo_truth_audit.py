@@ -70,6 +70,24 @@ EXPECTED_MODEL_DIGESTS: dict[str, dict[str, str]] = {
         ),
         "expected_sha256": "1d02e5bba556cb28709bd0faefce5f29da424a419a2d95332ad27a8995b26f63",
     },
+    "preprocessor_state": {
+        "label": "Preprocessor State",
+        "rel_path": (
+            "data/processed/unsw_network_preprocessing/"
+            "full-train-only-0141bde-v1/preprocessor_state.json"
+        ),
+        "expected_sha256": "30c955e3931dc010f8b4391a80fc0fbeddd17e14260701c8131d88f95b06ee49",
+    },
+    "exploratory_9class_dnn": {
+        "label": "Exploratory 9-Class DNN",
+        "rel_path": "artifacts/models/fyp2_dnn_same_split_v1/dnn_model.pt",
+        "expected_sha256": "614850ad84fc4ab32dc6e6d2318900668d97cad6edba37290ed9fe2b2482df1f",
+    },
+    "calibrated_runtime_fixtures": {
+        "label": "Calibrated Runtime Fixtures",
+        "rel_path": "artifacts/benchmarks/unsw_nb15_calibrated_runtime_fixtures.json",
+        "expected_sha256": "0c38310e84c6869947cc60118a3e2dec91577757c81aded654757ea7ecabcaf6",
+    },
 }
 
 FORBIDDEN_SPLIT_PASTE_PATHS: tuple[str, ...] = (
@@ -592,7 +610,7 @@ def _check_2_frozen_model_invariance(
         }
 
     summary = (
-        "All 4 frozen model artifacts verified byte-identical against immutable reference hashes."
+        "All 7 frozen model/preprocessor/fixture artifacts verified byte-identical against immutable reference hashes."
         if passed
         else "; ".join(failures)
     )

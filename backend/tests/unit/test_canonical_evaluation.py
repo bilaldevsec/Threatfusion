@@ -155,3 +155,5 @@ def test_pack_to_dict_serialization() -> None:
     assert d["frozen_random_forest"]["precision_pct"] == 95.266
     assert d["section_8_complementarity"]["benign_fps_per_additional_attack"] == 16.395833333333332
     assert d["legacy_superseded"]["superseded_by_fyp2_eval_pack_rev2"] is True
+    assert pack.fyp_i_models["random_forest"].binary_accuracy == 0.99763
+    assert pack.fyp_ii_models["autoencoder_v2"].binary_accuracy == 0.98154

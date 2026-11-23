@@ -182,7 +182,7 @@ This document establishes the comprehensive **STRIDE Threat Model** (Spoofing, T
 
 ---
 
-### Stage 8: Autonomous n8n Playbook & TheHive Dispatch
+### Stage 8: Approval-Gated n8n Playbook & TheHive Dispatch
 * **Components:** `N8nDeterministicPlaybookClient`, `TheHiveDeterministicClient`, `run_misp_and_callback_contract_server.py`.
 * **STRIDE Analysis:**
   * **Spoofing:** Rogue caller triggers n8n webhooks or fakes callback receipts from unapproved alerts.
@@ -205,23 +205,25 @@ This document establishes the comprehensive **STRIDE Threat Model** (Spoofing, T
 
 ## 2. Production Readiness Assessment
 
+**Overall Readiness Disposition:** `PROTOTYPE_CONTROLS_VERIFIED / PRODUCTION_NO_GO (open gates TF-002..TF-012)`
+
 | Readiness Category | Evaluation Criteria | Enforcement Mechanism | Status |
 | :--- | :--- | :--- | :--- |
-| **Model Invariance** | SHA-256 byte immutability for all 4 model families | `verify_frozen_model_supply_chain` in preflight | **READY (100% Verified)** |
-| **Fail-Closed Secrets** | Zero plaintext tokens in configs; mandatory `:?required` | Docker Compose `${VAR:?required}` + client init validation | **READY (100% Enforced)** |
-| **Network Isolation** | Internal container communication via private bridge | `threatfusion_soc_net` bridge; host ports bound to `127.0.0.1` | **READY (100% Enforced)** |
-| **Cryptographic Receipts**| HMAC-SHA256 over canonical sorted-key JSON payloads | `N8nDeterministicPlaybookClient` + Contract Server | **READY (100% Enforced)** |
-| **Anti-Replay Protection**| Idempotency keys enforced on dispatch and callbacks | Format `^idem_[A-Za-z0-9_\-]+_\d+$`; HTTP 409 on replay | **READY (100% Enforced)** |
-| **Audit Trail Integrity** | Tamper-evident hash-chained ledger from genesis to head | `verify_audit_chain_integrity()` in `playbook_ledger.py` | **READY (100% Enforced)** |
-| **Telemetry Drift Guard** | Continuous 14-feature drift detection across live ingress | `evaluate_14_feature_telemetry_drift` (PSI $\le 0.25$) | **READY (100% Enforced)** |
-| **Resource & Spend Cap** | Automatic billing detachment on excessive cloud egress | `evaluate_budget_kill_switch` in telemetry pipeline | **READY (100% Enforced)** |
-| **External Holdout Gates**| TF-008, TF-009, TF-010, TF-011 closure discipline | Documented in `docs/issue_register.md` as honestly OPEN | **HONESTLY OPEN (Preserved)** |
+| **Model Invariance** | SHA-256 byte immutability across all 7 frozen model/preprocessor/fixture artifacts | `verify_frozen_model_supply_chain` + `audit_repo_truth.py` | **PROTOTYPE_CONTROLS_VERIFIED / PRODUCTION_NO_GO (open gates TF-002..TF-012)** |
+| **Fail-Closed Secrets** | Zero plaintext tokens in configs; mandatory `:?required` | Docker Compose `${VAR:?required}` + client init validation | **PROTOTYPE_CONTROLS_VERIFIED / PRODUCTION_NO_GO (open gates TF-002..TF-012)** |
+| **Network Isolation** | Internal container communication via private bridge | `threatfusion_soc_net` bridge; host ports bound to `127.0.0.1` | **PROTOTYPE_CONTROLS_VERIFIED / PRODUCTION_NO_GO (open gates TF-002..TF-012)** |
+| **Cryptographic Receipts**| HMAC-SHA256 over canonical sorted-key JSON payloads | `N8nDeterministicPlaybookClient` + Contract Server | **PROTOTYPE_CONTROLS_VERIFIED / PRODUCTION_NO_GO (open gates TF-002..TF-012)** |
+| **Anti-Replay Protection**| Idempotency keys enforced on dispatch and callbacks | Format `^idem_[A-Za-z0-9_\-]+_\d+$`; HTTP 409 on replay | **PROTOTYPE_CONTROLS_VERIFIED / PRODUCTION_NO_GO (open gates TF-002..TF-012)** |
+| **Audit Trail Integrity** | Tamper-evident hash-chained ledger from genesis to head | `verify_audit_chain_integrity()` in `playbook_ledger.py` | **PROTOTYPE_CONTROLS_VERIFIED / PRODUCTION_NO_GO (open gates TF-002..TF-012)** |
+| **Telemetry Drift Guard** | Continuous 14-feature drift detection across live ingress | `evaluate_14_feature_telemetry_drift` (PSI $\le 0.25$) | **PROTOTYPE_CONTROLS_VERIFIED / PRODUCTION_NO_GO (open gates TF-002..TF-012)** |
+| **Resource & Spend Cap** | Automatic billing detachment on excessive cloud egress | `evaluate_budget_kill_switch` in telemetry pipeline | **PROTOTYPE_CONTROLS_VERIFIED / PRODUCTION_NO_GO (open gates TF-002..TF-012)** |
+| **Open Product & Scientific Gates** | `TF-002..TF-004` and `TF-006..TF-012` closure discipline | Documented in `docs/issue_register.md` as honestly OPEN | **HONESTLY OPEN (`TF-002..TF-004`, `TF-006..TF-012`)** |
 
 ---
 
 ## 3. Incident Response & Playbook Rollback Procedure
 
-When an autonomous or human-approved SOAR containment action (e.g., host quarantine, firewall block) must be reversed:
+When a human-approved SOAR containment action (e.g., host quarantine, firewall block) must be reversed:
 1. **Locate Playbook Record:** Retrieve `playbook_id` from TheHive case or analyst dashboard triage view.
 2. **Verify Record State:** Confirm state is `executed_simulated`.
 3. **Execute Rollback:** Call `soar_engine.rollback_executed_action(playbook_id, actor_id, rollback_reason, expected_version)`.
@@ -233,4 +235,4 @@ When an autonomous or human-approved SOAR containment action (e.g., host quarant
 
 ## Conclusion
 
-The ThreatFusion platform architecture implements defense-in-depth across every stage of the threat intelligence lifecycle. By combining mathematical gating (Section 8 fusion rejection), cryptographic authentication (HMAC-SHA256, hash-chained audit ledger), network safeguards (RFC1918 Private-IP Guard), and strict fail-closed contract servers, ThreatFusion delivers enterprise-grade security operations while maintaining academic rigor and transparent issue governance.
+The ThreatFusion prototype implements defense-in-depth across every stage of the threat intelligence lifecycle—combining mathematical gating (Section 8 fusion rejection), cryptographic authentication (HMAC-SHA256, hash-chained audit ledger), network safeguards (RFC1918 Private-IP Guard), and fail-closed contract boundaries. Operational readiness remains **`PROTOTYPE_CONTROLS_VERIFIED / PRODUCTION_NO_GO (open gates TF-002..TF-012)`** until all open empirical, operational, and compliance gates in `docs/issue_register.md` are formally satisfied.

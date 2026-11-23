@@ -572,10 +572,10 @@ def build_four_block_investigation_anatomy(
         if all(ip in allowed_ips for ip in candidate_ips) and len(candidate_ips) > 0:
             final_assets = candidate_ips
         else:
-            # Fall back closed to grounded allowed IPs
-            final_assets = sorted(allowed_ips) if allowed_ips else ["10.0.0.4", "10.0.0.5"]
+            # Fall back closed to grounded allowed IPs only (never fabricate endpoints)
+            final_assets = sorted(allowed_ips)
     else:
-        final_assets = sorted(allowed_ips) if allowed_ips else ["10.0.0.4", "10.0.0.5"]
+        final_assets = sorted(allowed_ips)
 
     prob = float(bundle.rf_attack_probability)
     if prob >= 0.90:
@@ -587,12 +587,12 @@ def build_four_block_investigation_anatomy(
     else:
         risk_level = "LOW"
 
-    # Secondary Autoencoder priority rank
+    # Secondary Autoencoder priority rank (strict > matching calibrated threshold rule)
     ae_rank = (
         1
         if (
             bundle.ae_v2_reconstruction_error is not None
-            and bundle.ae_v2_reconstruction_error >= bundle.ae_v2_threshold
+            and bundle.ae_v2_reconstruction_error > bundle.ae_v2_threshold
         )
         else 2
     )
@@ -638,9 +638,9 @@ def build_four_block_investigation_anatomy(
 
     # 4. Block 3: MITRE ATT&CK Mapping
     chosen_tid: str | None = None
-    chosen_tactic: str = "Command and Control"
-    chosen_score: float = 0.924
-    chosen_rationale: str = "Semantic vector RAG retrieval matched enterprise threat pattern."
+    chosen_tactic: str = "Unavailable"
+    chosen_score: float = 0.0
+    chosen_rationale: str = "No grounded MITRE ATT&CK mapping available from stored evidence."
 
     # Inspect ChromaDB RAG hits in bundle
     rag_hit = bundle.chroma_rag_hits[0] if bundle.chroma_rag_hits else None
@@ -654,17 +654,22 @@ def build_four_block_investigation_anatomy(
         tactic_hit = getattr(rag_hit, "tactic", "") or (
             rag_hit.get("tactic", "") if isinstance(rag_hit, dict) else ""
         )
-        score_hit = getattr(rag_hit, "cosine_similarity", 0.924) or (
-            rag_hit.get("cosine_similarity", 0.924) if isinstance(rag_hit, dict) else 0.924
-        )
+        score_raw = getattr(rag_hit, "cosine_similarity", None)
+        if score_raw is None and isinstance(rag_hit, dict):
+            score_raw = rag_hit.get("cosine_similarity")
+        score_hit = float(score_raw) if score_raw is not None else 0.0
         desc_hit = getattr(rag_hit, "description", "") or (
             rag_hit.get("description", "") if isinstance(rag_hit, dict) else ""
         )
         if tid_hit and MITRE_TECHNIQUE_REGEX.match(str(tid_hit)):
             chosen_tid = str(tid_hit)
-            chosen_tactic = tactic_hit or "Command and Control"
+            chosen_tactic = tactic_hit or "Unavailable"
             chosen_score = float(score_hit)
-            chosen_rationale = desc_hit or f"ChromaDB 64-dim semantic RAG hit: {tname_hit}"
+            chosen_rationale = desc_hit or (
+                f"ChromaDB 64-dim semantic RAG hit: {tname_hit}"
+                if tname_hit
+                else "ChromaDB semantic RAG hit."
+            )
 
     # Verify input technique_id if passed
     if technique_id is not None and explanation_grounded:
@@ -677,15 +682,12 @@ def build_four_block_investigation_anatomy(
                 chosen_score = float(cosine_similarity)
             if defensive_rationale:
                 chosen_rationale = str(defensive_rationale)
-        else:
-            # Fall back closed: reject hallucinated MITRE ID
-            if chosen_tid is None:
-                chosen_tid = "T1071.001"
 
     if chosen_tid is None:
-        chosen_tid = "T1071.001"
-        chosen_tactic = "Command and Control"
-        chosen_rationale = "Application Layer Protocol: Web Protocols (HTTP/HTTPS simulated command-and-control beaconing)."
+        chosen_tid = "unavailable"
+        chosen_tactic = "Unavailable"
+        chosen_score = 0.0
+        chosen_rationale = "No grounded MITRE ATT&CK mapping available from stored evidence."
 
     block_3 = MitreMappingBlock(
         technique_id=chosen_tid,

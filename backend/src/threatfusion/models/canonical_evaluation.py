@@ -2,7 +2,7 @@
 
 Consolidates the authoritative September 21, 2026 Evaluation Pack Rev2 (6a36dcd9af17bf509977bcf966f2ace72644d5b2)
 scientific baseline for FAST-NUCES CS492 FYP-II:
-1. Exact populations (Train 865,480 benign-only; January validation 216,568; February benchmark 1,452,844).
+1. Exact populations (Train 865,480 total: 847,837 benign + 17,643 attack; benign-only AE weight fit on 847,837 rows with all-TRAIN preprocessing; January validation 216,568; February benchmark 1,452,844).
 2. Frozen Random Forest Reference (full-network-random-forest-6d69c72-v1):
    95.266% precision, 92.818% recall, 94.026% F1, 0.095% FPR on January (216,568 rows).
 3. Corrected v2 Single-Record Autoencoder (full-benign-autoencoder-2a51c94-v2):
@@ -352,7 +352,7 @@ FYP_I_MODELS: dict[str, ModelEvaluationEntry] = {
         phase="FYP-II_Verified_Rev2",
         objective="binary_classification",
         disposition_status="FROZEN_PRODUCTION_BASELINE",
-        binary_accuracy=0.95266,
+        binary_accuracy=0.99763,
         binary_f1=0.94026,
         binary_recall=0.92818,
         false_positive_rate=0.00095,
@@ -381,7 +381,7 @@ FYP_II_MODELS: dict[str, ModelEvaluationEntry] = {
         phase="FYP-II_Verified_Rev2",
         objective="anomaly_detection",
         disposition_status="EXPERIMENTAL_UNFUSED_BASELINE",
-        binary_accuracy=0.54978,
+        binary_accuracy=0.98154,
         binary_f1=0.49862,
         binary_recall=0.45617,
         false_positive_rate=0.00767,

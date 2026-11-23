@@ -61,7 +61,7 @@ class AlertNoiseReductionFunnel:
 
 def compute_alert_noise_reduction_funnel(
     tier1_raw_flows_ingested: int = 216568,
-    tier2_triage_queue_candidates: int = 4358,
+    tier2_triage_queue_candidates: int = 4246,
     tier3_correlated_incidents: int = 24,
     tier4_actionable_soar_playbooks: int = 8,
 ) -> AlertNoiseReductionFunnel:
@@ -1698,13 +1698,43 @@ def render_dashboard_html(
             hmac_signature_verified=valid_dispatch,
         )
 
+        approve_button_html = (
+            '<button class="btn-submit" type="button">Approve Playbook</button>'
+            if actor_role == "analyst"
+            else ""
+        )
+        assets = anatomy.block_1_executive_summary.affected_network_assets
+        if len(assets) >= 2:
+            assets_html = (
+                f'<code data-copy-hash="{html.escape(assets[0])}" title="Click to copy SHA-256 digest">'
+                f"{html.escape(assets[0])}</code> &rarr; "
+                f'<code data-copy-hash="{html.escape(assets[1])}" title="Click to copy SHA-256 digest">'
+                f"{html.escape(assets[1])}</code>"
+            )
+            exposure_badge_html = (
+                '<span class="badge" data-evidence-state="verified">RFC1918 Internal</span>'
+            )
+        elif len(assets) == 1:
+            assets_html = (
+                f'<code data-copy-hash="{html.escape(assets[0])}" title="Click to copy SHA-256 digest">'
+                f"{html.escape(assets[0])}</code>"
+            )
+            exposure_badge_html = (
+                '<span class="badge" data-evidence-state="verified">Endpoint Grounded</span>'
+            )
+        else:
+            assets_html = "Endpoints unavailable (no verified entity provenance)"
+            exposure_badge_html = (
+                '<span class="badge" data-evidence-state="unavailable">Endpoints Unavailable</span>'
+            )
+
         anatomy_html = f"""
         <section class="card inspector-tabs" data-blast-ui-tier="unicorn-progressive-disclosure-v1" style="background:#111827;border:1px solid rgba(255,255,255,0.08);backdrop-filter:blur(12px);">
             <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.75rem;">
                 <h3 style="margin:0;">5-Tab Investigation Inspector &amp; Standardized 4-Block Case Anatomy</h3>
                 <div style="display:flex;gap:0.4rem;align-items:center;">
                     <span class="badge" data-evidence-state="{evidence_badge_state}">Grounded Evidence: {'Verified' if evidence_badge_state == 'verified' else 'Unavailable'}</span>
-                    <button class="btn-submit" type="button">Approve Playbook</button>
+                    {approve_button_html}
                 </div>
             </div>
             <div class="inspector-tab-panes">
@@ -1715,8 +1745,8 @@ def render_dashboard_html(
                         <div><b>RF Confidence:</b> {anatomy.block_1_executive_summary.rf_probability * 100.0:.2f}%</div>
                         <div><b>Priority Rank:</b> #{anatomy.block_1_executive_summary.autoencoder_anomaly_rank}</div>
                         <div style="margin-top:0.25rem;"><span class="badge badge-secondary-anomaly">{anatomy.block_1_executive_summary.recall_gain_badge}</span></div>
-                        <div style="margin-top:0.25rem;"><b>Affected Assets:</b> {f'<code data-copy-hash="{html.escape(anatomy.block_1_executive_summary.affected_network_assets[0])}" title="Click to copy SHA-256 digest">{html.escape(anatomy.block_1_executive_summary.affected_network_assets[0])}</code> &rarr; <code data-copy-hash="{html.escape(anatomy.block_1_executive_summary.affected_network_assets[1])}" title="Click to copy SHA-256 digest">{html.escape(anatomy.block_1_executive_summary.affected_network_assets[1])}</code>' if len(anatomy.block_1_executive_summary.affected_network_assets) >= 2 else html.escape(', '.join(anatomy.block_1_executive_summary.affected_network_assets))}</div>
-                        <div style="margin-top:0.25rem;"><b>Exposure Badge:</b> <span class="badge" data-evidence-state="verified">RFC1918 Internal</span></div>
+                        <div style="margin-top:0.25rem;"><b>Affected Assets:</b> {assets_html}</div>
+                        <div style="margin-top:0.25rem;"><b>Exposure Badge:</b> {exposure_badge_html}</div>
                     </div>
                 </div>
                 <div data-inspector-tab="2" style="margin-bottom:0.75rem;">
@@ -1901,43 +1931,46 @@ def render_dashboard_html(
         <div id="liveCopilotAnswer" data-evidence-state="unavailable"></div>
     </header>
 
+    <!-- Layers 1-2: Reference Benchmark Context & 6-Stage Architecture (collapsed for triage focus) -->
+    <details class="dashboard-context-collapse" style="margin-bottom:1.25rem;">
+    <summary style="cursor:pointer;padding:0.6rem 0.9rem;background:#111827;border:1px solid rgba(255,255,255,0.08);border-radius:6px;font-weight:600;color:#8b949e;">Pipeline Reference Metrics &amp; 6-Stage Architecture (TF-008..TF-011 Open)</summary>
     <!-- Layer 1: Top Hero Strip -->
-    <section class="card" data-layer="hero-investor-hook" style="background:transparent;border:none;padding:0;">
+    <section class="card" data-layer="hero-investor-hook" style="background:transparent;border:none;padding:0;margin-top:0.75rem;">
         <div class="card" style="background:#111827;border:1px solid rgba(255,255,255,0.08);backdrop-filter:blur(12px);">
             <div style="display:flex;justify-content:space-between;align-items:center;">
-                <span style="font-weight:bold;font-size:0.85rem;color:#8b949e;">ALERT NOISE COMPRESSION FUNNEL</span>
-                <span class="badge" style="background:rgba(16,185,129,0.15);color:#10b981;border:1px solid rgba(16,185,129,0.4);font-weight:800;">99%+ Alert Noise Eliminated</span>
+                <span style="font-weight:bold;font-size:0.85rem;color:#8b949e;">ALERT VOLUME REDUCTION BENCHMARK</span>
+                <span class="badge" style="background:rgba(16,185,129,0.15);color:#10b981;border:1px solid rgba(16,185,129,0.4);font-weight:800;">98.039% Raw-to-Alert Volume Reduction</span>
             </div>
-            <div style="font-size:1.35rem;font-weight:800;color:#10b981;margin:0.25rem 0;">99.9889% Ratio</div>
+            <div style="font-size:1.25rem;font-weight:800;color:#10b981;margin:0.25rem 0;">216,568 Flows &rarr; 4,246 RF Alerts</div>
             <div style="font-size:0.75rem;color:#8b949e;" id="velocitySourceLabel">{velocity_source_label}</div>
-            <div style="font-size:0.75rem;color:#8b949e;">216,568 Raw Flows &rarr; 4,358 RF Candidates &rarr; 24 Correlated Campaigns &rarr; 8 Actionable Playbooks</div>
-            <div style="font-size:0.72rem;color:#6e7681;margin-top:0.25rem;font-family:'JetBrains Mono',monospace;">Raw Flows Ingested &rarr; RF Gatekeeper (95.266% Prec, 0.095% FPR) &rarr; v2 Autoencoder Ranked (+2.203 pp Recall) &rarr; Stitched Campaigns (30s/600s Correlation)</div>
+            <div style="font-size:0.75rem;color:#8b949e;">216,568 Raw Flows &rarr; 4,246 RF Alerts (4,045 TP + 201 FP) · 0.095% FPR</div>
+            <div style="font-size:0.72rem;color:#6e7681;margin-top:0.25rem;font-family:'JetBrains Mono',monospace;">Raw Flows Ingested &rarr; RF Gatekeeper (95.266% Prec, 0.095% FPR) &rarr; v2 Autoencoder Ranker (+2.203 pp Recall, Unfused)</div>
         </div>
         <div class="card" style="background:#111827;border:1px solid rgba(255,255,255,0.08);backdrop-filter:blur(12px);">
             <div style="display:flex;justify-content:space-between;align-items:center;">
-                <span style="font-weight:bold;font-size:0.85rem;color:#8b949e;">OPERATIONAL VELOCITY DECOMPOSITION</span>
-                <span class="badge badge-auth">99.85% Analyst Toil Saved</span>
+                <span style="font-weight:bold;font-size:0.85rem;color:#8b949e;">OPERATIONAL VELOCITY &amp; WORKLOAD</span>
+                <span class="badge" data-evidence-state="unavailable">Analyst Workload Reduction: Unmeasured (TF-009 Open)</span>
             </div>
             <div style="font-family:'JetBrains Mono',monospace;font-size:0.78rem;color:#06b6d4;background:rgba(6,182,212,0.08);padding:0.35rem;border-radius:4px;margin:0.25rem 0;">
                 TTD (Time to Detect, ms) + TTA (Time to Acknowledge, ms) + TTI (Time to Investigate, s) = Total Time to Conclusion
             </div>
             <div style="font-size:0.75rem;color:#8b949e;">
-                TTD: 18.4 ms &middot; TTA: 12.6 ms &middot; TTI: 1.25 s &middot; Conclusion: 1.281s vs 15-min (900.0s) Manual Baseline (MTTI 1080s / MTTR 2700s benchmarks)
+                Controlled human-factors analyst cohort trials (&ge;10 trials) required before claiming empirical MTTR or toil savings (TF-009 open).
             </div>
         </div>
         <div class="card" style="background:#111827;border:1px solid rgba(255,255,255,0.08);backdrop-filter:blur(12px);">
             <div style="display:flex;justify-content:space-between;align-items:center;">
                 <span style="font-weight:bold;font-size:0.85rem;color:#8b949e;">PIPELINE &amp; SUPPLY-CHAIN SHIELD</span>
-                <span class="badge badge-auth">Nominal Guard</span>
+                <span class="badge" data-evidence-state="unavailable">Static Snapshot View</span>
             </div>
             <div style="display:flex;gap:0.35rem;flex-wrap:wrap;margin-top:0.35rem;">
-                <span class="badge" data-evidence-state="verified">mTLS 1.3 Active</span>
+                <span class="badge" data-evidence-state="unavailable">mTLS 1.3 Active (Verify at Listener)</span>
                 <span class="badge" data-evidence-state="{model_evidence_state}" data-copy-hash="{rf_registry_digest}" title="Click to copy SHA-256 digest">Model Weights Frozen &amp; Verified</span>
-                <span class="badge" data-evidence-state="verified">14-Feature PSI Drift Monitor: Nominal</span>
-                <span class="badge" data-evidence-state="verified" data-copy-hash="{"0" * 64}" title="Click to copy SHA-256 digest">SOAR Audit Ledger: Intact</span>
+                <span class="badge" data-evidence-state="unavailable">14-Feature PSI Drift Monitor: Static / Unmeasured</span>
+                <span class="badge" data-evidence-state="unavailable">SOAR Audit Ledger: Verified Per-Alert Only</span>
             </div>
             <div style="font-size:0.75rem;color:#8b949e;margin-top:0.35rem;">
-                Strict Empirical Lock: Gate G9 Decoupled &middot; 4 Frozen Artifacts Verified (<code data-copy-hash="{rf_registry_digest}" title="Click to copy SHA-256 digest">{rf_registry_digest[:8]}...</code>)
+                Strict Empirical Lock: Gate G9 Decoupled &middot; 7 Frozen Artifacts Tracked (<code data-copy-hash="{rf_registry_digest}" title="Click to copy SHA-256 digest">{rf_registry_digest[:8]}...</code>)
             </div>
         </div>
     </section>
@@ -1956,6 +1989,7 @@ def render_dashboard_html(
         <span style="color:#6e7681;">&rarr;</span>
         <div class="arch-stage" data-pipeline-stage="6"><b>6.</b> HMAC n8n &amp; TheHive SOAR</div>
     </section>
+    </details>
 
     <!-- Layer 3: Main Workspace (Split-Pane Stitched Queue + 5-Tab Inspector) -->
     <main data-layer="split-investigation-workspace">
