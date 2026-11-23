@@ -1030,7 +1030,7 @@ def test_live_product_launcher_starts_one_process() -> None:
         "+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)"
         in readme
     )
-    assert "TF-008, TF-009, TF-010, and TF-011 remain open." in readme
+    assert "all 10 governance gates (`TF-002..TF-004`, `TF-006..TF-012`) remain `open`" in readme
 
 
 def _post_json(

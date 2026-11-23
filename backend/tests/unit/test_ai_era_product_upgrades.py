@@ -786,10 +786,10 @@ def test_deploy_full_stack_provisions_only_when_live(tmp_path: Path) -> None:
     assert "provision-range is not called" in cloud
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert (
-        "AZURE_VM_SIZE=Standard_B2pls_v2 ./scripts/deploy_cloud_range.sh --auto-ip --deploy-full-stack"
+        "AZURE_VM_SIZE=Standard_B2pls_v2 ./scripts/deploy_cloud_range.sh --provider azure --auto-ip --deploy-full-stack"
         in readme
     )
-    assert "v1.2 operator surface" in readme
+    assert "v1.1.0 operator surface" in readme
 
 
 def test_quad_format_blocks_and_envelope_floor() -> None:

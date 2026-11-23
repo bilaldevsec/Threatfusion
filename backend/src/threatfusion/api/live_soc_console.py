@@ -2843,6 +2843,15 @@ def _grounded_gemini_narrative(
             hits,
         )
         fallback["ledger_verification"] = ledger
+        if local_narrative:
+            _remember_live_gemini(
+                flow_id,
+                question,
+                "local_air_gapped",
+                fallback,
+                db_path,
+                identity,
+            )
         return fallback
     model_name = str(status.get("model_name") or resolve_gemini_model())
     cached = _cached_live_gemini(flow_id, question, model_name, db_path, identity)
@@ -3139,12 +3148,16 @@ def _flow_rows(db_path: Path, *, limit: int, flow_id: int | None = None) -> list
                     "ae_anomaly_flag",
                     "ae_threshold",
                     "ae_top_features",
+                    "ae_feature_errors",
                     "dnn_attack_probability",
                     "dnn_binary_decision",
                     "unsw_attack_category",
                     "dnn_class",
                     "predicted_class",
                     "predicted_class_probability",
+                    "top_attack_class",
+                    "top_attack_probability",
+                    "dnn_class_distribution",
                     "dnn_classification",
                     "dnn_role",
                 ):

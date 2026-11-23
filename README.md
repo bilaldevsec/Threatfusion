@@ -7,7 +7,7 @@
 > - **Sole Alert Authority**: Stage 3 Frozen Random Forest (`bd2853a6`) drives every alert decision (`threshold = 0.5000`).
 > - **Section 8 Fusion Shield**: `production_fusion_enabled = False` is strictly enforced (raising `ValueError` if toggled).
 > - **Gate `G9` Isolation**: Zero LLM, ChromaDB RAG, or advisory imports exist in deterministic pipeline Stages 1–4 or Stage 6 SOAR ledger (`verify_gate_g9()` PASS).
-> - **Open Gates**: `TF-008, TF-009, TF-010, and TF-011 remain open.` Formal enterprise/production release stays blocked while all 10 governance gates (`TF-002`–`TF-004`, `TF-006`–`TF-012`) remain `open` in [`docs/issue_register.md`](docs/issue_register.md).
+> - **Open Gates**: Formal enterprise/production release stays blocked while all 10 governance gates (`TF-002..TF-004`, `TF-006..TF-012`) remain `open` in [`docs/issue_register.md`](docs/issue_register.md).
 
 ---
 
@@ -22,6 +22,8 @@
 | ![AI Threat Hunter Rules](docs/assets/screenshots/05-ai-threat-hunter-rules.png) | ![Mobile Console](docs/assets/screenshots/06-mobile-console.png) |
 
 ---
+
+> **Prerequisites**: `Python 3.11 · ~4 GB RAM · all 7 frozen model/fixture artifacts included in repo`
 
 ## Multi-Cloud & Local Quickstart (`Python 3.11`)
 
@@ -80,10 +82,10 @@ All cloud workflows lock port `8766` away from `0.0.0.0/0` (operator access uses
   ```
 - **Azure (`ARM` / B-Series Range)**:
   ```bash
-  AZURE_VM_SIZE=Standard_B2pls_v2 ./scripts/deploy_cloud_range.sh --auto-ip --deploy-full-stack
+  AZURE_VM_SIZE=Standard_B2pls_v2 ./scripts/deploy_cloud_range.sh --provider azure --auto-ip --deploy-full-stack
   ```
 
-### v1.2 operator surface
+### v1.1.0 operator surface
 
 - Single-row 52px Cool Obsidian header with collapsible **Health & Governance Drawer** (`/readyz`, SOAR hash chain status, transport posture, UTC clock, advisory provider status).
 - High-density **Investigations Queue** (`Flows + Correlated Incidents` summary, collapsed telemetry funnel strip, single-row filter bar, `40px` tabular-nums rows).

@@ -1883,6 +1883,16 @@
         else node.removeAttribute('title');
       });
     });
+    const containBtn = document.getElementById('btnContainRange');
+    if (containBtn) {
+      const srcIp = inc && inc.provenance && inc.provenance.srcIp
+        ? String(inc.provenance.srcIp)
+        : (inc && (inc.srcIp || inc.src_ip || inc.src_entity_id)
+          ? String(inc.srcIp || inc.src_ip || inc.src_entity_id)
+          : '');
+      const ipLabel = !isMissingEndpoint(srcIp) ? srcIp : 'selected flow';
+      containBtn.textContent = '3. Isolate Attacker (' + ipLabel + ') in Victim Firewall';
+    }
     applyTier3SoarAffordance();
   }
 
@@ -1969,6 +1979,12 @@
       setInspectorText('inspectorChain', 'Playbook hash chain: unavailable');
       setInspectorText('inspectorCallback', 'Callback receipt: not recorded');
       setInspectorText('inspectorExecutionPath', 'not dispatched');
+      const rangeBadge = document.getElementById('rangeConnectivityBadge');
+      if (rangeBadge) {
+        rangeBadge.textContent = 'Waiting for a selected flow';
+        rangeBadge.setAttribute('data-connectivity', 'waiting');
+        rangeBadge.setAttribute('data-evidence-state', 'unavailable');
+      }
       showOperatorStamp({ identity_verified: false, identity_label: 'unverified_local_label' });
       renderPlaybookPreview(null);
       renderGlassBox(null);
@@ -2138,6 +2154,15 @@
       return 'MSE ' + (Number.isFinite(mse) ? mse.toFixed(6) : String(value.mse));
     }
     if (component.component_id === 'pytorch_9class_head' && value && typeof value === 'object') {
+      const entries = Object.keys(value)
+        .map(function (key) { return [key, Number(value[key])]; })
+        .filter(function (pair) { return Number.isFinite(pair[1]); })
+        .sort(function (a, b) { return b[1] - a[1]; });
+      if (entries.length) {
+        return entries.slice(0, 3).map(function (pair) {
+          return pair[0] + ' ' + (pair[1] * 100).toFixed(2) + '%';
+        }).join(' · ');
+      }
       return Object.keys(value).map(function (key) {
         const score = Number(value[key]);
         return key + ' ' + (Number.isFinite(score) ? score.toFixed(4) : String(value[key]));
@@ -2150,6 +2175,11 @@
         const technique = hit && hit.technique_id ? String(hit.technique_id) : 'technique';
         return technique + (Number.isFinite(cosine) ? ' cosine ' + cosine.toFixed(4) : '');
       }).join('; ');
+    }
+    if (component.component_id === 'grounded_narrative_copilot' && typeof value === 'string') {
+      const firstLine = value.split('\n').map(function (l) { return l.trim(); }).filter(function (l) { return l && l.charAt(0) !== '['; })[0] || value.trim();
+      const compact = firstLine.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/`([^`]+)`/g, '$1');
+      return compact.length > 88 ? compact.slice(0, 85) + '...' : compact;
     }
     if (typeof value === 'string') return value;
     try {
@@ -3496,6 +3526,8 @@
       dnnAttackProbability: finiteOrNull(flow.dnn_attack_probability),
       dnnBinaryDecision: flow.dnn_binary_decision || '',
       unswAttackCategory: flow.unsw_attack_category || '',
+      topAttackClass: flow.top_attack_class || flow.unsw_attack_category || '',
+      topAttackProbability: finiteOrNull(flow.top_attack_probability),
       dnnFeatures: flow.dnn_features && typeof flow.dnn_features === 'object' ? flow.dnn_features : null,
       advisory: {
         summaryHeadline: flow.source_label === 'suricata_bridge' && flow.sensor_observation
@@ -4561,8 +4593,12 @@
       node.textContent = 'PyTorch DNN (9-Class): waiting';
       return;
     }
-    const category = inc.unswAttackCategory ? String(inc.unswAttackCategory) : 'unavailable';
-    node.textContent = 'PyTorch DNN (9-Class): ' + category + ' · ' + (probability * 100).toFixed(1) + '%';
+    const category = inc.topAttackClass || inc.unswAttackCategory
+      ? String(inc.topAttackClass || inc.unswAttackCategory)
+      : 'unavailable';
+    const topProb = Number(inc.topAttackProbability);
+    const topSuffix = Number.isFinite(topProb) ? ' (' + (topProb * 100).toFixed(1) + '%)' : '';
+    node.textContent = 'PyTorch DNN (9-Class): Attack ' + (probability * 100).toFixed(1) + '% · Top: ' + category + topSuffix;
   }
 
   function clearStaleContainmentBanner() {
@@ -4717,7 +4753,7 @@
     return override;
   }
 
-  function dnnClassLabel(block) {
+  function dnnClassLabel(block, distribution) {
     if (!block) return 'unavailable';
     const attackProb = Number(block.dnn_attack_probability);
     const predicted = String(block.predicted_class || block.dnn_class || '');
@@ -4727,17 +4763,28 @@
     const normalProb = Number(block.predicted_class_probability);
     if (benign) {
       const shown = Number.isFinite(normalProb)
-        ? normalProb.toFixed(4)
-        : (Number.isFinite(attackProb) ? (1 - attackProb).toFixed(4) : 'unavailable');
+        ? (normalProb * 100).toFixed(2) + '%'
+        : (Number.isFinite(attackProb) ? ((1 - attackProb) * 100).toFixed(2) + '%' : 'unavailable');
       const top = String(block.top_attack_class || '');
       const topProb = Number(block.top_attack_probability);
       const extra = top
-        ? (' top_attack ' + top + ' ' + (Number.isFinite(topProb) ? topProb.toFixed(4) : ''))
+        ? (' · Top attack: ' + top + (Number.isFinite(topProb) ? ' (' + (topProb * 100).toFixed(2) + '%)' : ''))
         : '';
       return 'Normal (' + shown + ')' + extra;
     }
-    const shown = Number.isFinite(attackProb) ? attackProb.toFixed(4) : 'unavailable';
-    return shown + ' / ' + (predicted || String(block.unsw_attack_category || 'unavailable'));
+    const attackPct = Number.isFinite(attackProb) ? (attackProb * 100).toFixed(2) + '%' : 'unavailable';
+    const topClass = predicted || String(block.top_attack_class || block.unsw_attack_category || 'unavailable');
+    let topProb = Number(block.top_attack_probability);
+    const dist = (distribution && typeof distribution === 'object')
+      ? distribution
+      : ((block.dnn_class_distribution && typeof block.dnn_class_distribution === 'object') ? block.dnn_class_distribution : null);
+    if (!Number.isFinite(topProb) && dist && topClass && Object.prototype.hasOwnProperty.call(dist, topClass)) {
+      const rows = jointSoftmaxRows(dist, attackProb);
+      const match = rows.find(row => row.label === topClass);
+      if (match && Number.isFinite(Number(match.value))) topProb = Number(match.value);
+    }
+    const topSuffix = Number.isFinite(topProb) ? ' (' + (topProb * 100).toFixed(2) + '%)' : '';
+    return 'Attack prob: ' + attackPct + ' · Top class: ' + topClass + topSuffix;
   }
 
   function proofScoreLine(block) {
@@ -5856,6 +5903,14 @@
   function renderVisualObservatory(data) {
     if (!data || typeof data !== 'object') return;
     const block = data.perturbed || data.original || data;
+    const currentInc = selectedIncident();
+    if (currentInc && block && typeof block === 'object') {
+      if (block.top_attack_class) currentInc.topAttackClass = String(block.top_attack_class);
+      if (Number.isFinite(Number(block.top_attack_probability))) {
+        currentInc.topAttackProbability = Number(block.top_attack_probability);
+      }
+      setDnnBadge(currentInc);
+    }
     const rf = Number(block.rf_attack_probability);
     const ae = Number(block.ae_loss);
     const aeThreshold = Number(block.ae_threshold || EVAL_PACK_REV2.aeThreshold);
@@ -5880,7 +5935,8 @@
         + ' / threshold ' + (Number.isFinite(aeThreshold) ? aeThreshold.toFixed(6) : 'unavailable')
         + (block.ae_anomaly_flag ? ' / anomaly' : ' / within threshold')
     );
-    const dnnGaugeText = '9-class DNN: ' + dnnClassLabel(block);
+    const distribution = data.dnn_class_distribution || block.dnn_class_distribution || {};
+    const dnnGaugeText = dnnClassLabel(block, distribution);
     setGauge(
       'gaugeDnnFill',
       'gaugeDnnThreshold',
@@ -5889,7 +5945,6 @@
       0.5,
       dnnGaugeText
     );
-    const distribution = data.dnn_class_distribution || block.dnn_class_distribution || {};
     const attackProbability = Number(block.dnn_attack_probability != null
       ? block.dnn_attack_probability
       : data.dnn_attack_probability);

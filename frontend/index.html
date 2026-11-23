@@ -537,8 +537,8 @@
                         <div><b>Callback:</b> <span id="inspectorCallback" data-evidence-state="unavailable">Callback receipt: not recorded</span></div>
                       </li>
                       <li>
-                        <button id="btnContainRange" type="button" disabled>3. Isolate Attacker (172.29.0.10) in Victim Firewall</button>
-                        <span class="badge" id="rangeConnectivityBadge" data-evidence-state="unavailable">172.29.0.10 -&gt; 172.29.0.20:80: waiting for a probe</span>
+                        <button id="btnContainRange" type="button" disabled>3. Isolate Attacker (selected flow) in Victim Firewall</button>
+                        <span class="badge" id="rangeConnectivityBadge" data-evidence-state="unavailable">Waiting for a selected flow</span>
                       </li>
                     </ol>
                     <section id="soarPlaybookInspectorSide" class="soar-playbook-inspector" aria-label="Dynamic Python SOAR Playbook and Live Execution Trace">
@@ -764,7 +764,7 @@
         <article class="card" id="hunterDraftRuleCard" style="background: #111827;" aria-label="Draft Detection Rule">
           <h3>Draft Detection Rule (Suricata / Sigma / SPL / YARA-L)</h3>
           <p>Grounds four review-only detection rules in the active flow protocol, destination port, and technique. Human approval is required before deployment.</p>
-          <div id="hunterRuleBadges" class="hunt-formats"></div>
+          <div id="hunterRuleBadges" class="hunt-formats" hidden></div>
           <label for="hunterDraftRuleQuery">Custom hunt intent</label>
           <div class="hunter-intent-row">
             <input id="hunterDraftRuleQuery" type="text" value="Detect lateral movement toward the active destination port" maxlength="240">
