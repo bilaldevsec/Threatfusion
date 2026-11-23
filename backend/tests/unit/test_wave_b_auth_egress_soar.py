@@ -14,6 +14,7 @@ from pathlib import Path
 import sqlite3
 import stat
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -54,6 +55,8 @@ from threatfusion.soar.playbook_ledger import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+VENV_PYTHON = REPO_ROOT / "threatfusion-venv" / "bin" / "python"
+PYTHON_BIN = VENV_PYTHON if VENV_PYTHON.is_file() else Path(sys.executable)
 
 
 def _load_contract_server_module():
@@ -634,7 +637,7 @@ def test_sqlite_0600_permissions_and_bootstrap_secrets(
     secrets_out = tmp_path / "prod_secrets" / ".env.secrets"
     proc = subprocess.run(
         [
-            str(REPO_ROOT / "threatfusion-venv" / "bin" / "python"),
+            str(PYTHON_BIN),
             str(REPO_ROOT / "scripts" / "bootstrap_secrets.py"),
             "--output",
             str(secrets_out),
@@ -657,7 +660,7 @@ def test_sqlite_0600_permissions_and_bootstrap_secrets(
     # Refuses /tmp output path when THREATFUSION_ENV=production
     bad_proc = subprocess.run(
         [
-            str(REPO_ROOT / "threatfusion-venv" / "bin" / "python"),
+            str(PYTHON_BIN),
             str(REPO_ROOT / "scripts" / "bootstrap_secrets.py"),
             "--output",
             "/tmp/threatfusion-forbidden-prod-secrets.env",
