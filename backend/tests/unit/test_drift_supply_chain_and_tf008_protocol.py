@@ -257,6 +257,54 @@ def test_evaluate_14_feature_telemetry_drift_is_strictly_read_only() -> None:
     assert report.is_read_only_diagnostic_monitor is True
 
 
+def test_evaluate_14_feature_telemetry_drift_extreme_tail_shifts() -> None:
+    """Extreme tail shifts (|z_shift| >= 1100) keep mass in tail bins and trigger severe drift."""
+    pos_rec_1 = dict(DEFAULT_BASELINE_MEANS)
+    pos_rec_1["fwd_packets"] = 100000.0
+    pos_rec_1["duration_ms"] = 3600000.0
+    pos_rec_2 = dict(DEFAULT_BASELINE_MEANS)
+    pos_rec_2["fwd_packets"] = 100500.0
+    pos_rec_2["duration_ms"] = 3605000.0
+
+    pos_report = evaluate_14_feature_telemetry_drift([pos_rec_1, pos_rec_2])
+    assert pos_report.drift_status == "severe_out_of_distribution_drift_retraining_review_required"
+    assert pos_report.max_psi > 2.0
+    assert (pos_report.feature_metrics["fwd_packets"].mean_shift_zscore or 0.0) >= 1100.0
+    assert (pos_report.feature_metrics["duration_ms"].mean_shift_zscore or 0.0) >= 1100.0
+    assert (pos_report.feature_metrics["fwd_packets"].psi or 0.0) > 2.0
+    assert (pos_report.feature_metrics["duration_ms"].psi or 0.0) > 2.0
+
+    neg_rec_1 = dict(DEFAULT_BASELINE_MEANS)
+    neg_rec_1["fwd_packets"] = -100000.0
+    neg_rec_2 = dict(DEFAULT_BASELINE_MEANS)
+    neg_rec_2["fwd_packets"] = -100500.0
+
+    neg_report = evaluate_14_feature_telemetry_drift([neg_rec_1, neg_rec_2])
+    assert neg_report.drift_status == "severe_out_of_distribution_drift_retraining_review_required"
+    assert (neg_report.feature_metrics["fwd_packets"].mean_shift_zscore or 0.0) <= -1100.0
+    assert (neg_report.feature_metrics["fwd_packets"].psi or 0.0) > 2.0
+
+
+def test_evaluate_14_feature_telemetry_drift_rejects_unknown_baselines_and_non_mappings() -> None:
+    """Unknown baseline keys and non-Mapping records/baselines raise TelemetryDriftError."""
+    valid_rec = dict(DEFAULT_BASELINE_MEANS)
+
+    with pytest.raises(TelemetryDriftError, match="baseline_means contains unknown features"):
+        evaluate_14_feature_telemetry_drift([valid_rec], baseline_means={"unknown_feat": 1.0})
+
+    with pytest.raises(TelemetryDriftError, match="baseline_stds contains unknown features"):
+        evaluate_14_feature_telemetry_drift([valid_rec], baseline_stds={"unknown_feat": 1.0})
+
+    with pytest.raises(TelemetryDriftError, match="baseline_means must be a mapping"):
+        evaluate_14_feature_telemetry_drift([valid_rec], baseline_means=["invalid"])  # type: ignore[arg-type]
+
+    with pytest.raises(TelemetryDriftError, match="baseline_stds must be a mapping"):
+        evaluate_14_feature_telemetry_drift([valid_rec], baseline_stds=["invalid"])  # type: ignore[arg-type]
+
+    with pytest.raises(TelemetryDriftError, match="Record at index 0 must be a mapping"):
+        evaluate_14_feature_telemetry_drift(["not-a-mapping"])  # type: ignore[list-item]
+
+
 # =============================================================================
 # 3. TF-008 Independent Holdout Evaluation Harness Tests
 # =============================================================================

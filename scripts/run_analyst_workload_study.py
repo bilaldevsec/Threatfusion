@@ -19,7 +19,12 @@ from pathlib import Path
 import sys
 import tempfile
 
-from threatfusion.evaluation.study_runner import (
+REPO_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_SRC = REPO_ROOT / "backend" / "src"
+if BACKEND_SRC.is_dir() and str(BACKEND_SRC) not in sys.path:
+    sys.path.insert(0, str(BACKEND_SRC))
+
+from threatfusion.evaluation.study_runner import (  # noqa: E402
     run_automated_smoke_study,
     run_interactive_study,
 )

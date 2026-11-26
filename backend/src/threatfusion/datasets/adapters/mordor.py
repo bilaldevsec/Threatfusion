@@ -1,8 +1,10 @@
+import math
 from typing import Any
 
 import pandas as pd
 
 from threatfusion.datasets.adapters.base import (
+    _is_missing,
     parse_required_timestamp,
     required_alias,
 )
@@ -11,7 +13,7 @@ from threatfusion.schemas.host_event import HostEvent
 
 
 def _string_or_none(value: Any) -> str | None:
-    if value is None or pd.isna(value):
+    if _is_missing(value):
         return None
 
     text = str(value).strip()
@@ -51,6 +53,12 @@ def adapt_mordor_row(row: dict[str, Any]) -> HostEvent:
     _, host_value = required_alias(row, source, ("Computer", "host", "Hostname"))
     timestamp = parse_required_timestamp(timestamp_value, source, timestamp_field)
 
+    dest_port_raw = (
+        row.get("DestinationPort")
+        if row.get("DestinationPort") not in (None, "")
+        else row.get("dst_port")
+    )
+
     return HostEvent(
         source_dataset="mordor",
         event_id=str(event_id_value).strip(),
@@ -65,7 +73,7 @@ def adapt_mordor_row(row: dict[str, Any]) -> HostEvent:
         command_line=_string_or_none(row.get("CommandLine")),
         src_ip=_string_or_none(row.get("SourceIp")) or _string_or_none(row.get("src_ip")),
         dst_ip=_string_or_none(row.get("DestinationIp")) or _string_or_none(row.get("dst_ip")),
-        dst_port=_parse_optional_port(row.get("DestinationPort") or row.get("dst_port")),
+        dst_port=_parse_optional_port(dest_port_raw),
         file_path=_string_or_none(row.get("TargetFilename"))
         or _string_or_none(row.get("file_path")),
         registry_key=_string_or_none(row.get("TargetObject"))
@@ -77,15 +85,21 @@ def adapt_mordor_row(row: dict[str, Any]) -> HostEvent:
 
 
 def _parse_optional_port(value: Any) -> int | None:
-    if value is None or pd.isna(value):
+    if value is None or isinstance(value, (bool, list, tuple, dict, set)):
+        return None
+    if not pd.api.types.is_scalar(value) or pd.isna(value):
         return None
 
     try:
-        port = int(float(str(value).strip()))
-    except (TypeError, ValueError):
+        parsed_f = float(str(value).strip())
+    except (TypeError, ValueError, OverflowError):
         return None
 
-    if port < 0 or port > 65535:
+    if not math.isfinite(parsed_f):
+        return None
+
+    port = int(parsed_f)
+    if parsed_f != port or port < 0 or port > 65535:
         return None
 
     return port

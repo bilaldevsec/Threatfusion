@@ -32,6 +32,10 @@ _PRIVATE_INTERNAL_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network,
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("fc00::/7"),
 )
+_SPECIAL_NON_GLOBAL_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
+    ipaddress.ip_network("198.18.0.0/15"),
+    ipaddress.ip_network("2001:db8::/32"),
+)
 _INTERNAL_HOST_SUFFIXES: tuple[str, ...] = (
     ".local",
     ".internal",
@@ -67,12 +71,20 @@ class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     http_error_308 = http_error_301
 
 
-def _unwrap_ip(
+def _unwrap_ips(
     addr: ipaddress.IPv4Address | ipaddress.IPv6Address,
-) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
-    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
-        return addr.ipv4_mapped
-    return addr
+) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
+    if not isinstance(addr, ipaddress.IPv6Address):
+        return (addr,)
+    unwrapped: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    if addr.ipv4_mapped is not None:
+        unwrapped.append(addr.ipv4_mapped)
+    if addr.sixtofour is not None:
+        unwrapped.append(addr.sixtofour)
+    if addr.teredo is not None:
+        unwrapped.extend(addr.teredo)
+    unwrapped.append(addr)
+    return tuple(unwrapped)
 
 
 def _check_ip_allowed(
@@ -81,22 +93,26 @@ def _check_ip_allowed(
     allow_loopback: bool,
     allow_private_internal: bool = False,
 ) -> None:
-    ip = _unwrap_ip(addr)
-    # Cloud metadata / IMDS / link-local / multicast / reserved / unspecified are NEVER allowed.
-    for net in _METADATA_IMDS_NETWORKS:
-        if ip.version == net.version and ip in net:
-            raise EgressBlockedError("egress_metadata_imds_blocked")
-    if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
-        raise EgressBlockedError("egress_non_global_ip_blocked")
-    if ip.is_loopback:
-        if allow_loopback or allow_private_internal:
-            return
-        raise EgressBlockedError("egress_loopback_blocked")
-    for net in _PRIVATE_INTERNAL_NETWORKS:
-        if ip.version == net.version and ip in net:
+    for ip in _unwrap_ips(addr):
+        # Cloud metadata / IMDS / link-local / multicast / reserved / unspecified are NEVER allowed.
+        for net in _METADATA_IMDS_NETWORKS:
+            if ip.version == net.version and ip in net:
+                raise EgressBlockedError("egress_metadata_imds_blocked")
+        # Check loopback before is_reserved because Python 3.11 marks IPv6 ::1 as is_reserved.
+        if ip.is_loopback:
+            if allow_loopback:
+                continue
+            raise EgressBlockedError("egress_loopback_blocked")
+        if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            raise EgressBlockedError("egress_non_global_ip_blocked")
+        if any(ip.version == net.version and ip in net for net in _PRIVATE_INTERNAL_NETWORKS):
             if allow_private_internal:
-                return
+                continue
             raise EgressBlockedError("egress_blocked_ip_range")
+        if any(ip.version == net.version and ip in net for net in _SPECIAL_NON_GLOBAL_NETWORKS):
+            raise EgressBlockedError("egress_non_global_ip_blocked")
+        if not ip.is_global:
+            raise EgressBlockedError("egress_non_global_ip_blocked")
 
 
 def _validate_and_resolve_egress(
@@ -150,7 +166,7 @@ def _validate_and_resolve_egress(
             allow_private_internal=host_in_allowlist,
         )
     else:
-        if host_lower == "localhost" and not (allow_loopback or host_in_allowlist):
+        if host_lower == "localhost" and not allow_loopback:
             raise EgressBlockedError("egress_loopback_blocked")
         if (
             "." not in host_lower

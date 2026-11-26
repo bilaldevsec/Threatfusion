@@ -38,6 +38,7 @@ from threatfusion.advisory.chromadb_mitre_rag import (
     ChromaDbMitrePlaybookRag,
 )
 from threatfusion.db.sqlite_permissions import (
+    connect_sqlite_readonly,
     ensure_secure_parent_dir,
     harden_sqlite_permissions,
     precreate_sqlite_0600,
@@ -726,6 +727,13 @@ def canonical_from_dnn_features(
         canonical["bwd_bytes"] = float(raw_features["dbytes"])
     if _touched("rate"):
         canonical["packets_per_second"] = float(raw_features["rate"])
+    elif changed is not None and any(k in changed for k in ("dur", "spkts", "dpkts")):
+        dur_s = float(raw_features["dur"])
+        canonical["packets_per_second"] = (
+            (float(raw_features["spkts"]) + float(raw_features["dpkts"])) / dur_s
+            if dur_s > 0.0
+            else 0.0
+        )
     if _touched("spkts") or _touched("sbytes"):
         spkts = float(raw_features["spkts"])
         canonical["fwd_packet_length_mean"] = (
@@ -740,6 +748,13 @@ def canonical_from_dnn_features(
         canonical["bytes_per_second"] = (
             float(raw_features["sload"]) + float(raw_features["dload"])
         ) / 8.0
+    elif changed is not None and any(k in changed for k in ("dur", "sbytes", "dbytes")):
+        dur_s = float(raw_features["dur"])
+        canonical["bytes_per_second"] = (
+            (float(raw_features["sbytes"]) + float(raw_features["dbytes"])) / dur_s
+            if dur_s > 0.0
+            else 0.0
+        )
     return canonical
 
 
@@ -911,8 +926,8 @@ def run_live_model_proof(
     if flow_id <= 0 or not live_db_path.is_file():
         return refused
     try:
-        conn = sqlite3.connect(f"file:{live_db_path}?mode=ro", uri=True, timeout=5.0)
-    except sqlite3.Error:
+        conn = connect_sqlite_readonly(live_db_path)
+    except (sqlite3.Error, OSError):
         return refused
     try:
         conn.row_factory = sqlite3.Row
@@ -942,6 +957,7 @@ def run_live_model_proof(
         refused["reason"] = "invalid_feature_contract"
         return refused
     perturbed_raw = dict(original_raw)
+    override_keys: set[str] = set()
     if features_override is not None:
         if not isinstance(features_override, Mapping):
             refused["http_status"] = 400
@@ -950,18 +966,25 @@ def run_live_model_proof(
         for name in _DNN_FEATURES:
             if name not in features_override:
                 continue
-            try:
-                value = float(features_override[name])
-            except (TypeError, ValueError):
+            raw_override = features_override[name]
+            if isinstance(raw_override, bool) or not isinstance(raw_override, (int, float)):
                 refused["http_status"] = 400
                 refused["reason"] = "invalid_feature_contract"
                 return refused
-            if not math.isfinite(value):
+            value = float(raw_override)
+            if not math.isfinite(value) or value < 0.0:
                 refused["http_status"] = 400
                 refused["reason"] = "invalid_feature_contract"
                 return refused
+            override_keys.add(name)
             perturbed_raw[name] = value
     supplied_canonical = _canonical_override(features_override) if features_override else None
+    if supplied_canonical is not None and any(
+        val < 0.0 for key, val in supplied_canonical.items() if not key.startswith("protocol_")
+    ):
+        refused["http_status"] = 400
+        refused["reason"] = "invalid_feature_contract"
+        return refused
     import time
 
     started = time.perf_counter()
@@ -979,7 +1002,7 @@ def run_live_model_proof(
         perturbed_canonical = (
             dict(original_canonical)
             if not changed
-            else canonical_from_dnn_features(perturbed_raw, stored, changed)
+            else canonical_from_dnn_features(perturbed_raw, stored, changed | override_keys)
         )
     perturbed = _model_proof_block(perturbed_canonical, perturbed_raw, root)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
@@ -1649,7 +1672,7 @@ _COPILOT_HEADINGS = (
 )
 _COPILOT_TITLES = tuple(heading.split("] ", 1)[1] for heading in _COPILOT_HEADINGS)
 _CVE_TOKEN = re.compile(r"cve[-_ ]?(\d{4})[-_ ](\d{4,7})", re.IGNORECASE)
-_MITRE_ID = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
+_MITRE_ID = re.compile(r"\bT\d{4}(?:\.\d{3})?\b", re.IGNORECASE)
 _CVE_ID = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
 _SCENARIO_LABEL_RE = re.compile(r"scenario label (T\d+(?:\.\d+)?)")
 _POISON_IPV4 = frozenset({"198.51.100.99", "203.0.113.99"})
@@ -1681,7 +1704,10 @@ def _normalize_copilot_headings(text: str) -> str:
 
 
 def _citation_ids(text: str) -> tuple[set[str], set[str]]:
-    return set(_MITRE_ID.findall(text)), {item.upper() for item in _CVE_ID.findall(text)}
+    return (
+        {item.upper() for item in _MITRE_ID.findall(text)},
+        {item.upper() for item in _CVE_ID.findall(text)},
+    )
 
 
 def _indexed_corpus_ids() -> tuple[set[str], set[str]]:
@@ -1761,14 +1787,18 @@ def _allowed_citation_ids(
     evidence: str,
     hits: Sequence[Mapping[str, Any]],
     flow_hits: Sequence[Mapping[str, Any]] = (),
+    *,
+    benign: bool = False,
 ) -> tuple[set[str], set[str]]:
     """Technique and CVE ids already present on the flow, the corpus, or the evidence."""
+    if benign:
+        return set(), set()
     allowed_techniques, allowed_cves = _citation_ids(evidence)
     corpus_techniques, corpus_cves = _indexed_corpus_ids()
     allowed_techniques.update(corpus_techniques)
     allowed_cves.update(corpus_cves)
     for hit in tuple(hits) + tuple(flow_hits):
-        technique = str(hit.get("technique_id") or "").strip()
+        technique = str(hit.get("technique_id") or "").strip().upper()
         if technique:
             allowed_techniques.add(technique)
         blob = " ".join(
@@ -1787,9 +1817,13 @@ def _copilot_citations_grounded(
     evidence: str,
     hits: Sequence[Mapping[str, Any]],
     flow_hits: Sequence[Mapping[str, Any]] = (),
+    *,
+    benign: bool = False,
 ) -> bool:
     """Reject a MITRE or CVE id outside the flow hits, the indexed corpus, and the evidence."""
-    allowed_techniques, allowed_cves = _allowed_citation_ids(evidence, hits, flow_hits)
+    allowed_techniques, allowed_cves = _allowed_citation_ids(
+        evidence, hits, flow_hits, benign=benign
+    )
     found_techniques, found_cves = _citation_ids(text)
     return found_techniques.issubset(allowed_techniques) and found_cves.issubset(allowed_cves)
 
@@ -1825,9 +1859,9 @@ def _rewrite_unindexed_citations(
     replacement = _flow_verified_technique_id(flow_hits, hits)
 
     def mitre(match: re.Match[str]) -> str:
-        token = match.group(0)
+        token = match.group(0).upper()
         if token in allowed_techniques:
-            return token
+            return match.group(0)
         return replacement
 
     def cve(match: re.Match[str]) -> str:
@@ -1852,17 +1886,79 @@ def _strip_anonymized_study_ips(
     source_label: str,
     inspected: Sequence[str],
 ) -> str:
-    """Drop example IPv4 on an anonymized study row. Poison addresses stay in the text."""
+    """Drop example IPv4/IPv6 on an anonymized study row. Poison addresses stay in the text."""
     if source_label != "recorded_unsw_nb15" or tuple(inspected):
         return text
-    from threatfusion.advisory.explanation_engine import IP_REGEX
+    from threatfusion.advisory.telemetry_shield import _extract_canonical_ip_spans
 
-    def repl(match: re.Match[str]) -> str:
-        if match.group(0) in _POISON_IPV4:
-            return match.group(0)
-        return ""
+    spans = _extract_canonical_ip_spans(text)
+    if not spans:
+        return text
+    parts: list[str] = []
+    cursor = 0
+    for start, end, canon in spans:
+        if start < cursor:
+            continue
+        is_poison = canon in _POISON_IPV4
+        if not is_poison:
+            try:
+                addr = ipaddress.ip_address(canon)
+                if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+                    is_poison = str(addr.ipv4_mapped) in _POISON_IPV4
+            except ValueError:
+                pass
+        if is_poison:
+            continue
+        parts.append(text[cursor:start])
+        cursor = end
+    parts.append(text[cursor:])
+    return re.sub(r"[ \t]{2,}", " ", "".join(parts))
 
-    return re.sub(r"[ \t]{2,}", " ", IP_REGEX.sub(repl, text))
+
+def _extract_alert_signature(
+    row: Mapping[str, Any],
+    *,
+    source_label: str = "",
+) -> str:
+    """Extract alert signature consistently across Copilot and Advisory Trace."""
+    obs = row.get("sensor_observation")
+    if not isinstance(obs, Mapping):
+        raw_obs = row.get("sensor_observation_json")
+        if isinstance(raw_obs, str) and raw_obs.strip().startswith("{"):
+            try:
+                parsed_obs = json.loads(raw_obs)
+                if isinstance(parsed_obs, Mapping):
+                    obs = parsed_obs
+            except json.JSONDecodeError:
+                obs = None
+    if isinstance(obs, Mapping):
+        sig = str(obs.get("signature") or "").strip()
+        if sig:
+            return sig
+    direct_sig = str(row.get("signature") or row.get("alert_signature") or "").strip()
+    if direct_sig:
+        return direct_sig
+    raw_feats = row.get("features_json")
+    feats_obj: Mapping[str, Any] | None = None
+    if isinstance(raw_feats, Mapping):
+        feats_obj = raw_feats
+    elif isinstance(raw_feats, str) and raw_feats.strip().startswith("{"):
+        try:
+            parsed_feats = json.loads(raw_feats)
+            if isinstance(parsed_feats, Mapping):
+                feats_obj = parsed_feats
+        except json.JSONDecodeError:
+            feats_obj = None
+    if feats_obj is not None:
+        feat_sig = str(feats_obj.get("signature") or feats_obj.get("alert_signature") or "").strip()
+        if feat_sig:
+            return feat_sig
+        nested_obs = feats_obj.get("sensor_observation")
+        if isinstance(nested_obs, Mapping):
+            nested_sig = str(nested_obs.get("signature") or "").strip()
+            if nested_sig:
+                return nested_sig
+    return str(row.get("case_title") or source_label or row.get("source_label") or "").strip()
 
 
 def _positive_flow_id(flow_id: Any) -> int | None:
@@ -1921,9 +2017,20 @@ def _ensure_copilot_cache_table(db_path: Path) -> None:
                 provider TEXT,
                 model_name TEXT,
                 narrative TEXT,
-                created_at_utc TEXT
+                created_at_utc TEXT,
+                envelope_sha256 TEXT,
+                prompt_injection_filtered INTEGER
             )
             """)
+        existing_cols = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(live_copilot_cache)").fetchall()
+        }
+        if "envelope_sha256" not in existing_cols:
+            conn.execute("ALTER TABLE live_copilot_cache ADD COLUMN envelope_sha256 TEXT")
+        if "prompt_injection_filtered" not in existing_cols:
+            conn.execute(
+                "ALTER TABLE live_copilot_cache ADD COLUMN prompt_injection_filtered INTEGER"
+            )
 
 
 def _cached_live_gemini(
@@ -1948,7 +2055,7 @@ def _cached_live_gemini(
         with _connect(db_path) as conn:
             row = conn.execute(
                 """
-                SELECT provider, model_name, narrative
+                SELECT provider, model_name, narrative, envelope_sha256, prompt_injection_filtered
                 FROM live_copilot_cache WHERE cache_key = ?
                 """,
                 (_copilot_cache_key(number, question, model_name, identity),),
@@ -1962,6 +2069,8 @@ def _cached_live_gemini(
         "model_name": row["model_name"],
         "model_used": row["model_name"] or model_name,
         "narrative": row["narrative"],
+        "envelope_sha256": str(row["envelope_sha256"] or ""),
+        "prompt_injection_filtered": bool(row["prompt_injection_filtered"]),
     }
     with _LIVE_GEMINI_CACHE_LOCK:
         _LIVE_GEMINI_CACHE[key] = dict(payload)
@@ -1987,6 +2096,8 @@ def _remember_live_gemini(
         or stored.get("model_used")
         or model_name
     )
+    envelope_sha = str(stored.get("envelope_sha256") or "")
+    inj_filtered = 1 if stored.get("prompt_injection_filtered") else 0
     with _LIVE_GEMINI_CACHE_LOCK:
         _LIVE_GEMINI_CACHE[key] = stored
     if db_path is None or not db_path.is_file():
@@ -1997,13 +2108,16 @@ def _remember_live_gemini(
             conn.execute(
                 """
                 INSERT INTO live_copilot_cache (
-                    cache_key, provider, model_name, narrative, created_at_utc
-                ) VALUES (?, ?, ?, ?, ?)
+                    cache_key, provider, model_name, narrative, created_at_utc,
+                    envelope_sha256, prompt_injection_filtered
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(cache_key) DO UPDATE SET
                     provider = excluded.provider,
                     model_name = excluded.model_name,
                     narrative = excluded.narrative,
-                    created_at_utc = excluded.created_at_utc
+                    created_at_utc = excluded.created_at_utc,
+                    envelope_sha256 = excluded.envelope_sha256,
+                    prompt_injection_filtered = excluded.prompt_injection_filtered
                 """,
                 (
                     _copilot_cache_key(number, question, model_name, identity),
@@ -2011,6 +2125,8 @@ def _remember_live_gemini(
                     stored_model,
                     str(stored.get("narrative") or ""),
                     datetime.now(UTC).isoformat(),
+                    envelope_sha,
+                    inj_filtered,
                 ),
             )
     except (OSError, sqlite3.Error):
@@ -2096,7 +2212,8 @@ def _live_copilot_callable() -> Any:
             model_name=resolve_gemini_model(),
             max_output_tokens=4096,
             temperature=0.1,
-            timeout_seconds=30.0,
+            timeout_seconds=8.0,
+            total_timeout_seconds=15.0,
         )
     )
 
@@ -2529,8 +2646,20 @@ def answer_mitre_copilot(
         soar_db_path = None
     elif isinstance(db_path, str):
         db_path = Path(db_path)
-    asked = question if isinstance(question, str) else ""
-    if _CONTAINMENT_REQUEST.search(asked):
+    import unicodedata
+
+    from threatfusion.advisory.telemetry_shield import (
+        _strip_combining_marks,
+        _strip_terminal_controls,
+    )
+
+    asked = (
+        _strip_combining_marks(_strip_terminal_controls(question))
+        if isinstance(question, str)
+        else ""
+    )
+    nfkd_asked = _strip_combining_marks(unicodedata.normalize("NFKD", asked))
+    if _CONTAINMENT_REQUEST.search(asked) or _CONTAINMENT_REQUEST.search(nfkd_asked):
         return disclose_offline_fallback(
             {
                 "schema_version": "live_mitre_copilot_v1",
@@ -2800,18 +2929,22 @@ def _grounded_gemini_narrative(
         real_dst_port = int(float(raw_port)) if raw_port not in (None, "") else 0
     except (TypeError, ValueError):
         real_dst_port = 0
-    real_technique = str(
-        _scenario_technique_id(row)
-        or _attack_technique_id(row)
-        or (identity[0] if identity else "")
-        or ""
-    ).strip()
-    real_cves = list(row.get("cve_ids") or ())
-    if real_technique:
-        for cve in _CORPUS_TECHNIQUE_CVES.get(real_technique, ()):
-            if cve not in real_cves:
-                real_cves.append(cve)
-    alert_sig = str(row.get("case_title") or source_label or "").strip()
+    if decision == "Benign":
+        real_technique = ""
+        real_cves = []
+    else:
+        real_technique = str(
+            _scenario_technique_id(row)
+            or _attack_technique_id(row)
+            or (identity[0] if identity else "")
+            or ""
+        ).strip()
+        real_cves = list(row.get("cve_ids") or ())
+        if real_technique:
+            for cve in _CORPUS_TECHNIQUE_CVES.get(real_technique, ()):
+                if cve not in real_cves:
+                    real_cves.append(cve)
+    alert_sig = _extract_alert_signature(row, source_label=source_label)
     untrusted = {
         "src_ip": real_src_ip,
         "dst_ip": real_dst_ip,
@@ -2840,7 +2973,7 @@ def _grounded_gemini_narrative(
         ledger = verify_advisory_against_ledger(
             str(fallback.get("narrative") or local_narrative),
             ledger_flow,
-            hits,
+            () if decision == "Benign" else hits,
         )
         fallback["ledger_verification"] = ledger
         if local_narrative:
@@ -2859,13 +2992,20 @@ def _grounded_gemini_narrative(
         str(cached.get("narrative") or ""), identity
     ):
         cached = dict(cached)
-        cached["evidence_envelope"] = fence["evidence_envelope"]
-        cached["prompt_injection_filtered"] = fence["prompt_injection_filtered"]
-        cached["envelope_sha256"] = fence["envelope_sha256"]
+        effective_sha = str(cached.get("envelope_sha256") or fence["envelope_sha256"])
+        effective_filtered = bool(fence["prompt_injection_filtered"]) or bool(
+            cached.get("prompt_injection_filtered")
+        )
+        envelope_copy = dict(fence["evidence_envelope"])
+        envelope_copy["envelope_sha256"] = effective_sha
+        envelope_copy["prompt_injection_filtered"] = effective_filtered
+        cached["evidence_envelope"] = envelope_copy
+        cached["prompt_injection_filtered"] = effective_filtered
+        cached["envelope_sha256"] = effective_sha
         cached["ledger_verification"] = verify_advisory_against_ledger(
             str(cached.get("narrative") or ""),
             ledger_flow,
-            hits,
+            () if decision == "Benign" else hits,
         )
         cached["reused_advisory"] = True
         return cached
@@ -2917,17 +3057,31 @@ def _grounded_gemini_narrative(
     )
     if not verify_explanation_groundedness(text, check_bundle):
         return local
-    if not _copilot_citations_grounded(text, evidence, hits, flow_hits):
+    if not _copilot_citations_grounded(
+        text,
+        evidence,
+        hits,
+        flow_hits,
+        benign=(decision == "Benign"),
+    ):
         return local
     if evidence_text and not _copilot_sections_have_prose(text):
         return local
+    if decision == "Benign":
+        ledger_rag: list[Mapping[str, Any]] = []
+    else:
+        ledger_rag = list(hits) + [h for h in flow_hits if isinstance(h, Mapping)]
+        if stored_flow is None and not hits and not flow_hits:
+            ledger_rag.extend({"technique_id": tid} for tid in _indexed_corpus_ids()[0])
     ledger = verify_advisory_against_ledger(
         text,
         ledger_flow,
-        hits,
+        ledger_rag,
     )
-    if ledger["status"] == "FLAGGED_UNGROUNDED":
-        text = str(ledger.get("annotated_summary") or text)
+    if ledger["status"] != "VERIFIED":
+        fallback_local = disclose_offline_fallback(dict(local))
+        fallback_local["ledger_verification"] = ledger
+        return fallback_local
     actual_model = str(
         (provenance.get("model_used") if isinstance(provenance, Mapping) else "") or model_name
     )
@@ -3063,8 +3217,7 @@ _FLOW_ROW_COLUMNS: tuple[str, ...] = (
 
 
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
-    uri = f"{Path(db_path).resolve().as_uri()}?mode=ro"
-    conn = sqlite3.connect(uri, uri=True, timeout=5.0)
+    conn = connect_sqlite_readonly(Path(db_path))
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -3094,7 +3247,7 @@ def _flow_rows(db_path: Path, *, limit: int, flow_id: int | None = None) -> list
         query_params = (max(1, min(limit, 100)),)
     try:
         conn = _connect_readonly(path)
-    except sqlite3.Error:
+    except (sqlite3.Error, OSError):
         return []
     try:
         select_list = _live_flow_select_sql(conn, _FLOW_ROW_COLUMNS)
@@ -3190,8 +3343,8 @@ def _read_stored_incidents(incidents_db_path: Path | None, *, limit: int) -> lis
     if incidents_db_path is None or not incidents_db_path.is_file():
         return []
     try:
-        conn = sqlite3.connect(f"file:{incidents_db_path}?mode=ro", uri=True, timeout=5.0)
-    except sqlite3.Error:
+        conn = connect_sqlite_readonly(incidents_db_path)
+    except (sqlite3.Error, OSError):
         return []
     try:
         conn.row_factory = sqlite3.Row
@@ -3376,6 +3529,10 @@ def save_context_memory(
         "entries": [],
         "stored": False,
     }
+    if actor:
+        refused_role = _refuse_readonly_auditor(db_path, actor)
+        if refused_role is not None:
+            return {**refused, **refused_role, "entries": [], "stored": False}
     if flow_id <= 0 and entity_text:
         found = _latest_flow_id_for_entity(db_path, entity_text)
         if found is None:
@@ -3485,7 +3642,7 @@ def _soar_receipt_status(
     has_audit_rows = False
     row = None
     try:
-        conn = sqlite3.connect(f"file:{soar_db_path}?mode=ro", uri=True, timeout=5.0)
+        conn = connect_sqlite_readonly(soar_db_path)
         conn.row_factory = sqlite3.Row
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         if "soar_audit_events" in tables:
@@ -3501,7 +3658,7 @@ def _soar_receipt_status(
                 """,
                 (f"live_flow:{flow_id}",),
             ).fetchone()
-    except sqlite3.Error:
+    except (sqlite3.Error, OSError):
         return unavailable
     finally:
         if conn is not None:
@@ -3825,8 +3982,8 @@ def _constituent_alert_ids(incidents_db_path: Path | None) -> dict[str, list[str
     if incidents_db_path is None or not incidents_db_path.is_file():
         return {}
     try:
-        conn = sqlite3.connect(f"file:{incidents_db_path}?mode=ro", uri=True, timeout=5.0)
-    except sqlite3.Error:
+        conn = connect_sqlite_readonly(incidents_db_path)
+    except (sqlite3.Error, OSError):
         return {}
     try:
         tables = {
@@ -3838,6 +3995,7 @@ def _constituent_alert_ids(incidents_db_path: Path | None) -> dict[str, list[str
             SELECT incident_id, alert_candidate_id
             FROM incident_constituent_alerts
             ORDER BY rowid ASC
+            LIMIT 2000
             """).fetchall()
     except sqlite3.Error:
         return {}
@@ -4042,6 +4200,7 @@ def replay_benchmark_attack_burst(
     repo_root: Path,
     model: Any | None = None,
     supply_verified: bool | None = None,
+    actor_id: str | None = None,
 ) -> dict[str, Any]:
     """Score the recorded UNSW-NB15 study vectors and store them as one campaign.
 
@@ -4049,6 +4208,12 @@ def replay_benchmark_attack_burst(
     probability is not copied onto the row.
     """
     from threatfusion.evaluation.study_runner import STUDY_TRIAGE_CASES
+
+    if actor_id is not None:
+        refused_role = _refuse_soar_role(db_path, actor_id)
+        if refused_role is not None:
+            refused_role["schema_version"] = "live_campaign_replay_v1"
+            return refused_role
 
     selected = [case for case in STUDY_TRIAGE_CASES if case.source == "recorded_unsw_nb15"]
     if not selected:
@@ -4576,6 +4741,7 @@ def replay_live_scenarios(
     repo_root: Path,
     model: Any | None = None,
     supply_verified: bool | None = None,
+    actor_id: str | None = None,
 ) -> dict[str, Any]:
     """Score four labeled scenarios with the frozen Random Forest and store them.
 
@@ -4583,6 +4749,11 @@ def replay_live_scenarios(
     The internal-recon row asks the private-IP guard and does not perform a lookup.
     A second call reuses the four canonical rows instead of inserting copies.
     """
+    if actor_id is not None:
+        refused_role = _refuse_soar_role(db_path, actor_id)
+        if refused_role is not None:
+            refused_role["schema_version"] = "live_campaign_replay_v1"
+            return refused_role
     created = datetime.now(UTC).isoformat()
     campaign_id = "campaign_live_scenarios:" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     stored: list[dict[str, Any]] = []
@@ -4916,12 +5087,18 @@ def replay_supplied_flows(
     repo_root: Path,
     model: Any | None = None,
     supply_verified: bool | None = None,
+    actor_id: str | None = None,
 ) -> dict[str, Any]:
     """Score caller-supplied flows, store their timestamps and entity keys, and return them.
 
     The frozen Random Forest still makes the decision. Entity keys are stored only
     when the caller supplies them.
     """
+    if actor_id is not None:
+        refused_role = _refuse_soar_role(db_path, actor_id)
+        if refused_role is not None:
+            refused_role["schema_version"] = "live_campaign_replay_v1"
+            return refused_role
     stored: list[dict[str, Any]] = []
     for item in flows:
         if not isinstance(item, Mapping):
@@ -5372,7 +5549,14 @@ def approve_live_soar(
         return refused
     with _connect(live_db_path) as conn:
         row = conn.execute(
-            "SELECT flow_id, decision FROM live_flows WHERE flow_id = ?", (flow_id,)
+            """
+            SELECT flow_id, decision, observed_at_utc, entity_namespace_id,
+                   src_entity_id, dst_entity_id, flow_protocol, service_or_port,
+                   clock_synchronized
+            FROM live_flows
+            WHERE flow_id = ?
+            """,
+            (flow_id,),
         ).fetchone()
     if row is None:
         refused["reason"] = "flow_not_stored"
@@ -5414,7 +5598,11 @@ def approve_live_soar(
         refused["reason"] = "playbook_already_rejected"
         refused["http_status"] = 403
         return refused
-    approved = next((record for record in existing if record.state == "approved"), None)
+    if any(record.state == "executed_simulated" for record in existing):
+        refused["reason"] = "containment_already_active"
+        refused["http_status"] = 409
+        return refused
+    approved = next((record for record in reversed(existing) if record.state == "approved"), None)
     if approved is not None:
         receipt = _receipt_from_ledger(repository, approved.playbook_id)
         receipt["schema_version"] = "live_soar_approval_v1"
@@ -5434,10 +5622,43 @@ def approve_live_soar(
             soar_receipt_status="approved",
         )
         return receipt
-    pending = next((record for record in existing if record.state == "pending_approval"), None)
+    provenance = None
+    src_entity = str(row["src_entity_id"] or "").strip()
+    dst_entity = str(row["dst_entity_id"] or "").strip()
+    if src_entity and dst_entity:
+        from threatfusion.alerts.correlation_engine import EntityProvenanceContract
+
+        try:
+            provenance = EntityProvenanceContract(
+                entity_namespace_id=row["entity_namespace_id"],
+                clock_synchronized=row["clock_synchronized"] == 1,
+                src_entity_id=src_entity,
+                dst_entity_id=dst_entity,
+                protocol=row["flow_protocol"],
+                service_or_port=row["service_or_port"],
+                observed_at_utc=row["observed_at_utc"],
+                address_reuse_or_nat=False,
+                max_clock_skew_seconds=0.0,
+            )
+        except (TypeError, ValueError):
+            provenance = None
+    has_rolled_back = any(record.state == "rolled_back" for record in existing)
+    pending = (
+        None
+        if has_rolled_back
+        else next(
+            (
+                record
+                for record in reversed(existing)
+                if record.state == "pending_approval"
+                and record.action_type != "capture_pcaps_on_victim_sensor"
+            ),
+            None,
+        )
+    )
     try:
         if pending is None:
-            created = engine.recommend_actions_for_alert(candidate_id, None)
+            created = engine.recommend_actions_for_alert(candidate_id, provenance)
             pending = created[0]
         updated = engine.decide_recommendation(
             pending.playbook_id,
@@ -5633,14 +5854,27 @@ def _n8n_contract_base(contract_base_url: str, override: str | None) -> str:
     return f"http://host.docker.internal:{port}"
 
 
-def _post_n8n_webhook(webhook_url: str, envelope: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+def _post_n8n_webhook(
+    webhook_url: str,
+    envelope: dict[str, Any],
+    *,
+    hmac_secret: str = "",
+) -> tuple[int, dict[str, Any]]:
     from threatfusion.operations.commercial_hardening import threatfusion_environment
 
-    encoded = json.dumps(envelope).encode("utf-8")
+    encoded = _canonical_body(envelope)
+    signing_secret = (
+        hmac_secret.strip()
+        or os.environ.get("THREATFUSION_N8N_WEBHOOK_SECRET", "").strip()
+        or os.environ.get("THREATFUSION_SOAR_HMAC_SECRET", "").strip()
+    )
+    headers = {"Content-Type": "application/json"}
+    if signing_secret:
+        headers["X-ThreatFusion-Signature-256"] = _hmac_sha256(encoded, signing_secret)
     request = urllib.request.Request(
         webhook_url,
         data=encoded,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     parsed_host = (urllib.parse.urlsplit(webhook_url).hostname or "").strip().lower()
@@ -5714,10 +5948,15 @@ def _dispatch_through_live_n8n(
     from threatfusion.soar.n8n_thehive_misp_stack import TheHiveDeterministicClient
     from threatfusion.soar.playbook_ledger import SoarStateTransitionError
 
-    verify_body = _canonical_body(
-        {"candidate_id": candidate_id, "playbook_id": approved.playbook_id}
-    )
     verify_key = f"idem_{approved.playbook_id}_{approved.version}"
+    verify_body = _canonical_body(
+        {
+            "candidate_id": candidate_id,
+            "playbook_id": approved.playbook_id,
+            "idempotency_key": verify_key,
+            "timestamp_utc": datetime.now(UTC).isoformat(),
+        }
+    )
     verify_sig = _hmac_sha256(verify_body, secret)
     case = None
     thehive_api_key = os.environ.get("THREATFUSION_THEHIVE_API_KEY", "").strip()
@@ -5745,6 +5984,7 @@ def _dispatch_through_live_n8n(
             if approved.t_approval_queued is not None
             else datetime.now(UTC).timestamp()
         )
+        callback_key = f"idem_{approved.playbook_id}_{approved.version}_cb"
         callback_body = _canonical_body(
             {
                 "candidate_id": candidate_id,
@@ -5752,10 +5992,11 @@ def _dispatch_through_live_n8n(
                 "case_id": case.case_id,
                 "t_approval_queued": queued_at,
                 "t_callback_verified": datetime.now(UTC).timestamp(),
+                "idempotency_key": callback_key,
+                "timestamp_utc": datetime.now(UTC).isoformat(),
             }
         )
         callback_sig = _hmac_sha256(callback_body, secret)
-        callback_key = f"idem_{approved.playbook_id}_{approved.version}_cb"
     target = str(flow["src_entity_id"] or "")
     envelope = {
         "contract_base_url": contract_base_url,
@@ -5768,7 +6009,7 @@ def _dispatch_through_live_n8n(
         "target_value": target if _bare_ip(target) else "",
     }
     try:
-        status, result = _post_n8n_webhook(webhook_url, envelope)
+        status, result = _post_n8n_webhook(webhook_url, envelope, hmac_secret=secret)
     except (
         EgressBlockedError,
         urllib.error.URLError,
@@ -5883,9 +6124,14 @@ def _dispatch_signed_local_contract(
     tls_ca_cert: str | None = None,
 ) -> dict[str, Any]:
     """Record the HMAC callback on this process. Host containment is not executed."""
-    verify_payload = {"candidate_id": candidate_id, "playbook_id": approved.playbook_id}
-    verify_body = _canonical_body(verify_payload)
     verify_key = f"idem_{approved.playbook_id}_{approved.version}"
+    verify_payload = {
+        "candidate_id": candidate_id,
+        "playbook_id": approved.playbook_id,
+        "idempotency_key": verify_key,
+        "timestamp_utc": datetime.now(UTC).isoformat(),
+    }
+    verify_body = _canonical_body(verify_payload)
     verify_sig = _hmac_sha256(verify_body, secret)
     status, verified = _post_signed(
         f"{base}/api/v1/soar/verify-state",
@@ -5921,16 +6167,19 @@ def _dispatch_signed_local_contract(
         else datetime.now(UTC).timestamp()
     )
     verified_at = datetime.now(UTC).timestamp()
+    callback_key = f"idem_{approved.playbook_id}_{approved.version}_cb"
+    callback_ts = datetime.now(UTC).isoformat()
     callback_payload = {
         "candidate_id": candidate_id,
         "playbook_id": approved.playbook_id,
         "case_id": case.case_id,
         "t_approval_queued": queued_at,
         "t_callback_verified": verified_at,
+        "idempotency_key": callback_key,
+        "timestamp_utc": callback_ts,
     }
     callback_body = _canonical_body(callback_payload)
     callback_sig = _hmac_sha256(callback_body, secret)
-    callback_key = f"idem_{approved.playbook_id}_{approved.version}_cb"
     callback_status, callback = _post_signed(
         f"{base}/api/v1/soar/callback",
         callback_body,
@@ -5969,6 +6218,8 @@ def _dispatch_signed_local_contract(
             "production_fusion_enabled": False,
             "callback_recorded": True,
             "signature_sha256": callback_sig,
+            "idempotency_key": callback_key,
+            "timestamp_utc": callback_ts,
             "thehive_case_id": case.case_id,
             "thehive_status": case.status,
             "four_block_recorded": all(label in case.description for label in four_block_labels),
@@ -6113,35 +6364,6 @@ def dispatch_approved_callback(
     if flow is None:
         refused["reason"] = "flow_not_stored"
         return refused
-    stored_sig = str(flow["callback_signature"] or "")
-    if flow["callback_recorded"] and _SHA256_HEX.fullmatch(stored_sig):
-        return _promote_recorded_callback(
-            disclose_offline_fallback(
-                {
-                    "schema_version": "live_soar_callback_v1",
-                    "evidence_state": "unavailable",
-                    "reason": "already_recorded",
-                    "execution_authorized": False,
-                    "containment_executed": False,
-                    "production_fusion_enabled": False,
-                    "callback_recorded": True,
-                    "signature_sha256": stored_sig,
-                    "thehive_case_id": flow["thehive_case_id"],
-                    "mttr_seconds": flow["mttr_seconds"],
-                    "flow_id": flow_id,
-                    "playbook_id": flow["playbook_id"],
-                    "execution_path": flow["execution_path"] or LOCAL_CONTRACT_FALLBACK,
-                    "callback_receipt": _signed_callback_receipt(
-                        playbook_id=str(flow["playbook_id"] or ""),
-                        candidate_id=f"live_flow:{flow_id}",
-                        state="executed_simulated",
-                        actor="",
-                        reason="already_recorded",
-                        secret=secret,
-                    ),
-                }
-            )
-        )
     webhook = (n8n_webhook_url or "").strip()
     configured_webhook = webhook or os.environ.get("THREATFUSION_N8N_WEBHOOK_URL", "").strip()
     refused["execution_path"] = (
@@ -6163,6 +6385,41 @@ def dispatch_approved_callback(
         refused["evidence_state"] = "unavailable"
         refused["execution_path"] = N8N_LIVE_CONTAINER if webhook else LOCAL_CONTRACT_FALLBACK
         return refused
+    stored_sig = str(flow["callback_signature"] or "")
+    if flow["callback_recorded"] and _SHA256_HEX.fullmatch(stored_sig):
+        if not chain_ok:
+            refused["reason"] = "audit_chain_invalid"
+            refused["http_status"] = 409
+            refused["callback_recorded"] = False
+            refused["evidence_state"] = "unavailable"
+            return refused
+        return _promote_recorded_callback(
+            disclose_offline_fallback(
+                {
+                    "schema_version": "live_soar_callback_v1",
+                    "evidence_state": "unavailable",
+                    "reason": "already_recorded",
+                    "execution_authorized": False,
+                    "containment_executed": False,
+                    "production_fusion_enabled": False,
+                    "callback_recorded": True,
+                    "signature_sha256": stored_sig,
+                    "thehive_case_id": flow["thehive_case_id"],
+                    "mttr_seconds": flow["mttr_seconds"],
+                    "flow_id": flow_id,
+                    "playbook_id": flow["playbook_id"],
+                    "execution_path": flow["execution_path"] or LOCAL_CONTRACT_FALLBACK,
+                    "callback_receipt": _signed_callback_receipt(
+                        playbook_id=str(flow["playbook_id"] or ""),
+                        candidate_id=candidate_id,
+                        state="executed_simulated",
+                        actor="",
+                        reason="already_recorded",
+                        secret=secret,
+                    ),
+                }
+            )
+        )
     approved = next(
         (
             record
@@ -6660,7 +6917,7 @@ _TRIAGE_ACTIONS = {
 
 
 def _stored_ipv4_addresses(*values: object) -> tuple[str, ...]:
-    """Keep stored IPv4 entity ids. Other text is not treated as an address."""
+    """Keep stored IPv4 and IPv6 entity ids. Other text is not treated as an address."""
     import ipaddress
 
     found: list[str] = []
@@ -6672,8 +6929,6 @@ def _stored_ipv4_addresses(*values: object) -> tuple[str, ...]:
             parsed = ipaddress.ip_address(text)
         except ValueError:
             continue
-        if parsed.version != 4:
-            continue
         rendered = str(parsed)
         if rendered not in found:
             found.append(rendered)
@@ -6681,12 +6936,22 @@ def _stored_ipv4_addresses(*values: object) -> tuple[str, ...]:
 
 
 def _any_non_public_ipv4(addresses: Sequence[str]) -> bool:
-    """True when a stored address is private, loopback, or link-local."""
+    """True when a stored IPv4 or IPv6 address is private, loopback, link-local, or mapped."""
     import ipaddress
 
     for item in addresses:
         parsed = ipaddress.ip_address(item)
-        if parsed.is_private or parsed.is_loopback or parsed.is_link_local:
+        if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
+            mapped = parsed.ipv4_mapped
+            if mapped.is_private or mapped.is_loopback or mapped.is_link_local:
+                return True
+        if (
+            parsed.is_private
+            or parsed.is_loopback
+            or parsed.is_link_local
+            or parsed.is_unspecified
+            or parsed.is_multicast
+        ):
             return True
     return False
 
@@ -6775,6 +7040,10 @@ def record_triage_action(
     """Persist one analyst triage action. Unknown actions are refused."""
     state = _TRIAGE_ACTIONS.get(action.strip().lower())
     author = actor_id.strip()
+    if author:
+        refused_role = _refuse_readonly_auditor(db_path, author)
+        if refused_role is not None:
+            return refused_role
     if state is None or not author or flow_id <= 0 or not db_path.is_file():
         return {"evidence_state": "unavailable", "reason": "triage_incomplete"}
     created = datetime.now(UTC).isoformat()
@@ -6961,6 +7230,7 @@ def record_case_assignment(
     review_status: str,
     policy_dir: Path | None = None,
     presented_fingerprint: str | None = None,
+    actor_id: str | None = None,
 ) -> dict[str, Any]:
     """Store a local assignee and review status. This does not dispatch containment."""
     status = review_status.strip().lower()
@@ -6971,6 +7241,10 @@ def record_case_assignment(
         "containment_executed": False,
         "production_fusion_enabled": False,
     }
+    if actor_id is not None and actor_id.strip():
+        refused_role = _refuse_readonly_auditor(db_path, actor_id.strip())
+        if refused_role is not None:
+            return {**refused, **refused_role}
     if status not in _REVIEW_STATUSES or flow_id <= 0 or not db_path.is_file():
         refused["reason"] = "assignment_incomplete"
         return refused
@@ -7180,8 +7454,9 @@ SCENARIO_CONTAINMENT_SOURCE = "10.0.0.4"
 SCENARIO_REPLAY_LABELS = frozenset({"scenario_replay", "live_scenario_replay"})
 RANGE_VICTIM_ADDRESS = "172.29.0.20"
 _DEFAULT_AZURE_PORTAL_STATE = Path("/tmp/threatfusion-range-demo/azure_portal_state.json")
+_DEFAULT_CLOUD_STATE = Path("/tmp/threatfusion-range-demo/cloud_state.json")
 AZURE_PORTAL_STATE_PATH = _DEFAULT_AZURE_PORTAL_STATE
-CLOUD_STATE_PATH = Path("/tmp/threatfusion-range-demo/cloud_state.json")
+CLOUD_STATE_PATH = _DEFAULT_CLOUD_STATE
 _SSH_USER_RE = re.compile(r"[A-Za-z][A-Za-z0-9._-]{0,31}")
 _PROVIDER_LABELS = {
     "azure": "Azure",
@@ -7283,20 +7558,59 @@ def _resolve_range_state_path(state_path: Path | None = None) -> Path:
     """Prefer an explicit file, then cloud_state.json, then the Azure portal file."""
     if state_path is not None:
         return state_path
+    from threatfusion.operations.commercial_hardening import resolve_data_dir
+
     if AZURE_PORTAL_STATE_PATH != _DEFAULT_AZURE_PORTAL_STATE:
         return AZURE_PORTAL_STATE_PATH
+    if (
+        CLOUD_STATE_PATH != _DEFAULT_CLOUD_STATE
+        and CLOUD_STATE_PATH.is_file()
+        and not CLOUD_STATE_PATH.is_symlink()
+    ):
+        return CLOUD_STATE_PATH
+    range_dir = resolve_data_dir() / "range-state"
+    cloud_candidate = range_dir / "cloud_state.json"
+    if cloud_candidate.is_file() and not cloud_candidate.is_symlink():
+        return cloud_candidate
+    portal_candidate = range_dir / "azure_portal_state.json"
+    if portal_candidate.is_file() and not portal_candidate.is_symlink():
+        return portal_candidate
     if CLOUD_STATE_PATH.is_file() and not CLOUD_STATE_PATH.is_symlink():
         return CLOUD_STATE_PATH
-    return AZURE_PORTAL_STATE_PATH
+    return portal_candidate
 
 
 def _read_range_state_dict(path: Path) -> dict[str, Any]:
-    if not path.is_file() or path.is_symlink():
-        return {}
+    import stat
+
+    fd = -1
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeError):
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(str(path), flags)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return {}
+        if st.st_uid != os.getuid() or (st.st_mode & 0o077) != 0:
+            return {}
+        if st.st_size > 1_048_576:
+            return {}
+        chunks: list[bytes] = []
+        remaining = 1_048_576
+        while remaining > 0:
+            chunk = os.read(fd, min(65_536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        loaded = json.loads(b"".join(chunks).decode("utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError, ValueError):
         return {}
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
     return loaded if isinstance(loaded, dict) else {}
 
 
@@ -7342,7 +7656,10 @@ def azure_victim_ssh_argv(
     public_ip: str, action: str, ssh_user: str = "azureuser"
 ) -> tuple[str, ...]:
     """Non-interactive SSH argv for the recorded victim kernel filter."""
-    from threatfusion.operations.commercial_hardening import assert_isolation_command_safe
+    from threatfusion.operations.commercial_hardening import (
+        assert_isolation_command_safe,
+        resolve_data_dir,
+    )
 
     assert_isolation_command_safe(RANGE_CONTAINMENT_SOURCE)
     parsed_host = ipaddress.ip_address(str(public_ip).strip())
@@ -7350,10 +7667,14 @@ def azure_victim_ssh_argv(
         raise ValueError("protected_infrastructure_ip")
     remote = _AZURE_REMOTE_COMMANDS[action]
     user = ssh_user if _SSH_USER_RE.fullmatch(ssh_user or "") else "azureuser"
+    known_hosts_dir = resolve_data_dir() / "range-state"
+    ensure_secure_parent_dir(known_hosts_dir)
     return (
         "ssh",
         "-o",
-        "StrictHostKeyChecking=no",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        f"UserKnownHostsFile={known_hosts_dir / 'range_known_hosts'}",
         "-o",
         "ConnectTimeout=3",
         "-o",
@@ -7502,58 +7823,69 @@ def _attach_azure_kernel(result: dict[str, Any], azure_kernel: Mapping[str, Any]
 def _run_range_action(action: str) -> dict[str, Any]:
     import subprocess
 
-    if action == "status":
-        completed = subprocess.run(
-            range_docker_argv("status"),
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        return {"running": completed.returncode == 0 and completed.stdout.strip() == "true"}
-    if action == "drop":
-        present = subprocess.run(
-            range_docker_argv("drop_check"),
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        if present.returncode != 0:
-            inserted = subprocess.run(
-                range_docker_argv("drop"),
+    try:
+        if action == "status":
+            completed = subprocess.run(
+                range_docker_argv("status"),
                 capture_output=True,
                 text=True,
                 timeout=10,
                 check=False,
             )
-            if inserted.returncode != 0:
-                return {"applied": False}
-        return {
-            "applied": True,
-            "azure_kernel": _azure_kernel_alongside_local("drop"),
-        }
-    if action == "rollback":
-        removed = subprocess.run(
-            range_docker_argv("rollback"),
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        return {
-            "removed": removed.returncode == 0,
-            "azure_kernel": _azure_kernel_alongside_local("rollback"),
-        }
-    if action == "probe":
-        probed = subprocess.run(
-            range_docker_argv("probe"),
-            capture_output=True,
-            text=True,
-            timeout=8,
-            check=False,
-        )
-        return {"reachable": probed.returncode == 0}
+            return {"running": completed.returncode == 0 and completed.stdout.strip() == "true"}
+        if action == "drop":
+            present = subprocess.run(
+                range_docker_argv("drop_check"),
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if present.returncode != 0:
+                inserted = subprocess.run(
+                    range_docker_argv("drop"),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
+                if inserted.returncode != 0:
+                    return {"applied": False}
+            return {
+                "applied": True,
+                "azure_kernel": _azure_kernel_alongside_local("drop"),
+            }
+        if action == "rollback":
+            removed = subprocess.run(
+                range_docker_argv("rollback"),
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            return {
+                "removed": removed.returncode == 0,
+                "azure_kernel": _azure_kernel_alongside_local("rollback"),
+            }
+        if action == "probe":
+            probed = subprocess.run(
+                range_docker_argv("probe"),
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+            return {"reachable": probed.returncode == 0}
+    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        if action == "status":
+            return {"running": False, "error": "range_subprocess_failed"}
+        if action == "drop":
+            return {"applied": False, "error": "range_subprocess_failed"}
+        if action == "rollback":
+            return {"removed": False, "error": "range_subprocess_failed"}
+        if action == "probe":
+            return {"reachable": None, "error": "range_subprocess_failed"}
+        raise
     raise ValueError(action)
 
 
@@ -7654,7 +7986,11 @@ def _authorized_range_flow(
         ),
         None,
     )
-    if not chain_ok or approved is None:
+    if not chain_ok:
+        return None, _containment_refusal("playbook_not_approved", 403)
+    if approved is None:
+        if _flow_field(flow, "containment_state") in {"rolled_back", "simulated_rolled_back"}:
+            return None, _containment_refusal("reisolation_requires_fresh_approval", 409)
         return None, _containment_refusal("playbook_not_approved", 403)
     return flow, None
 
@@ -7690,30 +8026,36 @@ def _append_containment_ledger(
     *,
     action: str,
     reason: str,
+    actor_id: str | None = None,
+    playbook: Any | None = None,
 ) -> bool:
     from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
 
     flow_id = int(flow["flow_id"])
     repository = SoarPlaybookSqliteRepository(soar_db_path)
-    approved = next(
-        (
-            record
-            for record in repository.list_records_for_candidate(f"live_flow:{flow_id}")
-            if record.state in {"approved", "executed_simulated"}
-        ),
-        None,
-    )
-    if approved is None:
+    target = playbook
+    if target is None:
+        target = next(
+            (
+                record
+                for record in reversed(
+                    repository.list_records_for_candidate(f"live_flow:{flow_id}")
+                )
+                if record.state in {"approved", "executed_simulated", "rolled_back"}
+            ),
+            None,
+        )
+    if target is None:
         return False
-    actor = _flow_field(flow, "operator_id") or "analyst_a"
-    if _LOCAL_ACTOR.match(actor) is None:
-        actor = "analyst_a"
+    actor = str(actor_id or _flow_field(flow, "operator_id") or "").strip()
+    if not actor or _LOCAL_ACTOR.match(actor) is None:
+        return False
     repository.append_audit_event(
-        playbook_id=approved.playbook_id,
+        playbook_id=target.playbook_id,
         action=action,
         actor_id=actor,
-        old_state=approved.state,
-        new_state=approved.state,
+        old_state=target.state,
+        new_state=target.state,
         reason=reason,
         snapshot=reason,
     )
@@ -7748,6 +8090,8 @@ def _record_simulated_scenario(
     flow: sqlite3.Row,
     *,
     rollback: bool,
+    actor_id: str,
+    playbook: Any | None = None,
 ) -> dict[str, Any]:
     flow_id = int(flow["flow_id"])
     rule = _scenario_firewall_rule(SCENARIO_CONTAINMENT_SOURCE, rollback=rollback)
@@ -7758,6 +8102,8 @@ def _record_simulated_scenario(
         flow,
         action=action,
         reason=rule,
+        actor_id=actor_id,
+        playbook=playbook,
     ):
         return _containment_refusal("ledger_append_failed", 409)
     recorded_at = datetime.now(UTC).isoformat()
@@ -7798,7 +8144,7 @@ def contain_range_source(
     172.29.0.10 uses the victim-namespace iptables runner. A 10.0.0.4 scenario
     replay is recorded as simulated and does not change a host firewall.
     """
-    effective_actor = "lab_operator" if actor_id is None else actor_id
+    effective_actor = ("lab_operator" if actor_id is None else actor_id).strip()
     refused_role = _refuse_soar_role(live_db_path, effective_actor)
     if refused_role is not None:
         refused_role["schema_version"] = "live_range_containment_v1"
@@ -7806,8 +8152,39 @@ def contain_range_source(
     flow, refused = _authorized_range_flow(live_db_path, soar_db_path, flow_id)
     if refused is not None or flow is None:
         return refused if refused is not None else _containment_refusal("flow_not_stored", 403)
+    containment_state = _flow_field(flow, "containment_state")
+    if containment_state in {"applied", "simulated_applied"}:
+        return _containment_refusal("containment_already_applied", 409)
+    repository = SoarPlaybookSqliteRepository(soar_db_path)
+    records = repository.list_records_for_candidate(f"live_flow:{flow_id}")
+    approved = next((record for record in reversed(records) if record.state == "approved"), None)
+    if approved is None:
+        if containment_state in {"rolled_back", "simulated_rolled_back"}:
+            return _containment_refusal("reisolation_requires_fresh_approval", 409)
+        return _containment_refusal("playbook_not_approved", 403)
+    engine = ApprovalGatedSoarEngine(repository)
     if _simulated_scenario_flow(flow):
-        return _record_simulated_scenario(live_db_path, soar_db_path, flow, rollback=False)
+        try:
+            executed = engine.execute_approved_action(
+                approved.playbook_id,
+                actor_id=effective_actor,
+                expected_version=approved.version,
+            )
+        except (
+            SoarStateTransitionError,
+            SoarOptimisticConcurrencyError,
+            KeyError,
+            ValueError,
+        ):
+            return _containment_refusal("ledger_transition_failed", 409)
+        return _record_simulated_scenario(
+            live_db_path,
+            soar_db_path,
+            flow,
+            rollback=False,
+            actor_id=effective_actor,
+            playbook=executed,
+        )
     act = runner or _run_range_action
     if not act("status").get("running"):
         return _containment_refusal("range_not_running", 409)
@@ -7819,11 +8196,25 @@ def contain_range_source(
         probe = {}
     probe_status = str(probe.get("status") or "")
     if probe.get("error") or probe_status in {"error", "failed"}:
+        act("rollback")
         return _containment_refusal("range_command_failed", 409)
     if probe.get("reachable") is not False:
-        if probe.get("reachable") is True:
-            act("rollback")
+        act("rollback")
         return _containment_refusal("containment_not_observed", 502)
+    try:
+        engine.execute_approved_action(
+            approved.playbook_id,
+            actor_id=effective_actor,
+            expected_version=approved.version,
+        )
+    except (
+        SoarStateTransitionError,
+        SoarOptimisticConcurrencyError,
+        KeyError,
+        ValueError,
+    ):
+        act("rollback")
+        return _containment_refusal("ledger_transition_failed", 409)
     recorded_at = datetime.now(UTC).isoformat()
     _store_containment_state(live_db_path, flow_id, "applied", when=recorded_at)
     rewrite_copilot_section_five(
@@ -7860,7 +8251,7 @@ def _rollback_range_source_work(
     actor_id: str | None = None,
 ) -> dict[str, Any]:
     """Remove a recorded drop. 10.0.0.4 scenario rollback stays on the ledger."""
-    effective_actor = "lab_operator" if actor_id is None else actor_id
+    effective_actor = ("lab_operator" if actor_id is None else actor_id).strip()
     refused_role = _refuse_soar_role(live_db_path, effective_actor)
     if refused_role is not None:
         refused_role["schema_version"] = "live_range_containment_v1"
@@ -7868,12 +8259,53 @@ def _rollback_range_source_work(
     flow, refused = _authorized_range_flow(live_db_path, soar_db_path, flow_id)
     if refused is not None or flow is None:
         return refused if refused is not None else _containment_refusal("flow_not_stored", 403)
-    if _simulated_scenario_flow(flow):
-        if str(flow["containment_state"] or "") != "simulated_applied":
+    containment_state = _flow_field(flow, "containment_state")
+    is_sim = _simulated_scenario_flow(flow)
+    if is_sim:
+        if containment_state != "simulated_applied":
             return _containment_refusal("containment_not_applied", 409)
-        return _record_simulated_scenario(live_db_path, soar_db_path, flow, rollback=True)
-    if str(flow["containment_state"] or "") != "applied":
+    elif containment_state not in {"applied", "rollback_unverified"}:
         return _containment_refusal("containment_not_applied", 409)
+    repository = SoarPlaybookSqliteRepository(soar_db_path)
+    chain_ok, _chain_msg = repository.verify_audit_chain_integrity(require_non_empty=True)
+    if not chain_ok:
+        return _containment_refusal("audit_chain_invalid", 409)
+    executed = next(
+        (
+            record
+            for record in reversed(repository.list_records_for_candidate(f"live_flow:{flow_id}"))
+            if record.state == "executed_simulated"
+        ),
+        None,
+    )
+    if executed is None:
+        return _containment_refusal("containment_not_applied", 409)
+    if str(executed.actor_id or "").strip() != effective_actor:
+        return _containment_refusal("rollback_actor_mismatch", 403)
+    engine = ApprovalGatedSoarEngine(repository)
+    if is_sim:
+        try:
+            rolled_rec = engine.rollback_executed_action(
+                executed.playbook_id,
+                actor_id=effective_actor,
+                rollback_reason="range_containment_rollback",
+                expected_version=executed.version,
+            )
+        except (
+            SoarStateTransitionError,
+            SoarOptimisticConcurrencyError,
+            KeyError,
+            ValueError,
+        ):
+            return _containment_refusal("ledger_transition_failed", 409)
+        return _record_simulated_scenario(
+            live_db_path,
+            soar_db_path,
+            flow,
+            rollback=True,
+            actor_id=effective_actor,
+            playbook=rolled_rec,
+        )
     act = runner or _run_range_action
     if not act("status").get("running"):
         return _containment_refusal("range_not_running", 409)
@@ -7900,6 +8332,20 @@ def _rollback_range_source_work(
         refused = _containment_refusal("rollback_not_observed", 502)
         refused["containment_state"] = "rollback_unverified"
         return refused
+    try:
+        engine.rollback_executed_action(
+            executed.playbook_id,
+            actor_id=effective_actor,
+            rollback_reason="range_containment_rollback",
+            expected_version=executed.version,
+        )
+    except (
+        SoarStateTransitionError,
+        SoarOptimisticConcurrencyError,
+        KeyError,
+        ValueError,
+    ):
+        return _containment_refusal("ledger_transition_failed", 409)
     recorded_at = datetime.now(UTC).isoformat()
     _store_containment_state(live_db_path, flow_id, "rolled_back", when=recorded_at)
     rewrite_copilot_section_five(
@@ -8008,8 +8454,13 @@ def rollback_range_source(
     )
 
 
-def purge_bridge_noise_rows(db_path: Path) -> int:
+def purge_bridge_noise_rows(db_path: Path, *, actor_id: str | None = None) -> int | dict[str, Any]:
     """Delete stored bridge rows that are multicast, link-local, broadcast, or mDNS."""
+    if actor_id is not None:
+        refused_role = _refuse_soar_role(db_path, actor_id)
+        if refused_role is not None:
+            refused_role["schema_version"] = "live_bridge_purge_v1"
+            return refused_role
     if not db_path.is_file():
         return 0
     with _connect(db_path) as conn:
@@ -8113,9 +8564,9 @@ def _docker_range_scan() -> None:
             "-o",
             "BatchMode=yes",
             "-o",
-            "StrictHostKeyChecking=no",
+            "StrictHostKeyChecking=accept-new",
             "-o",
-            "UserKnownHostsFile=/dev/null",
+            "UserKnownHostsFile=/tmp/range_known_hosts",
             "-o",
             "ConnectTimeout=5",
             f"root@{RANGE_VICTIM_ADDRESS}",
@@ -8834,9 +9285,23 @@ def _activate_workspace(
 
 
 def select_workspace(
-    db_path: Path, *, workspace_id: str, operator_id: str | None = None
+    db_path: Path,
+    *,
+    workspace_id: str,
+    operator_id: str | None = None,
+    actor_id: str | None = None,
 ) -> dict[str, Any]:
-    return _activate_workspace(db_path, str(workspace_id or "").strip(), operator_id)
+    eff_actor = actor_id if actor_id is not None else operator_id
+    if eff_actor is not None and str(eff_actor).strip():
+        refused_role = _refuse_readonly_auditor(db_path, str(eff_actor))
+        if refused_role is not None:
+            refused_role["schema_version"] = "live_workspace_v1"
+            return refused_role
+    return _activate_workspace(
+        db_path,
+        str(workspace_id or "").strip(),
+        str(eff_actor).strip() if eff_actor is not None and str(eff_actor).strip() else operator_id,
+    )
 
 
 def create_workspace(
@@ -8848,7 +9313,14 @@ def create_workspace(
     default_service: str,
     industry: str = "client",
     operator_id: str | None = None,
+    actor_id: str | None = None,
 ) -> dict[str, Any]:
+    eff_actor = actor_id if actor_id is not None else operator_id
+    if eff_actor is not None:
+        refused_role = _refuse_soar_role(db_path, str(eff_actor))
+        if refused_role is not None:
+            refused_role["schema_version"] = "live_workspace_v1"
+            return refused_role
     identifier = str(workspace_id or "").strip()
     name = str(display_name or "").strip()
     cidr = str(monitored_cidr or "").strip()
@@ -9189,8 +9661,8 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
         os.environ.get("THREATFUSION_ENTRA_JWKS_JSON", "").strip()
         or os.environ.get("THREATFUSION_ENTRA_JWKS_URL", "").strip()
     )
-    if is_prod and not jwks_configured:
-        refused["reason"] = "entra_jwks_verification_required"
+    if not jwks_configured:
+        refused["reason"] = "entra_jwks_unconfigured"
         return refused
     raw = str(token or "").strip()
     if raw.lower().startswith("bearer "):
@@ -9206,12 +9678,8 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
     if str(header.get("typ") or "JWT").upper() != "JWT":
         return refused
     alg = str(header.get("alg") or "")
-    if jwks_configured or is_prod:
-        # Pin algorithms=["RS256"] strictly when verifying JWKS signatures.
-        if alg != "RS256":
-            refused["reason"] = "entra_alg_rejected"
-            return refused
-    elif alg not in {"RS256", "RS384", "RS512"}:
+    # Pin algorithms=["RS256"] strictly when verifying JWKS signatures.
+    if alg != "RS256":
         refused["reason"] = "entra_alg_rejected"
         return refused
     now_ts = time.time()
@@ -9223,7 +9691,7 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
         if not math.isfinite(float(raw_exp)) or float(raw_exp) <= now_ts:
             refused["reason"] = "entra_token_expired"
             return refused
-    elif jwks_configured or is_prod:
+    else:
         refused["reason"] = "entra_token_expired"
         return refused
     if "nbf" in claims:
@@ -9238,44 +9706,56 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
     if is_prod and not expected_iss:
         refused["reason"] = "entra_issuer_unconfigured"
         return refused
-    if expected_iss and str(claims.get("iss") or "").strip() != expected_iss:
+    claim_iss = str(claims.get("iss") or "").strip()
+    if not claim_iss:
+        refused["reason"] = "entra_issuer_mismatch"
+        return refused
+    if expected_iss and claim_iss != expected_iss:
         refused["reason"] = "entra_issuer_mismatch"
         return refused
     expected_aud = os.environ.get("THREATFUSION_ENTRA_AUDIENCE", "").strip()
     if is_prod and not expected_aud:
         refused["reason"] = "entra_audience_unconfigured"
         return refused
-    if expected_aud:
-        aud = claims.get("aud")
-        aud_values = [aud] if isinstance(aud, str) else (aud if isinstance(aud, list) else [])
-        if expected_aud not in [str(item).strip() for item in aud_values]:
-            refused["reason"] = "entra_audience_mismatch"
-            return refused
+    aud_raw = claims.get("aud")
+    aud_values = [
+        str(item).strip()
+        for item in (
+            [aud_raw]
+            if isinstance(aud_raw, str)
+            else (aud_raw if isinstance(aud_raw, list) else [])
+        )
+        if str(item).strip()
+    ]
+    if not aud_values:
+        refused["reason"] = "entra_audience_missing"
+        return refused
+    if expected_aud and expected_aud not in aud_values:
+        refused["reason"] = "entra_audience_mismatch"
+        return refused
     expected_tenant = _entra_tenant_id()
     if is_prod and not expected_tenant:
         refused["reason"] = "entra_tenant_unconfigured"
         return refused
 
-    jwks_signature_checked = False
-    if jwks_configured:
-        kid = str(header.get("kid") or "").strip()
-        if not kid:
-            refused["reason"] = "entra_jwks_kid_missing"
-            return refused
-        jwk, jwk_err = _resolve_entra_jwk(kid)
-        if jwk is None:
-            refused["reason"] = jwk_err or "entra_jwks_kid_not_found"
-            return refused
-        try:
-            sig_bytes = _b64url_decode_bytes(parts[2])
-            signing_input = f"{parts[0]}.{parts[1]}".encode("ascii")
-        except (ValueError, UnicodeError):
-            refused["reason"] = "entra_signature_invalid"
-            return refused
-        if not _verify_rs256_jwk_signature(signing_input, sig_bytes, jwk):
-            refused["reason"] = "entra_signature_invalid"
-            return refused
-        jwks_signature_checked = True
+    kid = str(header.get("kid") or "").strip()
+    if not kid:
+        refused["reason"] = "entra_jwks_kid_missing"
+        return refused
+    jwk, jwk_err = _resolve_entra_jwk(kid)
+    if jwk is None:
+        refused["reason"] = jwk_err or "entra_jwks_kid_not_found"
+        return refused
+    try:
+        sig_bytes = _b64url_decode_bytes(parts[2])
+        signing_input = f"{parts[0]}.{parts[1]}".encode("ascii")
+    except (ValueError, UnicodeError):
+        refused["reason"] = "entra_signature_invalid"
+        return refused
+    if not _verify_rs256_jwk_signature(signing_input, sig_bytes, jwk):
+        refused["reason"] = "entra_signature_invalid"
+        return refused
+    jwks_signature_checked = True
 
     tenant = str(claims.get("tid") or "")
     object_id = str(claims.get("oid") or "")
@@ -9287,22 +9767,25 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
         roles = [str(item) for item in roles_raw if str(item).strip()]
     else:
         roles = []
-    expected_tenant = _entra_tenant_id()
     if not tenant or not object_id or not upn or not roles:
         refused["reason"] = "entra_claims_incomplete"
         return refused
     if expected_tenant and tenant != expected_tenant:
         refused["reason"] = "entra_claims_incomplete"
         return refused
-    if "iss" in claims and tenant not in str(claims.get("iss") or ""):
+    canonical_issuers = {
+        f"https://login.microsoftonline.com/{tenant}/v2.0",
+        f"https://sts.windows.net/{tenant}/",
+    }
+    if not expected_iss and claim_iss not in canonical_issuers:
+        refused["reason"] = "entra_issuer_mismatch"
+        return refused
+    if expected_iss and tenant not in claim_iss and claim_iss != expected_iss:
         refused["reason"] = "entra_issuer_mismatch"
         return refused
     actor = ""
-    for actor_id, profile in _ENTRA_DIRECTORY.items():
-        if (
-            profile["entra_object_id"] == object_id
-            or str(profile["entra_upn"]).lower() == upn.lower()
-        ):
+    for actor_id, directory_entry in _ENTRA_DIRECTORY.items():
+        if directory_entry["entra_object_id"] == object_id:
             actor = actor_id
             break
     if not actor:
@@ -9314,12 +9797,26 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
         refused["reason"] = "entra_role_unmapped"
         refused["http_status"] = 403
         return refused
-    switched = switch_operator(db_path, actor_id=actor)
-    if int(switched.get("http_status") or 400) != 200:
-        refused["reason"] = str(switched.get("reason") or "operator_not_registered")
-        refused["http_status"] = int(switched.get("http_status") or 404)
+    role_map = {seed[0]: seed[2] for seed in _OPERATOR_SEEDS}
+    operator_role = ""
+    if db_path.is_file():
+        try:
+            with _connect_readonly(db_path) as conn:
+                op_row = conn.execute(
+                    "SELECT role FROM console_operators WHERE actor_id = ?",
+                    (actor,),
+                ).fetchone()
+            if op_row is not None:
+                operator_role = str(op_row["role"] or "")
+        except (sqlite3.Error, OSError):
+            operator_role = ""
+    if not operator_role:
+        operator_role = role_map.get(actor, "")
+    if not operator_role:
+        refused["reason"] = "operator_not_registered"
+        refused["http_status"] = 404
         return refused
-    profile = _entra_profile(actor, str(switched.get("role") or ""))
+    profile = _entra_profile(actor, operator_role)
     return {
         "schema_version": "live_entra_oidc_v1",
         "evidence_state": "verified",
@@ -9334,7 +9831,7 @@ def verify_entra_token(db_path: Path, token: str) -> dict[str, Any]:
         "upn": upn,
         "roles": roles,
         "actor_id": actor,
-        "role": switched.get("role"),
+        "role": operator_role,
         **profile,
         "production_fusion_enabled": False,
         "http_status": 200,
@@ -9748,23 +10245,38 @@ def _lock_demo_passwords_for_production(conn: sqlite3.Connection) -> None:
         _PROD_LOCKED_DB_CACHE.add(cache_key)
 
 
+_DUMMY_PBKDF2_SALT = b"0" * 16
+
+
+def _dummy_pbkdf2_work() -> None:
+    hashlib.pbkdf2_hmac("sha256", b"dummy", _DUMMY_PBKDF2_SALT, _RBAC_ITERATIONS)
+
+
 def _verify_password(stored: str, password: str) -> bool:
     from threatfusion.operations.commercial_hardening import demo_password_rejected
 
-    if demo_password_rejected(password):
+    secret_text = str(password or "")
+    if len(secret_text) > 128:
+        _dummy_pbkdf2_work()
+        return False
+    if demo_password_rejected(secret_text):
+        _dummy_pbkdf2_work()
         return False
     parts = str(stored or "").split("$")
     if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
+        _dummy_pbkdf2_work()
         return False
     try:
         iterations = int(parts[1])
         salt = bytes.fromhex(parts[2])
         expected = bytes.fromhex(parts[3])
     except ValueError:
+        _dummy_pbkdf2_work()
         return False
     if iterations < 100_000 or iterations > 1_000_000 or not salt or not expected:
+        _dummy_pbkdf2_work()
         return False
-    derived = hashlib.pbkdf2_hmac("sha256", str(password or "").encode("utf-8"), salt, iterations)
+    derived = hashlib.pbkdf2_hmac("sha256", secret_text.encode("utf-8"), salt, iterations)
     return hmac.compare_digest(derived, expected)
 
 
@@ -10008,14 +10520,60 @@ def rbac_login(
             )
             return _rbac_refused("invalid_credentials", 401)
         actor = str(verified.get("actor_id") or "")
+        role = str(verified.get("role") or "")
+        verified_upn = str(verified.get("upn") or "").strip().lower()
+        verified_oid = str(verified.get("oid") or "").strip()
         with _connect(db_path) as conn:
             row = conn.execute(
                 "SELECT * FROM rbac_accounts WHERE actor_id = ?",
                 (actor,),
             ).fetchone()
-            if row is None or (
-                is_production and _is_disallowed_production_username(str(row["username"]))
-            ):
+            row_disallowed = (
+                row is not None
+                and is_production
+                and _is_disallowed_production_username(str(row["username"]))
+            )
+            if row is None or row_disallowed:
+                if row_disallowed:
+                    conn.execute("DELETE FROM rbac_accounts WHERE actor_id = ?", (actor,))
+                if (
+                    verified_upn
+                    and _RBAC_EMAIL.fullmatch(verified_upn) is not None
+                    and not (is_production and _is_disallowed_production_username(verified_upn))
+                ):
+                    principal_username = verified_upn
+                else:
+                    safe_oid = re.sub(r"[^A-Za-z0-9._-]", "", verified_oid)[:48] or actor
+                    principal_username = f"entra.{safe_oid}@entra.verified"
+                display_name = _DEFAULT_ACTOR_DISPLAY_NAMES.get(actor, actor)
+                locked_hash = f"entra_sso_locked_{secrets.token_hex(16)}"
+                conn.execute(
+                    """
+                    INSERT INTO rbac_accounts (
+                        username, display_name, actor_id, role, password_hash,
+                        certificate_subject, created_at_utc
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(username) DO UPDATE SET
+                        display_name = excluded.display_name,
+                        actor_id = excluded.actor_id,
+                        role = excluded.role,
+                        password_hash = excluded.password_hash
+                    """,
+                    (
+                        principal_username,
+                        display_name,
+                        actor,
+                        role or {s[0]: s[2] for s in _OPERATOR_SEEDS}.get(actor, "tier1_triage"),
+                        locked_hash,
+                        f"/CN={actor}",
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM rbac_accounts WHERE username = ?",
+                    (principal_username,),
+                ).fetchone()
+            if row is None:
                 _audit_auth(
                     db_path,
                     "login_failed",
@@ -10032,11 +10590,14 @@ def rbac_login(
         public["reason"] = "entra_token_verified"
         return public
     user = str(username or email or "").strip().lower()
+    raw_secret = str(access_code or "")
     if (
         _RBAC_EMAIL.fullmatch(user) is None
-        or not str(access_code or "")
+        or not raw_secret
+        or len(raw_secret) > 128
         or (is_production and _is_disallowed_production_username(user))
     ):
+        _dummy_pbkdf2_work()
         _audit_auth(db_path, "login_failed", user, client_ip, "invalid_credentials")
         return _rbac_refused("invalid_credentials", 401)
     with _connect(db_path) as conn:
@@ -10047,8 +10608,12 @@ def rbac_login(
         if (
             row is None
             or (is_production and _is_disallowed_production_username(str(row["username"])))
-            or not _verify_password(str(row["password_hash"]), access_code)
+            or not _verify_password(str(row["password_hash"]), raw_secret)
         ):
+            if row is None or (
+                is_production and _is_disallowed_production_username(str(row["username"]))
+            ):
+                _dummy_pbkdf2_work()
             _audit_auth(db_path, "login_failed", user, client_ip, "invalid_credentials", conn)
             return _rbac_refused("invalid_credentials", 401)
         token, csrf_token = _issue_session(conn, row)
@@ -10155,6 +10720,20 @@ def rbac_register(
     )
     if int(registered.get("http_status") or 400) != 200:
         return _rbac_refused(str(registered.get("reason") or "operator_invalid"), 400)
+    if is_admin_caller:
+        return {
+            "schema_version": "rbac_session_v1",
+            "registered": True,
+            "authenticated": False,
+            "evidence_state": "verified",
+            "reason": "operator_registered",
+            "username": user,
+            "display_name": name,
+            "actor_id": actor,
+            "role": chosen,
+            "production_fusion_enabled": False,
+            "http_status": 200,
+        }
     return rbac_login(db_path, username=user, access_code=secret)
 
 
@@ -10694,7 +11273,7 @@ def build_alert_fatigue_compression_funnel(db_path: Path) -> dict[str, Any]:
         return _compression_funnel_empty()
     try:
         conn = _connect_readonly(path)
-    except sqlite3.Error:
+    except (sqlite3.Error, OSError):
         return _compression_funnel_empty()
     try:
         select_list = _live_flow_select_sql(
@@ -10711,7 +11290,9 @@ def build_alert_fatigue_compression_funnel(db_path: Path) -> dict[str, Any]:
         )
         if not select_list:
             return _compression_funnel_empty()
-        rows = conn.execute(f"SELECT {select_list} FROM live_flows ORDER BY flow_id ASC").fetchall()
+        rows = conn.execute(
+            f"SELECT {select_list} FROM live_flows ORDER BY flow_id ASC LIMIT 2000"
+        ).fetchall()
     except sqlite3.Error:
         return _compression_funnel_empty()
     finally:
@@ -10891,14 +11472,14 @@ def _hunt_queue_rows(db_path: Path) -> list[dict[str, Any]]:
         return []
     try:
         conn = _connect_readonly(path)
-    except sqlite3.Error:
+    except (sqlite3.Error, OSError):
         return []
     try:
         select_list = _live_flow_select_sql(conn, _HUNT_QUEUE_COLUMNS)
         if not select_list:
             return []
         rows = conn.execute(
-            f"SELECT {select_list} FROM live_flows ORDER BY flow_id DESC"
+            f"SELECT {select_list} FROM live_flows ORDER BY flow_id DESC LIMIT 2000"
         ).fetchall()
     except sqlite3.Error:
         return []
@@ -11194,11 +11775,19 @@ def _attach_trace_governance(
         wrap_untrusted_telemetry_envelope,
     )
 
-    technique = _attack_technique_id(row) or ""
+    is_benign = str(row.get("decision") or "") == "Benign"
+    technique = "" if is_benign else (_attack_technique_id(row) or "")
+    trace_cves: list[Any] = []
+    if not is_benign:
+        trace_cves = list(row.get("cve_ids") or ())
+        if technique:
+            for cve in _CORPUS_TECHNIQUE_CVES.get(technique, ()):
+                if cve not in trace_cves:
+                    trace_cves.append(cve)
     untrusted_fields = {
         "src_ip": str(row.get("src_entity_id") or ""),
         "dst_ip": str(row.get("dst_entity_id") or ""),
-        "alert_signature": str(row.get("case_title") or ""),
+        "alert_signature": _extract_alert_signature(row),
         "payload_excerpt": "",
         "dns_query": "",
         "http_uri": "",
@@ -11208,6 +11797,17 @@ def _attach_trace_governance(
         trusted_preamble="ThreatFusion Stage-5 advisory trace.",
         untrusted_fields=untrusted_fields,
     )
+    cached_sha = (
+        str(cached.get("envelope_sha256") or "").strip() if isinstance(cached, Mapping) else ""
+    )
+    cached_filtered = (
+        bool(cached.get("prompt_injection_filtered")) if isinstance(cached, Mapping) else False
+    )
+    effective_sha = cached_sha or str(fence.get("envelope_sha256") or "")
+    effective_filtered = bool(fence.get("prompt_injection_filtered")) or cached_filtered
+    envelope = dict(fence["evidence_envelope"])
+    envelope["envelope_sha256"] = effective_sha
+    envelope["prompt_injection_filtered"] = effective_filtered
     if str(narrative or "").strip():
         ledger = verify_advisory_against_ledger(
             str(narrative or ""),
@@ -11217,9 +11817,17 @@ def _attach_trace_governance(
                 "src_port": 0,
                 "dst_port": row.get("service_or_port"),
                 "technique_id": technique,
-                "cve_ids": row.get("cve_ids") or [],
+                "cve_ids": trace_cves,
             },
-            row.get("chroma_rag_hits") if isinstance(row.get("chroma_rag_hits"), list) else [],
+            (
+                ()
+                if is_benign
+                else (
+                    row.get("chroma_rag_hits")
+                    if isinstance(row.get("chroma_rag_hits"), list)
+                    else []
+                )
+            ),
         )
     else:
         ledger = {
@@ -11230,14 +11838,14 @@ def _attach_trace_governance(
             "cited_count": 0,
         }
     payload["model_used"] = _resolve_trace_model_used(cached, narrative)
-    payload["evidence_envelope"] = fence["evidence_envelope"]
-    payload["prompt_injection_filtered"] = fence["prompt_injection_filtered"]
-    payload["envelope_sha256"] = fence["envelope_sha256"]
+    payload["evidence_envelope"] = envelope
+    payload["prompt_injection_filtered"] = effective_filtered
+    payload["envelope_sha256"] = effective_sha
     payload["ledger_verification"] = ledger
     payload["ai_governance_controls"] = _ai_governance_controls(
         row,
         envelope_text=str(wrapped.get("envelope_text") or ""),
-        envelope_sha256=str(fence.get("envelope_sha256") or ""),
+        envelope_sha256=effective_sha,
         ledger=ledger,
     )
     return payload
@@ -11435,7 +12043,7 @@ def _readonly_flow_rows(db_path: Path) -> list[dict[str, Any]]:
         return []
     try:
         conn = _connect_readonly(path)
-    except sqlite3.Error:
+    except (sqlite3.Error, OSError):
         return []
     try:
         select_list = _live_flow_select_sql(
@@ -11457,7 +12065,7 @@ def _readonly_flow_rows(db_path: Path) -> list[dict[str, Any]]:
         if not select_list:
             return []
         rows = conn.execute(
-            f"SELECT {select_list} FROM live_flows ORDER BY observed_at_utc ASC, flow_id ASC"
+            f"SELECT {select_list} FROM live_flows ORDER BY observed_at_utc ASC, flow_id ASC LIMIT 2000"
         ).fetchall()
     except sqlite3.Error:
         return []
@@ -11923,8 +12531,18 @@ def list_sensors(db_path: Path) -> dict[str, Any]:
 
 
 def register_sensor(
-    db_path: Path, *, sensor_id: str, monitored_cidr: str, status: str = "enrolled"
+    db_path: Path,
+    *,
+    sensor_id: str,
+    monitored_cidr: str,
+    status: str = "enrolled",
+    actor_id: str | None = None,
 ) -> dict[str, Any]:
+    if actor_id is not None:
+        refused_role = _refuse_soar_role(db_path, actor_id)
+        if refused_role is not None:
+            refused_role["schema_version"] = "live_sensor_registry_v1"
+            return refused_role
     identifier = str(sensor_id or "").strip()
     cidr = str(monitored_cidr or "").strip()
     sensor_status = str(status or "enrolled").strip() or "enrolled"

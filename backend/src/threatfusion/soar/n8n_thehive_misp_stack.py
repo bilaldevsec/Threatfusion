@@ -32,7 +32,7 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
-from typing import TYPE_CHECKING, Any
+from typing import Any
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -45,17 +45,16 @@ from threatfusion.db.sqlite_permissions import (
     scoped_umask_077,
 )
 from threatfusion.operations.http_egress import EgressBlockedError, safe_urlopen
+from threatfusion.schemas.investigation_anatomy import (
+    FourBlockInvestigationAnatomy,
+    SoarCaseEvidenceInput,
+    build_soar_four_block_investigation_anatomy,
+)
 from threatfusion.soar.playbook_ledger import (
     SoarPlaybookRecord,
     SoarPlaybookSqliteRepository,
     SoarStateTransitionError,
 )
-
-if TYPE_CHECKING:
-    from threatfusion.advisory.explanation_engine import (
-        AdvisoryEvidenceBundle,
-        FourBlockInvestigationAnatomy,
-    )
 
 UTC = timezone.utc
 
@@ -73,8 +72,15 @@ _SINGLE_LABEL_RE = re.compile(r"^[A-Za-z0-9-]+$")
 _INTERNAL_HOST_SUFFIXES: tuple[str, ...] = (".local", ".internal", ".localhost", ".localdomain")
 
 
-def _allow_loopback_egress() -> bool:
-    return os.environ.get("THREATFUSION_ENV", "lab").strip().lower() != "production"
+def _is_configured_loopback_endpoint(url: str | None) -> bool:
+    hostname = (urllib.parse.urlsplit(str(url or "")).hostname or "").strip().lower().rstrip(".")
+    return hostname in {"127.0.0.1", "::1", "localhost"}
+
+
+def _allow_loopback_egress(url: str | None = None) -> bool:
+    if os.environ.get("THREATFUSION_ENV", "lab").strip().lower() != "production":
+        return True
+    return _is_configured_loopback_endpoint(url)
 
 
 def _configured_endpoint_allowlist(url: str) -> tuple[str, ...]:
@@ -338,7 +344,7 @@ class MispDeterministicClient:
                 req,
                 timeout=1.0,
                 max_bytes=1_048_576,
-                allow_loopback=_allow_loopback_egress(),
+                allow_loopback=_allow_loopback_egress(self.misp_url),
                 allowed_hosts=_configured_endpoint_allowlist(self.misp_url),
             ) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
@@ -506,15 +512,10 @@ class TheHiveDeterministicClient:
         incident_id: str | None = None,
         mitre_tags: Sequence[str] = (),
         misp_tags: Sequence[str] = (),
-        anatomy: FourBlockInvestigationAnatomy | None = None,
-        bundle: AdvisoryEvidenceBundle | None = None,
+        anatomy: FourBlockInvestigationAnatomy | Any | None = None,
+        bundle: Any | None = None,
     ) -> TheHiveCaseRecord:
         """Create a TheHive case from an authenticated, repository-verified approved SOAR record."""
-        from threatfusion.advisory.explanation_engine import (
-            AdvisoryEvidenceBundle as _AdvisoryEvidenceBundle,
-            build_four_block_investigation_anatomy as _build_four_block_anatomy,
-        )
-
         # 1. Reload authoritative record from repository & enforce Mandatory Approval Gate
         if soar_record.state not in ("approved", "executed_simulated"):
             raise SoarStateTransitionError(
@@ -552,7 +553,7 @@ class TheHiveDeterministicClient:
 
         # 3. Grounded 4-Block Investigation Case Anatomy
         if anatomy is None:
-            eff_bundle = bundle or _AdvisoryEvidenceBundle(
+            eff_bundle = bundle or SoarCaseEvidenceInput(
                 candidate_id=db_record.candidate_id,
                 record_id=db_record.candidate_id,
                 rf_model_version="full-network-random-forest-6d69c72-v1",
@@ -561,7 +562,7 @@ class TheHiveDeterministicClient:
                 top_feature_signals={"sbytes": 1250.0},
                 incident_id=incident_id,
             )
-            anatomy = _build_four_block_anatomy(
+            anatomy = build_soar_four_block_investigation_anatomy(
                 eff_bundle,
                 soar_record=db_record,
                 soar_repo=soar_repo,
@@ -652,7 +653,7 @@ class TheHiveDeterministicClient:
                     req,
                     timeout=1.0,
                     max_bytes=1_048_576,
-                    allow_loopback=_allow_loopback_egress(),
+                    allow_loopback=_allow_loopback_egress(self.thehive_url),
                     allowed_hosts=_configured_endpoint_allowlist(self.thehive_url),
                 ) as resp:
                     if resp.status in (200, 201):
@@ -901,7 +902,7 @@ class N8nDeterministicPlaybookClient:
                 req,
                 timeout=1.0,
                 max_bytes=1_048_576,
-                allow_loopback=_allow_loopback_egress(),
+                allow_loopback=_allow_loopback_egress(target_endpoint),
                 allowed_hosts=_configured_endpoint_allowlist(target_endpoint),
             ) as resp:
                 if resp.status in (200, 201, 204):

@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 import os
 from pathlib import Path
+import sqlite3
 import stat
 import threading
 
@@ -25,8 +26,12 @@ def ensure_secure_parent_dir(parent: Path) -> None:
         return
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise OSError(f"refusing non-directory parent: {parent.name}")
-    # Never alter shared sticky directories (e.g., /tmp, /var/tmp) or foreign-owned roots.
-    if (info.st_mode & stat.S_ISVTX) or info.st_uid != os.getuid():
+    # Never alter root-owned sticky directories (e.g., /tmp, /var/tmp); refuse foreign-owned non-root dirs.
+    if (info.st_mode & stat.S_ISVTX) and info.st_uid == 0:
+        return
+    if info.st_uid != os.getuid():
+        raise PermissionError(f"refusing foreign-owned parent directory: {parent.name}")
+    if info.st_mode & stat.S_ISVTX:
         return
     if stat.S_IMODE(info.st_mode) != 0o700:
         try:
@@ -95,7 +100,25 @@ def harden_sqlite_permissions(db_path: Path) -> None:
             pass
 
 
+def connect_sqlite_readonly(db_path: Path, *, timeout: float = 5.0) -> sqlite3.Connection:
+    """Open an existing non-symlink SQLite database strictly read-only with safe pragmas."""
+    path = Path(db_path)
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise OSError(f"refusing non-regular sqlite database: {path.name}")
+    uri = f"{path.resolve().as_uri()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=timeout)
+    try:
+        conn.execute("PRAGMA query_only = ON")
+        conn.execute("PRAGMA trusted_schema = OFF")
+    except Exception:
+        conn.close()
+        raise
+    return conn
+
+
 __all__ = [
+    "connect_sqlite_readonly",
     "ensure_secure_parent_dir",
     "harden_sqlite_permissions",
     "precreate_sqlite_0600",

@@ -359,7 +359,7 @@ def generate_presenter_guide_markdown() -> str:
   > Our architecture is comprehensively hardened with ChromaDB Semantic Vector RAG over MITRE ATT&CK, ledger-backed n8n/TheHive/MISP stack integration, continuous 14-feature PSI telemetry drift monitoring, frozen model supply-chain verification, and a comprehensive STRIDE threat model across all 8 pipeline stages.
   >
   > In strict accordance with our repository truth audit gate, four issues remain honestly OPEN:
-  > • TF-008 (open): Independent holdout benchmark beyond inspected Jan/Feb splits (e.g. CIC-IDS2017).
+  > • TF-008 (open): Independent holdout benchmark beyond inspected Jan/Feb UNSW splits.
   > • TF-009 (open): Measured analyst workload reduction in controlled human trials (requiring >= 10 human subjects).
   > • TF-010 (open): External signed FAST-NUCES evaluation rubric.
   > • TF-011 (open): Real operational SIEM enterprise production source proof.

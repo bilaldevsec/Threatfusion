@@ -31,6 +31,7 @@ import hmac
 import html
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import math
 import os
 import secrets
 import ssl
@@ -324,44 +325,50 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             return self.seen_verify_idempotency_keys
         return self.seen_callback_idempotency_keys
 
-    def _idempotency_is_replay(self, scope: str, key: str) -> bool:
-        if key in self._idempotency_memory(scope):
-            return True
+    def _idempotency_is_replay_status(self, scope: str, key: str) -> str:
+        """Return 'ok', 'replay', or 'error' (fail-closed) when checking idempotency."""
         db_path = self._soar_db_file()
-        if not db_path or not Path(db_path).is_file():
-            return False
-        from threatfusion.db.sqlite_permissions import harden_sqlite_permissions
-
+        if not db_path:
+            return "replay" if key in self._idempotency_memory(scope) else "ok"
         target = Path(db_path)
         try:
             conn = sqlite3.connect(str(target), timeout=5.0, isolation_level=None)
             try:
                 conn.execute("PRAGMA busy_timeout = 5000")
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS contract_idempotency_keys (
-                        scope TEXT NOT NULL,
-                        idempotency_key TEXT NOT NULL,
-                        recorded_at_utc TEXT NOT NULL,
-                        PRIMARY KEY (scope, idempotency_key)
-                    )
-                    """)
+                conn.execute("PRAGMA trusted_schema = OFF")
+                tables = {
+                    str(r[0])
+                    for r in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    ).fetchall()
+                }
+                if "contract_idempotency_keys" not in tables:
+                    return "ok"
                 row = conn.execute(
                     "SELECT 1 FROM contract_idempotency_keys WHERE scope = ? AND idempotency_key = ?",
                     (scope, key),
                 ).fetchone()
-                return row is not None
+                return "replay" if row is not None else "ok"
             finally:
                 conn.close()
-                harden_sqlite_permissions(target)
         except (sqlite3.Error, OSError):
-            return False
+            return "error"
 
-    def _idempotency_commit(self, scope: str, key: str) -> None:
-        self._idempotency_memory(scope).add(key)
+    def _idempotency_is_replay(self, scope: str, key: str) -> bool:
+        return self._idempotency_is_replay_status(scope, key) == "replay"
+
+    def _idempotency_claim(self, scope: str, key: str) -> str:
+        """Atomically claim idempotency key inside BEGIN IMMEDIATE.
+
+        Returns 'claimed', 'replay' (on duplicate/IntegrityError), or 'error' (fail-closed).
+        """
         db_path = self._soar_db_file()
         if not db_path:
-            return
+            mem = self._idempotency_memory(scope)
+            if key in mem:
+                return "replay"
+            mem.add(key)
+            return "claimed"
         from threatfusion.db.sqlite_permissions import (
             ensure_secure_parent_dir,
             harden_sqlite_permissions,
@@ -378,28 +385,45 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 conn = sqlite3.connect(str(target), timeout=5.0, isolation_level=None)
                 try:
                     conn.execute("PRAGMA busy_timeout = 5000")
+                    conn.execute("PRAGMA trusted_schema = OFF")
                     conn.execute("PRAGMA journal_mode=WAL")
-                    conn.execute("""
-                        CREATE TABLE IF NOT EXISTS contract_idempotency_keys (
-                            scope TEXT NOT NULL,
-                            idempotency_key TEXT NOT NULL,
-                            recorded_at_utc TEXT NOT NULL,
-                            PRIMARY KEY (scope, idempotency_key)
+                    conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        conn.execute("""
+                            CREATE TABLE IF NOT EXISTS contract_idempotency_keys (
+                                scope TEXT NOT NULL,
+                                idempotency_key TEXT NOT NULL,
+                                recorded_at_utc TEXT NOT NULL,
+                                PRIMARY KEY (scope, idempotency_key)
+                            )
+                            """)
+                        conn.execute(
+                            """
+                            INSERT INTO contract_idempotency_keys (
+                                scope, idempotency_key, recorded_at_utc
+                            ) VALUES (?, ?, ?)
+                            """,
+                            (scope, key, datetime.now(UTC).isoformat()),
                         )
-                        """)
-                    conn.execute(
-                        """
-                        INSERT OR IGNORE INTO contract_idempotency_keys (
-                            scope, idempotency_key, recorded_at_utc
-                        ) VALUES (?, ?, ?)
-                        """,
-                        (scope, key, datetime.now(UTC).isoformat()),
-                    )
+                        conn.execute("COMMIT")
+                    except sqlite3.IntegrityError:
+                        conn.execute("ROLLBACK")
+                        return "replay"
+                    except Exception:
+                        try:
+                            conn.execute("ROLLBACK")
+                        except sqlite3.Error:
+                            pass
+                        raise
                 finally:
                     conn.close()
                     harden_sqlite_permissions(target)
+            return "claimed"
         except (sqlite3.Error, OSError):
-            return
+            return "error"
+
+    def _idempotency_commit(self, scope: str, key: str) -> None:
+        self._idempotency_claim(scope, key)
 
     def _rejected_host_header(self) -> bool:
         """Refuse a Host that is not this console, the lab bridge, or the test client."""
@@ -1084,6 +1108,79 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 )
         return None, None, ""
 
+    _ADMIN_MUTATION_ROUTES = frozenset(
+        {
+            "/api/v1/live/workspaces/create",
+            "/api/v1/live/sensors/register",
+            "/api/v1/live/purge-bridge-noise",
+            "/api/v1/live/scenarios",
+            "/api/v1/live/replay",
+        }
+    )
+    _TRIAGE_MUTATION_ROUTES = frozenset(
+        {
+            "/api/v1/live/triage",
+            "/api/v1/live/assignment",
+            "/api/v1/live/context-memory",
+            "/api/v1/live/workspaces/select",
+        }
+    )
+
+    def _enforce_mutating_rbac(
+        self, path: str, req_data: Mapping[str, Any] | None = None
+    ) -> tuple[bool, str | None]:
+        """Enforce RBAC for mutating console routes and return (allowed, verified_actor)."""
+        from threatfusion.api.live_soc_console import (
+            _refuse_readonly_auditor,
+            _refuse_soar_role,
+        )
+
+        verified_actor, _role, _method = self._verified_operator_identity(req_data)
+        if not verified_actor:
+            return True, None
+        db_path = self._live_db_path()
+        if path in self._ADMIN_MUTATION_ROUTES:
+            refused = _refuse_soar_role(db_path, verified_actor)
+            if refused is not None:
+                self._send_json(int(refused.get("http_status") or 403), refused)
+                return False, verified_actor
+        elif path in self._TRIAGE_MUTATION_ROUTES:
+            refused = _refuse_readonly_auditor(db_path, verified_actor)
+            if refused is not None:
+                self._send_json(int(refused.get("http_status") or 403), refused)
+                return False, verified_actor
+        return True, verified_actor
+
+    @staticmethod
+    def _parse_contract_timestamp_epoch(raw_ts: Any) -> float | None:
+        if isinstance(raw_ts, bool):
+            return None
+        if isinstance(raw_ts, (int, float)):
+            val = float(raw_ts)
+            return val if math.isfinite(val) else None
+        if isinstance(raw_ts, str):
+            text = raw_ts.strip()
+            if not text:
+                return None
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            try:
+                parsed = datetime.fromisoformat(text)
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                return None
+            epoch = parsed.astimezone(UTC).timestamp()
+            return epoch if math.isfinite(epoch) else None
+        return None
+
+    @staticmethod
+    def _finite_epoch_value(raw_val: Any) -> float | None:
+        if isinstance(raw_val, bool) or not isinstance(raw_val, (int, float)):
+            return None
+        val = float(raw_val)
+        return val if math.isfinite(val) else None
+
     def _reject_actor_mismatch(self, actor_id: str) -> bool:
         """HTTP 403 when a presented certificate does not match this actor."""
         presented = self._presented_operator_fingerprint()
@@ -1415,7 +1512,31 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/live/purge-bridge-noise":
             from threatfusion.api.live_soc_console import purge_bridge_noise_rows
 
-            removed = purge_bridge_noise_rows(self._live_db_path())
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            allowed, verified_actor = self._enforce_mutating_rbac(path, req_data)
+            if not allowed:
+                return
+            raw_actor = req_data.get("actor_id")
+            eff_actor = (
+                verified_actor
+                if verified_actor is not None
+                else (
+                    str(raw_actor).strip()
+                    if isinstance(raw_actor, str) and raw_actor.strip()
+                    else None
+                )
+            )
+            removed = purge_bridge_noise_rows(self._live_db_path(), actor_id=eff_actor)
+            if isinstance(removed, dict):
+                self._send_json(int(removed.get("http_status") or 403), removed)
+                return
             self._send_json(
                 200,
                 {
@@ -1575,6 +1696,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
             features = req_data.get("features") if isinstance(req_data, dict) else None
             contract_error = canonical_feature_contract_error(features)
             if contract_error is not None:
@@ -1673,6 +1797,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
             question = ""
             flow_id = None
             if isinstance(req_data, dict):
@@ -1743,6 +1870,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
             value = str(req_data.get("value") or "") if isinstance(req_data, dict) else ""
             status, payload = private_ip_guard_response(value)
             self._send_json(status, payload)
@@ -1802,18 +1932,21 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if not isinstance(req_data, dict):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
+            allowed, verified_actor = self._enforce_mutating_rbac(path, req_data)
+            if not allowed:
+                return
             raw_flow = req_data.get("flow_id")
             entity = req_data.get("entity_ip_or_subnet")
             service = req_data.get("service_or_port")
-            verified_actor, _role, _method = self._verified_operator_identity(req_data)
-            if threatfusion_environment() == "production":
-                operator_id = verified_actor or ""
-                actor_arg = verified_actor or ""
+            if verified_actor is not None:
+                operator_id = verified_actor
+                actor_arg = verified_actor
+            elif threatfusion_environment() == "production":
+                operator_id = ""
+                actor_arg = ""
             else:
-                operator_id = str(
-                    req_data.get("operator_id") or req_data.get("actor_id") or verified_actor or ""
-                )
-                actor_arg = str(req_data.get("actor_id") or verified_actor or "")
+                operator_id = str(req_data.get("operator_id") or req_data.get("actor_id") or "")
+                actor_arg = str(req_data.get("actor_id") or "")
             if self._reject_actor_mismatch(operator_id):
                 return
             result = save_context_memory(
@@ -1827,10 +1960,14 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             )
             if result.get("evidence_state") == "verified":
                 status = 200
+            elif (
+                result.get("http_status") == 403 or result.get("reason") == "role_readonly_auditor"
+            ):
+                status = 403
             elif result.get("reason") in ("entity_not_on_flow", "explanation_not_grounded"):
                 status = 422
             else:
-                status = 400
+                status = int(result.get("http_status") or 400)
             self._send_json(status, result)
             return
 
@@ -1889,6 +2026,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if not isinstance(req_data, dict):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
+            allowed, verified_actor = self._enforce_mutating_rbac(path, req_data)
+            if not allowed:
+                return
             raw_flow = req_data.get("flow_id")
             assignee = str(req_data.get("assignee_id") or req_data.get("assigned_to") or "")
             raw_status = req_data.get("review_status")
@@ -1899,6 +2039,16 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             )
             if self._reject_actor_mismatch(assignee):
                 return
+            raw_actor = req_data.get("actor_id")
+            eff_actor = (
+                verified_actor
+                if verified_actor is not None
+                else (
+                    str(raw_actor).strip()
+                    if isinstance(raw_actor, str) and raw_actor.strip()
+                    else None
+                )
+            )
             result = record_case_assignment(
                 self._live_db_path(),
                 flow_id=raw_flow if isinstance(raw_flow, int) else 0,
@@ -1906,11 +2056,16 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 review_status=review_status,
                 policy_dir=_operator_policy_dir(),
                 presented_fingerprint=self._presented_operator_fingerprint(),
+                actor_id=eff_actor,
             )
             if isinstance(result, dict):
                 result["assignee_id"] = result.get("assignee_id") or assignee or None
                 result["assigned_to"] = result.get("assigned_to") or result.get("assignee_id")
-            status = 200 if result.get("evidence_state") == "verified" else 400
+            status = (
+                200
+                if result.get("evidence_state") == "verified"
+                else int(result.get("http_status") or 400)
+            )
             self._send_json(status, result)
             return
 
@@ -1926,13 +2081,16 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if not isinstance(req_data, dict):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
+            allowed, verified_actor = self._enforce_mutating_rbac(path, req_data)
+            if not allowed:
+                return
             raw_flow = req_data.get("flow_id")
-            verified_actor, _role, _method = self._verified_operator_identity(req_data)
-            actor_id = (
-                (verified_actor or "")
-                if threatfusion_environment() == "production"
-                else str(req_data.get("actor_id") or verified_actor or "")
-            )
+            if verified_actor is not None:
+                actor_id = verified_actor
+            elif threatfusion_environment() == "production":
+                actor_id = ""
+            else:
+                actor_id = str(req_data.get("actor_id") or "")
             result = record_triage_action(
                 self._live_db_path(),
                 flow_id=raw_flow if isinstance(raw_flow, int) else 0,
@@ -1941,7 +2099,11 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 policy_dir=_operator_policy_dir(),
                 presented_fingerprint=self._presented_operator_fingerprint(),
             )
-            status = 200 if result.get("evidence_state") == "verified" else 400
+            status = (
+                200
+                if result.get("evidence_state") == "verified"
+                else int(result.get("http_status") or 400)
+            )
             self._send_json(status, result)
             return
 
@@ -1983,7 +2145,33 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 replay_live_scenarios,
             )
 
-            result = replay_live_scenarios(self._live_db_path(), repo_root=REPO_ROOT)
+            try:
+                req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            allowed, verified_actor = self._enforce_mutating_rbac(path, req_data)
+            if not allowed:
+                return
+            raw_actor = req_data.get("actor_id")
+            eff_actor = (
+                verified_actor
+                if verified_actor is not None
+                else (
+                    str(raw_actor).strip()
+                    if isinstance(raw_actor, str) and raw_actor.strip()
+                    else None
+                )
+            )
+            result = replay_live_scenarios(
+                self._live_db_path(), repo_root=REPO_ROOT, actor_id=eff_actor
+            )
+            if result.get("http_status") == 403 or result.get("evidence_state") == "refused":
+                self._send_json(int(result.get("http_status") or 403), result)
+                return
             if result.get("member_count"):
                 attack = ensure_recorded_attack_row(self._live_db_path(), repo_root=REPO_ROOT)
                 bridge = ensure_notable_bridge_row(self._live_db_path(), repo_root=REPO_ROOT)
@@ -1993,7 +2181,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                     self._live_db_path(),
                     self._incidents_db_path(),
                 )
-            status = 200 if result.get("member_count") else 400
+            status = 200 if result.get("member_count") else int(result.get("http_status") or 400)
             self._send_json(status, _with_three_proof_state(result))
             return
 
@@ -2009,15 +2197,37 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
-            supplied = req_data.get("flows") if isinstance(req_data, dict) else None
+            if not isinstance(req_data, dict):
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            allowed, verified_actor = self._enforce_mutating_rbac(path, req_data)
+            if not allowed:
+                return
+            raw_actor = req_data.get("actor_id")
+            eff_actor = (
+                verified_actor
+                if verified_actor is not None
+                else (
+                    str(raw_actor).strip()
+                    if isinstance(raw_actor, str) and raw_actor.strip()
+                    else None
+                )
+            )
+            supplied = req_data.get("flows")
             if isinstance(supplied, list):
                 result = replay_supplied_flows(
                     self._live_db_path(),
                     supplied,
                     repo_root=REPO_ROOT,
+                    actor_id=eff_actor,
                 )
             else:
-                result = replay_benchmark_attack_burst(self._live_db_path(), repo_root=REPO_ROOT)
+                result = replay_benchmark_attack_burst(
+                    self._live_db_path(), repo_root=REPO_ROOT, actor_id=eff_actor
+                )
+            if result.get("http_status") == 403 or result.get("evidence_state") == "refused":
+                self._send_json(int(result.get("http_status") or 403), result)
+                return
             if result.get("reason") == "invalid_observed_at":
                 self._send_json(400, result)
                 return
@@ -2025,7 +2235,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 self._live_db_path(),
                 self._incidents_db_path(),
             )
-            status = 200 if result.get("member_count") else 400
+            status = 200 if result.get("member_count") else int(result.get("http_status") or 400)
             self._send_json(status, result)
             return
 
@@ -2315,18 +2525,20 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if not isinstance(req_data, dict):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
-            verified_actor, _role, _method = self._verified_operator_identity(req_data)
-            op_id = (
-                (verified_actor or "")
-                if threatfusion_environment() == "production"
-                else str(
-                    req_data.get("operator_id") or req_data.get("actor_id") or verified_actor or ""
-                )
-            )
+            allowed, verified_actor = self._enforce_mutating_rbac(path, req_data)
+            if not allowed:
+                return
+            if verified_actor is not None:
+                op_id = verified_actor
+            elif threatfusion_environment() == "production":
+                op_id = ""
+            else:
+                op_id = str(req_data.get("operator_id") or req_data.get("actor_id") or "")
             result = select_workspace(
                 self._live_db_path(),
                 workspace_id=str(req_data.get("workspace_id") or ""),
                 operator_id=op_id,
+                actor_id=verified_actor,
             )
             self._send_json(int(result.get("http_status") or 400), result)
             return
@@ -2343,14 +2555,21 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if not isinstance(req_data, dict):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
-            verified_actor, _role, _method = self._verified_operator_identity(req_data)
-            op_id = (
-                (verified_actor or "")
-                if threatfusion_environment() == "production"
-                else str(
-                    req_data.get("operator_id") or req_data.get("actor_id") or verified_actor or ""
+            allowed, verified_actor = self._enforce_mutating_rbac(path, req_data)
+            if not allowed:
+                return
+            if verified_actor is not None:
+                op_id = verified_actor
+                eff_actor: str | None = verified_actor
+            elif threatfusion_environment() == "production":
+                op_id = ""
+                eff_actor = ""
+            else:
+                raw_op = req_data.get("actor_id") or req_data.get("operator_id")
+                op_id = str(raw_op or "")
+                eff_actor = (
+                    str(raw_op).strip() if isinstance(raw_op, str) and raw_op.strip() else None
                 )
-            )
             result = create_workspace(
                 self._live_db_path(),
                 workspace_id=str(req_data.get("workspace_id") or ""),
@@ -2359,6 +2578,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 default_service=str(req_data.get("default_service") or ""),
                 industry=str(req_data.get("industry") or "client"),
                 operator_id=op_id,
+                actor_id=eff_actor,
             )
             self._send_json(int(result.get("http_status") or 400), result)
             return
@@ -2556,11 +2776,25 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             if not isinstance(req_data, dict):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
+            allowed, verified_actor = self._enforce_mutating_rbac(path, req_data)
+            if not allowed:
+                return
+            raw_actor = req_data.get("actor_id")
+            eff_actor = (
+                verified_actor
+                if verified_actor is not None
+                else (
+                    str(raw_actor).strip()
+                    if isinstance(raw_actor, str) and raw_actor.strip()
+                    else None
+                )
+            )
             result = register_sensor(
                 self._live_db_path(),
                 sensor_id=str(req_data.get("sensor_id") or ""),
                 monitored_cidr=str(req_data.get("monitored_cidr") or ""),
                 status=str(req_data.get("status") or "enrolled"),
+                actor_id=eff_actor,
             )
             self._send_json(int(result.get("http_status") or 400), result)
             return
@@ -2592,6 +2826,9 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
             try:
                 req_data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
             except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON body"})
+                return
+            if not isinstance(req_data, dict):
                 self._send_json(400, {"error": "Invalid JSON body"})
                 return
 
@@ -2678,8 +2915,19 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 return
 
             with self._lock:
+                replay_status = self._idempotency_is_replay_status("verify", idem_key)
+                if replay_status == "error":
+                    self._send_json(
+                        503,
+                        {
+                            "error": "storage_unavailable",
+                            "state_verified": False,
+                            "verified": False,
+                        },
+                    )
+                    return
                 if (
-                    self._idempotency_is_replay("verify", idem_key)
+                    replay_status == "replay"
                     or ("verify", idem_key) in self.in_flight_idempotency_keys
                 ):
                     self._send_json(
@@ -2702,6 +2950,40 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                         400,
                         {
                             "error": "Invalid JSON payload",
+                            "state_verified": False,
+                            "verified": False,
+                        },
+                    )
+                    return
+                if not isinstance(body_obj, dict):
+                    self._send_json(
+                        400,
+                        {
+                            "error": "Invalid JSON payload",
+                            "state_verified": False,
+                            "verified": False,
+                        },
+                    )
+                    return
+
+                body_idem = str(body_obj.get("idempotency_key") or "")
+                if not body_idem or not hmac.compare_digest(body_idem, idem_key):
+                    self._send_json(
+                        403,
+                        {
+                            "error": "idempotency_key_binding_mismatch",
+                            "state_verified": False,
+                            "verified": False,
+                        },
+                    )
+                    return
+
+                ts_epoch = self._parse_contract_timestamp_epoch(body_obj.get("timestamp_utc"))
+                if ts_epoch is None or abs(datetime.now(UTC).timestamp() - ts_epoch) > 300.0:
+                    self._send_json(
+                        403,
+                        {
+                            "error": "timestamp_skew_or_missing",
                             "state_verified": False,
                             "verified": False,
                         },
@@ -2799,6 +3081,16 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                             },
                         )
                         return
+                except (sqlite3.Error, OSError):
+                    self._send_json(
+                        503,
+                        {
+                            "error": "storage_unavailable",
+                            "state_verified": False,
+                            "verified": False,
+                        },
+                    )
+                    return
                 except Exception as exc:
                     self._send_json(
                         403,
@@ -2812,7 +3104,28 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                     return
 
                 with self._lock:
-                    self._idempotency_commit("verify", idem_key)
+                    claim_status = self._idempotency_claim("verify", idem_key)
+                if claim_status == "replay":
+                    self._send_json(
+                        409,
+                        {
+                            "error": "Conflict: Idempotency key replayed",
+                            "state_verified": False,
+                            "verified": False,
+                            "idempotency_key": idem_key,
+                        },
+                    )
+                    return
+                if claim_status == "error":
+                    self._send_json(
+                        503,
+                        {
+                            "error": "storage_unavailable",
+                            "state_verified": False,
+                            "verified": False,
+                        },
+                    )
+                    return
             finally:
                 with self._lock:
                     self.in_flight_idempotency_keys.discard(("verify", idem_key))
@@ -2895,8 +3208,18 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                 return
 
             with self._lock:
+                replay_status = self._idempotency_is_replay_status("callback", idem_key)
+                if replay_status == "error":
+                    self._send_json(
+                        503,
+                        {
+                            "error": "storage_unavailable",
+                            "callback_recorded": False,
+                        },
+                    )
+                    return
                 if (
-                    self._idempotency_is_replay("callback", idem_key)
+                    replay_status == "replay"
                     or ("callback", idem_key) in self.in_flight_idempotency_keys
                 ):
                     self._send_json(
@@ -2922,8 +3245,39 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                         },
                     )
                     return
+                if not isinstance(body_obj, dict):
+                    self._send_json(
+                        400,
+                        {
+                            "error": "Invalid JSON payload",
+                            "callback_recorded": False,
+                        },
+                    )
+                    return
 
                 payload = body_obj
+                body_idem = str(payload.get("idempotency_key") or "")
+                if not body_idem or not hmac.compare_digest(body_idem, idem_key):
+                    self._send_json(
+                        403,
+                        {
+                            "error": "idempotency_key_binding_mismatch",
+                            "callback_recorded": False,
+                        },
+                    )
+                    return
+
+                ts_epoch = self._parse_contract_timestamp_epoch(payload.get("timestamp_utc"))
+                if ts_epoch is None or abs(datetime.now(UTC).timestamp() - ts_epoch) > 300.0:
+                    self._send_json(
+                        403,
+                        {
+                            "error": "timestamp_skew_or_missing",
+                            "callback_recorded": False,
+                        },
+                    )
+                    return
+
                 playbook_id = str(payload.get("playbook_id", "")).strip()
                 candidate_id = str(payload.get("candidate_id", "")).strip()
                 presented_case_id = str(
@@ -2940,6 +3294,31 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                         },
                     )
                     return
+
+                raw_t_cb = payload.get("t_callback_verified", datetime.now(UTC).timestamp())
+                t_cb = self._finite_epoch_value(raw_t_cb)
+                if t_cb is None:
+                    self._send_json(
+                        400,
+                        {
+                            "error": "invalid_callback_timestamp",
+                            "callback_recorded": False,
+                        },
+                    )
+                    return
+                if "t_approval_queued" in payload and payload["t_approval_queued"] is not None:
+                    t_app = self._finite_epoch_value(payload["t_approval_queued"])
+                    if t_app is None:
+                        self._send_json(
+                            400,
+                            {
+                                "error": "invalid_callback_timestamp",
+                                "callback_recorded": False,
+                            },
+                        )
+                        return
+                else:
+                    t_app = None
 
                 # (a) Check playbook_id and candidate_id are non-empty
                 if not playbook_id or not candidate_id:
@@ -3020,6 +3399,15 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                             },
                         )
                         return
+                except (sqlite3.Error, OSError):
+                    self._send_json(
+                        503,
+                        {
+                            "error": "storage_unavailable",
+                            "callback_recorded": False,
+                        },
+                    )
+                    return
                 except Exception:
                     self._send_json(
                         403,
@@ -3030,18 +3418,30 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                     )
                     return
 
-                t_cb = float(payload.get("t_callback_verified", datetime.now(UTC).timestamp()))
-                t_app = (
-                    float(payload["t_approval_queued"])
-                    if ("t_approval_queued" in payload and payload["t_approval_queued"] is not None)
-                    else None
-                )
                 try:
                     t_resp = repo.record_callback_verification(
                         playbook_id=playbook_id,
                         t_callback_verified=t_cb,
                         t_approval_queued=t_app,
                     )
+                except (sqlite3.Error, OSError):
+                    self._send_json(
+                        503,
+                        {
+                            "error": "storage_unavailable",
+                            "callback_recorded": False,
+                        },
+                    )
+                    return
+                except ValueError:
+                    self._send_json(
+                        400,
+                        {
+                            "error": "invalid_callback_timestamp",
+                            "callback_recorded": False,
+                        },
+                    )
+                    return
                 except Exception:
                     self._send_json(
                         403,
@@ -3053,11 +3453,33 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                     return
 
                 with self._lock:
-                    self._idempotency_commit("callback", idem_key)
+                    claim_status = self._idempotency_claim("callback", idem_key)
+                if claim_status == "replay":
+                    self._send_json(
+                        409,
+                        {
+                            "error": "Conflict: Callback idempotency key replayed",
+                            "callback_recorded": False,
+                            "idempotency_key": idem_key,
+                        },
+                    )
+                    return
+                if claim_status == "error":
+                    self._send_json(
+                        503,
+                        {
+                            "error": "storage_unavailable",
+                            "callback_recorded": False,
+                        },
+                    )
+                    return
             finally:
                 with self._lock:
                     self.in_flight_idempotency_keys.discard(("callback", idem_key))
 
+            authoritative_t_app = (
+                record.t_approval_queued if record.t_approval_queued is not None else t_app
+            )
             self._send_json(
                 200,
                 {
@@ -3066,9 +3488,7 @@ class MispAndCallbackContractHandler(BaseHTTPRequestHandler):
                     "playbook_id": playbook_id,
                     "candidate_id": candidate_id,
                     "idempotency_key": idem_key,
-                    "t_approval_queued": (
-                        t_app if t_app is not None else getattr(record, "t_approval_queued", None)
-                    ),
+                    "t_approval_queued": authoritative_t_app,
                     "t_callback_verified": t_cb,
                     "t_response": t_resp,
                     "timestamp_utc": datetime.now(UTC).isoformat(),

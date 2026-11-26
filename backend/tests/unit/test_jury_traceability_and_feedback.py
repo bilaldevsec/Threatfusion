@@ -70,6 +70,11 @@ class TestJuryRequirementsTraceability:
         assert (
             ae.expected_sha256 == "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23"
         )
+        assert ae.evaluation_boundary == (
+            "PyTorch reconstruction anomaly model trained on 847,837 benign TRAIN UNSW rows "
+            "(threshold calibrated on 212,210 benign January validation rows). "
+            "Retained as unfused advisory signal; not approved for automatic containment."
+        )
 
     def test_checksum_mismatch_fails_closed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

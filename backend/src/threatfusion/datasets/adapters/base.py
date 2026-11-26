@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from ipaddress import ip_address
 from math import isfinite
 from typing import Any
@@ -6,6 +7,17 @@ from typing import Any
 import pandas as pd
 
 UTC = timezone.utc
+
+
+def _is_missing(value: Any) -> bool:
+    """Safely detect missing/NA scalar values without crashing on containers or arrays."""
+    if value is None:
+        return True
+    if isinstance(value, (list, tuple, dict, set)):
+        return False
+    if pd.api.types.is_scalar(value):
+        return bool(pd.isna(value))
+    return False
 
 
 class SourceRowValidationError(ValueError):
@@ -21,7 +33,7 @@ class SourceRowValidationError(ValueError):
 
 def required_value(row: dict[str, Any], source: str, field: str) -> Any:
     """Return a present source value, rejecting null and blank values."""
-    if field not in row or row[field] is None or pd.isna(row[field]):
+    if field not in row or _is_missing(row[field]):
         raise SourceRowValidationError(source, field, "required value is missing")
     if isinstance(row[field], str) and not row[field].strip():
         raise SourceRowValidationError(source, field, "required value is blank")
@@ -32,12 +44,8 @@ def required_alias(row: dict[str, Any], source: str, fields: tuple[str, ...]) ->
     """Return the first non-empty value from a required alias set."""
     for field in fields:
         value = row.get(field)
-        if (
-            value is not None
-            and not pd.isna(value)
-            and (
-                not isinstance(value, str) or value.strip().lower() not in {"", "-", "none", "nan"}
-            )
+        if not _is_missing(value) and (
+            not isinstance(value, str) or value.strip().lower() not in {"", "-", "none", "nan"}
         ):
             return field, value
     raise SourceRowValidationError(source, fields, "no valid alias value is present")
@@ -54,23 +62,45 @@ def required_int(
     *,
     minimum: int = 0,
     maximum: int | None = None,
+    exact: bool = True,
 ) -> int:
     value = required_value(row, source, field)
+    if isinstance(value, bool):
+        raise SourceRowValidationError(source, field, "must be an integer")
+    text = str(value).strip()
+    if "__" in text or text.startswith("_") or text.endswith("_"):
+        raise SourceRowValidationError(source, field, "must be an integer")
+    if not exact:
+        try:
+            number = float(text)
+            parsed = int(number)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise SourceRowValidationError(source, field, "must be an integer") from exc
+        if not isfinite(number) or number != parsed:
+            raise SourceRowValidationError(source, field, "must be a finite integer")
+        if parsed < minimum or (maximum is not None and parsed > maximum):
+            bounds = f"between {minimum} and {maximum}" if maximum is not None else f">= {minimum}"
+            raise SourceRowValidationError(source, field, f"must be {bounds}")
+        return parsed
     try:
-        number = float(str(value).strip())
-        parsed = int(number)
-    except (TypeError, ValueError, OverflowError) as exc:
+        dec = Decimal(text)
+    except (InvalidOperation, TypeError, ValueError) as exc:
         raise SourceRowValidationError(source, field, "must be an integer") from exc
-    if not isfinite(number) or number != parsed:
+    if not dec.is_finite() or dec != dec.to_integral_value():
         raise SourceRowValidationError(source, field, "must be a finite integer")
-    if parsed < minimum or (maximum is not None and parsed > maximum):
+    if dec < minimum or (maximum is not None and dec > maximum):
         bounds = f"between {minimum} and {maximum}" if maximum is not None else f">= {minimum}"
         raise SourceRowValidationError(source, field, f"must be {bounds}")
-    return parsed
+    try:
+        return int(dec)
+    except (InvalidOperation, ValueError, OverflowError) as exc:
+        raise SourceRowValidationError(source, field, "must be a finite integer") from exc
 
 
 def required_float(row: dict[str, Any], source: str, field: str, *, minimum: float = 0.0) -> float:
     value = required_value(row, source, field)
+    if isinstance(value, bool):
+        raise SourceRowValidationError(source, field, "must be numeric")
     try:
         parsed = float(str(value).strip())
     except (TypeError, ValueError) as exc:
@@ -90,7 +120,7 @@ def required_ip(row: dict[str, Any], source: str, field: str) -> str:
 
 
 def parse_required_timestamp(value: Any, source: str, field: str) -> datetime:
-    if value is None or pd.isna(value) or (isinstance(value, str) and not value.strip()):
+    if _is_missing(value) or (isinstance(value, str) and not value.strip()):
         raise SourceRowValidationError(source, field, "required timestamp is missing")
 
     if isinstance(value, datetime):

@@ -30,8 +30,11 @@ def test_unset_model_stays_gemini_4_hydrogen(monkeypatch: pytest.MonkeyPatch) ->
     dashboard = Path(__file__).resolve().parents[3] / "frontend" / "js" / "soc_dashboard.js"
     assert "Live Gemini 4 Hydrogen (Grounded API Call)" in dashboard.read_text(encoding="utf-8")
     monkeypatch.setenv("TF_GEMINI_MODEL", "gemini-2.0-flash")
-    assert resolve_gemini_model() == "gemini-2.0-flash"
-    assert GeminiAdvisoryCallable().config.model_name == "gemini-2.0-flash"
+    assert resolve_gemini_model() == "gemini-3.5-flash-lite"
+    assert GeminiAdvisoryCallable().config.model_name == "gemini-3.5-flash-lite"
+    monkeypatch.setenv("TF_GEMINI_MODEL", "gemini-3.5-flash")
+    assert resolve_gemini_model() == "gemini-3.5-flash"
+    assert GeminiAdvisoryCallable().config.model_name == "gemini-3.5-flash"
 
 
 def test_prompt_keeps_the_system_sentence_and_the_debrief_rules() -> None:

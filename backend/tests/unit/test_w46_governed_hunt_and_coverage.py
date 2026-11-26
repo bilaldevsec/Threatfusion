@@ -489,3 +489,47 @@ def _method(url: str, method: str) -> tuple[int, bytes, str | None]:
             return response.status, response.read(), response.headers.get("Allow")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read(), exc.headers.get("Allow")
+
+
+def test_rt_w46_cf_p1_09_lock_nofollow_and_sqlite_suffix_refusal(tmp_path: Path) -> None:
+    runner_src = _RUNNER_PATH.read_text(encoding="utf-8")
+    assert "O_NOFOLLOW" in runner_src
+    assert "RLock" in runner_src
+
+    # Refuse any .sqlite / .sqlite3 / .db suffix (case-insensitive) on write and verify
+    for bad_name in ("custom.sqlite3", "custom.sqlite", "custom.db", "EVIL.SQLITE3", "TEST.DB"):
+        target = tmp_path / bad_name
+        with pytest.raises(LabHuntSandboxError, match="production_database_refused"):
+            run_lab_hunt_pack(_fixture(), _pack(), target)
+        assert not target.exists()
+        assert verify_lab_hash_chain(target) is False
+
+    # Symlink chain target refused
+    real_chain = tmp_path / "real_chain.json"
+    real_chain.write_text("{}", encoding="utf-8")
+    sym_chain = tmp_path / "sym_chain.json"
+    sym_chain.symlink_to(real_chain)
+    with pytest.raises(LabHuntSandboxError, match="symlink_chain_refused"):
+        run_lab_hunt_pack(_fixture(), _pack(), sym_chain)
+    assert verify_lab_hash_chain(sym_chain) is False
+
+    # Concurrent threads entering/exiting lab_network_sandbox stay balanced without race/deadlock
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(4)
+
+    def _worker() -> None:
+        try:
+            barrier.wait(timeout=5.0)
+            with lab_network_sandbox():
+                probe_outbound_socket_blocked()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5.0)
+    assert not errors
+    with pytest.raises(LabHuntSandboxError, match="allowed"):
+        probe_outbound_socket_blocked()

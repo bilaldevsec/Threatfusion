@@ -114,3 +114,47 @@ def test_event_code_and_process_guid_are_not_event_identifiers(
                 "Hostname": "fixture-host",
             }
         )
+
+
+def test_mordor_port_zero_preserved_over_fallback() -> None:
+    event = adapt_mordor_row(
+        {
+            "RecordID": "3001",
+            "UtcTime": "2026-01-01T12:00:00Z",
+            "Computer": "win10-lab",
+            "DestinationPort": 0,
+            "dst_port": 443,
+        }
+    )
+    assert event.dst_port == 0
+
+
+@pytest.mark.parametrize(
+    "bad_port",
+    [
+        "inf",
+        "-inf",
+        "nan",
+        float("inf"),
+        float("nan"),
+        True,
+        False,
+        [80],
+        {"port": 80},
+        "80.5",
+        70000,
+        -1,
+    ],
+)
+def test_mordor_invalid_or_non_finite_port_returns_none(bad_port: object) -> None:
+    event = adapt_mordor_row(
+        {
+            "RecordID": "3002",
+            "UtcTime": "2026-01-01T12:00:00Z",
+            "Computer": "win10-lab",
+            "DestinationPort": bad_port,
+            "CommandLine": ["powershell", "-NoProfile"],
+        }
+    )
+    assert event.dst_port is None
+    assert event.command_line == "['powershell', '-NoProfile']"

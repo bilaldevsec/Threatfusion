@@ -353,7 +353,7 @@ def test_c2_entra_forged_jwt_and_production_register_blocked(
     assert denied["http_status"] == 401
     assert denied["authenticated"] is False
 
-    # 2. Expired JWT rejected by verify_entra_token
+    # 2. Unsigned/unconfigured JWKS fails closed even on expired JWT
     expired = _forged_jwt(
         {
             "tid": "00000000-0000-0000-0000-000000000001",
@@ -363,9 +363,11 @@ def test_c2_entra_forged_jwt_and_production_register_blocked(
             "exp": int(time.time()) - 10,
         }
     )
+    monkeypatch.delenv("THREATFUSION_ENTRA_JWKS_JSON", raising=False)
+    monkeypatch.delenv("THREATFUSION_ENTRA_JWKS_URL", raising=False)
     exp_res = verify_entra_token(live_db, expired)
     assert exp_res["http_status"] == 401
-    assert exp_res["reason"] == "entra_token_expired"
+    assert exp_res["reason"] == "entra_jwks_unconfigured"
 
     # 3. Self-assigning soc_approver via rbac_register refused even in lab mode
     self_approver = rbac_register(
@@ -385,7 +387,7 @@ def test_c2_entra_forged_jwt_and_production_register_blocked(
     monkeypatch.setenv("TF_ADMIN_SECRET", "Prod-Admin-Secret-2026!")
     prod_entra = verify_entra_token(live_db, forged)
     assert prod_entra["http_status"] == 401
-    assert prod_entra["reason"] == "entra_jwks_verification_required"
+    assert prod_entra["reason"] == "entra_jwks_unconfigured"
 
     prod_reg = rbac_register(
         live_db,
@@ -406,7 +408,7 @@ def test_c2_entra_forged_jwt_and_production_register_blocked(
     assert prod_op["http_status"] == 403
     assert prod_op["reason"] == "admin_session_required"
 
-    # 5. Authenticated production admin CAN register a new operator
+    # 5. Authenticated production admin CAN register a new operator without rotating caller session
     admin = rbac_login(
         live_db,
         username="admin@threatfusion.local",
@@ -421,7 +423,10 @@ def test_c2_entra_forged_jwt_and_production_register_blocked(
         role="tier1_triage",
         session_token=str(admin["session_token"]),
     )
-    assert created["authenticated"] is True
+    assert created["http_status"] == 200
+    assert created["registered"] is True
+    assert created["authenticated"] is False
+    assert "session_token" not in created
 
 
 def test_c2_entra_login_is_rate_limited(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

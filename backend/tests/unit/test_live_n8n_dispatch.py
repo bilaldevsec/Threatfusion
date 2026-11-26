@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import importlib.util
 import json
 import sqlite3
@@ -80,11 +82,28 @@ class _FakeN8n(BaseHTTPRequestHandler):
 
     calls = 0
     callback_posts = 0
+    last_outer_signature = ""
+    last_verify_body: dict[str, object] = {}
+    last_callback_body: dict[str, object] = {}
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length") or "0")
-        envelope = json.loads(self.rfile.read(length).decode("utf-8"))
+        raw_envelope = self.rfile.read(length)
+        envelope = json.loads(raw_envelope.decode("utf-8"))
         type(self).calls += 1
+        type(self).last_outer_signature = str(
+            self.headers.get("X-ThreatFusion-Signature-256") or ""
+        )
+        canonical_outer = json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        expected_outer = hmac.new(
+            SECRET.encode("utf-8"), canonical_outer, hashlib.sha256
+        ).hexdigest()
+        assert hmac.compare_digest(type(self).last_outer_signature, expected_outer)
+        type(self).last_verify_body = json.loads(str(envelope["verify_body"]))
+        if envelope.get("callback_body"):
+            type(self).last_callback_body = json.loads(str(envelope["callback_body"]))
         base = str(envelope["contract_base_url"]).rstrip("/")
         verify_status, verified = _signed_post(
             f"{base}/api/v1/soar/verify-state",
@@ -290,6 +309,11 @@ def test_n8n_dispatch_records_422_without_dropping_the_callback(
         assert stored["execution_path"] == "n8n_live_container"
         assert stored["callback_recorded"] == 1
         assert _FakeN8n.callback_posts == 1
+        assert _FakeN8n.last_outer_signature
+        assert _FakeN8n.last_verify_body.get("idempotency_key")
+        assert _FakeN8n.last_verify_body.get("timestamp_utc")
+        assert _FakeN8n.last_callback_body.get("idempotency_key")
+        assert _FakeN8n.last_callback_body.get("timestamp_utc")
     finally:
         contract.shutdown()
         webhook.shutdown()

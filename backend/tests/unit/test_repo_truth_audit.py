@@ -15,10 +15,14 @@ import pytest
 from threatfusion.evaluation.repo_truth_audit import (
     CANONICAL_PROJECT_RELEASE_READINESS,
     EXPECTED_MODEL_DIGESTS,
+    GATE_G9_FORBIDDEN_IMPORT_PATTERNS,
+    GATE_G9_STAGE_1_TO_4_MODULES,
     REPO_TRUTH_AUDIT_SCHEMA_VERSION,
     _check_2_frozen_model_invariance,
     _verify_module_origin,
     run_repository_truth_audit,
+    verify_gate_g9_ast_import_graph,
+    verify_gate_g9_runtime_sys_modules,
 )
 
 
@@ -519,3 +523,109 @@ class TestRepoTruthAudit:
         assert "TF-009 (open):" in report.unresolved_risks[1]
         assert "TF-010 (open):" in report.unresolved_risks[2]
         assert "TF-011 (open):" in report.unresolved_risks[3]
+
+
+def _write_clean_g9_stage_tree(src_root: Path) -> None:
+    for rel_mod in GATE_G9_STAGE_1_TO_4_MODULES:
+        mod_path = src_root / rel_mod
+        mod_path.parent.mkdir(parents=True, exist_ok=True)
+        mod_path.write_text("# clean stage module\n", encoding="utf-8")
+
+
+class TestGateG9ImportIsolationRegressions:
+    """CF-P0-03 Gate G9 AST and runtime coverage tests using tmp_path fixtures."""
+
+    def test_gate_g9_expanded_coverage_and_patterns(self) -> None:
+        for expected_mod in (
+            "threatfusion/soar/playbook_ledger.py",
+            "threatfusion/soar/n8n_thehive_misp_stack.py",
+            "threatfusion/schemas/flow.py",
+            "threatfusion/db/retraining_feedback_ledger.py",
+            "threatfusion/datasets/adapters/suricata_flow.py",
+            "threatfusion/models/network_inference.py",
+            "threatfusion/operations/cloud_live_telemetry.py",
+            "threatfusion/operations/bridge_noise.py",
+        ):
+            assert expected_mod in GATE_G9_STAGE_1_TO_4_MODULES
+        for needle in (
+            "advisory_trace",
+            "telemetry_shield",
+            "google.genai",
+            "google.generativeai",
+        ):
+            assert needle in GATE_G9_FORBIDDEN_IMPORT_PATTERNS
+
+    def test_gate_g9_clean_tmp_tree_and_runtime_probe_pass(self, tmp_path: Path) -> None:
+        _write_clean_g9_stage_tree(tmp_path)
+        passed, violations = verify_gate_g9_ast_import_graph(tmp_path)
+        assert passed is True
+        assert violations == []
+
+        repo_src = Path(__file__).resolve().parents[2] / "src"
+        rt_passed, rt_violations = verify_gate_g9_runtime_sys_modules(repo_src)
+        assert rt_passed is True, rt_violations
+        assert rt_violations == []
+
+    @pytest.mark.parametrize(
+        ("rel_target", "source_code", "expected_fragment"),
+        [
+            (
+                "threatfusion/soar/playbook_ledger.py",
+                "from ..advisory import telemetry_shield\n",
+                "threatfusion.advisory",
+            ),
+            (
+                "threatfusion/soar/n8n_thehive_misp_stack.py",
+                "from .. import advisory\n",
+                "advisory",
+            ),
+            (
+                "threatfusion/soar/playbook_ledger.py",
+                "from ....advisory import telemetry_shield\n",
+                "out-of-package relative import",
+            ),
+            (
+                "threatfusion/soar/n8n_thehive_misp_stack.py",
+                'import importlib\nimportlib.import_module("threatfusion.advisory.gemini_client")\n',
+                "threatfusion.advisory.gemini_client",
+            ),
+            (
+                "threatfusion/operations/cloud_live_telemetry.py",
+                'from importlib import import_module\nimport_module(".advisory", package="threatfusion")\n',
+                "threatfusion.advisory",
+            ),
+            (
+                "threatfusion/models/network_inference.py",
+                '__import__("threatfusion.advisory")\n',
+                "threatfusion.advisory",
+            ),
+            (
+                "threatfusion/schemas/flow.py",
+                '__import__(name="google.genai")\n',
+                "google.genai",
+            ),
+            (
+                "threatfusion/operations/bridge_noise.py",
+                "import google.generativeai\n",
+                "google.generativeai",
+            ),
+            (
+                "threatfusion/db/retraining_feedback_ledger.py",
+                "from threatfusion.advisory import advisory_trace\n",
+                "advisory_trace",
+            ),
+        ],
+    )
+    def test_gate_g9_detects_relative_dynamic_and_soar_imports(
+        self,
+        tmp_path: Path,
+        rel_target: str,
+        source_code: str,
+        expected_fragment: str,
+    ) -> None:
+        _write_clean_g9_stage_tree(tmp_path)
+        (tmp_path / rel_target).write_text(source_code, encoding="utf-8")
+
+        passed, violations = verify_gate_g9_ast_import_graph(tmp_path)
+        assert passed is False
+        assert any(rel_target in v and expected_fragment in v for v in violations), violations

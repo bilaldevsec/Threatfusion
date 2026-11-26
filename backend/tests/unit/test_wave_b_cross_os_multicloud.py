@@ -643,15 +643,20 @@ def test_deploy_cloud_range_aws_and_gcp_remediations(tmp_path: Path) -> None:
     aws_log = tmp_path / "aws.log"
     gcloud_log = tmp_path / "gcloud.log"
 
+    aws_terminated_marker = tmp_path / "aws_terminated.flag"
     _write_executable(
         fake_bin / "aws",
         f"""#!/usr/bin/env python3
+from pathlib import Path
 import sys
 with open({str(aws_log)!r}, "a", encoding="utf-8") as fh:
     fh.write(" ".join(sys.argv[1:]) + "\\n")
 args = sys.argv[1:]
+marker = Path({str(aws_terminated_marker)!r})
 if "get-caller-identity" in args:
     print('{{"Account": "123456789012"}}')
+elif "terminate-instances" in args:
+    marker.write_text("terminated", encoding="utf-8")
 elif "describe-vpcs" in args:
     print("vpc-123")
 elif "describe-subnets" in args:
@@ -671,6 +676,8 @@ elif "describe-instances" in args:
         print("None")
     elif "--instance-ids" in args:
         print("203.0.113.55")
+    elif marker.exists():
+        print("None")
     else:
         print("i-111 i-222")
 elif "run-instances" in args:
@@ -775,9 +782,12 @@ elif args[:3] == ["compute", "firewall-rules", "describe"]:
         in td_calls
     )
     assert (
-        "describe-volumes --region us-east-1 --filters Name=tag:Project,Values=threatfusion-range Name=status,Values=available"
+        "describe-volumes --region us-east-1 --filters Name=tag:Project,Values=threatfusion-range"
         in td_calls
     )
+    assert "Name=status,Values=available" not in td_calls
+    assert "pending,running,stopping,stopped,shutting-down" in td_calls
+    assert "Addresses[].AllocationId" in td_calls
 
     # GCP provision + ARM + teardown
     res_gcp = subprocess.run(
@@ -935,3 +945,492 @@ def test_bridge_noise_filters_all_multicloud_metadata_and_ipv4_mapped_ips() -> N
 
     assert is_lab_bridge_noise("172.29.0.10", "172.29.0.20", 44120, 80) is False
     assert is_lab_bridge_noise("::ffff:172.29.0.10", "::ffff:172.29.0.20", 44120, 80) is False
+
+
+# ---------------------------------------------------------------------------
+# Wave 1 Track 1D Regressions (CF-P0-13 + CF-P1-12)
+# ---------------------------------------------------------------------------
+
+
+def test_render_forwarder_env_preserves_ampersand_and_backslash() -> None:
+    script = REPO_ROOT / "scripts" / "deploy_azure_cyber_range.sh"
+    secret = r"sec&ret\with&back\slash=123"
+    token = r"tok&en\val"
+    res = subprocess.run(
+        [
+            "bash",
+            "-c",
+            """
+            set -euo pipefail
+            eval "$(sed -n '/^render_forwarder_env()/,/^}/p' "$1")"
+            render_forwarder_env 'https://console.example/soc?a=1&b=2' "$2" "$3"
+            """,
+            "bash",
+            str(script),
+            token,
+            secret,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode == 0, res.stderr
+    lines = dict(line.split("=", 1) for line in res.stdout.strip().splitlines())
+    assert lines["THREATFUSION_CONSOLE_URL"] == "https://console.example/soc?a=1&b=2"
+    assert lines["THREATFUSION_SENSOR_INGEST_TOKEN"] == token
+    assert lines["THREATFUSION_SOAR_HMAC_SECRET"] == secret
+    assert lines["THREATFUSION_CLIENT_CERT"] == "/etc/threatfusion/client.crt"
+    assert lines["THREATFUSION_CLIENT_KEY"] == "/etc/threatfusion/client.key"
+
+
+def test_verify_teardown_zero_burn_fails_closed_when_resources_remain(tmp_path: Path) -> None:
+    script = REPO_ROOT / "scripts" / "deploy_cloud_range.sh"
+
+    # 1. AWS fails closed on attached in-use EBS volume (without attempting delete-volume on it)
+    aws_bin = tmp_path / "aws_vol_bin"
+    aws_bin.mkdir()
+    aws_vol_log = tmp_path / "aws_vol.log"
+    _write_executable(
+        aws_bin / "aws",
+        f"""#!/usr/bin/env python3
+import sys
+args = sys.argv[1:]
+with open({str(aws_vol_log)!r}, "a", encoding="utf-8") as fh:
+    fh.write(" ".join(args) + "\\n")
+if "get-caller-identity" in args:
+    print('{{"Account": "123456789012"}}')
+elif "describe-volumes" in args:
+    if "Volumes[].[VolumeId,State]" in args:
+        print("vol-inuse\\tin-use")
+    else:
+        print("vol-inuse")
+""",
+    )
+    aws_state = tmp_path / "aws_state"
+    aws_state.mkdir()
+    (aws_state / "cloud_state.json").write_text('{"provider": "aws"}', encoding="utf-8")
+    env_aws = dict(
+        os.environ,
+        PATH=f"{aws_bin}:{os.environ.get('PATH', '')}",
+        THREATFUSION_CLOUD_STATE_DIR=str(aws_state),
+    )
+    res_aws_vol = subprocess.run(
+        ["bash", str(script), "--provider", "aws", "--teardown"],
+        cwd=REPO_ROOT,
+        env=env_aws,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_aws_vol.returncode != 0
+    assert "Idle burn 0.00" not in res_aws_vol.stdout
+    assert "vol-inuse" in res_aws_vol.stderr
+    assert (aws_state / "cloud_state.json").is_file()
+    assert "delete-volume" not in aws_vol_log.read_text(encoding="utf-8")
+
+    # 2. AWS fails closed on running/shutting-down EC2 instance
+    aws_inst_bin = tmp_path / "aws_inst_bin"
+    aws_inst_bin.mkdir()
+    _write_executable(
+        aws_inst_bin / "aws",
+        """#!/usr/bin/env python3
+import sys
+args = sys.argv[1:]
+if "get-caller-identity" in args:
+    print('{"Account": "123456789012"}')
+elif "describe-instances" in args:
+    print("i-running")
+""",
+    )
+    env_aws_inst = dict(
+        os.environ,
+        PATH=f"{aws_inst_bin}:{os.environ.get('PATH', '')}",
+        THREATFUSION_CLOUD_STATE_DIR=str(aws_state),
+    )
+    res_aws_inst = subprocess.run(
+        ["bash", str(script), "--provider", "aws", "--teardown"],
+        cwd=REPO_ROOT,
+        env=env_aws_inst,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_aws_inst.returncode != 0
+    assert "Idle burn 0.00" not in res_aws_inst.stdout
+    assert "i-running" in res_aws_inst.stderr
+    assert (aws_state / "cloud_state.json").is_file()
+
+    # 3. GCP fails closed on attached tf-* disk (without AND NOT users:*)
+    gcp_bin = tmp_path / "gcp_bin"
+    gcp_bin.mkdir()
+    _write_executable(
+        gcp_bin / "gcloud",
+        """#!/usr/bin/env python3
+import sys
+args = sys.argv[1:]
+if args[:3] == ["config", "get-value", "project"]:
+    print("tf-test-project")
+elif args[:3] == ["config", "get-value", "account"]:
+    print("ops@example.com")
+elif args[:3] == ["config", "get-value", "compute/region"]:
+    print("us-central1")
+elif args[:3] == ["compute", "disks", "list"]:
+    print("tf-soc-victim-vm")
+""",
+    )
+    gcp_state = tmp_path / "gcp_state"
+    gcp_state.mkdir()
+    (gcp_state / "cloud_state.json").write_text('{"provider": "gcp"}', encoding="utf-8")
+    env_gcp = dict(
+        os.environ,
+        PATH=f"{gcp_bin}:{os.environ.get('PATH', '')}",
+        THREATFUSION_CLOUD_STATE_DIR=str(gcp_state),
+    )
+    res_gcp = subprocess.run(
+        ["bash", str(script), "--provider", "gcp", "--teardown"],
+        cwd=REPO_ROOT,
+        env=env_gcp,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_gcp.returncode != 0
+    assert "Idle burn 0.00" not in res_gcp.stdout
+    assert "tf-soc-victim-vm" in res_gcp.stderr
+    assert (gcp_state / "cloud_state.json").is_file()
+    assert "AND NOT users:*" not in script.read_text(encoding="utf-8")
+
+    # 4. Azure fails closed when RG remains in Deleting state after wait
+    az_bin = tmp_path / "az_bin"
+    az_bin.mkdir()
+    az_log = tmp_path / "az.log"
+    _write_executable(
+        az_bin / "az",
+        f"""#!/usr/bin/env python3
+import sys
+args = sys.argv[1:]
+with open({str(az_log)!r}, "a", encoding="utf-8") as fh:
+    fh.write(" ".join(args) + "\\n")
+if args[:2] == ["account", "show"]:
+    print('{{"id": "sub-1", "tenantId": "ten-1"}}')
+elif args[:2] == ["group", "exists"]:
+    print("true")
+elif args[:2] == ["group", "show"]:
+    print("Deleting")
+""",
+    )
+    az_state = tmp_path / "az_state"
+    az_state.mkdir()
+    (az_state / "cloud_state.json").write_text('{"provider": "azure"}', encoding="utf-8")
+    env_az = dict(
+        os.environ,
+        PATH=f"{az_bin}:{os.environ.get('PATH', '')}",
+        THREATFUSION_CLOUD_STATE_DIR=str(az_state),
+    )
+    res_az = subprocess.run(
+        ["bash", str(script), "--provider", "azure", "--teardown"],
+        cwd=REPO_ROOT,
+        env=env_az,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_az.returncode != 0
+    assert "Idle burn 0.00" not in res_az.stdout
+    assert "Deleting" in res_az.stderr
+    assert (az_state / "cloud_state.json").is_file()
+    assert "group wait --name ThreatFusion-RG --deleted" in az_log.read_text(encoding="utf-8")
+
+
+def test_teardown_aws_and_gcp_load_saved_region_and_zone(tmp_path: Path) -> None:
+    script = REPO_ROOT / "scripts" / "deploy_cloud_range.sh"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    aws_log = tmp_path / "aws_region.log"
+    gcloud_log = tmp_path / "gcloud_zone.log"
+
+    _write_executable(
+        fake_bin / "aws",
+        f"""#!/usr/bin/env python3
+import sys
+args = sys.argv[1:]
+with open({str(aws_log)!r}, "a", encoding="utf-8") as fh:
+    fh.write(" ".join(args) + "\\n")
+if "get-caller-identity" in args:
+    print('{{"Account": "123456789012"}}')
+elif args[:3] == ["configure", "get", "region"]:
+    print("us-east-1")
+""",
+    )
+    _write_executable(
+        fake_bin / "gcloud",
+        f"""#!/usr/bin/env python3
+import sys
+args = sys.argv[1:]
+with open({str(gcloud_log)!r}, "a", encoding="utf-8") as fh:
+    fh.write(" ".join(args) + "\\n")
+if args[:3] == ["config", "get-value", "project"]:
+    print("tf-test-project")
+elif args[:3] == ["config", "get-value", "account"]:
+    print("ops@example.com")
+elif args[:3] == ["config", "get-value", "compute/region"]:
+    print("us-central1")
+""",
+    )
+
+    aws_state = tmp_path / "aws_state"
+    aws_state.mkdir()
+    (aws_state / "cloud_state.json").write_text(
+        json.dumps({"provider": "aws", "region": "eu-west-1"}),
+        encoding="utf-8",
+    )
+    env_aws = {k: v for k, v in os.environ.items() if k != "CLOUD_REGION"}
+    env_aws["PATH"] = f"{fake_bin}:{env_aws.get('PATH', '')}"
+    env_aws["THREATFUSION_CLOUD_STATE_DIR"] = str(aws_state)
+    res_aws = subprocess.run(
+        ["bash", str(script), "--provider", "aws", "--teardown"],
+        cwd=REPO_ROOT,
+        env=env_aws,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_aws.returncode == 0, res_aws.stderr
+    assert "--region eu-west-1" in aws_log.read_text(encoding="utf-8")
+
+    gcp_state = tmp_path / "gcp_state"
+    gcp_state.mkdir()
+    (gcp_state / "cloud_state.json").write_text(
+        json.dumps(
+            {
+                "provider": "gcp",
+                "region": "europe-west1",
+                "resource_ids": {"zone": "europe-west1-c"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    env_gcp = {k: v for k, v in os.environ.items() if k not in ("CLOUD_REGION", "CLOUD_ZONE")}
+    env_gcp["PATH"] = f"{fake_bin}:{env_gcp.get('PATH', '')}"
+    env_gcp["THREATFUSION_CLOUD_STATE_DIR"] = str(gcp_state)
+    res_gcp = subprocess.run(
+        ["bash", str(script), "--provider", "gcp", "--teardown"],
+        cwd=REPO_ROOT,
+        env=env_gcp,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_gcp.returncode == 0, res_gcp.stderr
+    gcp_calls = gcloud_log.read_text(encoding="utf-8")
+    assert "--zone europe-west1-c" in gcp_calls
+    assert "--region europe-west1" in gcp_calls
+
+
+def test_pair_forwarder_writes_env_before_enabling_service_and_uploads_package(
+    tmp_path: Path,
+) -> None:
+    script = REPO_ROOT / "scripts" / "deploy_azure_cyber_range.sh"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    events_log = tmp_path / "events.jsonl"
+    tar_out = tmp_path / "uploaded_pkg.tar.gz"
+
+    _write_executable(
+        fake_bin / "az",
+        f"""#!/usr/bin/env python3
+import json
+import sys
+args = sys.argv[1:]
+with open({str(events_log)!r}, "a", encoding="utf-8") as fh:
+    fh.write(json.dumps({{"tool": "az", "args": args}}) + "\\n")
+if args[:2] == ["vm", "list-ip-addresses"]:
+    print("203.0.113.42")
+""",
+    )
+    _write_executable(
+        fake_bin / "ssh",
+        f"""#!/usr/bin/env python3
+import json
+import sys
+args = sys.argv[1:]
+raw_stdin = sys.stdin.buffer.read()
+if raw_stdin[:2] == b"\\x1f\\x8b":
+    with open({str(tar_out)!r}, "wb") as tf:
+        tf.write(raw_stdin)
+    stdin_text = "<tar.gz>"
+else:
+    stdin_text = raw_stdin.decode("utf-8", errors="replace")
+with open({str(events_log)!r}, "a", encoding="utf-8") as fh:
+    fh.write(json.dumps({{"tool": "ssh", "args": args, "stdin": stdin_text}}) + "\\n")
+""",
+    )
+
+    secret = r"hmac&secret\with\special=chars"
+    env = dict(
+        os.environ,
+        PATH=f"{fake_bin}:{os.environ.get('PATH', '')}",
+        THREATFUSION_CONSOLE_URL="https://console.example:8766",
+        THREATFUSION_SENSOR_INGEST_TOKEN="ingest-tok-1234567890",
+        THREATFUSION_SOAR_HMAC_SECRET=secret,
+    )
+    res = subprocess.run(
+        ["bash", str(script), "--pair-forwarder"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode == 0, res.stderr
+
+    events = [json.loads(line) for line in events_log.read_text(encoding="utf-8").splitlines()]
+    run_cmd_scripts = [
+        ev["args"][ev["args"].index("--scripts") + 1]
+        for ev in events
+        if ev["tool"] == "az" and ev["args"][:3] == ["vm", "run-command", "invoke"]
+    ]
+    assert run_cmd_scripts
+    assert all(
+        "systemctl enable --now threatfusion-eve-follower.service" not in s for s in run_cmd_scripts
+    )
+    assert any("pydantic>=2,<3" in s for s in run_cmd_scripts)
+
+    import tarfile
+
+    with tarfile.open(tar_out, "r:gz") as tf:
+        members = tf.getnames()
+    assert "backend/src/threatfusion/datasets/adapters/suricata_flow.py" in members
+
+    ssh_events = [ev for ev in events if ev["tool"] == "ssh"]
+    tar_idx = next(i for i, ev in enumerate(ssh_events) if ev["stdin"] == "<tar.gz>")
+    env_idx = next(
+        i
+        for i, ev in enumerate(ssh_events)
+        if "/etc/threatfusion/forwarder.env" in " ".join(ev["args"])
+        and "THREATFUSION_SOAR_HMAC_SECRET" in ev["stdin"]
+    )
+    enable_idx = next(
+        i
+        for i, ev in enumerate(ssh_events)
+        if "systemctl enable --now threatfusion-eve-follower.service" in " ".join(ev["args"])
+    )
+    assert tar_idx < env_idx < enable_idx
+    assert f"THREATFUSION_SOAR_HMAC_SECRET={secret}" in ssh_events[env_idx]["stdin"]
+
+
+def test_watchdog_uses_non_eval_env_parser_and_uv_sync(tmp_path: Path) -> None:
+    cloud_text = (REPO_ROOT / "scripts" / "deploy_cloud_range.sh").read_text(encoding="utf-8")
+    assert ". /opt/threatfusion/.env" not in cloud_text
+    assert "uv sync --locked --python 3.11 --no-dev" in cloud_text
+    assert "UV_PROJECT_ENVIRONMENT=/opt/threatfusion-venv" in cloud_text
+    assert "torch<2.7" not in cloud_text
+
+    marker_val = tmp_path / "pwn_val.flag"
+    marker_key = tmp_path / "pwn_key.flag"
+    env_file = tmp_path / ".env"
+    env_file.write_bytes(
+        (
+            "# comment line\r\n"
+            "\r\n"
+            f'THREATFUSION_SOAR_HMAC_SECRET="sec&ret\\val$(touch {marker_val})"\r\n'
+            "GEMINI_MODEL='gemini-3.5-flash'\r\n"
+            f"TF_CUSTOM=$(touch {marker_key})\r\n"
+            f"EVIL_VAR=$(touch {marker_val})\r\n"
+            "PATH=/tmp/hijack\r\n"
+        ).encode("utf-8")
+    )
+
+    start_marker = "cat > /opt/threatfusion/run-console-watchdog.sh <<'WATCH'\n"
+    end_marker = "\nWATCH\n"
+    watchdog_block = cloud_text.split(start_marker, 1)[1].split(end_marker, 1)[0]
+    parser_only = watchdog_block.split("export THREATFUSION_ENV=production", 1)[0]
+    parser_only = parser_only.replace("/opt/threatfusion/.env", str(env_file))
+
+    probe = subprocess.run(
+        [
+            "bash",
+            "-c",
+            parser_only
+            + '\nprintf "HMAC=%s\\nMODEL=%s\\nTF=%s\\nEVIL=%s\\nPATH_OK=%s\\n" "$THREATFUSION_SOAR_HMAC_SECRET" "$GEMINI_MODEL" "$TF_CUSTOM" "${EVIL_VAR:-UNSET}" "${PATH##*/}"',
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert probe.returncode == 0, probe.stderr
+    assert f"HMAC=sec&ret\\val$(touch {marker_val})" in probe.stdout
+    assert "MODEL=gemini-3.5-flash" in probe.stdout
+    assert f"TF=$(touch {marker_key})" in probe.stdout
+    assert "EVIL=UNSET" in probe.stdout
+    assert "PATH_OK=hijack" not in probe.stdout
+    assert not marker_val.exists()
+    assert not marker_key.exists()
+
+
+def test_azure_create_both_live_vms_schedules_victim_shutdown_before_attacker(
+    tmp_path: Path,
+) -> None:
+    script = REPO_ROOT / "scripts" / "deploy_azure_cyber_range.sh"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    az_log = tmp_path / "az_shutdown.log"
+
+    _write_executable(
+        fake_bin / "az",
+        f"""#!/usr/bin/env python3
+import sys
+args = sys.argv[1:]
+with open({str(az_log)!r}, "a", encoding="utf-8") as fh:
+    fh.write(" ".join(args) + "\\n")
+if args[:2] == ["vm", "show"]:
+    sys.exit(1)
+if args[:2] == ["vm", "create"]:
+    if "tf-attacker-redteam-vm" in args:
+        print("Attacker failure")
+        sys.exit(1)
+    sys.exit(0)
+""",
+    )
+
+    env = dict(os.environ, PATH=f"{fake_bin}:{os.environ.get('PATH', '')}")
+    res = subprocess.run(
+        [
+            "bash",
+            "-c",
+            """
+            set -euo pipefail
+            RG=ThreatFusion-RG
+            LIVE_VNET=ThreatFusion-VNet
+            LIVE_SUBNET=ThreatFusion-Subnet
+            LIVE_NSG=ThreatFusion-NSG
+            LIVE_ADMIN_USER=azureuser
+            VICTIM_NAME=tf-soc-victim-vm
+            VICTIM_IP=172.29.0.20
+            ATTACKER_NAME=tf-attacker-redteam-vm
+            ATTACKER_IP=172.29.0.10
+            DRY_RUN=0
+            AZURE_VM_SIZE=Standard_D2as_v7
+            STUDENT_QUOTA_SKUS=(Standard_D2as_v7)
+            X86_UBUNTU_IMAGE="Canonical:ubuntu-24_04-lts:server:latest"
+            ARM_UBUNTU_IMAGE="Canonical:ubuntu-24_04-lts:server-arm64:latest"
+            run() { "$@"; }
+            eval "$(sed -n '/^is_arm_sku()/,/^}/p' "$1")"
+            eval "$(sed -n '/^ubuntu_image_for_sku()/,/^}/p' "$1")"
+            eval "$(sed -n '/^create_vm_with_zone_retry()/,/^}/p' "$1")"
+            eval "$(sed -n '/^create_live_vm_if_missing()/,/^}/p' "$1")"
+            eval "$(sed -n '/^schedule_utc_shutdown()/,/^}/p' "$1")"
+            eval "$(sed -n '/^create_both_live_vms()/,/^}/p' "$1")"
+            create_both_live_vms Standard_D2as_v7
+            """,
+            "bash",
+            str(script),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode != 0
+    calls = az_log.read_text(encoding="utf-8")
+    assert "vm auto-shutdown --resource-group ThreatFusion-RG --name tf-soc-victim-vm" in calls

@@ -205,10 +205,12 @@ def _backup_sqlite(src_path: Path, dest_path: Path) -> None:
 
     try:
         src_conn = sqlite3.connect(
-            f"file:{src_path.resolve()}?mode=ro",
+            f"{src_path.resolve().as_uri()}?mode=ro",
             uri=True,
             timeout=SQLITE_TIMEOUT_SECONDS,
         )
+        src_conn.execute("PRAGMA query_only = ON")
+        src_conn.execute("PRAGMA trusted_schema = OFF")
     except sqlite3.Error:
         raise StorageBackupError("database_corrupt") from None
 
@@ -264,10 +266,12 @@ def _inspect_database(db_path: Path, role: str) -> dict[str, object]:
 
     try:
         conn = sqlite3.connect(
-            f"file:{db_path.resolve()}?mode=ro",
+            f"{db_path.resolve().as_uri()}?mode=ro",
             uri=True,
             timeout=SQLITE_TIMEOUT_SECONDS,
         )
+        conn.execute("PRAGMA query_only = ON")
+        conn.execute("PRAGMA trusted_schema = OFF")
         conn.row_factory = sqlite3.Row
         try:
             result = conn.execute("PRAGMA integrity_check").fetchall()
@@ -347,23 +351,32 @@ def _check_cross_database_consistency(
 ) -> dict[str, int]:
     """Verify that every alert_candidate_id in analyst state and incidents exists in retained alerts."""
     try:
+        _check_no_symlink(alerts_path)
+        _check_no_symlink(states_path)
         alerts_conn = sqlite3.connect(
-            f"file:{alerts_path.resolve()}?mode=ro",
+            f"{alerts_path.resolve().as_uri()}?mode=ro",
             uri=True,
             timeout=SQLITE_TIMEOUT_SECONDS,
         )
+        alerts_conn.execute("PRAGMA query_only = ON")
+        alerts_conn.execute("PRAGMA trusted_schema = OFF")
         states_conn = sqlite3.connect(
-            f"file:{states_path.resolve()}?mode=ro",
+            f"{states_path.resolve().as_uri()}?mode=ro",
             uri=True,
             timeout=SQLITE_TIMEOUT_SECONDS,
         )
+        states_conn.execute("PRAGMA query_only = ON")
+        states_conn.execute("PRAGMA trusted_schema = OFF")
         incidents_conn = None
         if incidents_path is not None and incidents_path.exists():
+            _check_no_symlink(incidents_path)
             incidents_conn = sqlite3.connect(
-                f"file:{incidents_path.resolve()}?mode=ro",
+                f"{incidents_path.resolve().as_uri()}?mode=ro",
                 uri=True,
                 timeout=SQLITE_TIMEOUT_SECONDS,
             )
+            incidents_conn.execute("PRAGMA query_only = ON")
+            incidents_conn.execute("PRAGMA trusted_schema = OFF")
         try:
             alert_ids = {
                 row[0]

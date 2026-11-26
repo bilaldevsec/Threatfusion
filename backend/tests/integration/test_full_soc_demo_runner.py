@@ -2,25 +2,53 @@
 
 from __future__ import annotations
 
+import csv
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
+from threatfusion.models.network_inference import UnswNetworkInferenceBoundary
 from threatfusion.operations.full_soc_demo import (
     DEMO_SCHEMA_VERSION,
     REGISTERED_UNSW_MEMBER_SHA256,
     run_full_soc_demo,
 )
 
+_SYNTHETIC_RAW_NAMES = tuple(
+    "srcip sport dstip dsport proto state dur sbytes dbytes sttl dttl sloss dloss service "
+    "sload dload spkts dpkts swin dwin stcpb dtcpb smeansz dmeansz trans_depth res_bdy_len "
+    "sjit djit stime ltime sintpkt dintpkt tcprtt synack ackdat is_sm_ips_ports ct_state_ttl "
+    "ct_flw_http_mthd is_ftp_login ct_ftp_cmd ct_srv_src ct_srv_dst ct_dst_ltm ct_src_ltm "
+    "ct_src_dport_ltm ct_dst_sport_ltm ct_dst_src_ltm attack_cat label".split()
+)
 
-def test_full_soc_demo_runner_end_to_end(tmp_path: Path) -> None:
-    """Execute run_full_soc_demo(tmp_path) end-to-end and assert all invariants."""
-    official = Path(__file__).resolve().parents[3] / "data" / "raw" / "unsw_nb15" / "official"
-    if any(not (official / f"UNSW-NB15_{number}.csv").is_file() for number in range(1, 5)):
-        pytest.skip("raw UNSW-NB15 CSV files not present in this checkout")
-    report = run_full_soc_demo(tmp_path)
 
+def _synthetic_unsw_row(**updates: str) -> list[str]:
+    values = dict.fromkeys(_SYNTHETIC_RAW_NAMES, "0")
+    values.update(
+        srcip="192.0.2.1",
+        dstip="198.51.100.2",
+        sport="54322",
+        dsport="53",
+        proto="udp",
+        dur="0.001",
+        sbytes="146",
+        dbytes="178",
+        spkts="2",
+        dpkts="2",
+        stime="1421928000",
+        ltime="1421928001",
+        attack_cat="",
+        label="0",
+    )
+    values.update(updates)
+    return [values[name] for name in _SYNTHETIC_RAW_NAMES]
+
+
+def _assert_full_soc_demo_report(report: dict[str, object], out_dir: Path) -> None:
+    """Assert end-to-end invariants for both official and synthetic UNSW runs."""
     # 1. Top-Level Metadata Invariants
     assert report["schema_version"] == DEMO_SCHEMA_VERSION
     assert report["project_id"] == "AI-FYP-2006"
@@ -102,8 +130,8 @@ def test_full_soc_demo_runner_end_to_end(tmp_path: Path) -> None:
     assert summary["speedup_pct"] > 0.0
 
     # 4. Artifact File Generation Invariants
-    json_path = tmp_path / "full_soc_demo_report.json"
-    md_path = tmp_path / "full_soc_demo_report.md"
+    json_path = out_dir / "full_soc_demo_report.json"
+    md_path = out_dir / "full_soc_demo_report.md"
 
     assert json_path.exists()
     assert md_path.exists()
@@ -118,3 +146,68 @@ def test_full_soc_demo_runner_end_to_end(tmp_path: Path) -> None:
     assert "16.4:1 benign false alarm penalty" in md_text
     assert "pending_approval" in md_text
     assert "rolled_back" in md_text
+
+
+def test_full_soc_demo_runner_end_to_end(tmp_path: Path) -> None:
+    """Execute run_full_soc_demo(tmp_path) end-to-end and assert all invariants."""
+    official = Path(__file__).resolve().parents[3] / "data" / "raw" / "unsw_nb15" / "official"
+    if any(not (official / f"UNSW-NB15_{number}.csv").is_file() for number in range(1, 5)):
+        pytest.skip("raw UNSW-NB15 CSV files not present in this checkout")
+    report = run_full_soc_demo(tmp_path)
+    _assert_full_soc_demo_report(report, tmp_path)
+
+
+def test_full_soc_demo_runner_with_synthetic_unsw_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise run_full_soc_demo end-to-end without requiring gitignored raw CSVs."""
+    synthetic_csv = tmp_path / "synthetic_UNSW-NB15_1.csv"
+    normal_row = _synthetic_unsw_row(
+        proto="udp",
+        dsport="53",
+        dur="0.001",
+        spkts="2",
+        dpkts="2",
+        sbytes="146",
+        dbytes="178",
+        label="0",
+    )
+    attack_row = _synthetic_unsw_row(
+        proto="udp",
+        dsport="53",
+        dur="0.00001",
+        spkts="2",
+        dpkts="0",
+        sbytes="114",
+        dbytes="0",
+        attack_cat="Generic",
+        label="1",
+    )
+    with synthetic_csv.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        for row_num in range(1, 22):
+            writer.writerow(attack_row if row_num == 21 else normal_row)
+
+    synthetic_sha256 = hashlib.sha256(synthetic_csv.read_bytes()).hexdigest()
+
+    def _load_synthetic_row(
+        _self: UnswNetworkInferenceBoundary, member: object, row_number: int
+    ) -> list[str]:
+        assert getattr(member, "sha256", None) == REGISTERED_UNSW_MEMBER_SHA256
+        payload = synthetic_csv.read_bytes()
+        assert hashlib.sha256(payload).hexdigest() == synthetic_sha256
+        rows = list(csv.reader(payload.decode("utf-8").splitlines()))
+        assert len(rows) == 21
+        return rows[row_number - 1]
+
+    monkeypatch.setattr(UnswNetworkInferenceBoundary, "_registered_row", _load_synthetic_row)
+    for env_key in (
+        "THREATFUSION_MISP_URL",
+        "THREATFUSION_N8N_WEBHOOK_URL",
+        "THREATFUSION_THEHIVE_URL",
+    ):
+        monkeypatch.delenv(env_key, raising=False)
+
+    out_dir = tmp_path / "demo_out"
+    report = run_full_soc_demo(out_dir)
+    _assert_full_soc_demo_report(report, out_dir)

@@ -269,9 +269,13 @@ def test_azure_victim_address_rejects_missing_and_private_values(tmp_path: Path)
     assert read_azure_victim_public_ip(tmp_path / "absent.json") == ""
     path = tmp_path / "azure_portal_state.json"
     path.write_text(json.dumps({"victim_public_ip": "10.0.0.5"}), encoding="utf-8")
+    path.chmod(0o600)
     assert read_azure_victim_public_ip(path) == ""
     path.write_text(json.dumps({"victim_public_ip": "93.184.216.34"}), encoding="utf-8")
     assert read_azure_victim_public_ip(path) == "93.184.216.34"
+    path.chmod(0o644)
+    assert read_azure_victim_public_ip(path) == ""
+    path.chmod(0o600)
     link = tmp_path / "linked.json"
     link.symlink_to(path)
     assert read_azure_victim_public_ip(link) == ""
@@ -280,14 +284,13 @@ def test_azure_victim_address_rejects_missing_and_private_values(tmp_path: Path)
 def test_azure_ssh_commands_match_the_victim_kernel_filter() -> None:
     isolate = azure_victim_ssh_argv("93.184.216.34", "isolate")
     rollback = azure_victim_ssh_argv("93.184.216.34", "rollback")
-    assert isolate[:6] == (
+    assert isolate[:4] == (
         "ssh",
         "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "ConnectTimeout=3",
+        "StrictHostKeyChecking=accept-new",
         "-o",
     )
+    assert isolate[4].startswith("UserKnownHostsFile=")
     assert isolate[-2] == "azureuser@93.184.216.34"
     assert (
         isolate[-1] == "sudo iptables -C INPUT -s 172.29.0.10 -j DROP 2>/dev/null "
@@ -301,6 +304,7 @@ def test_unreachable_azure_ssh_falls_back_without_raising(
 ) -> None:
     path = tmp_path / "azure_portal_state.json"
     path.write_text(json.dumps({"victim_public_ip": "93.184.216.34"}), encoding="utf-8")
+    path.chmod(0o600)
 
     def unreachable(*_args: object, **_kwargs: object) -> None:
         raise subprocess.TimeoutExpired(cmd="ssh", timeout=8)
@@ -318,6 +322,7 @@ def test_local_drop_still_applies_when_azure_ssh_fails(
 ) -> None:
     path = tmp_path / "azure_portal_state.json"
     path.write_text(json.dumps({"victim_public_ip": "93.184.216.34"}), encoding="utf-8")
+    path.chmod(0o600)
     monkeypatch.setattr(
         "threatfusion.api.live_soc_console.AZURE_PORTAL_STATE_PATH",
         path,
@@ -353,6 +358,7 @@ def test_dual_probe_badge_requires_local_and_azure_drops(
 ) -> None:
     path = tmp_path / "azure_portal_state.json"
     path.write_text(json.dumps({"victim_public_ip": "93.184.216.34"}), encoding="utf-8")
+    path.chmod(0o600)
 
     class _Completed:
         def __init__(self, code: int) -> None:
@@ -408,3 +414,128 @@ def test_console_isolate_button_posts_the_azure_local_badge() -> None:
     assert "/api/soar/rollback" in script
     assert AZURE_LOCAL_CONTAINMENT_BADGE in script
     assert '"/api/soar/isolate"' in server
+
+
+def test_cf_p0_08_containment_rollback_lifecycle_actors_probe_and_retry(tmp_path: Path) -> None:
+    from threatfusion.api.live_soc_console import enroll_lab_operator, rbac_login, rbac_register
+    from threatfusion.operations.human_credentials import active_fingerprint
+    from threatfusion.soar.playbook_ledger import SoarPlaybookSqliteRepository
+
+    live_db, soar_db, flow_id = _ready(tmp_path)
+    admin = rbac_login(
+        live_db,
+        username="approver@threatfusion.local",
+        access_code="TF-Lab-Approver-01!",
+    )
+    assert admin["authenticated"] is True
+    reg_a = rbac_register(
+        live_db,
+        username="approver.alpha@example.com",
+        access_code="VeryStrongPass1!",
+        display_name="Approver Alpha",
+        role="soc_approver",
+        session_token=str(admin["session_token"]),
+    )
+    reg_b = rbac_register(
+        live_db,
+        username="approver.beta@example.com",
+        access_code="VeryStrongPass2!",
+        display_name="Approver Beta",
+        role="soc_approver",
+        session_token=str(admin["session_token"]),
+    )
+    actor_a = str(reg_a["actor_id"])
+    actor_b = str(reg_b["actor_id"])
+    policy = tmp_path / "op-policy-a"
+    assert enroll_lab_operator(policy, actor_a)["identity_verified"] is True
+
+    # 1. Post-drop probe error triggers rollback before returning error without transitioning ledger
+    class _FailProbeRunner(_Runner):
+        def __call__(self, action: str) -> dict[str, object]:
+            if action == "probe":
+                self.calls.append("probe")
+                return {"error": "probe_timeout"}
+            return dict(super().__call__(action))
+
+    fail_probe_runner = _FailProbeRunner()
+    probe_err = contain_range_source(
+        live_db, soar_db, flow_id=flow_id, runner=fail_probe_runner, actor_id=actor_a
+    )
+    assert probe_err["http_status"] == 409
+    assert probe_err["reason"] == "range_command_failed"
+    assert "rollback" in fail_probe_runner.calls
+    records_after_fail = SoarPlaybookSqliteRepository(soar_db).list_records_for_candidate(
+        f"live_flow:{flow_id}"
+    )
+    assert any(r.state == "approved" for r in records_after_fail)
+    assert not any(r.state == "executed_simulated" for r in records_after_fail)
+
+    # 2. Successful isolation records actor_a on SOAR ledger
+    runner = _Runner()
+    isolated = contain_range_source(
+        live_db, soar_db, flow_id=flow_id, runner=runner, actor_id=actor_a
+    )
+    assert isolated["http_status"] == 200
+    assert isolated["containment_executed"] is True
+
+    # 3. Wrong-actor rollback refused 403 BEFORE touching firewall
+    calls_before_wrong = len(runner.calls)
+    wrong = rollback_range_source(
+        live_db, soar_db, flow_id=flow_id, runner=runner, actor_id=actor_b
+    )
+    assert wrong["http_status"] == 403
+    assert wrong["reason"] == "rollback_actor_mismatch"
+    assert len(runner.calls) == calls_before_wrong
+
+    # 4. Failed rollback probe enters rollback_unverified and permits retry when probe recovers
+    class _UnverifiedThenOkRunner:
+        def __init__(self) -> None:
+            self.probe_calls = 0
+
+        def __call__(self, action: str) -> dict[str, object]:
+            if action == "status":
+                return {"running": True}
+            if action == "rollback":
+                return {"removed": True}
+            if action == "probe":
+                self.probe_calls += 1
+                return {"reachable": self.probe_calls >= 2}
+            return {}
+
+    retry_runner = _UnverifiedThenOkRunner()
+    unverified = rollback_range_source(
+        live_db, soar_db, flow_id=flow_id, runner=retry_runner, actor_id=actor_a
+    )
+    assert unverified["http_status"] == 502
+    assert unverified["containment_state"] == "rollback_unverified"
+
+    retried = rollback_range_source(
+        live_db, soar_db, flow_id=flow_id, runner=retry_runner, actor_id=actor_a
+    )
+    assert retried["http_status"] == 200
+    assert retried["reason"] == "containment_rolled_back"
+
+    # 5. Re-isolation after rollback refuses 409 without fresh approval; real actor recorded in audit events
+    reisolate = contain_range_source(
+        live_db, soar_db, flow_id=flow_id, runner=runner, actor_id=actor_a
+    )
+    assert reisolate["http_status"] == 409
+    assert reisolate["reason"] == "reisolation_requires_fresh_approval"
+
+    with sqlite3.connect(soar_db) as conn:
+        actors = {row[0] for row in conn.execute("SELECT actor_id FROM soar_audit_events")}
+    assert actor_a in actors
+    assert "analyst_a" not in actors
+
+    # Fresh approval unlocks second cycle
+    reapproved = approve_live_soar(
+        live_db,
+        soar_db,
+        flow_id=flow_id,
+        actor_id=actor_a,
+        reason="Re-approved after rollback.",
+        policy_dir=policy,
+        presented_fingerprint=active_fingerprint(policy, actor_a),
+    )
+    assert reapproved["http_status"] == 200
+    assert reapproved["ledger_state"] == "approved"

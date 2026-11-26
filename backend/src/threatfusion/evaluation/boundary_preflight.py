@@ -110,8 +110,6 @@ WALK_SKIP_DIRS: frozenset[str] = frozenset(
         ".pytest_cache",
         ".ruff_cache",
         ".mypy_cache",
-        "data",
-        "artifacts",
     }
 )
 
@@ -233,15 +231,26 @@ def check_b2_symlinks(
     passed = True
     issues: list[str] = []
     if Path(active_path).is_symlink():
-        target = Path(os.path.realpath(active_path))
-        if target.is_relative_to(protected_rp):
+        try:
+            target = Path(os.path.realpath(active_path))
+            if target.is_relative_to(protected_rp):
+                passed = False
+                issues.append(
+                    f"B2: Active workspace root '{active_path}' is a symlink into protected workspace '{target}'"
+                )
+            elif not target.is_relative_to(active_rp):
+                passed = False
+                issues.append(
+                    f"B2: Active workspace root '{active_path}' is a symlink escaping active workspace '{target}'"
+                )
+        except Exception as e:
             passed = False
             issues.append(
-                f"B2: Active workspace root '{active_path}' is a symlink into protected workspace '{target}'"
+                f"B2: Failed to resolve active workspace root symlink '{active_path}': {e}"
             )
 
-    if active_path.exists():
-        for root_dir, dirs, files in os.walk(active_path, followlinks=False):
+    if active_rp.exists():
+        for root_dir, dirs, files in os.walk(active_rp, followlinks=False):
             dirs[:] = [d for d in dirs if d not in WALK_SKIP_DIRS]
             for entry in dirs + [f for f in files if f not in WALK_SKIP_DIRS]:
                 p = Path(root_dir) / entry
@@ -250,13 +259,13 @@ def check_b2_symlinks(
                         target_rp = Path(os.path.realpath(p))
                         if target_rp.is_relative_to(protected_rp):
                             passed = False
-                            rel = p.relative_to(active_path)
+                            rel = p.relative_to(active_rp)
                             issues.append(
                                 f"B2: Symlink '{rel}' resolves into protected workspace: '{target_rp}'"
                             )
                         elif not target_rp.is_relative_to(active_rp):
                             passed = False
-                            rel = p.relative_to(active_path)
+                            rel = p.relative_to(active_rp)
                             issues.append(
                                 f"B2: Symlink '{rel}' escapes active workspace: '{target_rp}'"
                             )
@@ -331,6 +340,18 @@ def check_b4_git_metadata(
         prot_re = re.compile(re.escape(str(protected_rp)) + r"(?![\w\-])")
 
     git_dir = active_path / ".git"
+    if git_dir.is_symlink():
+        try:
+            git_target = Path(os.path.realpath(git_dir))
+            if git_target.is_relative_to(protected_rp) or prot_re.search(str(git_target)):
+                passed = False
+                issues.append(
+                    f"B4: Git metadata '.git' symlink resolves into protected workspace: '{git_target}'"
+                )
+        except Exception as e:
+            passed = False
+            issues.append(f"B4: Failed resolving '.git' symlink: {e}")
+
     if git_dir.is_dir():
         # 1. alternates
         alternates = git_dir / "objects" / "info" / "alternates"
@@ -374,6 +395,33 @@ def check_b4_git_metadata(
             except Exception as e:
                 passed = False
                 issues.append(f"B4: Failed reading git config: {e}")
+    elif git_dir.is_file():
+        try:
+            wt_content = git_dir.read_text(encoding="utf-8", errors="ignore")
+            if prot_re.search(wt_content):
+                passed = False
+                issues.append(
+                    f"B4: Git worktree pointer '.git' references protected workspace: {wt_content.strip()}"
+                )
+            for line in wt_content.splitlines():
+                stripped = line.strip()
+                if stripped.lower().startswith("gitdir:"):
+                    raw_target = stripped.split(":", 1)[1].strip()
+                    if raw_target:
+                        target_path = Path(raw_target)
+                        if not target_path.is_absolute():
+                            target_path = active_path / target_path
+                        resolved_target = Path(os.path.realpath(target_path))
+                        if resolved_target.is_relative_to(protected_rp) or prot_re.search(
+                            str(resolved_target)
+                        ):
+                            passed = False
+                            issues.append(
+                                f"B4: Git worktree pointer '.git' gitdir target resolves into protected workspace: '{resolved_target}'"
+                            )
+        except Exception as e:
+            passed = False
+            issues.append(f"B4: Failed reading git worktree pointer '.git': {e}")
 
     return passed, issues
 
@@ -494,16 +542,18 @@ def run_boundary_preflight(
     # Resolve paths. The default active root follows the checkout that contains
     # this module when the declared gemini path is not present on the machine.
     if active is not None:
-        active_path = Path(active).resolve()
+        active_raw = Path(os.path.abspath(active))
+        active_path = active_raw.resolve()
     else:
         active_path = resolve_default_active_workspace()
+        active_raw = active_path
     if not active_path.is_dir():
-        raise FileNotFoundError(f"Active workspace does not exist: {active_path}")
+        raise FileNotFoundError(f"Active workspace does not exist: {active_raw}")
     protected_path = (
         Path(protected).resolve() if protected is not None else CANONICAL_PROTECTED_WORKSPACE
     )
 
-    active_rp = Path(os.path.realpath(active_path))
+    active_rp = Path(os.path.realpath(active_raw))
     protected_rp = Path(os.path.realpath(protected_path))
 
     # Compile lookahead regex: matches protected path NOT followed by word-char or hyphen
@@ -546,7 +596,7 @@ def run_boundary_preflight(
     }
 
     # B2
-    b2_passed, b2_issues = check_b2_symlinks(active_path, active_rp, protected_rp)
+    b2_passed, b2_issues = check_b2_symlinks(active_raw, active_rp, protected_rp)
     findings.extend(b2_issues)
     checks["B2"] = {
         "name": "Workspace Symlink Non-Escape Check",

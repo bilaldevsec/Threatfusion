@@ -116,7 +116,7 @@ class SuricataFlowAdapter:
         src_ip = required_ip(record, source, "src_ip")
         dest_ip = required_ip(record, source, "dest_ip")
         proto_str = required_protocol(record, source, "proto")
-        if proto_str == "icmp":
+        if proto_str in {"icmp", "other"}:
             src_port = (
                 0
                 if record.get("src_port") in (None, "")
@@ -154,15 +154,23 @@ class SuricataFlowAdapter:
 
         duration_sec = (end_dt - start_dt).total_seconds()
         duration_ms = duration_sec * 1000.0
-        if duration_ms == 0.0 and "age" in flow_block:
+        if duration_ms == 0.0 and "age" in flow_block and flow_block["age"] is not None:
+            raw_age = flow_block["age"]
+            if isinstance(raw_age, bool):
+                raise SourceRowValidationError(source, "flow.age", "must be a finite duration")
             try:
-                raw_age = flow_block["age"]
-                if not isinstance(raw_age, bool):
-                    age_val = float(raw_age)
-                    if math.isfinite(age_val) and age_val > 0.0:
-                        duration_ms = age_val * 1000.0
-            except (ValueError, TypeError):
-                pass
+                age_val = float(raw_age)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise SourceRowValidationError(
+                    source, "flow.age", "must be a finite duration"
+                ) from exc
+            if not math.isfinite(age_val):
+                raise SourceRowValidationError(source, "flow.age", "must be a finite duration")
+            candidate_ms = age_val * 1000.0
+            if not math.isfinite(candidate_ms):
+                raise SourceRowValidationError(source, "flow.age", "must be a finite duration")
+            if candidate_ms > 0.0:
+                duration_ms = candidate_ms
 
         total_packets = fwd_packets + bwd_packets
         total_bytes = fwd_bytes + bwd_bytes
@@ -174,7 +182,11 @@ class SuricataFlowAdapter:
         bwd_mean = mean_size(bwd_bytes, bwd_packets)
 
         # Build validated canonical NetworkFlow
-        flow_id = str(record.get("flow_id", f"{src_ip}:{src_port}-{dest_ip}:{dest_port}"))
+        raw_flow_id = record.get("flow_id")
+        if raw_flow_id is None or not str(raw_flow_id).strip():
+            flow_id = f"{src_ip}:{src_port}-{dest_ip}:{dest_port}:{proto_str}"
+        else:
+            flow_id = str(raw_flow_id).strip()
         network_flow = NetworkFlow(
             source_dataset="live_sensor",
             flow_id=flow_id,

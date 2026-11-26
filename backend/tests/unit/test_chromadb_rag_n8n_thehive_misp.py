@@ -11,6 +11,7 @@ Covers:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import http.server
 import json
 import os
@@ -66,6 +67,8 @@ from threatfusion.soar.playbook_ledger import (
     SoarPlaybookSqliteRepository,
     SoarStateTransitionError,
 )
+
+UTC = timezone.utc
 
 
 def _signed_n8n_receipt() -> dict[str, str]:
@@ -761,6 +764,8 @@ class TestMispAndCallbackContractServer:
                 "playbook_id": "pb-fabricated-999",
                 "soar_state": "approved",
                 "audit_chain_verified": True,
+                "idempotency_key": "idem_pb-fabricated-999_1",
+                "timestamp_utc": datetime.now(UTC).isoformat(),
             }
             fab_bytes = json.dumps(fab_payload, sort_keys=True, separators=(",", ":")).encode(
                 "utf-8"
@@ -788,6 +793,8 @@ class TestMispAndCallbackContractServer:
                 "playbook_id": test_pb_id,
                 "soar_state": "approved",
                 "audit_chain_verified": True,
+                "idempotency_key": f"idem_{test_pb_id}_1",
+                "timestamp_utc": datetime.now(UTC).isoformat(),
             }
             pending_bytes = json.dumps(
                 pending_payload, sort_keys=True, separators=(",", ":")
@@ -825,6 +832,8 @@ class TestMispAndCallbackContractServer:
                 "playbook_id": test_pb_id,
                 "soar_state": "approved",
                 "audit_chain_verified": True,
+                "idempotency_key": f"idem_{test_pb_id}_2",
+                "timestamp_utc": datetime.now(UTC).isoformat(),
             }
             approved_bytes = json.dumps(
                 approved_payload, sort_keys=True, separators=(",", ":")
@@ -877,6 +886,8 @@ class TestMispAndCallbackContractServer:
                 "playbook_id": test_pb_id,
                 "candidate_id": "cand_srv_test",
                 "n8n_status": "completed",
+                "idempotency_key": f"idem_{test_pb_id}_2_cb",
+                "timestamp_utc": datetime.now(UTC).isoformat(),
             }
             cb_bytes = json.dumps(cb_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
             cb_sig = hmac_mod.new(
@@ -985,6 +996,8 @@ class TestMispAndCallbackContractServer:
                 "playbook_id": "fabricated",
                 "candidate_id": "fake",
                 "n8n_status": "completed",
+                "idempotency_key": "idem_cb_probe_none_db_01",
+                "timestamp_utc": datetime.now(UTC).isoformat(),
             }
             fab_bytes = json.dumps(fab_payload, sort_keys=True, separators=(",", ":")).encode(
                 "utf-8"
@@ -1016,6 +1029,8 @@ class TestMispAndCallbackContractServer:
                 "playbook_id": "",
                 "candidate_id": "cand_cb_test",
                 "n8n_status": "completed",
+                "idempotency_key": "idem_cb_probe_empty_pb_02",
+                "timestamp_utc": datetime.now(UTC).isoformat(),
             }
             empty_pb_bytes = json.dumps(
                 empty_pb_payload, sort_keys=True, separators=(",", ":")
@@ -1439,7 +1454,7 @@ class TestMilestone36ArchitecturalElevation:
             protocol="tcp",
             service_or_port="80",
         )
-        recs = soar_engine.recommend_actions_for_alert("cand_01", prov)
+        recs = soar_engine.recommend_actions_for_alert("cand_01", prov, t_approval_queued=t_queued)
         pb_id = recs[0].playbook_id
         soar_engine.decide_recommendation(
             pb_id,
@@ -1530,6 +1545,8 @@ class TestMilestone36ArchitecturalElevation:
                 "candidate_id": "cand_01",
                 "t_approval_queued": t_queued,
                 "t_callback_verified": t_verified + 1.0,
+                "idempotency_key": f"idem_{pb_id}_cb_m36",
+                "timestamp_utc": datetime.now(UTC).isoformat(),
             }
             cb_bytes = json.dumps(cb_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
             cb_sig = hmod.new(
@@ -2236,17 +2253,19 @@ class TestMegaMilestone38FailClosedEvidence:
             reason="milestone 38 replay",
             expected_version=1,
         )
+        idem_key = f"idem_{playbook_id}_2"
         payload = {
             "candidate_id": "cand_m38_idem",
             "playbook_id": playbook_id,
             "soar_state": "approved",
             "audit_chain_verified": True,
+            "idempotency_key": idem_key,
+            "timestamp_utc": datetime.now(UTC).isoformat(),
         }
         body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         signature = hmac_mod.new(
             TEST_SOAR_HMAC_SECRET.encode("utf-8"), body, hashlib_mod.sha256
         ).hexdigest()
-        idem_key = f"idem_{playbook_id}_2"
 
         def _serve() -> tuple[http.server.HTTPServer, int]:
             MispAndCallbackContractHandler.soar_db_path = str(db_path)
@@ -2540,3 +2559,19 @@ class TestMegaMilestone39ResponsePlaneFollowupHandoff:
         assert handoff["containment_executed"] is False
         assert handoff["execution_authorized"] is False
         assert handoff["outbox_evidence_state"] == "verified"
+
+    def test_n8n_thehive_misp_stack_zero_advisory_ast_imports(self) -> None:
+        """CF-P0-03: soar/n8n_thehive_misp_stack.py has zero imports from threatfusion.advisory."""
+        import ast
+
+        stack_path = (
+            REPO_ROOT / "backend" / "src" / "threatfusion" / "soar" / "n8n_thehive_misp_stack.py"
+        )
+        tree = ast.parse(stack_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert not alias.name.startswith("threatfusion.advisory")
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                assert not node.module.startswith("threatfusion.advisory")
+        assert CANONICAL_MITRE_AND_PLAYBOOK_CORPUS  # keep corpus sanity imported

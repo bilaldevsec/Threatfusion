@@ -110,7 +110,7 @@ Usage: scripts/deploy_azure_cyber_range.sh [--dry-run] [--low-cost-tier] (--help
   --status           Show live VMs, public/private IPs, and auto-shutdown policy.
   --deallocate       Stop both VMs and release compute so billing stops after a demo.
   --deallocate-vms   Same as --deallocate.
-  --teardown-rg      Delete ThreatFusion-RG without waiting, then remove
+  --teardown-rg      Delete ThreatFusion-RG and wait for deletion, then remove
                      /tmp/threatfusion-range-demo/azure_portal_state.json.
   --setup-entra-app  Register the ThreatFusion Microsoft Entra ID app roles.
 
@@ -259,23 +259,19 @@ render_forwarder_env() {
   local console_url="$1"
   local sensor_token="$2"
   local hmac_secret="$3"
-  local text
-  text=$(cat <<'ENV'
-THREATFUSION_CONSOLE_URL=TFQ0CONSOLE
-THREATFUSION_SENSOR_INGEST_TOKEN=TFQ0SENSOR
-THREATFUSION_SOAR_HMAC_SECRET=TFQ0HMAC
+  printf 'THREATFUSION_CONSOLE_URL=%s\n' "$console_url"
+  printf 'THREATFUSION_SENSOR_INGEST_TOKEN=%s\n' "$sensor_token"
+  printf 'THREATFUSION_SOAR_HMAC_SECRET=%s\n' "$hmac_secret"
+  cat <<'ENV'
 THREATFUSION_CLIENT_CERT=/etc/threatfusion/client.crt
 THREATFUSION_CLIENT_KEY=/etc/threatfusion/client.key
 ENV
-)
-  text=${text//TFQ0CONSOLE/$console_url}
-  text=${text//TFQ0SENSOR/$sensor_token}
-  text=${text//TFQ0HMAC/$hmac_secret}
-  printf '%s\n' "$text"
 }
 
 pair_forwarder() {
   require_az
+  local repo_root
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   local console_url="${THREATFUSION_CONSOLE_URL:-}"
   local sensor_token="${THREATFUSION_SENSOR_INGEST_TOKEN:-${THREATFUSION_SENSOR_TOKEN:-}}"
   local hmac_secret="${THREATFUSION_SOAR_HMAC_SECRET:-}"
@@ -288,6 +284,10 @@ pair_forwarder() {
       echo "Missing forwarder source: $FORWARDER_SRC" >&2
       exit 1
     fi
+    if [[ ! -d "${repo_root}/backend/src/threatfusion" ]]; then
+      echo "Missing ThreatFusion package source: ${repo_root}/backend/src/threatfusion" >&2
+      exit 1
+    fi
   fi
   local remote
   remote=$(cat <<EOF
@@ -296,6 +296,9 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get update -o Dpkg::Options::="--force-c
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" suricata ethtool python3 python3-venv
 if [[ ! -x /opt/threatfusion-venv/bin/python ]]; then
   sudo python3 -m venv /opt/threatfusion-venv
+fi
+if ! /opt/threatfusion-venv/bin/python -c "import pydantic" >/dev/null 2>&1; then
+  sudo /opt/threatfusion-venv/bin/pip install --no-cache-dir 'pydantic>=2,<3'
 fi
 PRIMARY_NIC="\$(ip -o -4 route show to default | awk '{print \$5; exit}')"
 PRIMARY_NIC="\${PRIMARY_NIC:-eth0}"
@@ -375,13 +378,13 @@ UNIT
 sudo systemctl daemon-reload
 sudo systemctl enable --now suricata
 sudo systemctl restart suricata || true
-sudo systemctl enable --now threatfusion-eve-follower.service
 EOF
 )
   if [[ "$DRY_RUN" -eq 1 ]]; then
     printf 'dry-run: copy %s to %s:%s\n' "$FORWARDER_SRC" "$VICTIM_NAME" "$FORWARDER_DST"
     printf 'dry-run: az vm run-command invoke --resource-group %s --name %s --command-id RunShellScript\n' "$RG" "$VICTIM_NAME"
     printf 'dry-run remote script follows\n%s\n' "$remote"
+    printf 'dry-run: COPYFILE_DISABLE=1 tar -C %s -czf - backend/src/threatfusion | ssh %s:<victim-ip> "sudo tar -C /opt/threatfusion -xzf -"\n' "$repo_root" "$ADMIN_USER"
     printf 'dry-run: ssh stdin umask 077; cat > /etc/threatfusion/forwarder.env\n'
     printf 'THREATFUSION_CONSOLE_URL=%s\n' "${console_url:-}"
     printf 'THREATFUSION_SENSOR_INGEST_TOKEN=<redacted>\n'
@@ -391,6 +394,7 @@ EOF
     if [[ -n "${THREATFUSION_CLIENT_CERT:-}" && -n "${THREATFUSION_CLIENT_KEY:-}" ]]; then
       echo "dry-run: copy optional mTLS client certificate and key to /etc/threatfusion/"
     fi
+    echo "dry-run: ssh enable and start threatfusion-eve-follower.service after /etc/threatfusion/forwarder.env is written"
     return 0
   fi
   local encoded
@@ -411,9 +415,12 @@ EOF
     echo "Victim public IP is required to push forwarder.env over ssh." >&2
     exit 1
   fi
+  COPYFILE_DISABLE=1 tar -C "$repo_root" --exclude '__pycache__' -czf - backend/src/threatfusion | ssh \
+    -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    "${ADMIN_USER}@${public_ip}" \
+    "sudo tar -C /opt/threatfusion -xzf - && sudo chown -R root:root /opt/threatfusion/backend"
   # Secrets go over ssh stdin. Azure run-command history never stores them.
-  # The heredoc delimiter is quoted so shellcheck SC2087 does not treat this
-  # body as a remote script. Placeholders expand on the client before ssh.
+  local forwarder_env_body
   forwarder_env_body=$(render_forwarder_env "$console_url" "$sensor_token" "$hmac_secret")
   printf '%s\n' "$forwarder_env_body" | ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
     "${ADMIN_USER}@${public_ip}" \
@@ -432,6 +439,9 @@ EOF
       "${ADMIN_USER}@${public_ip}" \
       "sudo chmod 0600 /etc/threatfusion/client.key /etc/threatfusion/forwarder.env"
   fi
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    "${ADMIN_USER}@${public_ip}" \
+    "sudo bash -c 'if ! /opt/threatfusion-venv/bin/python -c \"import pydantic\" >/dev/null 2>&1; then /opt/threatfusion-venv/bin/pip install --no-cache-dir \"pydantic>=2,<3\"; fi && PYTHONPATH=/opt/threatfusion/backend/src /opt/threatfusion-venv/bin/python -c \"import threatfusion.datasets.adapters.suricata_flow\" && systemctl daemon-reload && systemctl enable --now threatfusion-eve-follower.service && systemctl restart threatfusion-eve-follower.service'"
 }
 
 # Verified unrestricted 2-vCPU SKUs in southeastasia for the Azure for Students
@@ -833,6 +843,7 @@ create_both_live_vms() {
       echo "Victim create failed on $size (status=$status); trying next verified SKU." >&2
       continue
     fi
+    schedule_utc_shutdown "$VICTIM_NAME"
     set +e
     create_live_vm_if_missing "$ATTACKER_NAME" "$ATTACKER_IP" "$size" "$image"
     status=$?
@@ -948,10 +959,10 @@ PY
 teardown_resource_group() {
   require_az
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "dry-run: az group delete --name ThreatFusion-RG --yes --no-wait && rm -f /tmp/threatfusion-range-demo/azure_portal_state.json"
+    echo "dry-run: az group delete --name ThreatFusion-RG --yes && az group wait --name ThreatFusion-RG --deleted && rm -f /tmp/threatfusion-range-demo/azure_portal_state.json"
     return 0
   fi
-  az group delete --name ThreatFusion-RG --yes --no-wait && rm -f /tmp/threatfusion-range-demo/azure_portal_state.json
+  az group delete --name ThreatFusion-RG --yes && az group wait --name ThreatFusion-RG --deleted && rm -f /tmp/threatfusion-range-demo/azure_portal_state.json
 }
 
 provision_live_azure() {

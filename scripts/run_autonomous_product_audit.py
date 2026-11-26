@@ -23,8 +23,8 @@ Orchestrates the three-tier autonomous product audit:
    - Captures screenshots (./scripts/capture_demo_screenshots.py)
    - Tears down range demo (./scripts/run_full_range_demo.sh --down)
 4. Reporting:
-   - Emits docs/reports/AUTONOMOUS_PRODUCT_AUDIT_REPORT.json
-   - Emits docs/reports/AUTONOMOUS_PRODUCT_AUDIT_REPORT.md
+   - Emits artifacts/reports/AUTONOMOUS_PRODUCT_AUDIT_REPORT.json
+   - Emits artifacts/reports/AUTONOMOUS_PRODUCT_AUDIT_REPORT.md
    - Returns exit code 0 if all active suites succeed, 1 otherwise.
 """
 
@@ -37,6 +37,7 @@ from http.server import ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
@@ -132,14 +133,15 @@ def _get_python_bin() -> Path:
 def _sanitize_data(data: Any) -> Any:
     """Sanitize any occurrence of the protected workspace path to avoid B5 leakage."""
     protected_str = str(ROOT.parent / "threatfusion")
+    protected_re = re.compile(re.escape(protected_str) + r"(?![\w\-])")
     if isinstance(data, str):
-        return data.replace(protected_str, "[PROTECTED_WORKSPACE]")
+        return protected_re.sub("[PROTECTED_WORKSPACE]", data)
     elif isinstance(data, list):
         return [_sanitize_data(x) for x in data]
     elif isinstance(data, dict):
         return {
             (
-                k.replace(protected_str, "[PROTECTED_WORKSPACE]") if isinstance(k, str) else k
+                protected_re.sub("[PROTECTED_WORKSPACE]", k) if isinstance(k, str) else k
             ): _sanitize_data(v)
             for k, v in data.items()
         }
@@ -1091,8 +1093,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=ROOT / "docs" / "reports",
-        help="Directory to write JSON and Markdown audit reports (default: docs/reports)",
+        default=ROOT / "artifacts" / "reports",
+        help="Directory to write JSON and Markdown audit reports (default: artifacts/reports)",
     )
     args = parser.parse_args(argv)
 

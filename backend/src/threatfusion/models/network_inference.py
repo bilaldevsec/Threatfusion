@@ -737,7 +737,10 @@ class UnswNetworkInferenceBoundary:
             # Check integral values exactly before the legacy adapter's float
             # parsing, including the binary label needed for a valid raw event.
             for name in ("spkts", "dpkts", "sbytes", "dbytes", "label"):
-                number = Decimal(row[name])
+                raw_text = row[name].strip()
+                if "__" in raw_text or raw_text.startswith("_") or raw_text.endswith("_"):
+                    return None
+                number = Decimal(raw_text)
                 if (
                     not number.is_finite()
                     or number < 0

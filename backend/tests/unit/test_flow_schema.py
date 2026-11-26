@@ -56,3 +56,47 @@ def test_rejects_invalid_bidirectional_bytes() -> None:
 
     with pytest.raises(ValidationError):
         NetworkFlow.model_validate(data)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "src_port",
+        "dst_port",
+        "duration_ms",
+        "fwd_packets",
+        "bwd_packets",
+        "fwd_bytes",
+        "bwd_bytes",
+        "packets_per_second",
+        "bytes_per_second",
+        "fwd_packet_length_mean",
+        "bwd_packet_length_mean",
+    ],
+)
+@pytest.mark.parametrize("bad_bool", [True, False])
+def test_rejects_booleans_on_all_numeric_fields(field_name: str, bad_bool: bool) -> None:
+    data = valid_flow()
+    data[field_name] = bad_bool
+
+    with pytest.raises(ValidationError):
+        NetworkFlow.model_validate(data)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "duration_ms",
+        "packets_per_second",
+        "bytes_per_second",
+        "fwd_packet_length_mean",
+        "bwd_packet_length_mean",
+    ],
+)
+@pytest.mark.parametrize("bad_float", [float("inf"), float("-inf"), float("nan"), "inf", "nan"])
+def test_rejects_non_finite_float_fields(field_name: str, bad_float: object) -> None:
+    data = valid_flow()
+    data[field_name] = bad_float
+
+    with pytest.raises(ValidationError):
+        NetworkFlow.model_validate(data)

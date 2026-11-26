@@ -1190,9 +1190,11 @@ def test_http_dispatch_records_four_block_case_hmac_and_ledger_mttr(
             {
                 "candidate_id": dispatched["candidate_id"],
                 "case_id": dispatched["thehive_case_id"],
+                "idempotency_key": dispatched["idempotency_key"],
                 "playbook_id": dispatched["playbook_id"],
                 "t_approval_queued": dispatched["t_approval_queued"],
                 "t_callback_verified": dispatched["t_callback_verified"],
+                "timestamp_utc": dispatched["timestamp_utc"],
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -2030,41 +2032,149 @@ def test_approve_unlocks_snapshot_and_repeat_click_stays_authorized(
     assert rolled["reason"] == "containment_rolled_back"
 
 
-def test_entra_token_syncs_app_role(tmp_path: Path) -> None:
+def test_entra_token_syncs_app_role(tmp_path: Path, monkeypatch) -> None:
     import base64
     import json
+    import subprocess
+    import time
+
+    from threatfusion.api.live_soc_console import (
+        _active_operator_id,
+        rbac_login,
+        reset_entra_jwks_cache,
+    )
 
     live_db = tmp_path / "live.sqlite3"
+    key_path = tmp_path / "kid-test-sync.pem"
+    subprocess.run(
+        ["openssl", "genrsa", "-out", str(key_path), "2048"],
+        check=True,
+        capture_output=True,
+    )
+    modulus_out = subprocess.run(
+        ["openssl", "rsa", "-in", str(key_path), "-noout", "-modulus"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    n_bytes = bytes.fromhex(modulus_out.split("=", 1)[1].strip())
+    e_bytes = (65537).to_bytes(3, "big")
 
-    def segment(payload: dict[str, object]) -> str:
-        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    def b64u(raw: bytes) -> str:
         return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
-    token = ".".join(
-        (
-            segment({"alg": "RS256", "typ": "JWT"}),
-            segment(
-                {
-                    "tid": "00000000-0000-0000-0000-000000000001",
-                    "oid": "4c2e9b11-1a77-4e08-8d55-22b6c0e8f202",
-                    "upn": "analyst@threatfusion.local",
-                    "roles": ["SOC.Analyst.Tier1"],
-                }
-            ),
-            segment({"sig": "structure"}),
+    jwk = {
+        "kty": "RSA",
+        "use": "sig",
+        "alg": "RS256",
+        "kid": "kid-test-sync",
+        "n": b64u(n_bytes),
+        "e": b64u(e_bytes),
+    }
+
+    def sign_jwt(claims: dict[str, object]) -> str:
+        hdr = b64u(
+            json.dumps(
+                {"alg": "RS256", "typ": "JWT", "kid": "kid-test-sync"}, separators=(",", ":")
+            ).encode("utf-8")
         )
-    )
+        pay = b64u(json.dumps(claims, separators=(",", ":")).encode("utf-8"))
+        msg = f"{hdr}.{pay}".encode("ascii")
+        sig = subprocess.run(
+            ["openssl", "dgst", "-sha256", "-sign", str(key_path)],
+            input=msg,
+            check=True,
+            capture_output=True,
+        ).stdout
+        return f"{hdr}.{pay}.{b64u(sig)}"
+
     status = entra_identity_status(live_db)
     assert status["http_status"] == 200
     assert any(
         item["entra_app_roles"] == ["SOC.Commander.Approver"] for item in status["operators"]
     )
-    verified = verify_entra_token(live_db, token)
-    assert verified["http_status"] == 200
-    assert verified["token_structure_valid"] is True
-    assert verified["actor_id"] == "tier1_analyst"
-    assert verified["roles"] == ["SOC.Analyst.Tier1"]
-    assert verified["upn"] == "analyst@threatfusion.local"
+    now = int(time.time())
+    tid = "00000000-0000-0000-0000-000000000001"
+    claims = {
+        "tid": tid,
+        "oid": "4c2e9b11-1a77-4e08-8d55-22b6c0e8f202",
+        "upn": "analyst@threatfusion.local",
+        "roles": ["SOC.Analyst.Tier1"],
+        "iss": f"https://login.microsoftonline.com/{tid}/v2.0",
+        "aud": "api://threatfusion-console",
+        "exp": now + 600,
+    }
+    token = sign_jwt(claims)
+
+    # Unconfigured JWKS must fail closed (401)
+    monkeypatch.delenv("THREATFUSION_ENTRA_JWKS_JSON", raising=False)
+    monkeypatch.delenv("THREATFUSION_ENTRA_JWKS_URL", raising=False)
+    reset_entra_jwks_cache()
+    no_jwks = verify_entra_token(live_db, token)
+    assert no_jwks["http_status"] == 401
+    assert no_jwks["reason"] == "entra_jwks_unconfigured"
+
+    # Configured JWKS verifies RS256 JWT without mutating console_operators active row
+    monkeypatch.setenv("THREATFUSION_ENTRA_JWKS_JSON", json.dumps({"keys": [jwk]}))
+    reset_entra_jwks_cache()
+    try:
+        verified = verify_entra_token(live_db, token)
+        assert verified["http_status"] == 200
+        assert verified["token_structure_valid"] is True
+        assert verified["jwks_signature_checked"] is True
+        assert verified["actor_id"] == "tier1_analyst"
+        assert verified["roles"] == ["SOC.Analyst.Tier1"]
+        assert verified["upn"] == "analyst@threatfusion.local"
+        assert _active_operator_id(live_db) == "lab_operator"
+
+        # Production Entra SSO synthesizes locked account for SOC.Analyst.Tier1 / SOC.Compliance.Auditor
+        monkeypatch.setenv("THREATFUSION_ENV", "production")
+        monkeypatch.setenv("THREATFUSION_DATA_DIR", str(tmp_path / "prod"))
+        monkeypatch.setenv("THREATFUSION_ENTRA_TENANT_ID", tid)
+        monkeypatch.setenv(
+            "THREATFUSION_ENTRA_ISSUER", f"https://login.microsoftonline.com/{tid}/v2.0"
+        )
+        monkeypatch.setenv("THREATFUSION_ENTRA_AUDIENCE", "api://threatfusion-console")
+        prod_analyst = rbac_login(live_db, entra_token=token)
+        assert prod_analyst["http_status"] == 200
+        assert prod_analyst["authenticated"] is True
+        assert prod_analyst["actor_id"] == "tier1_analyst"
+        assert prod_analyst["role"] == "tier1_triage"
+
+        auditor_token = sign_jwt(
+            {
+                "tid": tid,
+                "oid": "b71d0e44-90c3-4f6a-a1d8-55e9a7c3b303",
+                "upn": "auditor@contoso.com",
+                "roles": ["SOC.Compliance.Auditor"],
+                "iss": f"https://login.microsoftonline.com/{tid}/v2.0",
+                "aud": "api://threatfusion-console",
+                "exp": now + 600,
+            }
+        )
+        prod_auditor = rbac_login(live_db, entra_token=auditor_token)
+        assert prod_auditor["http_status"] == 200
+        assert prod_auditor["authenticated"] is True
+        assert prod_auditor["actor_id"] == "compliance_auditor"
+        assert prod_auditor["role"] == "auditor_readonly"
+
+        # Forged upn with mismatched/unmapped oid falls back strictly to role mapping, never UPN hijack
+        spoofed_upn_tok = sign_jwt(
+            {
+                "tid": tid,
+                "oid": "deadbeef-0000-0000-0000-000000000999",
+                "upn": "approver@threatfusion.local",
+                "roles": ["SOC.Analyst.Tier1"],
+                "iss": f"https://login.microsoftonline.com/{tid}/v2.0",
+                "aud": "api://threatfusion-console",
+                "exp": now + 600,
+            }
+        )
+        mapped = verify_entra_token(live_db, spoofed_upn_tok)
+        assert mapped["http_status"] == 200
+        assert mapped["actor_id"] == "tier1_analyst"
+    finally:
+        reset_entra_jwks_cache()
 
 
 def _get_json(url: str) -> tuple[int, dict]:
@@ -2075,3 +2185,47 @@ def _get_json(url: str) -> tuple[int, dict]:
     with urllib.request.urlopen(request, timeout=5.0) as response:
         parsed = json.loads(response.read().decode("utf-8"))
         return response.status, parsed if isinstance(parsed, dict) else {}
+
+
+def test_what_if_rejects_bool_negative_and_recomputes_rate_bytes(tmp_path: Path) -> None:
+    live_db = tmp_path / "live_whatif.sqlite3"
+    scored = score_canonical_flow(
+        _features(), repo_root=REPO_ROOT, model=_Width14Model(), supply_verified=True
+    )
+    stored = persist_scored_flow(live_db, _features(), scored)
+    flow_id = int(stored["flow_id"])
+
+    bool_refused = run_live_model_proof(
+        live_db,
+        flow_id=flow_id,
+        features_override={"spkts": True},
+        repo_root=REPO_ROOT,
+    )
+    assert bool_refused["http_status"] == 400
+    assert bool_refused["reason"] == "invalid_feature_contract"
+
+    neg_refused = run_live_model_proof(
+        live_db,
+        flow_id=flow_id,
+        features_override={"dur": -1.0},
+        repo_root=REPO_ROOT,
+    )
+    assert neg_refused["http_status"] == 400
+    assert neg_refused["reason"] == "invalid_feature_contract"
+
+    recomputed = run_live_model_proof(
+        live_db,
+        flow_id=flow_id,
+        features_override={
+            "dur": 2.0,
+            "spkts": 100.0,
+            "dpkts": 20.0,
+            "sbytes": 4000.0,
+            "dbytes": 2000.0,
+        },
+        repo_root=REPO_ROOT,
+    )
+    assert recomputed["http_status"] == 200
+    canon = recomputed["perturbed"]["canonical_features"]
+    assert canon["packets_per_second"] == pytest.approx(60.0)
+    assert canon["bytes_per_second"] == pytest.approx(3000.0)

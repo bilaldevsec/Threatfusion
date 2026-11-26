@@ -76,23 +76,34 @@ def technique_for_flow(*, decision: str, case_title: str, playbook_id: str) -> s
     return "T1498"
 
 
-def _validated_ip(raw: str, *, allow_empty_default: bool = False) -> str:
+def _validated_ip(
+    raw: str, *, allow_empty_default: bool = False, check_protected: bool = True
+) -> str:
+    from threatfusion.operations.commercial_hardening import isolation_refusal_reason
+
     text = str(raw or "").strip()
     if not text and allow_empty_default:
         return "0.0.0.0"
     try:
-        return str(ipaddress.ip_address(text))
+        validated = str(ipaddress.ip_address(text))
     except ValueError as exc:
         raise ValueError("invalid_ip_address") from exc
+    if check_protected:
+        refusal = isolation_refusal_reason(validated)
+        if refusal is not None:
+            raise ValueError(refusal)
+    return validated
 
 
 def firewall_rule_preview(*, technique: str, src_ip: str, proto: str, dport: int) -> str:
     if technique == "BENIGN":
         return "noop: benign flow, no iptables change"
-    validated_ip = _validated_ip(src_ip)
+    validated_ip = _validated_ip(src_ip, allow_empty_default=False, check_protected=True)
     safe_proto = str(proto or "").strip().lower()
     if safe_proto not in {"tcp", "udp", "icmp"}:
         raise ValueError("invalid_protocol")
+    if safe_proto == "icmp":
+        return f"iptables -I INPUT 1 -s {validated_ip} -p icmp -j DROP"
     safe_dport = int(dport)
     if not 1 <= safe_dport <= 65535:
         raise ValueError("invalid_dport")
@@ -102,8 +113,27 @@ def firewall_rule_preview(*, technique: str, src_ip: str, proto: str, dport: int
 def render_python_playbook(technique: str, fields: dict[str, Any]) -> str:
     """Return a syntax-clean responder populated with this flow's live values."""
     if technique != "BENIGN":
-        _validated_ip(str(fields.get("src_ip") or ""))
+        _validated_ip(
+            str(fields.get("src_ip") or ""), allow_empty_default=False, check_protected=True
+        )
     spec = _PLAYBOOKS[technique]
+    safe_proto = str(fields.get("proto") or "").strip().lower()
+    if technique == "BENIGN":
+        rule_body = '    return "noop: benign flow, no iptables change"'
+    elif safe_proto == "icmp":
+        rule_body = '    return "iptables -I INPUT 1 -s " + str(SRC_IP) + " -p icmp -j DROP"'
+    else:
+        rule_body = (
+            "    return (\n"
+            '        "iptables -I INPUT 1 -s "\n'
+            "        + str(SRC_IP)\n"
+            '        + " -p "\n'
+            "        + str(PROTO)\n"
+            '        + " --dport "\n'
+            "        + str(DPORT)\n"
+            '        + " -j DROP"\n'
+            "    )"
+        )
     source = f'''"""ThreatFusion lab SOAR responder {spec["script_filename"]}.
 
 MITRE {spec["mitre_technique_id"]}. Human approval is required before any
@@ -128,17 +158,7 @@ SCRIPT_FILENAME = {spec["script_filename"]!r}
 
 
 def firewall_rule() -> str:
-    if MITRE_TECHNIQUE_ID == "BENIGN":
-        return "noop: benign flow, no iptables change"
-    return (
-        "iptables -I INPUT 1 -s "
-        + str(SRC_IP)
-        + " -p "
-        + str(PROTO)
-        + " --dport "
-        + str(DPORT)
-        + " -j DROP"
-    )
+{rule_body}
 
 
 def main() -> int:
@@ -221,8 +241,12 @@ def preview_fields(
     spec = dict(_PLAYBOOKS[technique])
     safe_proto = proto if proto in {"tcp", "udp", "icmp"} else "tcp"
     safe_dport = dport if dport > 0 else int(_DEFAULT_DPORT[technique])
-    safe_src_ip = _validated_ip(src_ip, allow_empty_default=True)
-    safe_dst_ip = _validated_ip(dst_ip, allow_empty_default=True)
+    safe_src_ip = _validated_ip(
+        src_ip,
+        allow_empty_default=(technique == "BENIGN"),
+        check_protected=(technique != "BENIGN"),
+    )
+    safe_dst_ip = _validated_ip(dst_ip, allow_empty_default=True, check_protected=False)
     fields = {
         "flow_id": int(flow_id),
         "src_ip": safe_src_ip,

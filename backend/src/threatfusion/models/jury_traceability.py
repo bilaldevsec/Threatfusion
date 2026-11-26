@@ -264,8 +264,9 @@ JURY_MODEL_FAMILY_DISPOSITIONS: dict[str, JuryModelFamilyDisposition] = {
         expected_sha256=FROZEN_AE_EXPECTED_SHA256,
         contract_reference="network_autoencoder_v2",
         evaluation_boundary=(
-            "PyTorch reconstruction anomaly model trained on benign January UNSW rows. "
-            "Calibrated threshold. Retained as unfused advisory signal; not approved for automatic containment."
+            "PyTorch reconstruction anomaly model trained on 847,837 benign TRAIN UNSW rows "
+            "(threshold calibrated on 212,210 benign January validation rows). "
+            "Retained as unfused advisory signal; not approved for automatic containment."
         ),
         notes="Experimental unfused reconstruction autoencoder.",
     ),

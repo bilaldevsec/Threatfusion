@@ -16,6 +16,7 @@ Enforces Section 13.D of ThreatFusion:
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 import os
@@ -34,6 +35,11 @@ from threatfusion.advisory.explanation_engine import (
     EvidenceBoundExplanation,
     verify_explanation_groundedness,
 )
+from threatfusion.operations.http_egress import (
+    EgressBlockedError,
+    _check_ip_allowed,
+    safe_urlopen,
+)
 
 SOC_COPILOT_SYSTEM_PROMPT = (
     "You are the ThreatFusion Enterprise SOC Copilot. Base your analysis STRICTLY "
@@ -47,7 +53,15 @@ SOC_COPILOT_SYSTEM_PROMPT = (
 
 _MODEL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _PLACEHOLDER_MODELS = frozenset({"gemini-configured-at-runtime"})
-_DEPRECATED_MODEL_ALIASES = {"gemini-2.5-flash": "gemini-3.5-flash-lite"}
+_DEPRECATED_MODEL_ALIASES = {
+    "gemini-2.5-flash": "gemini-3.5-flash-lite",
+    "gemini-2.5-pro": "gemini-3.5-flash-lite",
+    "gemini-2.5-flash-lite": "gemini-3.5-flash-lite",
+    "gemini-2.0-flash": "gemini-3.5-flash-lite",
+    "gemini-2.0-flash-lite": "gemini-3.5-flash-lite",
+    "gemini-1.5-pro": "gemini-3.5-flash-lite",
+    "gemini-1.5-flash": "gemini-3.5-flash-lite",
+}
 
 _MODEL_LABELS = {
     "gemini-4-hydrogen": "Gemini 4 Hydrogen",
@@ -77,9 +91,9 @@ def validate_model_name(name: str) -> str:
     """Validate and normalize a Gemini model identifier against URL/path injection."""
     if not isinstance(name, str):
         raise ValueError("invalid_gemini_model_name")
-    cleaned = name.strip()
+    cleaned = name.strip().lower()
     cleaned = _DEPRECATED_MODEL_ALIASES.get(cleaned, cleaned)
-    if cleaned.lower() in _PLACEHOLDER_MODELS or not _MODEL_NAME_RE.fullmatch(cleaned):
+    if cleaned in _PLACEHOLDER_MODELS or not _MODEL_NAME_RE.fullmatch(cleaned):
         raise ValueError("invalid_gemini_model_name")
     return cleaned
 
@@ -152,15 +166,28 @@ def _refuse_blocked_live_gemini() -> None:
 
 def advisory_provider_status() -> dict[str, Any]:
     """Describe the copilot the console will use. This does not call the network."""
-    model_name = resolve_gemini_model()
+    try:
+        model_name = resolve_gemini_model()
+        invalid_model_fallback = False
+    except ValueError:
+        model_name = _DEFAULT_ADVISORY_MODEL
+        invalid_model_fallback = True
     key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not key or gemini_enabled_blocks() or copilot_budget_blocks_live_call():
-        return {
+    if (
+        invalid_model_fallback
+        or not key
+        or gemini_enabled_blocks()
+        or copilot_budget_blocks_live_call()
+    ):
+        payload: dict[str, Any] = {
             "provider": "local_air_gapped",
             "model_name": model_name,
             "label": "AI Copilot: Local Air-Gapped Engine",
             "live_call_allowed": False,
         }
+        if invalid_model_fallback:
+            payload["invalid_model_fallback"] = True
+        return payload
     return {
         "provider": "gemini",
         "model_name": model_name,
@@ -182,45 +209,20 @@ def _validate_endpoint_url(url: str) -> str:
     if not host:
         raise GeminiAdvisoryUnavailableError("invalid_gemini_endpoint_url: missing_host")
     is_production = os.environ.get("THREATFUSION_ENV", "").strip().lower() == "production"
+    try:
+        ip_literal = ipaddress.ip_address(host)
+    except ValueError:
+        ip_literal = None
+    if ip_literal is not None and not (not is_production and ip_literal.is_loopback):
+        try:
+            _check_ip_allowed(ip_literal, allow_loopback=False)
+        except EgressBlockedError as exc:
+            raise GeminiAdvisoryUnavailableError(f"invalid_gemini_endpoint_url: {exc}") from exc
     if scheme == "https":
         return cleaned
     if scheme == "http" and not is_production and host in _LOOPBACK_HOSTS:
         return cleaned
     raise GeminiAdvisoryUnavailableError(f"invalid_gemini_endpoint_url: scheme={scheme}")
-
-
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Refuse all 3xx HTTP redirects so API keys and payloads are never redirected."""
-
-    def redirect_request(
-        self,
-        req: urllib.request.Request,
-        fp: Any,
-        code: int,
-        msg: str,
-        headers: Any,
-        newurl: str,
-    ) -> urllib.request.Request | None:
-        del req, fp, code, msg, headers, newurl
-        raise GeminiAdvisoryUnavailableError("gemini_http_redirect_refused")
-
-    def http_error_302(
-        self,
-        req: urllib.request.Request,
-        fp: Any,
-        code: int,
-        msg: str,
-        headers: Any,
-    ) -> Any:
-        del req, code, msg, headers
-        if fp is not None:
-            fp.close()
-        raise GeminiAdvisoryUnavailableError("gemini_http_redirect_refused")
-
-    http_error_301 = http_error_302
-    http_error_303 = http_error_302
-    http_error_307 = http_error_302
-    http_error_308 = http_error_302
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +237,7 @@ class GeminiAdvisoryConfig:
     endpoint_url_template: str = (
         "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     )
+    total_timeout_seconds: float = 15.0
 
     def get_endpoint_url(self, api_key: str) -> str:
         """Return the model URL. The key travels only in the x-goog-api-key header."""
@@ -251,13 +254,19 @@ _COPILOT_FALLBACK_MODELS = _ADVISORY_MODEL_CASCADE[1:]
 
 
 def _copilot_retryable_failure(exc: BaseException, err_body: str = "") -> bool:
-    """HTTP 404, HTTP 429, HTTP 503, quota exhaustion, and timeouts hop to the next model."""
+    """HTTP 400/403/404/429/5xx, quota exhaustion, and timeouts hop to the next model."""
     if isinstance(exc, TimeoutError):
         return True
-    if "RESOURCE_EXHAUSTED" in str(exc) or "RESOURCE_EXHAUSTED" in err_body:
+    body_text = str(err_body or "")
+    exc_text = str(exc)
+    if "API_KEY_INVALID" in body_text or "API key not valid" in body_text:
+        return False
+    if "API_KEY_INVALID" in exc_text or "API key not valid" in exc_text:
+        return False
+    if "RESOURCE_EXHAUSTED" in exc_text or "RESOURCE_EXHAUSTED" in body_text:
         return True
     if isinstance(exc, urllib.error.HTTPError):
-        return exc.code in {404, 429, 503}
+        return exc.code in {400, 403, 404, 429, 500, 502, 503, 504}
     return isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
 
 
@@ -295,7 +304,7 @@ def _generation_config_for(
         "temperature": temperature,
         "maxOutputTokens": max_output_tokens,
     }
-    if response_mime_type:
+    if response_mime_type and not model_name.startswith("gemma-"):
         config["responseMimeType"] = response_mime_type
     if model_name.startswith("gemini-4"):
         config["thinkingConfig"] = {"thinkingLevel": "LOW"}
@@ -329,6 +338,28 @@ def _extract_candidate_text(payload: Mapping[str, Any]) -> str:
         if isinstance(raw_text, str) and raw_text.strip():
             return raw_text.strip()
     raise GeminiAdvisoryUnavailableError("Candidate content contains no non-thought text.")
+
+
+def _sanitize_payload_value(obj: Any) -> Any:
+    """Recursively neutralize prompt-injection patterns on all strings inside evidence payloads."""
+    from threatfusion.advisory.telemetry_shield import neutralize_prompt_injection
+
+    if isinstance(obj, str):
+        return neutralize_prompt_injection(obj)[0]
+    if isinstance(obj, Mapping):
+        return {
+            (
+                neutralize_prompt_injection(key)[0]
+                if isinstance(key, str)
+                else _sanitize_payload_value(key)
+            ): _sanitize_payload_value(val)
+            for key, val in obj.items()
+        }
+    if isinstance(obj, tuple):
+        return tuple(_sanitize_payload_value(item) for item in obj)
+    if isinstance(obj, list):
+        return [_sanitize_payload_value(item) for item in obj]
+    return obj
 
 
 def build_grounded_gemini_prompt(bundle: AdvisoryEvidenceBundle) -> str:
@@ -394,8 +425,11 @@ def build_grounded_gemini_prompt(bundle: AdvisoryEvidenceBundle) -> str:
         "allowed_evidence_keys": allowed_keys,
         "allowed_ip_entities": inspected_entities,
     }
-
-    evidence_json = json.dumps(evidence_payload, indent=2)
+    sanitized_payload = _sanitize_payload_value(evidence_payload)
+    evidence_json = json.dumps(sanitized_payload, indent=2)
+    sanitized_entities = _sanitize_payload_value(inspected_entities)
+    sanitized_allowed_keys = _sanitize_payload_value(allowed_keys)
+    sanitized_rf_version = _sanitize_payload_value(bundle.rf_model_version)
     from threatfusion.advisory.telemetry_shield import build_fenced_advisory_prompt
 
     untrusted = {
@@ -413,15 +447,15 @@ Your debrief is strictly advisory and non-authoritative.
 
 CRITICAL GROUNDEDNESS & ANTI-HALLUCINATION RULES:
 1. PURE JSON ONLY: Output MUST be a single valid JSON object. Do NOT wrap in markdown code fences, do NOT include backticks (```), and do NOT add explanatory text or preamble.
-2. NO IP ADDRESS HALLUCINATIONS: You must NEVER invent, mention, or reference ANY IP address that is not explicitly listed in allowed_ip_entities: {json.dumps(inspected_entities)}. If allowed_ip_entities is empty, you must NOT include ANY IPv4 or IPv6 address anywhere in any field of your response.
-3. EXACT MODEL VERSION & PROBABILITY: In 'detection_rationale', you MUST state the exact Random Forest model version "{bundle.rf_model_version}" and the exact attack probability "{rf_prob_str}".
-4. SECTION 8 INVARIANT (FUSION DISABLED): In 'complementarity_and_fusion_note', you MUST affirm that production alert authority rests solely with the frozen Random Forest model ("{bundle.rf_model_version}") and that production fusion is strictly disabled ("fusion_disabled per Section 8" or "fusion is disabled") due to the empirical false-positive penalty (16.4:1 benign FP penalty on January UNSW validation). The autoencoder residual is advisory only. Both "Random Forest" and "fusion" and "disabled" must appear.
-5. CITED EVIDENCE KEYS: In 'cited_evidence_keys', every entry MUST be selected strictly from the allowed_evidence_keys list: {json.dumps(allowed_keys)}. Do not invent keys.
+2. NO IP ADDRESS HALLUCINATIONS: You must NEVER invent, mention, or reference ANY IP address that is not explicitly listed in allowed_ip_entities: {json.dumps(sanitized_entities)}. If allowed_ip_entities is empty, you must NOT include ANY IPv4 or IPv6 address anywhere in any field of your response.
+3. EXACT MODEL VERSION & PROBABILITY: In 'detection_rationale', you MUST state the exact Random Forest model version "{sanitized_rf_version}" and the exact attack probability "{rf_prob_str}".
+4. SECTION 8 INVARIANT (FUSION DISABLED): In 'complementarity_and_fusion_note', you MUST affirm that production alert authority rests solely with the frozen Random Forest model ("{sanitized_rf_version}") and that production fusion is strictly disabled ("fusion_disabled per Section 8" or "fusion is disabled") due to the empirical false-positive penalty (16.4:1 benign FP penalty on January UNSW validation). The autoencoder residual is advisory only. Both "Random Forest" and "fusion" and "disabled" must appear.
+5. CITED EVIDENCE KEYS: In 'cited_evidence_keys', every entry MUST be selected strictly from the allowed_evidence_keys list: {json.dumps(sanitized_allowed_keys)}. Do not invent keys.
 
 REQUIRED JSON OUTPUT FORMAT:
 {{
   "summary_headline": "<string: concise SOC triage headline>",
-  "detection_rationale": "<string: factual detection rationale citing {bundle.rf_model_version} and probability {rf_prob_str}>",
+  "detection_rationale": "<string: factual detection rationale citing {sanitized_rf_version} and probability {rf_prob_str}>",
   "complementarity_and_fusion_note": "<string: affirming production alert authority rests with Random Forest and fusion is disabled>",
   "correlation_and_enrichment_context": "<string: correlation status and inspected entities context>",
   "recommended_analyst_checks": ["<string: triage check 1>", "<string: triage check 2>", "<string: triage check 3>"],
@@ -470,6 +504,8 @@ class GeminiAdvisoryCallable:
         endpoint_url: str,
         payload: dict[str, Any],
         api_key: str,
+        *,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         req = urllib.request.Request(
             endpoint_url,
@@ -480,9 +516,39 @@ class GeminiAdvisoryCallable:
             },
             method="POST",
         )
-        opener = urllib.request.build_opener(_NoRedirectHandler())
-        with opener.open(req, timeout=self.config.timeout_seconds) as resp:
-            raw = resp.read(_MAX_GEMINI_RESPONSE_BYTES + 1)
+        is_production = os.environ.get("THREATFUSION_ENV", "").strip().lower() == "production"
+        parsed_ep = urllib.parse.urlsplit(endpoint_url)
+        ep_host = (parsed_ep.hostname or "").lower()
+        ep_scheme = parsed_ep.scheme.lower()
+        allow_loopback = (not is_production) and (ep_host in _LOOPBACK_HOSTS)
+        allowed_schemes: tuple[str, ...] = (
+            ("https", "http") if (allow_loopback and ep_scheme == "http") else ("https",)
+        )
+        effective_timeout = (
+            float(self.config.timeout_seconds)
+            if timeout_seconds is None
+            else max(0.05, float(timeout_seconds))
+        )
+        try:
+            with safe_urlopen(
+                req,
+                timeout=effective_timeout,
+                max_bytes=_MAX_GEMINI_RESPONSE_BYTES,
+                allowed_schemes=allowed_schemes,
+                allow_loopback=allow_loopback,
+            ) as resp:
+                raw = resp.read(_MAX_GEMINI_RESPONSE_BYTES + 1)
+        except EgressBlockedError as exc:
+            msg = str(exc)
+            if "http_redirect_blocked" in msg:
+                raise GeminiAdvisoryUnavailableError(
+                    f"gemini_http_redirect_refused: {msg}"
+                ) from exc
+            if "egress_response_too_large" in msg:
+                raise GeminiAdvisoryUnavailableError(
+                    f"Gemini API response exceeded {_MAX_GEMINI_RESPONSE_BYTES} bytes."
+                ) from exc
+            raise GeminiAdvisoryUnavailableError(f"gemini_egress_blocked: {msg}") from exc
         if len(raw) > _MAX_GEMINI_RESPONSE_BYTES:
             raise GeminiAdvisoryUnavailableError(
                 f"Gemini API response exceeded {_MAX_GEMINI_RESPONSE_BYTES} bytes."
@@ -516,8 +582,16 @@ class GeminiAdvisoryCallable:
         models = list(advisory_model_cascade(primary_model))
         last_error: BaseException | None = None
         fallback_reasons: list[str] = []
+        deadline = time.monotonic() + max(0.1, float(self.config.total_timeout_seconds))
 
         for model_name in models:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.advisory_provenance = {
+                    "model_used": primary_model,
+                    "fallback_reason": "; ".join(fallback_reasons),
+                }
+                raise GeminiAdvisoryUnavailableError("Gemini cascade deadline exceeded")
             _refuse_blocked_live_gemini()
             validated_model = validate_model_name(model_name)
             endpoint_url = _validate_endpoint_url(
@@ -536,7 +610,13 @@ class GeminiAdvisoryCallable:
                 if self._transport_callable is not None:
                     response_dict = self._transport_callable(endpoint_url, payload)
                 else:
-                    response_dict = self._send_http_request(endpoint_url, payload, effective_key)
+                    hop_timeout = min(float(self.config.timeout_seconds), remaining)
+                    response_dict = self._send_http_request(
+                        endpoint_url,
+                        payload,
+                        effective_key,
+                        timeout_seconds=hop_timeout,
+                    )
                     _record_gemini_live_spend()
             except urllib.error.HTTPError as exc:
                 try:
@@ -560,7 +640,9 @@ class GeminiAdvisoryCallable:
                         and exc.code in {429, 503}
                         and model_name != models[-1]
                     ):
-                        time.sleep(1.0)
+                        sleep_budget = min(1.0, max(0.0, deadline - time.monotonic()))
+                        if sleep_budget > 0.0:
+                            time.sleep(sleep_budget)
                     continue
                 raise GeminiAdvisoryUnavailableError(
                     f"Gemini API HTTP error {exc.code}: {exc.reason}"
@@ -672,7 +754,7 @@ class GeminiAdvisoryCallable:
 
     def generate_copilot_text(self, evidence_text: str) -> str:
         """Ask Gemini for a short brief. The caller must check groundedness."""
-        prompt = (
+        trusted_preamble = (
             f"{SOC_COPILOT_SYSTEM_PROMPT}\n\n"
             "Write these five headings and no others:\n"
             "[1] EXECUTIVE TRIAGE & MODEL AUTHORITY\n"
@@ -682,9 +764,19 @@ class GeminiAdvisoryCallable:
             "[5] GOVERNED SOAR PLAYBOOK & CONTAINMENT GUIDANCE\n"
             "Reference ONLY the src_entity_id, dst_entity_id, MITRE technique IDs, "
             "and CVE IDs that appear in the evidence block. Do not invent an external "
-            "IP address, technique, or CVE.\n\n"
-            f"EVIDENCE BLOCK:\n{evidence_text}\n"
+            "IP address, technique, or CVE."
         )
+        raw_evidence = str(evidence_text or "")
+        if "<untrusted_telemetry_envelope" in raw_evidence:
+            prompt = f"{trusted_preamble}\n\nEVIDENCE BLOCK:\n{raw_evidence}\n"
+        else:
+            from threatfusion.advisory.telemetry_shield import build_fenced_advisory_prompt
+
+            fenced = build_fenced_advisory_prompt(
+                trusted_preamble=trusted_preamble,
+                untrusted_fields={"payload_excerpt": raw_evidence},
+            )
+            prompt = f"{fenced['prompt']}\n"
         response_dict = self._invoke_gemini_cascade(
             prompt,
             temperature=self.config.temperature,

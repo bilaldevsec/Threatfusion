@@ -852,7 +852,7 @@ def test_unverified_peers_receive_no_identity_and_idle_polling_is_ignored(tmp_pa
     with listener:
         try:
             _exchange(listener, certificates, None, request_bytes, context=context)
-        except Exception:
+        except (ssl.SSLError, OSError):
             pass
 
     events = audit.list()

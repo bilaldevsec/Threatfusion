@@ -334,6 +334,42 @@ PY
 )"
 }
 
+load_saved_state_field() {
+  local expected_provider="$1"
+  local field_name="$2"
+  if [[ ! -f "$CLOUD_STATE" ]]; then
+    return 0
+  fi
+  CLOUD_STATE="$CLOUD_STATE" EXPECTED_PROVIDER="$expected_provider" FIELD_NAME="$field_name" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["CLOUD_STATE"])
+expected_provider = os.environ["EXPECTED_PROVIDER"]
+field = os.environ["FIELD_NAME"]
+try:
+    state = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(0)
+if not isinstance(state, dict):
+    raise SystemExit(0)
+provider = str(state.get("provider") or "")
+if expected_provider and provider and provider != expected_provider:
+    raise SystemExit(0)
+if field == "region":
+    value = state.get("region") or state.get("location") or ""
+elif field == "zone":
+    resource_ids = state.get("resource_ids")
+    nested = resource_ids.get("zone") if isinstance(resource_ids, dict) else ""
+    value = state.get("zone") or nested or ""
+else:
+    value = state.get(field) or ""
+if value:
+    print(str(value))
+PY
+}
+
 azure_delegate() {
   local flag="$1"
   shift || true
@@ -1094,28 +1130,55 @@ sudo docker compose --env-file .env -f docker/docker-compose.soc-stack.yml up -d
 if [[ -f docker/docker-compose.n8n.yml ]] && ! grep -q '5678:5678' docker/docker-compose.soc-stack.yml; then
   sudo docker compose --env-file .env -f docker/docker-compose.n8n.yml up -d
 fi
-echo "[4/6] Preparing virtualenv and PyTorch wheel"
-if [[ ! -x /opt/threatfusion-venv/bin/python ]]; then
-  python3 -m venv /opt/threatfusion-venv
-  /opt/threatfusion-venv/bin/pip install --upgrade pip
-  if [[ "$(uname -m)" == "x86_64" ]]; then
-    /opt/threatfusion-venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.10.0+cpu'
-  else
-    /opt/threatfusion-venv/bin/pip install --no-cache-dir 'torch>=2.1,<2.7'
-  fi
-  /opt/threatfusion-venv/bin/pip install 'pandas>=2,<3' 'pydantic>=2,<3' 'pydantic-settings>=2,<3' 'PyYAML>=6,<7' 'scikit-learn==1.9.0' 'threadpoolctl==3.6.0'
-else
-  if ! /opt/threatfusion-venv/bin/python -c "import sklearn, threadpoolctl; assert sklearn.__version__ == '1.9.0' and threadpoolctl.__version__ == '3.6.0'" >/dev/null 2>&1; then
-    /opt/threatfusion-venv/bin/pip install 'scikit-learn==1.9.0' 'threadpoolctl==3.6.0'
-  fi
+echo "[4/6] Preparing locked Python 3.11 virtualenv via uv"
+export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
+if ! command -v uv >/dev/null 2>&1; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
+fi
+if ! command -v uv >/dev/null 2>&1; then
+  echo "uv is required to provision /opt/threatfusion-venv with locked Python 3.11 dependencies." >&2
+  exit 1
+fi
+if ! uv python find 3.11 >/dev/null 2>&1; then
+  uv python install 3.11
+fi
+if [[ -x /opt/threatfusion-venv/bin/python ]] && ! /opt/threatfusion-venv/bin/python -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)" >/dev/null 2>&1; then
+  rm -rf /opt/threatfusion-venv
+fi
+UV_PROJECT_ENVIRONMENT=/opt/threatfusion-venv uv sync --locked --python 3.11 --no-dev
+if ! /opt/threatfusion-venv/bin/python -c "import sys, sklearn, threadpoolctl, torch; assert sys.version_info[:2] == (3, 11) and sklearn.__version__ == '1.9.0' and threadpoolctl.__version__ == '3.6.0' and torch.__version__.startswith('2.10.0')" >/dev/null 2>&1; then
+  echo "Locked Python 3.11 runtime verification failed (expected torch==2.10.0+cpu, scikit-learn==1.9.0, threadpoolctl==3.6.0)." >&2
+  exit 1
 fi
 cat > /opt/threatfusion/run-console-watchdog.sh <<'WATCH'
 #!/bin/bash
 set -euo pipefail
-set -a
-# shellcheck disable=SC1091
-. /opt/threatfusion/.env
-set +a
+if [[ -f /opt/threatfusion/.env ]]; then
+  while IFS='=' read -r k v || [[ -n "${k:-}${v:-}" ]]; do
+    k="${k%$'\r'}"
+    v="${v%$'\r'}"
+    k="${k#"${k%%[![:space:]]*}"}"
+    k="${k%"${k##*[![:space:]]}"}"
+    [[ -z "$k" || "$k" == \#* ]] && continue
+    if [[ "$k" == export\ * ]]; then
+      k="${k#export }"
+      k="${k#"${k%%[![:space:]]*}"}"
+    fi
+    case "$k" in
+      THREATFUSION_*|TF_*|GEMINI_*)
+        if [[ ! "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+          continue
+        fi
+        if [[ ${#v} -ge 2 && ( ( "$v" == \"*\" ) || ( "$v" == \'*\' ) ) ]]; then
+          v="${v:1:${#v}-2}"
+        fi
+        printf -v "$k" '%s' "$v"
+        export "${k?}"
+        ;;
+    esac
+  done < /opt/threatfusion/.env
+fi
 export THREATFUSION_ENV=production
 export THREATFUSION_DATA_DIR="${THREATFUSION_DATA_DIR:-/var/lib/threatfusion}"
 export THREATFUSION_LIVE_CONSOLE_DB="${THREATFUSION_LIVE_CONSOLE_DB:-/var/lib/threatfusion/threatfusion-live-console.sqlite3}"
@@ -1205,58 +1268,93 @@ verify_teardown_zero_burn() {
   fi
   case "$PROVIDER" in
     aws)
-      local volumes addresses
-      volumes="$(aws ec2 describe-volumes --region "$REGION_NAME" \
-        --filters "Name=tag:Project,Values=${RANGE_TAG}" "Name=status,Values=available" \
-        --query 'Volumes[].VolumeId' --output text 2>/dev/null || true)"
-      if [[ -n "$volumes" && "$volumes" != "None" ]]; then
-        local volume_id
-        for volume_id in $volumes; do
-          aws ec2 delete-volume --region "$REGION_NAME" --volume-id "$volume_id" || true
-        done
+      REGION_NAME="${REGION_NAME:-${CLOUD_REGION:-}}"
+      if [[ -z "$REGION_NAME" ]]; then
+        REGION_NAME="$(load_saved_state_field "aws" "region")"
       fi
-      addresses="$(aws ec2 describe-addresses --region "$REGION_NAME" \
+      REGION_NAME="${REGION_NAME:-us-east-1}"
+      local instances volume_rows volumes address_rows addresses
+      instances="$(aws ec2 describe-instances --region "$REGION_NAME" \
+        --filters "Name=tag:Project,Values=${RANGE_TAG}" "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down" \
+        --query 'Reservations[].Instances[].InstanceId' --output text)"
+      if [[ -n "$instances" && "$instances" != "None" ]]; then
+        echo "Orphaned EC2 instances remain after teardown: ${instances}" >&2
+        exit 1
+      fi
+      volume_rows="$(aws ec2 describe-volumes --region "$REGION_NAME" \
         --filters "Name=tag:Project,Values=${RANGE_TAG}" \
-        --query 'Addresses[?AssociationId==null].AllocationId' --output text 2>/dev/null || true)"
-      if [[ -n "$addresses" && "$addresses" != "None" ]]; then
-        local allocation
-        for allocation in $addresses; do
-          aws ec2 release-address --region "$REGION_NAME" --allocation-id "$allocation" || true
-        done
+        --query 'Volumes[].[VolumeId,State]' --output text)"
+      if [[ -n "$volume_rows" && "$volume_rows" != "None" ]]; then
+        local volume_id volume_state
+        while read -r volume_id volume_state; do
+          [[ -z "$volume_id" || "$volume_id" == "None" ]] && continue
+          if [[ "$volume_state" == "available" ]]; then
+            aws ec2 delete-volume --region "$REGION_NAME" --volume-id "$volume_id" || true
+          fi
+        done <<< "$volume_rows"
       fi
       volumes="$(aws ec2 describe-volumes --region "$REGION_NAME" \
-        --filters "Name=tag:Project,Values=${RANGE_TAG}" "Name=status,Values=available" \
-        --query 'Volumes[].VolumeId' --output text 2>/dev/null || true)"
+        --filters "Name=tag:Project,Values=${RANGE_TAG}" \
+        --query 'Volumes[].VolumeId' --output text)"
       if [[ -n "$volumes" && "$volumes" != "None" ]]; then
         echo "Orphaned disks remain after teardown: ${volumes}" >&2
         exit 1
       fi
+      address_rows="$(aws ec2 describe-addresses --region "$REGION_NAME" \
+        --filters "Name=tag:Project,Values=${RANGE_TAG}" \
+        --query 'Addresses[].[AllocationId,AssociationId]' --output text)"
+      if [[ -n "$address_rows" && "$address_rows" != "None" ]]; then
+        local allocation assoc_id
+        while read -r allocation assoc_id; do
+          [[ -z "$allocation" || "$allocation" == "None" ]] && continue
+          if [[ -z "$assoc_id" || "$assoc_id" == "None" ]]; then
+            aws ec2 release-address --region "$REGION_NAME" --allocation-id "$allocation" || true
+          fi
+        done <<< "$address_rows"
+      fi
+      addresses="$(aws ec2 describe-addresses --region "$REGION_NAME" \
+        --filters "Name=tag:Project,Values=${RANGE_TAG}" \
+        --query 'Addresses[].AllocationId' --output text)"
+      if [[ -n "$addresses" && "$addresses" != "None" ]]; then
+        echo "Orphaned public IPs remain after teardown: ${addresses}" >&2
+        exit 1
+      fi
       ;;
     gcp)
-      local disks addresses
-      disks="$(gcloud compute disks list --filter="name~'^tf-' AND NOT users:*" --format='value(name)' 2>/dev/null || true)"
+      local instances disks addresses
+      instances="$(gcloud compute instances list --filter="name~'^tf-'" --format='value(name)')"
+      if [[ -n "$instances" ]]; then
+        echo "Orphaned instances remain after teardown: ${instances}" >&2
+        exit 1
+      fi
+      disks="$(gcloud compute disks list --filter="name~'^tf-'" --format='value(name)')"
       if [[ -n "$disks" ]]; then
         echo "Orphaned disks remain after teardown: ${disks}" >&2
         exit 1
       fi
-      addresses="$(gcloud compute addresses list --filter="name~'tf-'" --format='value(name)' 2>/dev/null || true)"
+      addresses="$(gcloud compute addresses list --filter="name~'^tf-'" --format='value(name)')"
       if [[ -n "$addresses" ]]; then
         echo "Orphaned public IPs remain after teardown: ${addresses}" >&2
         exit 1
       fi
       ;;
     azure)
-      if command -v az >/dev/null 2>&1; then
-        if az group exists --name ThreatFusion-RG --output tsv 2>/dev/null | grep -qx true; then
-          local rg_state
-          rg_state="$(az group show --name ThreatFusion-RG --query properties.provisioningState -o tsv 2>/dev/null || true)"
-          if [[ "$rg_state" == "Deleting" ]]; then
-            echo "Azure resource group ThreatFusion-RG is Deleting (asynchronous teardown in progress)."
-          else
-            echo "Azure resource group ThreatFusion-RG still exists after teardown (state=${rg_state:-unknown})." >&2
-            exit 1
-          fi
+      if ! command -v az >/dev/null 2>&1; then
+        echo "az CLI is required to verify Azure teardown." >&2
+        exit 1
+      fi
+      az group wait --name ThreatFusion-RG --deleted >/dev/null 2>&1 || true
+      local rg_exists
+      rg_exists="$(az group exists --name ThreatFusion-RG --output tsv 2>/dev/null || echo true)"
+      if [[ "$rg_exists" != "false" ]]; then
+        local rg_state
+        rg_state="$(az group show --name ThreatFusion-RG --query properties.provisioningState -o tsv 2>/dev/null || true)"
+        if [[ "$rg_state" == "Deleting" ]]; then
+          echo "Azure resource group ThreatFusion-RG is still in state \"Deleting\" after teardown wait." >&2
+        else
+          echo "Azure resource group ThreatFusion-RG still exists after teardown (exists=${rg_exists:-unknown}, state=${rg_state:-unknown})." >&2
         fi
+        exit 1
       fi
       ;;
     generic)
@@ -1266,7 +1364,17 @@ verify_teardown_zero_burn() {
 }
 
 teardown_aws() {
+  local forced_region="${CLOUD_REGION:-${REGION_NAME:-}}"
   read_aws_account
+  if [[ -n "$forced_region" ]]; then
+    REGION_NAME="$forced_region"
+  else
+    local saved_region
+    saved_region="$(load_saved_state_field "aws" "region")"
+    if [[ -n "$saved_region" ]]; then
+      REGION_NAME="$saved_region"
+    fi
+  fi
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "dry-run: delete tagged ${RANGE_TAG} instances, security group, subnet, gateway, and vpc in ${REGION_NAME}"
     return 0
@@ -1303,7 +1411,9 @@ teardown_aws() {
     if [[ -n "$subnet" && "$subnet" != "None" ]]; then
       aws ec2 delete-subnet --region "$REGION_NAME" --subnet-id "$subnet" || true
     fi
-    if [[ -n "$igw" && "$igw" != "None" ]]; then
+    if [[ -n "$igw" && "$igw" == "None" ]]; then
+      :
+    elif [[ -n "$igw" ]]; then
       aws ec2 detach-internet-gateway --region "$REGION_NAME" --internet-gateway-id "$igw" --vpc-id "$vpc" || true
       aws ec2 delete-internet-gateway --region "$REGION_NAME" --internet-gateway-id "$igw" || true
     fi
@@ -1312,8 +1422,23 @@ teardown_aws() {
 }
 
 teardown_gcp() {
+  local forced_region="${CLOUD_REGION:-${REGION_NAME:-}}"
+  local forced_zone="${CLOUD_ZONE:-}"
   read_gcp_account
-  local zone="${CLOUD_ZONE:-${REGION_NAME}-a}"
+  if [[ -n "$forced_region" ]]; then
+    REGION_NAME="$forced_region"
+  else
+    local saved_region
+    saved_region="$(load_saved_state_field "gcp" "region")"
+    if [[ -n "$saved_region" ]]; then
+      REGION_NAME="$saved_region"
+    fi
+  fi
+  local zone="$forced_zone"
+  if [[ -z "$zone" && -z "$forced_region" ]]; then
+    zone="$(load_saved_state_field "gcp" "zone")"
+  fi
+  zone="${zone:-${REGION_NAME}-a}"
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "dry-run: gcloud compute instances delete tf-soc-victim-vm tf-attacker-redteam-vm --zone ${zone}"
     return 0

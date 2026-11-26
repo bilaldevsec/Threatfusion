@@ -16,6 +16,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import secrets
 import sqlite3
@@ -117,6 +118,34 @@ def seal_head_hmac(secret: str, expected_count: int, head_entry_sha256: str) -> 
         raise SoarError("missing_ledger_secret")
     material = f"{int(expected_count)}:{head_entry_sha256}"
     return hmac.new(secret.encode("utf-8"), material.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def compute_playbook_record_hmac(
+    playbook_id: str,
+    candidate_id: str,
+    action_type: str,
+    target_entity: str,
+    state: str,
+    version: int,
+    actor_id: str | None,
+    decision_reason: str | None,
+    rollback_reason: str | None,
+    ledger_secret: str | None = None,
+) -> str:
+    """Compute keyed HMAC-SHA256 over the 9 authoritative playbook record fields."""
+    payload = {
+        "playbook_id": str(playbook_id),
+        "candidate_id": str(candidate_id),
+        "action_type": str(action_type),
+        "target_entity": str(target_entity),
+        "state": str(state),
+        "version": int(version),
+        "actor_id": "" if actor_id is None else str(actor_id),
+        "decision_reason": "" if decision_reason is None else str(decision_reason),
+        "rollback_reason": "" if rollback_reason is None else str(rollback_reason),
+    }
+    canonical_repr = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return _ledger_hmac(ledger_secret, canonical_repr)
 
 
 class SoarStateTransitionError(SoarError):
@@ -272,17 +301,21 @@ class SoarPlaybookSqliteRepository:
     def _resolve_ledger_secret(self, ledger_secret: str | None) -> str:
         """Use an explicit secret, the environment, or a mode-0600 sidecar.
 
-        An empty key is never used. When ``THREATFUSION_SOAR_HMAC_SECRET`` is
-        unset, the sidecar lets a second process open the same SQLite path and
-        recompute the same seal.
+        An empty or short (< 16 chars) explicit/env secret fails closed. When
+        ``THREATFUSION_SOAR_HMAC_SECRET`` is unset, the sidecar lets a second
+        process open the same SQLite path and recompute the same seal.
         """
         env_name = "THREATFUSION_SOAR_HMAC_SECRET"
-        env_value = os.environ.get(env_name, "")
-        if ledger_secret:
+        if ledger_secret is not None:
+            if len(ledger_secret.strip()) < 16:
+                raise SoarError("soar_hmac_secret_too_short")
             if env_name not in os.environ:
                 self._write_sidecar_key(ledger_secret)
             return ledger_secret
-        if env_value:
+        if env_name in os.environ:
+            env_value = os.environ.get(env_name, "")
+            if len(env_value.strip()) < 16:
+                raise SoarError("soar_hmac_secret_too_short")
             return env_value
         return self._read_sidecar_key() or self._write_sidecar_key(secrets.token_hex(32))
 
@@ -291,6 +324,7 @@ class SoarPlaybookSqliteRepository:
             conn = sqlite3.connect(str(self.db_path), timeout=5.0)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA trusted_schema = OFF")
             conn.execute("PRAGMA busy_timeout = 5000")
             previous_isolation = conn.isolation_level
             conn.isolation_level = None
@@ -325,7 +359,8 @@ class SoarPlaybookSqliteRepository:
                         updated_at_utc TEXT NOT NULL,
                         t_approval_queued REAL,
                         t_callback_verified REAL,
-                        t_response REAL
+                        t_response REAL,
+                        record_hmac TEXT
                     )
                     """)
                 conn.execute("""
@@ -381,6 +416,8 @@ class SoarPlaybookSqliteRepository:
                     )
                 if "t_response" not in cols_pb:
                     conn.execute("ALTER TABLE soar_playbook_records ADD COLUMN t_response REAL")
+                if "record_hmac" not in cols_pb:
+                    conn.execute("ALTER TABLE soar_playbook_records ADD COLUMN record_hmac TEXT")
 
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS soar_ledger_head_seal (
@@ -409,38 +446,8 @@ class SoarPlaybookSqliteRepository:
         harden_sqlite_permissions(self.db_path)
 
     def save_record(self, record: SoarPlaybookRecord) -> None:
-        with self._get_connection() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO soar_playbook_records (
-                    playbook_id, candidate_id, action_type, target_entity,
-                    state, version, actor_id, decision_reason,
-                    pre_action_snapshot, execution_evidence, rollback_reason,
-                    created_at_utc, updated_at_utc,
-                    t_approval_queued, t_callback_verified, t_response
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record.playbook_id,
-                    record.candidate_id,
-                    record.action_type,
-                    record.target_entity,
-                    record.state,
-                    record.version,
-                    record.actor_id,
-                    record.decision_reason,
-                    record.pre_action_snapshot,
-                    record.execution_evidence,
-                    record.rollback_reason,
-                    record.created_at_utc,
-                    record.updated_at_utc,
-                    record.t_approval_queued,
-                    record.t_callback_verified,
-                    record.t_response,
-                ),
-            )
-            conn.commit()
-        harden_sqlite_permissions(self.db_path)
+        del record
+        raise SoarStateTransitionError("raw_save_record_disabled_use_atomic_transition")
 
     def get_record(self, playbook_id: str) -> SoarPlaybookRecord | None:
         with self._get_connection() as conn:
@@ -590,6 +597,18 @@ class SoarPlaybookSqliteRepository:
             try:
                 conn.isolation_level = None
                 conn.execute("BEGIN IMMEDIATE")
+                rec_hmac = compute_playbook_record_hmac(
+                    playbook_id=record.playbook_id,
+                    candidate_id=record.candidate_id,
+                    action_type=record.action_type,
+                    target_entity=record.target_entity,
+                    state=record.state,
+                    version=record.version,
+                    actor_id=record.actor_id,
+                    decision_reason=record.decision_reason,
+                    rollback_reason=record.rollback_reason,
+                    ledger_secret=self._ledger_secret,
+                )
                 conn.execute(
                     """
                     INSERT INTO soar_playbook_records (
@@ -597,8 +616,8 @@ class SoarPlaybookSqliteRepository:
                         state, version, actor_id, decision_reason,
                         pre_action_snapshot, execution_evidence, rollback_reason,
                         created_at_utc, updated_at_utc,
-                        t_approval_queued, t_callback_verified, t_response
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        t_approval_queued, t_callback_verified, t_response, record_hmac
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record.playbook_id,
@@ -617,6 +636,7 @@ class SoarPlaybookSqliteRepository:
                         record.t_approval_queued,
                         record.t_callback_verified,
                         record.t_response,
+                        rec_hmac,
                     ),
                 )
                 entry = self._append_audit_event_in_tx(
@@ -707,6 +727,18 @@ class SoarPlaybookSqliteRepository:
                             f"Cannot rollback action {updated.playbook_id}: "
                             f"audit chain verification failed ({chain_message})."
                         )
+                rec_hmac = compute_playbook_record_hmac(
+                    playbook_id=updated.playbook_id,
+                    candidate_id=updated.candidate_id,
+                    action_type=updated.action_type,
+                    target_entity=updated.target_entity,
+                    state=updated.state,
+                    version=updated.version,
+                    actor_id=updated.actor_id,
+                    decision_reason=updated.decision_reason,
+                    rollback_reason=updated.rollback_reason,
+                    ledger_secret=self._ledger_secret,
+                )
                 cur = conn.execute(
                     """
                     UPDATE soar_playbook_records
@@ -714,7 +746,8 @@ class SoarPlaybookSqliteRepository:
                         state = ?, version = ?, actor_id = ?, decision_reason = ?,
                         pre_action_snapshot = ?, execution_evidence = ?, rollback_reason = ?,
                         created_at_utc = ?, updated_at_utc = ?,
-                        t_approval_queued = ?, t_callback_verified = ?, t_response = ?
+                        t_approval_queued = ?, t_callback_verified = ?, t_response = ?,
+                        record_hmac = ?
                     WHERE playbook_id = ? AND version = ? AND state = ?
                     """,
                     (
@@ -733,6 +766,7 @@ class SoarPlaybookSqliteRepository:
                         updated.t_approval_queued,
                         updated.t_callback_verified,
                         updated.t_response,
+                        rec_hmac,
                         updated.playbook_id,
                         expected_version,
                         expected_state,
@@ -932,6 +966,24 @@ class SoarPlaybookSqliteRepository:
                         """,
                         (len(rows), previous, seal),
                     )
+                pb_rows = conn.execute("SELECT * FROM soar_playbook_records").fetchall()
+                for pb_row in pb_rows:
+                    rec_hmac = compute_playbook_record_hmac(
+                        playbook_id=str(pb_row["playbook_id"]),
+                        candidate_id=str(pb_row["candidate_id"]),
+                        action_type=str(pb_row["action_type"]),
+                        target_entity=str(pb_row["target_entity"]),
+                        state=str(pb_row["state"]),
+                        version=int(pb_row["version"]),
+                        actor_id=pb_row["actor_id"],
+                        decision_reason=pb_row["decision_reason"],
+                        rollback_reason=pb_row["rollback_reason"],
+                        ledger_secret=self._ledger_secret,
+                    )
+                    conn.execute(
+                        "UPDATE soar_playbook_records SET record_hmac = ? WHERE playbook_id = ?",
+                        (rec_hmac, str(pb_row["playbook_id"])),
+                    )
                 # Recreate append-only update trigger atomically BEFORE COMMIT so it is never absent.
                 conn.execute("""
                     CREATE TRIGGER IF NOT EXISTS soar_audit_events_append_only_update
@@ -960,7 +1012,7 @@ class SoarPlaybookSqliteRepository:
         *,
         require_non_empty: bool = True,
     ) -> tuple[bool, str]:
-        """Verify keyed hash chain and head seal on an active transaction connection."""
+        """Verify keyed hash chain, head seal, and soar_playbook_records integrity in tx."""
         if not self._ledger_secret:
             return False, "missing_ledger_secret"
         cursor = conn.execute("SELECT * FROM soar_audit_events ORDER BY rowid ASC")
@@ -969,12 +1021,60 @@ class SoarPlaybookSqliteRepository:
             "SELECT expected_count, head_entry_sha256, head_seal_hmac "
             "FROM soar_ledger_head_seal WHERE seal_id = 1"
         ).fetchone()
-        return self._evaluate_audit_chain_rows(
+        ok, msg = self._evaluate_audit_chain_rows(
             all_rows,
             seal_row,
             playbook_id=playbook_id,
             require_non_empty=require_non_empty,
         )
+        if not ok:
+            return False, msg
+
+        latest_by_pb: dict[str, sqlite3.Row] = {}
+        required_pbs: set[str] = set()
+        for row in all_rows:
+            pb_key = str(row["playbook_id"])
+            latest_by_pb[pb_key] = row
+            cand = str(row["candidate_id"] or "").strip() if "candidate_id" in row.keys() else ""
+            if cand:
+                required_pbs.add(pb_key)
+
+        pb_rows = conn.execute("SELECT * FROM soar_playbook_records").fetchall()
+        seen_pbs: set[str] = set()
+        for pb_row in pb_rows:
+            pb_key = str(pb_row["playbook_id"])
+            seen_pbs.add(pb_key)
+            if pb_key not in latest_by_pb:
+                return False, "soar_playbook_record_orphan"
+            stored_hmac = str(pb_row["record_hmac"] or "") if "record_hmac" in pb_row.keys() else ""
+            expected_hmac = compute_playbook_record_hmac(
+                playbook_id=pb_key,
+                candidate_id=str(pb_row["candidate_id"]),
+                action_type=str(pb_row["action_type"]),
+                target_entity=str(pb_row["target_entity"]),
+                state=str(pb_row["state"]),
+                version=int(pb_row["version"]),
+                actor_id=pb_row["actor_id"],
+                decision_reason=pb_row["decision_reason"],
+                rollback_reason=pb_row["rollback_reason"],
+                ledger_secret=self._ledger_secret,
+            )
+            if not stored_hmac or not hmac.compare_digest(expected_hmac, stored_hmac):
+                return False, "soar_playbook_record_hmac_mismatch"
+            latest_ev = latest_by_pb[pb_key]
+            if str(pb_row["state"]) != str(latest_ev["new_state"]):
+                return False, "soar_playbook_record_state_mismatch"
+            ev_cand = (
+                str(latest_ev["candidate_id"] or "") if "candidate_id" in latest_ev.keys() else ""
+            )
+            if ev_cand and str(pb_row["candidate_id"]) != ev_cand:
+                return False, "soar_playbook_record_state_mismatch"
+
+        for pb_key in required_pbs:
+            if pb_key not in seen_pbs:
+                return False, "soar_playbook_record_missing"
+
+        return True, msg
 
     def verify_audit_chain_integrity(
         self,
@@ -1157,39 +1257,64 @@ class SoarPlaybookSqliteRepository:
         t_approval_queued: float | None = None,
     ) -> float:
         """Record deterministic MTTR callback verification and compute response duration."""
-        record = self.get_record(playbook_id)
-        if record is None:
-            raise SoarStateTransitionError(f"Playbook '{playbook_id}' not found")
+        if (
+            isinstance(t_callback_verified, bool)
+            or not isinstance(t_callback_verified, (int, float))
+            or not math.isfinite(float(t_callback_verified))
+        ):
+            raise ValueError("invalid_callback_timestamp")
+        if t_approval_queued is not None and (
+            isinstance(t_approval_queued, bool)
+            or not isinstance(t_approval_queued, (int, float))
+            or not math.isfinite(float(t_approval_queued))
+        ):
+            raise ValueError("invalid_approval_timestamp")
 
-        approval_time = (
-            t_approval_queued
-            if t_approval_queued is not None
-            else (
-                record.t_approval_queued
-                if record.t_approval_queued is not None
-                else datetime.fromisoformat(
-                    record.created_at_utc.replace("Z", "+00:00")
-                ).timestamp()
-            )
-        )
-        t_resp = round(max(0.0, float(t_callback_verified) - float(approval_time)), 6)
-        with self._get_connection() as conn:
-            conn.execute(
-                """
-                UPDATE soar_playbook_records
-                SET t_approval_queued = ?, t_callback_verified = ?, t_response = ?, updated_at_utc = ?
-                WHERE playbook_id = ?
-                """,
-                (
-                    approval_time,
-                    float(t_callback_verified),
-                    t_resp,
-                    datetime.now(UTC).isoformat(),
-                    playbook_id,
-                ),
-            )
-            conn.commit()
-        harden_sqlite_permissions(self.db_path)
+        with self._append_lock:
+            conn = self._get_connection()
+            try:
+                conn.isolation_level = None
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM soar_playbook_records WHERE playbook_id = ?",
+                    (playbook_id,),
+                ).fetchone()
+                if row is None:
+                    raise SoarStateTransitionError(f"Playbook '{playbook_id}' not found")
+                record = self._row_to_record(row)
+                if record.t_approval_queued is not None:
+                    approval_time = float(record.t_approval_queued)
+                elif t_approval_queued is not None:
+                    approval_time = float(t_approval_queued)
+                else:
+                    approval_time = datetime.fromisoformat(
+                        record.created_at_utc.replace("Z", "+00:00")
+                    ).timestamp()
+                t_resp = round(max(0.0, float(t_callback_verified) - approval_time), 6)
+                conn.execute(
+                    """
+                    UPDATE soar_playbook_records
+                    SET t_approval_queued = ?, t_callback_verified = ?, t_response = ?, updated_at_utc = ?
+                    WHERE playbook_id = ?
+                    """,
+                    (
+                        approval_time,
+                        float(t_callback_verified),
+                        t_resp,
+                        datetime.now(UTC).isoformat(),
+                        playbook_id,
+                    ),
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+            finally:
+                conn.close()
+                harden_sqlite_permissions(self.db_path)
         return t_resp
 
     def list_response_timings(self) -> list[dict[str, Any]]:
@@ -1411,8 +1536,16 @@ class ApprovalGatedSoarEngine:
             )
 
         if record.action_type == "verify_and_contain_lab_source_ip":
+            from threatfusion.operations.commercial_hardening import isolation_refusal_reason
+
+            raw_target = str(record.target_entity).strip()
+            refusal = isolation_refusal_reason(raw_target)
+            if refusal is not None:
+                raise SoarStateTransitionError(
+                    f"Refused target_entity for containment playbook {playbook_id}: {refusal}"
+                )
             try:
-                validated_ip = str(ipaddress.ip_address(str(record.target_entity).strip()))
+                validated_ip = str(ipaddress.ip_address(raw_target))
             except ValueError as exc:
                 raise SoarStateTransitionError(
                     f"Invalid IP target_entity for containment playbook {playbook_id}"

@@ -21,7 +21,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const crypto = require('crypto');\n\nconst headers = $json.headers || {};\nconst sigHeader = headers['x-threatfusion-signature-256'] || headers['X-ThreatFusion-Signature-256'];\nconst idemKey = headers['x-idempotency-key'] || headers['X-Idempotency-Key'];\nconst hmacSecret = $env.THREATFUSION_SOAR_HMAC_SECRET;\n\nlet verified = false;\nlet callbackSignature = '';\nlet callbackIdemKey = '';\n\nif (sigHeader && idemKey && hmacSecret && typeof hmacSecret === 'string' && hmacSecret.length >= 16) {\n  try {\n    const body = $json.body || {};\n    const sortKeys = (obj) => {\n      if (obj === null || typeof obj !== 'object') return obj;\n      if (Array.isArray(obj)) return obj.map(sortKeys);\n      return Object.keys(obj).sort().reduce((acc, k) => {\n        acc[k] = sortKeys(obj[k]);\n        return acc;\n      }, {});\n    };\n    const canonicalPayload = JSON.stringify(sortKeys(body));\n    const hmac = crypto.createHmac('sha256', hmacSecret);\n    hmac.update(canonicalPayload);\n    const expectedSig = hmac.digest('hex');\n\n    const sigBuf = Buffer.from(String(sigHeader), 'hex');\n    const expBuf = Buffer.from(expectedSig, 'hex');\n    const sigMatches = sigBuf.length === expBuf.length && crypto.timingSafeEqual(sigBuf, expBuf);\n\n    const expectedIdemPrefix = `idem_${body.playbook_id}_`;\n    const idemValid = Boolean(idemKey && String(idemKey).startsWith(expectedIdemPrefix) && String(idemKey).length > expectedIdemPrefix.length);\n\n    let ledgerValid = false;\n    try {\n      const res = await fetch('http://threatfusion-callback:8443/api/v1/soar/verify-state', {\n        method: 'POST',\n        headers: {\n          'Content-Type': 'application/json',\n          'X-ThreatFusion-Signature-256': String(sigHeader),\n          'X-Idempotency-Key': String(idemKey),\n        },\n        body: canonicalPayload,\n      });\n      if (res.ok) {\n        const data = await res.json();\n        ledgerValid = Boolean(data && data.state_verified === true);\n      }\n    } catch (e) {\n      ledgerValid = false;\n    }\n\n    if (sigMatches && idemValid && ledgerValid) {\n      verified = true;\n      callbackIdemKey = `${idemKey}_cb`;\n      const cbPayload = {\n        candidate_id: body.candidate_id,\n        execution_id: body.execution_id || 'exec_auto',\n        misp_correlated: true,\n        n8n_status: 'completed',\n        playbook_id: body.playbook_id,\n        thehive_case_created: true\n      };\n      const cbCanonical = JSON.stringify(sortKeys(cbPayload));\n      const cbHmac = crypto.createHmac('sha256', hmacSecret);\n      cbHmac.update(cbCanonical);\n      callbackSignature = cbHmac.digest('hex');\n    }\n  } catch (err) {\n    verified = false;\n  }\n}\n\nreturn {\n  ...$json,\n  hmac_and_ledger_verified: verified,\n  callback_signature: callbackSignature,\n  callback_idempotency_key: callbackIdemKey,\n};"
+        "jsCode": "const crypto = require('crypto');\n\nconst headers = $json.headers || {};\nconst sigHeader = headers['x-threatfusion-signature-256'] || headers['X-ThreatFusion-Signature-256'];\nconst idemKey = headers['x-idempotency-key'] || headers['X-Idempotency-Key'];\nconst hmacSecret = $env.THREATFUSION_SOAR_HMAC_SECRET;\nconst verifyUrl = $env.THREATFUSION_VERIFY_STATE_URL || 'http://threatfusion-callback:8443/api/v1/soar/verify-state';\n\nlet verified = false;\n\nif (sigHeader && idemKey && hmacSecret && typeof hmacSecret === 'string' && hmacSecret.length >= 16) {\n  try {\n    const body = $json.body || {};\n    const sortKeys = (obj) => {\n      if (obj === null || typeof obj !== 'object') return obj;\n      if (Array.isArray(obj)) return obj.map(sortKeys);\n      return Object.keys(obj).sort().reduce((acc, k) => {\n        acc[k] = sortKeys(obj[k]);\n        return acc;\n      }, {});\n    };\n    const canonicalPayload = JSON.stringify(sortKeys(body));\n    const hmac = crypto.createHmac('sha256', hmacSecret);\n    hmac.update(canonicalPayload);\n    const expectedSig = hmac.digest('hex');\n\n    const sigBuf = Buffer.from(String(sigHeader), 'hex');\n    const expBuf = Buffer.from(expectedSig, 'hex');\n    const sigMatches = sigBuf.length === expBuf.length && crypto.timingSafeEqual(sigBuf, expBuf);\n\n    const expectedIdemPrefix = `idem_${body.playbook_id}_`;\n    const bodyIdemMatches = String(body.idempotency_key || '') === String(idemKey);\n    const idemValid = Boolean(idemKey && bodyIdemMatches && String(idemKey).startsWith(expectedIdemPrefix) && String(idemKey).length > expectedIdemPrefix.length);\n    const tsMs = Date.parse(String(body.timestamp_utc || ''));\n    const tsFresh = Number.isFinite(tsMs) && Math.abs(Date.now() - tsMs) <= 300000;\n\n    let ledgerValid = false;\n    if (sigMatches && idemValid && tsFresh) {\n      try {\n        const res = await fetch(verifyUrl, {\n          method: 'POST',\n          headers: {\n            'Content-Type': 'application/json',\n            'X-ThreatFusion-Signature-256': String(sigHeader),\n            'X-Idempotency-Key': String(idemKey),\n          },\n          body: canonicalPayload,\n        });\n        if (res.ok) {\n          const data = await res.json();\n          ledgerValid = Boolean(data && data.state_verified === true);\n        }\n      } catch (e) {\n        ledgerValid = false;\n      }\n    }\n\n    if (sigMatches && idemValid && tsFresh && ledgerValid) {\n      verified = true;\n    }\n  } catch (err) {\n    verified = false;\n  }\n}\n\nreturn {\n  ...$json,\n  hmac_and_ledger_verified: verified,\n  verified_idempotency_key: idemKey ? String(idemKey) : '',\n};"
       },
       "id": "node-1b-verify-hmac-ledger",
       "name": "Verify HMAC-SHA256 & Idempotency Envelope",
@@ -66,7 +66,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://misp-connector:8080/attributes/restSearch",
+        "url": "={{ $env.THREATFUSION_MISP_SEARCH_URL || 'http://misp-connector:8080/attributes/restSearch' }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -91,6 +91,7 @@
       "name": "3. Query MISP Hashes & IOCs",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
+      "onError": "continueRegularOutput",
       "position": [
         920,
         280
@@ -99,7 +100,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://thehive:9000/api/v1/case",
+        "url": "={{ $env.THREATFUSION_THEHIVE_CASE_URL || 'http://thehive:9000/api/v1/case' }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -131,36 +132,13 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "http://threatfusion-callback:8443/api/v1/soar/callback",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            },
-            {
-              "name": "X-ThreatFusion-Signature-256",
-              "value": "={{ $('Verify HMAC-SHA256 & Idempotency Envelope').item.json.callback_signature }}"
-            },
-            {
-              "name": "X-Idempotency-Key",
-              "value": "={{ $('Verify HMAC-SHA256 & Idempotency Envelope').item.json.callback_idempotency_key }}"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ {\n  execution_id: $('1. Webhook Trigger (POST /webhook/threatfusion-soar-approved)').item.json.body.execution_id || 'exec_auto',\n  playbook_id: $('1. Webhook Trigger (POST /webhook/threatfusion-soar-approved)').item.json.body.playbook_id,\n  candidate_id: $('1. Webhook Trigger (POST /webhook/threatfusion-soar-approved)').item.json.body.candidate_id,\n  n8n_status: 'completed',\n  thehive_case_created: true,\n  misp_correlated: true\n} }}",
-        "options": {
-          "timeout": 3000
-        }
+        "mode": "runOnceForEachItem",
+        "jsCode": "const crypto = require('crypto');\n\nconst triggerJson = $('1. Webhook Trigger (POST /webhook/threatfusion-soar-approved)').item.json || {};\nconst body = triggerJson.body || {};\nconst verifyEnv = $('Verify HMAC-SHA256 & Idempotency Envelope').item.json || {};\nconst mispOut = $('3. Query MISP Hashes & IOCs').item.json || {};\nconst thehiveOut = $json || {};\nconst hmacSecret = $env.THREATFUSION_SOAR_HMAC_SECRET;\nconst callbackUrl = $env.THREATFUSION_CALLBACK_URL || 'http://threatfusion-callback:8443/api/v1/soar/callback';\n\nconst sortKeys = (obj) => {\n  if (obj === null || typeof obj !== 'object') return obj;\n  if (Array.isArray(obj)) return obj.map(sortKeys);\n  return Object.keys(obj).sort().reduce((acc, k) => {\n    acc[k] = sortKeys(obj[k]);\n    return acc;\n  }, {});\n};\n\nconst baseIdemKey = String(verifyEnv.verified_idempotency_key || `idem_${body.playbook_id}_1`);\nconst callbackIdemKey = `${baseIdemKey}_cb`;\nconst mispCorrelated = Boolean(mispOut && mispOut.response && !mispOut.error);\nconst thehiveCaseCreated = Boolean(thehiveOut && (thehiveOut._id || thehiveOut.id || thehiveOut.caseId) && !thehiveOut.error);\n\nconst cbPayload = {\n  candidate_id: body.candidate_id,\n  execution_id: body.execution_id || 'exec_auto',\n  idempotency_key: callbackIdemKey,\n  misp_correlated: mispCorrelated,\n  n8n_status: 'completed',\n  playbook_id: body.playbook_id,\n  thehive_case_created: thehiveCaseCreated,\n  timestamp_utc: new Date().toISOString(),\n};\n\nif (!hmacSecret || typeof hmacSecret !== 'string' || hmacSecret.length < 16) {\n  throw new Error('THREATFUSION_SOAR_HMAC_SECRET missing or insecure');\n}\n\nconst cbCanonical = JSON.stringify(sortKeys(cbPayload));\nconst cbHmac = crypto.createHmac('sha256', hmacSecret);\ncbHmac.update(cbCanonical);\nconst callbackSignature = cbHmac.digest('hex');\n\nconst res = await fetch(callbackUrl, {\n  method: 'POST',\n  headers: {\n    'Content-Type': 'application/json',\n    'X-ThreatFusion-Signature-256': callbackSignature,\n    'X-Idempotency-Key': callbackIdemKey,\n  },\n  body: cbCanonical,\n});\nconst resData = await res.json().catch(() => ({}));\n\nreturn {\n  status: res.status,\n  ok: res.ok,\n  callback_idempotency_key: callbackIdemKey,\n  callback_response: resData,\n};"
       },
       "id": "node-5-notify-and-callback",
       "name": "5. Notify SOC Analyst & Callback ThreatFusion Audit Ledger",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.1,
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         1400,
         280
@@ -224,7 +202,7 @@
       ]
     }
   },
-  "active": false,
+  "active": true,
   "settings": {
     "executionOrder": "v1"
   },

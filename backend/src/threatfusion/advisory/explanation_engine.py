@@ -12,13 +12,31 @@ Enforces Section 13.D of ThreatFusion:
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from threatfusion.advisory.telemetry_shield import (
+    _canonicalize_ip,
+    _extract_canonical_ips,
+    _strip_combining_marks,
+    _strip_terminal_controls,
+)
 from threatfusion.enrichment.threat_intel import ThreatIntelEnrichmentResult
+from threatfusion.schemas.investigation_anatomy import (
+    CANONICAL_INDEXED_TECHNIQUES,
+    MITRE_TECHNIQUE_REGEX,
+    RECALL_GAIN_BADGE,
+    AttackTimelineBlock,
+    CryptographicSoarStatusBlock,
+    ExecutiveSummaryBlock,
+    FourBlockInvestigationAnatomy,
+    MitreMappingBlock,
+)
 
 IP_REGEX = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+_CVE_REGEX = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
 
 
 class AdvisoryGroundednessError(RuntimeError):
@@ -114,6 +132,88 @@ class EvidenceBoundExplanation:
         }
 
 
+def _allowed_ips_from_bundle(
+    bundle: AdvisoryEvidenceBundle,
+    provenance: Any | None = None,
+) -> set[str]:
+    allowed_ips: set[str] = set()
+    if bundle.enrichment_result and bundle.enrichment_result.inspected_entities:
+        for entity in bundle.enrichment_result.inspected_entities:
+            canon = _canonicalize_ip(entity)
+            if canon is not None:
+                allowed_ips.add(canon)
+            else:
+                for extracted in _extract_canonical_ips(str(entity or "")):
+                    allowed_ips.add(extracted)
+    if provenance is not None:
+        src = getattr(provenance, "src_ip", None) or getattr(provenance, "src_entity_id", None)
+        dst = getattr(provenance, "dst_ip", None) or getattr(provenance, "dst_entity_id", None)
+        for cand in (src, dst):
+            if cand and isinstance(cand, str):
+                canon = _canonicalize_ip(cand)
+                if canon is not None:
+                    allowed_ips.add(canon)
+                else:
+                    for extracted in _extract_canonical_ips(cand):
+                        allowed_ips.add(extracted)
+    return allowed_ips
+
+
+def _allowed_mitre_and_cves(bundle: AdvisoryEvidenceBundle) -> tuple[set[str], set[str]]:
+    allowed_mitre: set[str] = set()
+    allowed_cves: set[str] = set()
+    for hit in getattr(bundle, "chroma_rag_hits", ()) or ():
+        tid = getattr(hit, "technique_id", None) or (
+            hit.get("technique_id") if isinstance(hit, Mapping) else None
+        )
+        if tid:
+            norm_tid = str(tid).strip().upper()
+            allowed_mitre.add(norm_tid)
+            allowed_mitre.add(norm_tid.split(".", 1)[0])
+        raw_cves = getattr(hit, "cve_ids", None) or (
+            hit.get("cve_ids") if isinstance(hit, Mapping) else None
+        )
+        if isinstance(raw_cves, str):
+            allowed_cves.update(c.upper() for c in _CVE_REGEX.findall(raw_cves))
+        elif isinstance(raw_cves, Sequence) and not isinstance(raw_cves, (bytes, bytearray)):
+            for cve in raw_cves:
+                allowed_cves.update(c.upper() for c in _CVE_REGEX.findall(str(cve or "")))
+        cve_single = getattr(hit, "cve_id", None) or (
+            hit.get("cve_id") if isinstance(hit, Mapping) else None
+        )
+        if cve_single:
+            allowed_cves.update(c.upper() for c in _CVE_REGEX.findall(str(cve_single)))
+        parts: list[str] = []
+        for attr in ("doc_id", "technique_name", "description", "playbook_id"):
+            val = getattr(hit, attr, None) or (hit.get(attr) if isinstance(hit, Mapping) else None)
+            if val:
+                parts.append(str(val))
+        steps = getattr(hit, "deterministic_playbook_steps", None) or (
+            hit.get("deterministic_playbook_steps") if isinstance(hit, Mapping) else None
+        )
+        if steps and not isinstance(steps, str):
+            parts.extend(str(step) for step in steps)
+        blob = " ".join(parts)
+        allowed_mitre.update(m.upper() for m in _FOLLOWUP_MITRE_ID.findall(blob))
+        allowed_cves.update(c.upper() for c in _CVE_REGEX.findall(blob))
+    for field in (bundle.candidate_id, bundle.record_id, bundle.incident_id):
+        if field:
+            text = str(field)
+            allowed_mitre.update(m.upper() for m in _FOLLOWUP_MITRE_ID.findall(text))
+            allowed_cves.update(c.upper() for c in _CVE_REGEX.findall(text))
+    return allowed_mitre, allowed_cves
+
+
+def _collect_dict_text(obj: Any) -> str:
+    if isinstance(obj, str):
+        return obj
+    if isinstance(obj, Mapping):
+        return " ".join(_collect_dict_text(v) for v in obj.values())
+    if isinstance(obj, (list, tuple)):
+        return " ".join(_collect_dict_text(item) for item in obj)
+    return ""
+
+
 def verify_explanation_groundedness(
     explanation: EvidenceBoundExplanation | dict[str, Any] | str,
     bundle: AdvisoryEvidenceBundle,
@@ -125,29 +225,28 @@ def verify_explanation_groundedness(
     2. Every cited key exists in allowed evidence dictionary.
     3. Stated RF probability and model version match bundle.
     4. Any IP address in text is actually in bundle.enrichment_result.inspected_entities.
-    5. complementarity_and_fusion_note affirms production authority rests on frozen RF.
+    5. Cited MITRE/CVE IDs in structured explanations map to bundle RAG hits.
+    6. complementarity_and_fusion_note affirms production authority rests on frozen RF.
     """
+    allowed_ips = _allowed_ips_from_bundle(bundle)
+
     if isinstance(explanation, str):
-        found_ips = set(IP_REGEX.findall(explanation))
-        allowed_ips: set[str] = set()
-        if bundle.enrichment_result and bundle.enrichment_result.inspected_entities:
-            allowed_ips.update(bundle.enrichment_result.inspected_entities)
-        # Any found IP not in allowed_ips is an ungrounded hallucination
+        found_ips = set(_extract_canonical_ips(explanation))
         if not found_ips.issubset(allowed_ips):
             return False
         return True
 
     if isinstance(explanation, dict):
-        text_vals = " ".join(
-            str(v) for v in explanation.values() if isinstance(v, (str, list, dict))
-        )
-        found_ips = set(IP_REGEX.findall(text_vals))
-        allowed_ips: set[str] = set()
-        if bundle.enrichment_result and bundle.enrichment_result.inspected_entities:
-            allowed_ips.update(bundle.enrichment_result.inspected_entities)
+        text_vals = _collect_dict_text(explanation)
+        found_ips = set(_extract_canonical_ips(text_vals))
         if not found_ips.issubset(allowed_ips):
             return False
         if explanation.get("advisory_only_non_authoritative") is False:
+            return False
+        allowed_mitre, allowed_cves = _allowed_mitre_and_cves(bundle)
+        found_mitre = {m.upper() for m in _FOLLOWUP_MITRE_ID.findall(text_vals)}
+        found_cves = {c.upper() for c in _CVE_REGEX.findall(text_vals)}
+        if not found_mitre.issubset(allowed_mitre) or not found_cves.issubset(allowed_cves):
             return False
         return True
 
@@ -172,7 +271,7 @@ def verify_explanation_groundedness(
     ):
         return False
 
-    # IP address hallucination check across all text fields
+    # IP address & MITRE/CVE hallucination check across all text fields
     all_text = " ".join(
         [
             explanation.summary_headline,
@@ -183,13 +282,14 @@ def verify_explanation_groundedness(
         ]
     )
 
-    found_ips = set(IP_REGEX.findall(all_text))
-    allowed_ips: set[str] = set()
-    if bundle.enrichment_result and bundle.enrichment_result.inspected_entities:
-        allowed_ips = set(bundle.enrichment_result.inspected_entities)
-
-    # Any found IP not in allowed_ips is an ungrounded hallucination
+    found_ips = set(_extract_canonical_ips(all_text))
     if not found_ips.issubset(allowed_ips):
+        return False
+
+    allowed_mitre, allowed_cves = _allowed_mitre_and_cves(bundle)
+    found_mitre = {m.upper() for m in _FOLLOWUP_MITRE_ID.findall(all_text)}
+    found_cves = {c.upper() for c in _CVE_REGEX.findall(all_text)}
+    if not found_mitre.issubset(allowed_mitre) or not found_cves.issubset(allowed_cves):
         return False
 
     # Section 8 Invariant check
@@ -355,128 +455,10 @@ class AdvisoryExplanationEngine:
         )
 
 
-RECALL_GAIN_BADGE: str = (
-    "+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)"
-)
-MITRE_TECHNIQUE_REGEX = re.compile(r"^T\d{4}(\.\d{3})?$")
-CANONICAL_INDEXED_TECHNIQUES: frozenset[str] = frozenset(
-    {
-        "T1046",
-        "T1190",
-        "T1498",
-        "T1071.001",
-        "T1595",
-        "T1110",
-        "T1041",
-        "T1021",
-        "T1059",
-        "T1133",
-    }
-)
-
-
-@dataclass(frozen=True, slots=True)
-class ExecutiveSummaryBlock:
-    """Block 1: Executive Summary with primary decision authority and RFC1918 guard."""
-
-    risk_level: str
-    rf_probability: float
-    autoencoder_anomaly_rank: int
-    recall_gain_badge: str
-    affected_network_assets: tuple[str, ...]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "risk_level": self.risk_level,
-            "rf_probability": self.rf_probability,
-            "autoencoder_anomaly_rank": self.autoencoder_anomaly_rank,
-            "recall_gain_badge": self.recall_gain_badge,
-            "affected_network_assets": list(self.affected_network_assets),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class AttackTimelineBlock:
-    """Block 2: Attack Timeline with burst/campaign windowing and volume deltas."""
-
-    window_type: str  # "30.0s_burst" | "600.0s_campaign"
-    correlated_flow_count: int
-    chronological_flow_progression: tuple[dict[str, Any], ...]
-    byte_volume_delta: int
-    packet_volume_delta: int
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "window_type": self.window_type,
-            "correlated_flow_count": self.correlated_flow_count,
-            "chronological_flow_progression": list(self.chronological_flow_progression),
-            "byte_volume_delta": self.byte_volume_delta,
-            "packet_volume_delta": self.packet_volume_delta,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class MitreMappingBlock:
-    """Block 3: MITRE ATT&CK Mapping grounded in ChromaDB Semantic Vector RAG."""
-
-    technique_id: str
-    tactic_name: str
-    cosine_similarity: float
-    defensive_rationale: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "technique_id": self.technique_id,
-            "tactic_name": self.tactic_name,
-            "cosine_similarity": self.cosine_similarity,
-            "defensive_rationale": self.defensive_rationale,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class CryptographicSoarStatusBlock:
-    """Block 4: Cryptographic SOAR Status with immutable SHA-256 hash chain and HMAC."""
-
-    playbook_id: str
-    playbook_state: str  # "pending_approval" | "approved" | "executed_simulated"
-    prev_entry_sha256: str
-    entry_sha256: str
-    audit_chain_valid: bool
-    hmac_signature_verified: bool
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "playbook_id": self.playbook_id,
-            "playbook_state": self.playbook_state,
-            "prev_entry_sha256": self.prev_entry_sha256,
-            "entry_sha256": self.entry_sha256,
-            "audit_chain_valid": self.audit_chain_valid,
-            "hmac_signature_verified": self.hmac_signature_verified,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class FourBlockInvestigationAnatomy:
-    """Standardized 4-Block Investigation Case Anatomy for TheHive, Advisory & Dashboard."""
-
-    block_1_executive_summary: ExecutiveSummaryBlock
-    block_2_attack_timeline: AttackTimelineBlock
-    block_3_mitre_mapping: MitreMappingBlock
-    block_4_cryptographic_soar_status: CryptographicSoarStatusBlock
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "block_1_executive_summary": self.block_1_executive_summary.to_dict(),
-            "block_2_attack_timeline": self.block_2_attack_timeline.to_dict(),
-            "block_3_mitre_mapping": self.block_3_mitre_mapping.to_dict(),
-            "block_4_cryptographic_soar_status": self.block_4_cryptographic_soar_status.to_dict(),
-        }
-
-
 def build_four_block_investigation_anatomy(
     bundle: AdvisoryEvidenceBundle,
     *,
-    candidate_explanation: EvidenceBoundExplanation | None = None,
+    candidate_explanation: EvidenceBoundExplanation | dict[str, Any] | str | None = None,
     provenance: Any | None = None,
     candidate_affected_assets: Sequence[str] | None = None,
     window_type: str = "30.0s_burst",
@@ -503,6 +485,8 @@ def build_four_block_investigation_anatomy(
     entity IPs or MITRE technique IDs are ungrounded hallucinations, this function safely
     rejects the ungrounded inputs and falls back to deterministic template values.
     """
+    allowed_ips = _allowed_ips_from_bundle(bundle, provenance)
+
     # 1. Groundedness verification on explanation
     explanation_grounded = True
     if candidate_explanation is not None:
@@ -510,67 +494,33 @@ def build_four_block_investigation_anatomy(
             if not verify_explanation_groundedness(candidate_explanation, bundle):
                 explanation_grounded = False
         elif isinstance(candidate_explanation, str):
-            found_ips = set(IP_REGEX.findall(candidate_explanation))
-            known_ips: set[str] = set()
-            if bundle.enrichment_result and bundle.enrichment_result.inspected_entities:
-                known_ips.update(bundle.enrichment_result.inspected_entities)
-            if provenance is not None:
-                src = getattr(provenance, "src_ip", None) or getattr(
-                    provenance, "src_entity_id", None
-                )
-                dst = getattr(provenance, "dst_ip", None) or getattr(
-                    provenance, "dst_entity_id", None
-                )
-                for cand in (src, dst):
-                    if cand and isinstance(cand, str):
-                        clean_cand = cand.split(":")[-1]
-                        if IP_REGEX.match(clean_cand):
-                            known_ips.add(clean_cand)
-            if any(ip not in known_ips for ip in found_ips):
+            found_ips = set(_extract_canonical_ips(candidate_explanation))
+            if any(ip not in allowed_ips for ip in found_ips):
                 explanation_grounded = False
         elif isinstance(candidate_explanation, dict):
-            text_vals = " ".join(
-                str(v) for v in candidate_explanation.values() if isinstance(v, (str, list, dict))
-            )
-            found_ips = set(IP_REGEX.findall(text_vals))
-            known_ips = set()
-            if bundle.enrichment_result and bundle.enrichment_result.inspected_entities:
-                known_ips.update(bundle.enrichment_result.inspected_entities)
-            if provenance is not None:
-                src = getattr(provenance, "src_ip", None) or getattr(
-                    provenance, "src_entity_id", None
-                )
-                dst = getattr(provenance, "dst_ip", None) or getattr(
-                    provenance, "dst_entity_id", None
-                )
-                for cand in (src, dst):
-                    if cand and isinstance(cand, str):
-                        clean_cand = cand.split(":")[-1]
-                        if IP_REGEX.match(clean_cand):
-                            known_ips.add(clean_cand)
-            if any(ip not in known_ips for ip in found_ips):
+            text_vals = _collect_dict_text(candidate_explanation)
+            found_ips = set(_extract_canonical_ips(text_vals))
+            if any(ip not in allowed_ips for ip in found_ips):
                 explanation_grounded = False
+            elif candidate_explanation.get("advisory_only_non_authoritative") is False:
+                explanation_grounded = False
+            else:
+                allowed_mitre, allowed_cves = _allowed_mitre_and_cves(bundle)
+                found_mitre = {m.upper() for m in _FOLLOWUP_MITRE_ID.findall(text_vals)}
+                found_cves = {c.upper() for c in _CVE_REGEX.findall(text_vals)}
+                if not found_mitre.issubset(allowed_mitre) or not found_cves.issubset(allowed_cves):
+                    explanation_grounded = False
 
     # 2. Block 1: Executive Summary & Affected Network Assets
-    allowed_ips: set[str] = set()
-    if bundle.enrichment_result and bundle.enrichment_result.inspected_entities:
-        allowed_ips.update(bundle.enrichment_result.inspected_entities)
-    if provenance is not None:
-        src = getattr(provenance, "src_ip", None) or getattr(provenance, "src_entity_id", None)
-        dst = getattr(provenance, "dst_ip", None) or getattr(provenance, "dst_entity_id", None)
-        for cand in (src, dst):
-            if cand and isinstance(cand, str):
-                # Clean prefix if any
-                clean_cand = cand.split(":")[-1]
-                if IP_REGEX.match(clean_cand):
-                    allowed_ips.add(clean_cand)
-
     final_assets: list[str] = []
     if candidate_affected_assets is not None and explanation_grounded:
         candidate_ips = [ip.strip() for ip in candidate_affected_assets if ip.strip()]
+        canonical_candidates = [_canonicalize_ip(ip) for ip in candidate_ips]
         # Fail-closed check: every candidate IP must be in allowed_ips
-        if all(ip in allowed_ips for ip in candidate_ips) and len(candidate_ips) > 0:
-            final_assets = candidate_ips
+        if len(canonical_candidates) > 0 and all(
+            canon is not None and canon in allowed_ips for canon in canonical_candidates
+        ):
+            final_assets = [canon for canon in canonical_candidates if canon is not None]
         else:
             # Fall back closed to grounded allowed IPs only (never fabricate endpoints)
             final_assets = sorted(allowed_ips)
@@ -736,7 +686,7 @@ _FOLLOWUP_EXECUTION_REQUEST = re.compile(
     r"\b(isolate|contain|containment|quarantine|execute|block|kill)\b",
     re.IGNORECASE,
 )
-_FOLLOWUP_MITRE_ID = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
+_FOLLOWUP_MITRE_ID = re.compile(r"\bT\d{4}(?:\.\d{3})?\b", re.IGNORECASE)
 
 
 def answer_citation_locked_followup(
@@ -748,14 +698,18 @@ def answer_citation_locked_followup(
     Unknown IPs, unknown MITRE ids, and containment requests fail closed to the
     deterministic template. The reply never authorizes execution.
     """
+    cleaned_question = _strip_combining_marks(_strip_terminal_controls(question or ""))
+    nfkd_question = _strip_combining_marks(unicodedata.normalize("NFKD", cleaned_question))
     allowed = bundle.get_allowed_evidence_keys()
-    inspected: set[str] = set()
-    if bundle.enrichment_result is not None:
-        inspected.update(bundle.enrichment_result.inspected_entities)
-    unknown_ips = sorted(set(IP_REGEX.findall(question or "")) - inspected)
-    allowed_mitre = {key.split(":", 1)[1] for key in allowed if key.startswith("mitre:")}
-    unknown_mitre = sorted(set(_FOLLOWUP_MITRE_ID.findall(question or "")) - allowed_mitre)
-    asks_execution = _FOLLOWUP_EXECUTION_REQUEST.search(question or "") is not None
+    inspected = _allowed_ips_from_bundle(bundle)
+    unknown_ips = sorted(set(_extract_canonical_ips(cleaned_question)) - inspected)
+    allowed_mitre = {key.split(":", 1)[1].upper() for key in allowed if key.startswith("mitre:")}
+    found_mitre = {m.upper() for m in _FOLLOWUP_MITRE_ID.findall(cleaned_question)}
+    unknown_mitre = sorted(found_mitre - allowed_mitre)
+    asks_execution = (
+        _FOLLOWUP_EXECUTION_REQUEST.search(cleaned_question) is not None
+        or _FOLLOWUP_EXECUTION_REQUEST.search(nfkd_question) is not None
+    )
     fusion_sentence = "Production authority remains the frozen Random Forest and production_fusion_enabled is false."
     if unknown_ips or unknown_mitre or asks_execution:
         answer = (

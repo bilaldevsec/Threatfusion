@@ -15,15 +15,17 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "docs" / "screenshots"
+OUT = ROOT / "docs" / "assets" / "screenshots"
 BASE = "http://127.0.0.1:8766/"
+DESKTOP_WINDOW_SIZE = "1440,900"
+MOBILE_WINDOW_SIZE = "390,844"
 SHOTS = (
-    ("01_master_detail_dashboard.png", "#investigations"),
-    ("02_gemini_threat_copilot.png", "#detail"),
-    ("03_glassbox_evidence_checklist.png", "#graph"),
-    ("04_n8n_soar_callback.png", "#hunter"),
-    ("05_victim_firewall_containment.png", "#detail-soar"),
-    ("06_agy_adversarial_audit.png", "#lab"),
+    ("01-investigations-queue.png", "#investigations", DESKTOP_WINDOW_SIZE),
+    ("02-investigation-detail-ml.png", "#evidence", DESKTOP_WINDOW_SIZE),
+    ("03-gemini-copilot-grounded.png", "#detail", DESKTOP_WINDOW_SIZE),
+    ("04-ai-action-graph-soar.png", "#graph", DESKTOP_WINDOW_SIZE),
+    ("05-ai-threat-hunter-rules.png", "#hunter", DESKTOP_WINDOW_SIZE),
+    ("06-mobile-console.png", "#investigations", MOBILE_WINDOW_SIZE),
 )
 
 
@@ -52,7 +54,7 @@ def main() -> int:
     if browser is None:
         print("no Chrome or Chromium binary is available for screenshots", file=sys.stderr)
         return 1
-    for filename, suffix in SHOTS:
+    for filename, suffix, window_size in SHOTS:
         destination = OUT / filename
         command = [
             *browser,
@@ -60,7 +62,7 @@ def main() -> int:
             "--no-sandbox",
             "--disable-gpu",
             "--hide-scrollbars",
-            "--window-size=1600,2400",
+            f"--window-size={window_size}",
             f"--screenshot={destination}",
             BASE + suffix,
         ]

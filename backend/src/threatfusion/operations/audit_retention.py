@@ -215,9 +215,11 @@ def export_security_audit_archive(
             except FileNotFoundError:
                 pass
 
-        uri_path = f"file:{path.resolve()}?mode=ro"
+        uri_path = f"{path.resolve().as_uri()}?mode=ro"
         try:
             conn = sqlite3.connect(uri_path, uri=True, timeout=5.0)
+            conn.execute("PRAGMA query_only = ON")
+            conn.execute("PRAGMA trusted_schema = OFF")
         except sqlite3.Error:
             raise AuditRetentionError("file_invalid") from None
 
@@ -479,9 +481,10 @@ def prune_archived_security_audit(
     if row_count != manifest["row_count"]:
         raise AuditRetentionError("archive_tampered")
 
-    uri_path = f"file:{path.resolve()}"
+    uri_path = path.resolve().as_uri()
     try:
         conn = sqlite3.connect(uri_path, uri=True, timeout=5.0)
+        conn.execute("PRAGMA trusted_schema = OFF")
     except sqlite3.Error:
         raise AuditRetentionError("file_invalid") from None
 

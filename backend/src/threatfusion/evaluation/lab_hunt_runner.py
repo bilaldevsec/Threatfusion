@@ -12,6 +12,7 @@ import json
 import os
 import re
 import socket
+import threading
 from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path
@@ -24,6 +25,7 @@ LAB_CHAIN_SCHEMA_VERSION = "lab_hunt_hash_chain_v1"
 LAB_CLASSIFICATION = "LAB HYPOTHESIS — NOT AN ALERT"
 LAB_CHAIN_GENESIS = "0" * 64
 FORBIDDEN_PRODUCTION_DB_NAMES = frozenset({"soar.sqlite3", "alerts.sqlite3", "incidents.sqlite3"})
+_FORBIDDEN_DB_SUFFIXES = frozenset({".sqlite", ".sqlite3", ".db"})
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _RECORD_KEYS = frozenset({"record_id", "actor", "technique_id", "observed_at", "fields"})
@@ -38,6 +40,7 @@ _HASHED_ENTRY_KEYS = (
     "surviving_record_ids",
 )
 
+_SANDBOX_LOCK = threading.RLock()
 _SANDBOX_DEPTH = 0
 _ORIGINAL_CONNECT: Any = None
 _ORIGINAL_CONNECT_EX: Any = None
@@ -95,33 +98,35 @@ def lab_network_sandbox() -> Iterator[None]:
     """Refuse outbound socket connections until the block is released."""
     global _SANDBOX_DEPTH, _ORIGINAL_CONNECT, _ORIGINAL_CONNECT_EX, _ORIGINAL_CREATE_CONNECTION
     global _ORIGINAL_SENDTO, _ORIGINAL_GETADDRINFO
-    if _SANDBOX_DEPTH == 0:
-        _ORIGINAL_CONNECT = socket.socket.connect
-        _ORIGINAL_CONNECT_EX = socket.socket.connect_ex
-        _ORIGINAL_CREATE_CONNECTION = socket.create_connection
-        _ORIGINAL_SENDTO = socket.socket.sendto
-        _ORIGINAL_GETADDRINFO = socket.getaddrinfo
-        socket.socket.connect = _blocked_connect  # type: ignore[method-assign]
-        socket.socket.connect_ex = _blocked_connect_ex  # type: ignore[method-assign]
-        socket.create_connection = _blocked_create_connection
-        socket.socket.sendto = _blocked_sendto  # type: ignore[method-assign]
-        socket.getaddrinfo = _blocked_getaddrinfo
-    _SANDBOX_DEPTH += 1
+    with _SANDBOX_LOCK:
+        if _SANDBOX_DEPTH == 0:
+            _ORIGINAL_CONNECT = socket.socket.connect
+            _ORIGINAL_CONNECT_EX = socket.socket.connect_ex
+            _ORIGINAL_CREATE_CONNECTION = socket.create_connection
+            _ORIGINAL_SENDTO = socket.socket.sendto
+            _ORIGINAL_GETADDRINFO = socket.getaddrinfo
+            socket.socket.connect = _blocked_connect  # type: ignore[method-assign]
+            socket.socket.connect_ex = _blocked_connect_ex  # type: ignore[method-assign]
+            socket.create_connection = _blocked_create_connection
+            socket.socket.sendto = _blocked_sendto  # type: ignore[method-assign]
+            socket.getaddrinfo = _blocked_getaddrinfo
+        _SANDBOX_DEPTH += 1
     try:
         yield
     finally:
-        _SANDBOX_DEPTH -= 1
-        if _SANDBOX_DEPTH == 0:
-            socket.socket.connect = _ORIGINAL_CONNECT  # type: ignore[method-assign]
-            socket.socket.connect_ex = _ORIGINAL_CONNECT_EX  # type: ignore[method-assign]
-            socket.create_connection = _ORIGINAL_CREATE_CONNECTION
-            socket.socket.sendto = _ORIGINAL_SENDTO  # type: ignore[method-assign]
-            socket.getaddrinfo = _ORIGINAL_GETADDRINFO
-            _ORIGINAL_CONNECT = None
-            _ORIGINAL_CONNECT_EX = None
-            _ORIGINAL_CREATE_CONNECTION = None
-            _ORIGINAL_SENDTO = None
-            _ORIGINAL_GETADDRINFO = None
+        with _SANDBOX_LOCK:
+            _SANDBOX_DEPTH -= 1
+            if _SANDBOX_DEPTH == 0:
+                socket.socket.connect = _ORIGINAL_CONNECT  # type: ignore[method-assign]
+                socket.socket.connect_ex = _ORIGINAL_CONNECT_EX  # type: ignore[method-assign]
+                socket.create_connection = _ORIGINAL_CREATE_CONNECTION
+                socket.socket.sendto = _ORIGINAL_SENDTO  # type: ignore[method-assign]
+                socket.getaddrinfo = _ORIGINAL_GETADDRINFO
+                _ORIGINAL_CONNECT = None
+                _ORIGINAL_CONNECT_EX = None
+                _ORIGINAL_CREATE_CONNECTION = None
+                _ORIGINAL_SENDTO = None
+                _ORIGINAL_GETADDRINFO = None
 
 
 def probe_outbound_socket_blocked() -> None:
@@ -144,7 +149,12 @@ def probe_outbound_socket_blocked() -> None:
 
 
 def _refuse_production_database(path: Path) -> None:
-    if path.name in FORBIDDEN_PRODUCTION_DB_NAMES:
+    lower_name = path.name.lower()
+    if (
+        path.name in FORBIDDEN_PRODUCTION_DB_NAMES
+        or lower_name in FORBIDDEN_PRODUCTION_DB_NAMES
+        or path.suffix.lower() in _FORBIDDEN_DB_SUFFIXES
+    ):
         raise LabHuntSandboxError(f"production_database_refused:{path.name}")
     if path.is_symlink():
         raise LabHuntSandboxError("symlink_chain_refused")
@@ -320,17 +330,24 @@ def _write_chain(path: Path, document: Mapping[str, Any]) -> None:
     if path.is_symlink():
         raise LabHuntSandboxError("symlink_chain_refused")
     payload = canonical_json(document).encode("utf-8")
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+    fd = os.open(path, flags, 0o600)
     try:
         os.write(fd, payload)
+        os.fchmod(fd, 0o600)
     finally:
         os.close(fd)
-    os.chmod(path, 0o600)
 
 
 def verify_lab_hash_chain(path: Path) -> bool:
     """Recompute the lab chain. Production database names never verify."""
-    if path.name in FORBIDDEN_PRODUCTION_DB_NAMES or path.is_symlink() or not path.is_file():
+    if (
+        path.name in FORBIDDEN_PRODUCTION_DB_NAMES
+        or path.name.lower() in FORBIDDEN_PRODUCTION_DB_NAMES
+        or path.suffix.lower() in _FORBIDDEN_DB_SUFFIXES
+        or path.is_symlink()
+        or not path.is_file()
+    ):
         return False
     try:
         document = json.loads(path.read_text(encoding="utf-8"))

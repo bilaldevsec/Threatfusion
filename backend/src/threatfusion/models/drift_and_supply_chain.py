@@ -425,7 +425,7 @@ def _compute_decile_psi(
     scale_ratio = max(s_std / b_std, 0.1)
 
     z_shift = (s_mean - baseline_mean) / b_std
-    edges = [-999.0, *DECILE_NORMAL_QUANTILES, 999.0]
+    edges = (-math.inf, *DECILE_NORMAL_QUANTILES, math.inf)
 
     q: list[float] = []
     for i in range(10):
@@ -477,7 +477,17 @@ def evaluate_14_feature_telemetry_drift(
         raise TelemetryDriftError("records sequence must not be empty")
 
     b_means = dict(DEFAULT_BASELINE_MEANS)
+    canonical_feature_set = set(CANONICAL_14_FEATURES)
     if baseline_means is not None:
+        if not isinstance(baseline_means, Mapping):
+            raise TelemetryDriftError(
+                f"baseline_means must be a mapping, got {type(baseline_means).__name__}"
+            )
+        unknown_means = sorted(set(baseline_means) - canonical_feature_set)
+        if unknown_means:
+            raise TelemetryDriftError(
+                f"baseline_means contains unknown features: {', '.join(unknown_means)}"
+            )
         for fname, val in baseline_means.items():
             if isinstance(val, bool) or not isinstance(val, (int, float)):
                 raise TelemetryDriftError(
@@ -490,6 +500,15 @@ def evaluate_14_feature_telemetry_drift(
 
     b_stds = dict(DEFAULT_BASELINE_STDS)
     if baseline_stds is not None:
+        if not isinstance(baseline_stds, Mapping):
+            raise TelemetryDriftError(
+                f"baseline_stds must be a mapping, got {type(baseline_stds).__name__}"
+            )
+        unknown_stds = sorted(set(baseline_stds) - canonical_feature_set)
+        if unknown_stds:
+            raise TelemetryDriftError(
+                f"baseline_stds contains unknown features: {', '.join(unknown_stds)}"
+            )
         for fname, val in baseline_stds.items():
             if isinstance(val, bool) or not isinstance(val, (int, float)):
                 raise TelemetryDriftError(
@@ -506,6 +525,10 @@ def evaluate_14_feature_telemetry_drift(
     feature_vals: dict[str, list[float]] = {fname: [] for fname in CANONICAL_14_FEATURES}
 
     for idx, rec in enumerate(records):
+        if not isinstance(rec, Mapping):
+            raise TelemetryDriftError(
+                f"Record at index {idx} must be a mapping, got {type(rec).__name__}"
+            )
         for fname in CANONICAL_14_FEATURES:
             if fname not in rec:
                 raise TelemetryDriftError(

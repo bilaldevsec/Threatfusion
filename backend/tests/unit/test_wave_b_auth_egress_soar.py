@@ -395,6 +395,7 @@ def test_rs256_entra_jwks_verification_and_unknown_kid_cooldown(
             "exp": now + 600,
             "nbf": now - 10,
             "iss": "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000001/v2.0",
+            "aud": "api://threatfusion-console",
         }
         valid_jwt = _sign_rs256_jwt(
             key_path,
@@ -999,3 +1000,155 @@ def test_wave_b1_soar_atomic_reseal_trigger_and_rolled_back_redispatch_blocked(
         stub_srv.shutdown()
         stub_srv.server_close()
         stub_thread.join(timeout=5)
+
+
+def test_cf_p0_01_soar_playbook_record_row_tamper_detected(tmp_path: Path) -> None:
+    soar_db = tmp_path / "soar_tamper.sqlite3"
+    repo = SoarPlaybookSqliteRepository(soar_db, ledger_secret="tamper_test_secret_32_bytes_long")
+    engine = ApprovalGatedSoarEngine(repo)
+    rec = engine.recommend_actions_for_alert("cand_tamper_1", None)[0]
+    ok_before, _ = repo.verify_audit_chain_integrity(require_non_empty=True)
+    assert ok_before is True
+
+    with sqlite3.connect(soar_db) as conn:
+        conn.execute(
+            "UPDATE soar_playbook_records SET state = 'approved', target_entity = '10.0.0.1' WHERE playbook_id = ?",
+            (rec.playbook_id,),
+        )
+    ok_after, reason = repo.verify_audit_chain_integrity(require_non_empty=True)
+    assert ok_after is False
+    assert reason in {"soar_playbook_record_hmac_mismatch", "soar_playbook_record_state_mismatch"}
+
+
+def test_cf_p0_07_http_mutating_routes_enforce_rbac_and_reject_spoofed_actor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import urllib.error
+    import urllib.request
+
+    from scripts.run_misp_and_callback_contract_server import MispAndCallbackContractHandler
+    from threatfusion.api.live_soc_console import rbac_login
+
+    live_db = tmp_path / "live_rbac.sqlite3"
+    monkeypatch.setenv("THREATFUSION_LIVE_CONSOLE_DB", str(live_db))
+    monkeypatch.setenv("THREATFUSION_ENV", "lab")
+
+    auditor = rbac_login(
+        live_db, username="auditor@threatfusion.local", access_code="TF-Lab-Auditor-03!"
+    )
+    analyst = rbac_login(
+        live_db, username="analyst@threatfusion.local", access_code="TF-Lab-Analyst-02!"
+    )
+    assert auditor["authenticated"] is True
+    assert analyst["authenticated"] is True
+
+    all_nine_routes: tuple[tuple[str, dict[str, object]], ...] = (
+        (
+            "/api/v1/live/triage",
+            {"flow_id": 1, "action": "acknowledge", "actor_id": "lab_operator"},
+        ),
+        (
+            "/api/v1/live/assignment",
+            {"flow_id": 1, "assignee_id": "tier1_analyst", "actor_id": "lab_operator"},
+        ),
+        (
+            "/api/v1/live/context-memory",
+            {"flow_id": 1, "expected_behavior_rule": "test", "actor_id": "lab_operator"},
+        ),
+        (
+            "/api/v1/live/workspaces/select",
+            {"workspace_id": "finbank-pci-core", "operator_id": "lab_operator"},
+        ),
+        (
+            "/api/v1/live/workspaces/create",
+            {
+                "workspace_id": "ws-x",
+                "display_name": "X",
+                "monitored_cidr": "10.9.0.0/24",
+                "default_service": "443",
+                "actor_id": "lab_operator",
+            },
+        ),
+        (
+            "/api/v1/live/sensors/register",
+            {"sensor_id": "sensor-x", "monitored_cidr": "10.9.0.0/24", "actor_id": "lab_operator"},
+        ),
+        ("/api/v1/live/purge-bridge-noise", {"actor_id": "lab_operator"}),
+        ("/api/v1/live/scenarios", {"actor_id": "lab_operator"}),
+        ("/api/v1/live/replay", {"actor_id": "lab_operator"}),
+    )
+    admin_five_routes = all_nine_routes[4:]
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), MispAndCallbackContractHandler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    try:
+        for route, body in all_nine_routes:
+            req = urllib.request.Request(
+                f"{base}{route}",
+                data=json.dumps(body).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-ThreatFusion-Session": str(auditor["session_token"]),
+                    "X-ThreatFusion-CSRF": str(auditor["csrf_token"]),
+                },
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                urllib.request.urlopen(req, timeout=2.0)
+            assert exc.value.code == 403, f"auditor allowed on {route}"
+
+        for route, body in admin_five_routes:
+            req = urllib.request.Request(
+                f"{base}{route}",
+                data=json.dumps(body).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-ThreatFusion-Session": str(analyst["session_token"]),
+                    "X-ThreatFusion-CSRF": str(analyst["csrf_token"]),
+                },
+                method="POST",
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                urllib.request.urlopen(req, timeout=2.0)
+            assert exc.value.code == 403, f"tier1 allowed on {route}"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=5)
+
+
+def test_cf_p1_01_http_egress_blocks_tunnelled_ipv6_special_ranges_and_loopback_via_allowlist() -> (
+    None
+):
+    for blocked in (
+        "http://[2002:7f00:0001::1]/probe",
+        "http://[2001:0000:4136:e378:8000:63bf:3fff:fdd2]/probe",
+        "http://198.18.0.1/probe",
+        "http://[2001:db8::1]/probe",
+    ):
+        with pytest.raises(EgressBlockedError):
+            validate_egress_url(blocked, allow_loopback=True)
+
+    with pytest.raises(EgressBlockedError, match="egress_loopback_blocked"):
+        validate_egress_url(
+            "http://localhost:8080/internal",
+            allow_loopback=False,
+            allowed_hosts=("localhost",),
+        )
+    with pytest.raises(EgressBlockedError, match="egress_loopback_blocked"):
+        validate_egress_url(
+            "http://127.0.0.1:8080/internal",
+            allow_loopback=False,
+            allowed_hosts=("127.0.0.1",),
+        )
+    assert validate_egress_url("http://[::1]:8000/internal", allow_loopback=True).startswith(
+        "http://[::1]:8000"
+    )
+    with pytest.raises(EgressBlockedError, match="egress_loopback_blocked"):
+        validate_egress_url(
+            "http://[::1]:8000/internal",
+            allow_loopback=False,
+            allowed_hosts=("::1",),
+        )

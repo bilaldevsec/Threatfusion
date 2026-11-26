@@ -19,9 +19,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import importlib
+import importlib.util
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
@@ -113,12 +114,17 @@ CANONICAL_MODULES: tuple[str, ...] = (
 )
 
 _GATE_G9_STAGE_DIRECTORIES: tuple[str, ...] = (
+    "threatfusion/datasets",
     "threatfusion/datasets/adapters",
     "threatfusion/features",
     "threatfusion/preprocessing",
     "threatfusion/alerts",
     "threatfusion/enrichment",
     "threatfusion/correlation",
+    "threatfusion/soar",
+    "threatfusion/schemas",
+    "threatfusion/db",
+    "threatfusion/models",
 )
 _GATE_G9_STAGE_FILES: tuple[str, ...] = (
     "threatfusion/api/__init__.py",
@@ -130,6 +136,8 @@ _GATE_G9_STAGE_FILES: tuple[str, ...] = (
     "threatfusion/api/producer_service.py",
     "threatfusion/api/producer_tls_transport.py",
     "threatfusion/models/network_inference.py",
+    "threatfusion/operations/cloud_live_telemetry.py",
+    "threatfusion/operations/bridge_noise.py",
 )
 _GATE_G9_RUNTIME_MODULE_NEEDLES: tuple[str, ...] = (
     "analyst_dashboard",
@@ -138,19 +146,23 @@ _GATE_G9_RUNTIME_MODULE_NEEDLES: tuple[str, ...] = (
     "explanation_engine",
     "chromadb_mitre_rag",
     "chromadb",
+    "advisory_trace",
+    "telemetry_shield",
+    "google.genai",
+    "google.generativeai",
 )
 
 
-def _discover_gate_g9_stage_modules() -> tuple[str, ...]:
+def _discover_gate_g9_stage_modules(src_root: Path | None = None) -> tuple[str, ...]:
     """Every Stage 1–4 module under the detection pipeline, relative to backend/src."""
-    src_root = Path(__file__).resolve().parents[2]
+    base_src_root = src_root if src_root is not None else Path(__file__).resolve().parents[2]
     found = set(_GATE_G9_STAGE_FILES)
     for relative_root in _GATE_G9_STAGE_DIRECTORIES:
-        base = src_root / relative_root
+        base = base_src_root / relative_root
         if not base.is_dir():
             continue
         for path in base.rglob("*.py"):
-            found.add(path.relative_to(src_root).as_posix())
+            found.add(path.relative_to(base_src_root).as_posix())
     return tuple(sorted(found))
 
 
@@ -161,6 +173,10 @@ GATE_G9_FORBIDDEN_IMPORT_PATTERNS: tuple[str, ...] = (
     "gemini_client",
     "explanation_engine",
     "chromadb",
+    "advisory_trace",
+    "telemetry_shield",
+    "google.genai",
+    "google.generativeai",
 )
 
 
@@ -780,12 +796,91 @@ def _check_4_section_8_fusion_disabled(expected_src_root: Path) -> CheckResult:
     )
 
 
+def _resolve_relative_import_module(
+    rel_mod: str, module: str | None, level: int
+) -> tuple[str | None, bool]:
+    """Resolve a relative `from ... import ...` module path using `rel_mod`.
+
+    Returns `(resolved_module, out_of_package)`.
+    """
+    parts = PurePosixPath(rel_mod).with_suffix("").parts
+    if not parts:
+        return None, level > 1
+    pkg_parts = list(parts[:-1])
+    strip_count = level - 1
+    if strip_count > len(pkg_parts):
+        return None, True
+    base_parts = pkg_parts[: len(pkg_parts) - strip_count]
+    resolved_mod = ".".join(base_parts + ([module] if module else []))
+    return resolved_mod, False
+
+
+def _extract_constant_str(node: ast.AST | None) -> str | None:
+    """Return string value if AST node is a string literal Constant."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _extract_dynamic_import_targets(node: ast.Call) -> list[str]:
+    """Extract target module strings from importlib.import_module/import_module/__import__."""
+    is_import_module = (isinstance(node.func, ast.Name) and node.func.id == "import_module") or (
+        isinstance(node.func, ast.Attribute) and node.func.attr == "import_module"
+    )
+    is_dunder_import = (isinstance(node.func, ast.Name) and node.func.id == "__import__") or (
+        isinstance(node.func, ast.Attribute) and node.func.attr == "__import__"
+    )
+    if not (is_import_module or is_dunder_import):
+        return []
+
+    target_name = _extract_constant_str(node.args[0]) if node.args else None
+    package_name = (
+        _extract_constant_str(node.args[1]) if is_import_module and len(node.args) >= 2 else None
+    )
+    fromlist_node: ast.AST | None = (
+        node.args[3] if is_dunder_import and len(node.args) >= 4 else None
+    )
+
+    for kw in node.keywords:
+        if kw.arg == "name" and target_name is None:
+            target_name = _extract_constant_str(kw.value)
+        elif kw.arg == "package" and is_import_module and package_name is None:
+            package_name = _extract_constant_str(kw.value)
+        elif kw.arg == "fromlist" and is_dunder_import and fromlist_node is None:
+            fromlist_node = kw.value
+
+    if target_name is None:
+        return []
+
+    candidates: list[str] = []
+    if is_import_module and package_name and target_name.startswith("."):
+        try:
+            resolved = importlib.util.resolve_name(target_name, package_name)
+        except (ValueError, ImportError):
+            resolved = None
+        if resolved:
+            candidates.append(resolved)
+
+    candidates.append(target_name)
+
+    if is_dunder_import and isinstance(fromlist_node, (ast.Tuple, ast.List)):
+        for elt in fromlist_node.elts:
+            item = _extract_constant_str(elt)
+            if item:
+                candidates.append(f"{target_name}.{item}")
+
+    return candidates
+
+
 def verify_gate_g9_ast_import_graph(src_root: Path) -> tuple[bool, list[str]]:
     """Gate G9: Verify that Stage 1 to 4 detection modules contain zero imports of Stage 5 advisory components."""
     violations: list[str] = []
     resolved_src = src_root.resolve()
+    target_modules = sorted(
+        set(GATE_G9_STAGE_1_TO_4_MODULES) | set(_discover_gate_g9_stage_modules(resolved_src))
+    )
 
-    for rel_mod in GATE_G9_STAGE_1_TO_4_MODULES:
+    for rel_mod in target_modules:
         mod_file = resolved_src / rel_mod
         if not mod_file.is_file():
             violations.append(f"Gate G9 target file not found: {mod_file}")
@@ -806,25 +901,76 @@ def verify_gate_g9_ast_import_graph(src_root: Path) -> tuple[bool, list[str]]:
                                 f"Gate G9 AST violation in {rel_mod}:{node.lineno}: "
                                 f"import '{alias.name}' references forbidden advisory pattern '{forbidden}'"
                             )
+                            break
             elif isinstance(node, ast.ImportFrom):
-                mod_name = node.module or ""
-                mod_matched = False
-                for forbidden in GATE_G9_FORBIDDEN_IMPORT_PATTERNS:
-                    if forbidden in mod_name:
-                        mod_matched = True
+                raw_mod = node.module or ""
+                candidate_mods = [raw_mod] if raw_mod else []
+                resolved_mod: str | None = None
+                if node.level > 0:
+                    resolved_mod, out_of_package = _resolve_relative_import_module(
+                        rel_mod, node.module, node.level
+                    )
+                    if out_of_package:
                         violations.append(
                             f"Gate G9 AST violation in {rel_mod}:{node.lineno}: "
-                            f"from-import '{mod_name}' references forbidden advisory pattern '{forbidden}'"
+                            f"out-of-package relative import (level={node.level})"
                         )
-                if not mod_matched:
-                    for alias in node.names:
-                        imported_sym = f"{mod_name}.{alias.name}" if mod_name else alias.name
+                    if resolved_mod and resolved_mod not in candidate_mods:
+                        candidate_mods.append(resolved_mod)
+
+                mod_matched = False
+                matched_mod_patterns: set[str] = set()
+                for mod_candidate in candidate_mods:
+                    for forbidden in GATE_G9_FORBIDDEN_IMPORT_PATTERNS:
+                        if forbidden in mod_candidate:
+                            mod_matched = True
+                            matched_mod_patterns.add(forbidden)
+                            violations.append(
+                                f"Gate G9 AST violation in {rel_mod}:{node.lineno}: "
+                                f"from-import '{mod_candidate}' references forbidden advisory pattern '{forbidden}'"
+                            )
+                            break
+                    if mod_matched:
+                        break
+
+                for alias in node.names:
+                    raw_sym = f"{raw_mod}.{alias.name}" if raw_mod else alias.name
+                    candidate_syms = [raw_sym]
+                    if resolved_mod:
+                        resolved_sym = f"{resolved_mod}.{alias.name}"
+                        if resolved_sym not in candidate_syms:
+                            candidate_syms.append(resolved_sym)
+                    matched_sym = False
+                    for sym in candidate_syms:
                         for forbidden in GATE_G9_FORBIDDEN_IMPORT_PATTERNS:
-                            if forbidden in imported_sym or alias.name == forbidden:
+                            if mod_matched and forbidden in matched_mod_patterns:
+                                continue
+                            if (
+                                (not mod_matched and forbidden in sym)
+                                or forbidden in alias.name
+                                or alias.name == forbidden
+                            ):
+                                matched_sym = True
                                 violations.append(
                                     f"Gate G9 AST violation in {rel_mod}:{node.lineno}: "
-                                    f"symbol '{imported_sym}' references forbidden advisory pattern '{forbidden}'"
+                                    f"symbol '{sym}' references forbidden advisory pattern '{forbidden}'"
                                 )
+                                break
+                        if matched_sym:
+                            break
+            elif isinstance(node, ast.Call):
+                matched_call = False
+                for candidate in _extract_dynamic_import_targets(node):
+                    for forbidden in GATE_G9_FORBIDDEN_IMPORT_PATTERNS:
+                        if forbidden in candidate:
+                            matched_call = True
+                            violations.append(
+                                f"Gate G9 AST violation in {rel_mod}:{node.lineno}: "
+                                f"dynamic import '{candidate}' references forbidden advisory pattern '{forbidden}'"
+                            )
+                            break
+                    if matched_call:
+                        break
 
     return len(violations) == 0, violations
 
@@ -834,6 +980,12 @@ import json
 import sys
 
 import threatfusion.api.producer_inference_worker
+import threatfusion.datasets.adapters.suricata_flow
+import threatfusion.models.network_inference
+import threatfusion.alerts.correlation_engine
+import threatfusion.soar.playbook_ledger
+import threatfusion.soar.n8n_thehive_misp_stack
+import threatfusion.operations.cloud_live_telemetry
 
 needles = (
     "analyst_dashboard",
@@ -842,6 +994,10 @@ needles = (
     "explanation_engine",
     "chromadb_mitre_rag",
     "chromadb",
+    "advisory_trace",
+    "telemetry_shield",
+    "google.genai",
+    "google.generativeai",
 )
 leaked = sorted(
     name for name in sys.modules if any(needle in name for needle in needles)
@@ -895,10 +1051,7 @@ def verify_gate_g9_runtime_sys_modules(src_root: Path) -> tuple[bool, list[str]]
             continue
         for needle in _GATE_G9_RUNTIME_MODULE_NEEDLES:
             if needle in name:
-                violations.append(
-                    "Gate G9 sys.modules leak after "
-                    f"import threatfusion.api.producer_inference_worker: {name}"
-                )
+                violations.append(f"Gate G9 sys.modules leak after Stage 1-4 probe imports: {name}")
                 break
     return len(violations) == 0, violations
 

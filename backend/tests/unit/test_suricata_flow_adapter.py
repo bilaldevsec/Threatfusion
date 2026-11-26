@@ -8,7 +8,14 @@ from __future__ import annotations
 
 import pytest
 
-from threatfusion.datasets.adapters.base import SourceRowValidationError
+from threatfusion.datasets.adapters.base import (
+    SourceRowValidationError,
+    parse_required_timestamp,
+    required_alias,
+    required_float,
+    required_int,
+    required_value,
+)
 from threatfusion.datasets.adapters.suricata_flow import (
     DEFAULT_SURICATA_SENSOR_NAMESPACE,
     SURICATA_FLOW_SOURCE_REPRESENTATION,
@@ -193,3 +200,58 @@ def test_suricata_flow_adapter_validation_failures() -> None:
     bad_pkts["flow"]["pkts_toserver"] = -1
     with pytest.raises(SourceRowValidationError, match="must be >= 0"):
         adapter.adapt_flow_record(bad_pkts)
+
+
+def test_suricata_flow_adapter_portless_other_protocol() -> None:
+    adapter = SuricataFlowAdapter()
+    rec = _valid_eve_record("GRE")
+    del rec["src_port"]
+    del rec["dest_port"]
+    res = adapter.adapt_flow_record(rec)
+    assert res.flow.protocol == "other"
+    assert res.flow.src_port == 0
+    assert res.flow.dst_port == 0
+    assert res.features_14["protocol_other"] == 1.0
+
+
+@pytest.mark.parametrize("bad_age", [1e308, float("inf"), float("nan"), True, "invalid"])
+def test_suricata_flow_adapter_rejects_invalid_or_overflow_age(bad_age: object) -> None:
+    adapter = SuricataFlowAdapter()
+    rec = _valid_eve_record("TCP")
+    rec["flow"]["start"] = "2026-10-15T12:00:00.000000+00:00"
+    rec["flow"]["end"] = "2026-10-15T12:00:00.000000+00:00"
+    rec["flow"]["age"] = bad_age
+    with pytest.raises(SourceRowValidationError, match=r"flow\.age"):
+        adapter.adapt_flow_record(rec)
+
+
+def test_suricata_flow_adapter_null_or_blank_flow_id_fallback() -> None:
+    adapter = SuricataFlowAdapter()
+    rec_tcp = _valid_eve_record("TCP")
+    rec_tcp["flow_id"] = None
+    res_tcp = adapter.adapt_flow_record(rec_tcp)
+    assert res_tcp.flow.flow_id == "10.0.0.4:44120-10.0.0.5:80:tcp"
+    assert res_tcp.flow.flow_id != "None"
+
+    rec_udp = _valid_eve_record("UDP")
+    rec_udp["flow_id"] = "   "
+    res_udp = adapter.adapt_flow_record(rec_udp)
+    assert res_udp.flow.flow_id == "10.0.0.4:44120-10.0.0.5:80:udp"
+    assert res_tcp.source_event_id != res_udp.source_event_id
+
+
+def test_adapter_base_helpers_bool_large_int_and_container_safety() -> None:
+    with pytest.raises(SourceRowValidationError, match="must be an integer"):
+        required_int({"x": True}, "S", "x")
+    with pytest.raises(SourceRowValidationError, match="must be numeric"):
+        required_float({"x": False}, "S", "x")
+
+    large_exact = (1 << 53) + 1  # 9007199254740993: lost under float64
+    assert required_int({"x": large_exact}, "S", "x") == large_exact
+    assert required_int({"x": str(large_exact)}, "S", "x") == large_exact
+
+    # Non-scalar containers do not crash pd.isna()
+    assert required_value({"x": [1, 2]}, "S", "x") == [1, 2]
+    assert required_alias({"a": [1, 2]}, "S", ("a",)) == ("a", [1, 2])
+    with pytest.raises(SourceRowValidationError, match="must be a parseable timestamp"):
+        parse_required_timestamp([1, 2], "S", "ts")

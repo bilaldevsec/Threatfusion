@@ -180,6 +180,7 @@ def test_generate_harmonized_defense_docs(tmp_path: Path) -> None:
             "VERIFIED & OPERATIONAL" not in text
         ), f"{doc_name} contains unqualified 'VERIFIED & OPERATIONAL'"
         assert "100% operational" not in text, f"{doc_name} contains unqualified '100% operational'"
+        assert "CIC-IDS2017" not in text, f"{doc_name} contains prohibited 'CIC-IDS2017' reference"
 
         # 5. Assert open issues disclosed honestly
         for issue_id in ("TF-008", "TF-009", "TF-010", "TF-011"):

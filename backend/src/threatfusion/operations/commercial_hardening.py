@@ -216,7 +216,7 @@ def resolve_data_dir() -> Path:
                     "THREATFUSION_DATA_DIR must be set or /var/lib/threatfusion must be "
                     "writable in production"
                 ) from exc
-            path = Path("/tmp/threatfusion-range-demo")
+            path = Path(f"/tmp/threatfusion-data-{os.getuid()}")
     ensure_secure_parent_dir(path)
     return path
 
@@ -431,11 +431,11 @@ class LoginRateLimiter:
             self._prune(key, now)
         if len(self._events) > self.max_keys:
             overflow = len(self._events) - self.max_keys
-            oldest = sorted(
-                self._events.items(),
+            unlocked = sorted(
+                ((key, stamps) for key, stamps in self._events.items() if len(stamps) < self.limit),
                 key=lambda item: item[1][-1] if item[1] else 0.0,
-            )[:overflow]
-            for key, _stamps in oldest:
+            )
+            for key, _stamps in unlocked[:overflow]:
                 self._events.pop(key, None)
 
     def rejected(self, client_ip: str, email: str, *, now: float | None = None) -> int | None:
@@ -500,6 +500,27 @@ def security_headers(*, cache_no_store: bool) -> list[tuple[str, str]]:
     return headers
 
 
+_PROTECTED_INFRA_IPS: frozenset[ipaddress.IPv4Address] = frozenset(
+    {
+        ipaddress.IPv4Address("255.255.255.255"),
+        ipaddress.IPv4Address("168.63.129.16"),
+        ipaddress.IPv4Address("100.100.100.200"),
+        ipaddress.IPv4Address("172.29.0.1"),
+        ipaddress.IPv4Address("172.29.0.20"),
+        ipaddress.IPv4Address("10.0.0.1"),
+        ipaddress.IPv4Address("10.0.0.5"),
+    }
+)
+
+
+def _unwrap_mapped_ip(
+    addr: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        return addr.ipv4_mapped
+    return addr
+
+
 def _admin_ip() -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     raw = os.environ.get("SSH_CLIENT", "").strip()
     if not raw:
@@ -508,7 +529,7 @@ def _admin_ip() -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     if not token:
         return None
     try:
-        return ipaddress.ip_address(token)
+        return _unwrap_mapped_ip(ipaddress.ip_address(token))
     except ValueError:
         return None
 
@@ -533,14 +554,24 @@ def isolation_refusal_reason(src_ip: str) -> str | None:
             or net.is_unspecified
             or net.is_multicast
             or (admin is not None and admin.version == net.version and admin in net)
+            or (
+                net.num_addresses == 1
+                and _unwrap_mapped_ip(net.network_address) in _PROTECTED_INFRA_IPS
+            )
         ):
             return "protected_infrastructure_ip"
         return "invalid_ip"
     try:
-        parsed = ipaddress.ip_address(raw)
+        parsed = _unwrap_mapped_ip(ipaddress.ip_address(raw))
     except ValueError:
         return "invalid_ip"
-    if parsed.is_loopback or parsed.is_link_local or parsed.is_unspecified or parsed.is_multicast:
+    if (
+        parsed.is_loopback
+        or parsed.is_link_local
+        or parsed.is_unspecified
+        or parsed.is_multicast
+        or parsed in _PROTECTED_INFRA_IPS
+    ):
         return "protected_infrastructure_ip"
     admin = _admin_ip()
     if admin is not None and parsed == admin:
@@ -553,7 +584,7 @@ def assert_isolation_command_safe(src_ip: str) -> str:
     reason = isolation_refusal_reason(src_ip)
     if reason is not None:
         raise ValueError(reason)
-    return str(ipaddress.ip_address(str(src_ip).strip()))
+    return str(_unwrap_mapped_ip(ipaddress.ip_address(str(src_ip).strip())))
 
 
 def guard_isolation_source(src_ip: str) -> dict[str, Any] | None:
@@ -692,9 +723,87 @@ def seed_chromadb(db_path: Path) -> dict[str, Any]:
     return {"ready": count >= expected and count > 0, "documents": count}
 
 
+_READYZ_CACHE_TTL_SECONDS = 15.0
+_READYZ_CACHE_LOCK = threading.Lock()
+_PORTABLE_MODELS_CACHE: dict[
+    str, tuple[float, tuple[tuple[int, int] | None, ...], dict[str, Any]]
+] = {}
+_CHROMADB_READYZ_CACHE: dict[str, tuple[float, tuple[int, int] | None, dict[str, Any]]] = {}
+
+
+def _file_stat_stamp(path: Path) -> tuple[int, int] | None:
+    try:
+        info = path.lstat()
+    except OSError:
+        return None
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        return None
+    return int(info.st_mtime_ns), int(info.st_size)
+
+
+def _portable_models_stat_fingerprint(repo_root: Path) -> tuple[tuple[int, int] | None, ...]:
+    stamps = [
+        _file_stat_stamp(repo_root / spec["rel_path"])
+        for spec in FROZEN_MODEL_SUPPLY_CHAIN_REGISTRY.values()
+    ]
+    stamps.append(_file_stat_stamp(repo_root / DNN_MODEL_RELATIVE))
+    return tuple(stamps)
+
+
+def _verify_portable_models_cached(repo_root: Path) -> dict[str, Any]:
+    key = str(repo_root.resolve())
+    fingerprint = _portable_models_stat_fingerprint(repo_root)
+    now = time.monotonic()
+    with _READYZ_CACHE_LOCK:
+        cached = _PORTABLE_MODELS_CACHE.get(key)
+        if cached is not None:
+            ts, cached_fp, cached_res = cached
+            if (now - ts) < _READYZ_CACHE_TTL_SECONDS and cached_fp == fingerprint:
+                return dict(cached_res)
+    fresh = verify_portable_models(repo_root)
+    with _READYZ_CACHE_LOCK:
+        _PORTABLE_MODELS_CACHE[key] = (time.monotonic(), fingerprint, dict(fresh))
+    return fresh
+
+
+def _seed_chromadb_cached(chroma_path: Path) -> dict[str, Any]:
+    key = str(chroma_path.resolve())
+    stamp = _file_stat_stamp(chroma_path)
+    now = time.monotonic()
+    with _READYZ_CACHE_LOCK:
+        cached = _CHROMADB_READYZ_CACHE.get(key)
+        if cached is not None:
+            ts, cached_stamp, cached_res = cached
+            if (
+                stamp is not None
+                and (now - ts) < _READYZ_CACHE_TTL_SECONDS
+                and cached_stamp == stamp
+            ):
+                return dict(cached_res)
+    fresh = seed_chromadb(chroma_path)
+    new_stamp = _file_stat_stamp(chroma_path)
+    with _READYZ_CACHE_LOCK:
+        _CHROMADB_READYZ_CACHE[key] = (time.monotonic(), new_stamp, dict(fresh))
+    return fresh
+
+
 def _sqlite_wal_writable(db_path: Path) -> bool:
     ensure_secure_parent_dir(db_path.parent)
-    if not db_path.exists() and not db_path.is_symlink():
+    existed = db_path.exists() and not db_path.is_symlink()
+    if existed:
+        with scoped_umask_077():
+            conn = sqlite3.connect(str(db_path), timeout=5.0)
+            try:
+                conn.execute("PRAGMA busy_timeout=5000")
+                mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                if mode == "wal":
+                    conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+                    return True
+            except sqlite3.Error:
+                return False
+            finally:
+                conn.close()
+    elif not db_path.is_symlink():
         precreate_sqlite_0600(db_path)
     with scoped_umask_077():
         conn = sqlite3.connect(str(db_path), timeout=5.0)
@@ -725,11 +834,11 @@ def build_readiness(repo_root: Path, db_path: Path) -> dict[str, Any]:
         wal_ok = _sqlite_wal_writable(db_path)
     except OSError:
         wal_ok = False
-    models = verify_portable_models(repo_root)
+    models = _verify_portable_models_cached(repo_root)
     fixtures = load_runtime_fixtures(repo_root)
     chroma_path = db_path.with_name("chromadb_vectors.sqlite3")
     try:
-        chroma = seed_chromadb(chroma_path)
+        chroma = _seed_chromadb_cached(chroma_path)
     except (OSError, sqlite3.Error, TypeError, ValueError):
         chroma = {"ready": False, "documents": 0}
     ready = bool(wal_ok and models.get("ok") and chroma.get("ready") and fixtures is not None)

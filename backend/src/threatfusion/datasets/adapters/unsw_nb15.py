@@ -57,10 +57,12 @@ def adapt_unsw_row(row: dict[str, Any]) -> NetworkFlow:
     source = "UNSW-NB15"
     duration_ms = required_float(row, source, "dur") * 1000.0
 
-    fwd_packets = required_int(row, source, "spkts")
-    bwd_packets = required_int(row, source, "dpkts")
-    fwd_bytes = required_int(row, source, "sbytes")
-    bwd_bytes = required_int(row, source, "dbytes")
+    # Preserve historical float-mediated UNSW adapter semantics; UnswNetworkInferenceBoundary
+    # rejects lossy values > 2**53 before adapt_unsw_row() is invoked.
+    fwd_packets = required_int(row, source, "spkts", exact=False)
+    bwd_packets = required_int(row, source, "dpkts", exact=False)
+    fwd_bytes = required_int(row, source, "sbytes", exact=False)
+    bwd_bytes = required_int(row, source, "dbytes", exact=False)
 
     timestamp_field, timestamp_value = required_alias(row, source, ("stime", "timestamp"))
     start = parse_required_timestamp(timestamp_value, source, timestamp_field)

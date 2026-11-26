@@ -13,6 +13,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from threatfusion.db.sqlite_permissions import connect_sqlite_readonly
+
 MEASURED_RAW = "measured_raw"
 DISPLAY_ADJUSTED = "display-adjusted, not measured"
 COMPLETE = "COMPLETE"
@@ -424,15 +426,14 @@ def build_advisory_trace(
     }
 
 
-def read_cached_narratives(db_path: Path) -> dict[int, dict[str, str]]:
+def read_cached_narratives(db_path: Path) -> dict[int, dict[str, Any]]:
     """Read copilot cache rows. A missing file, symlink, or table stays empty."""
     path = Path(db_path)
     if not path.is_file() or path.is_symlink():
         return {}
-    uri = f"file:{path.resolve()}?mode=ro"
     try:
-        connection = sqlite3.connect(uri, uri=True, timeout=2.0)
-    except sqlite3.Error:
+        connection = connect_sqlite_readonly(path, timeout=2.0)
+    except (sqlite3.Error, OSError):
         return {}
     try:
         connection.row_factory = sqlite3.Row
@@ -447,18 +448,23 @@ def read_cached_narratives(db_path: Path) -> dict[int, dict[str, str]]:
             for row in connection.execute("PRAGMA table_info(live_copilot_cache)").fetchall()
         }
         select_cols = ["cache_key", "narrative", "created_at_utc"]
-        if "model_name" in cols:
-            select_cols.append("model_name")
-        if "provider" in cols:
-            select_cols.append("provider")
+        for opt_col in (
+            "model_name",
+            "provider",
+            "envelope_sha256",
+            "prompt_injection_filtered",
+        ):
+            if opt_col in cols:
+                select_cols.append(opt_col)
         rows = connection.execute(
-            f"SELECT {', '.join(select_cols)} FROM live_copilot_cache"
+            f"SELECT {', '.join(select_cols)} FROM live_copilot_cache "
+            "ORDER BY created_at_utc DESC LIMIT 2000"
         ).fetchall()
     except sqlite3.Error:
         return {}
     finally:
         connection.close()
-    found: dict[int, dict[str, str]] = {}
+    found: dict[int, dict[str, Any]] = {}
     for row in rows:
         head = str(row["cache_key"] or "").split("\n", 1)[0]
         try:
@@ -469,7 +475,7 @@ def read_cached_narratives(db_path: Path) -> dict[int, dict[str, str]]:
             continue
         recorded_at = str(row["created_at_utc"] or "")
         current = found.get(flow_id)
-        if current is not None and recorded_at < current["recorded_at_utc"]:
+        if current is not None and recorded_at < str(current["recorded_at_utc"]):
             continue
         row_keys = set(row.keys())
         found[flow_id] = {
@@ -477,6 +483,14 @@ def read_cached_narratives(db_path: Path) -> dict[int, dict[str, str]]:
             "recorded_at_utc": recorded_at,
             "model_name": str(row["model_name"] or "") if "model_name" in row_keys else "",
             "provider": str(row["provider"] or "") if "provider" in row_keys else "",
+            "envelope_sha256": (
+                str(row["envelope_sha256"] or "") if "envelope_sha256" in row_keys else ""
+            ),
+            "prompt_injection_filtered": (
+                bool(row["prompt_injection_filtered"])
+                if "prompt_injection_filtered" in row_keys
+                else False
+            ),
         }
     return found
 

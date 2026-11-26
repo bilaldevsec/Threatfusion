@@ -256,6 +256,32 @@ def test_playbook_preview_changes_with_the_technique(tmp_path: Path) -> None:
     assert quiet["firewall_rule_preview"] == "noop: benign flow, no iptables change"
     ast.parse(quiet["rendered_python_code"])
 
+    icmp_flow = _insert_flow(
+        live,
+        case_title="ICMP Network Sweep scenario label T1046",
+        flow_protocol="icmp",
+        service_or_port="0",
+        dst_port=0,
+    )
+    icmp_preview = preview_soar_playbook(live, flow_id=icmp_flow)
+    assert "-p icmp" in icmp_preview["firewall_rule_preview"]
+    assert "--dport" not in icmp_preview["firewall_rule_preview"]
+    assert "--dport" not in icmp_preview["rendered_python_code"]
+    ast.parse(icmp_preview["rendered_python_code"])
+
+    for protected_ip in ("10.0.0.1", "169.254.169.254"):
+        bad_flow = _insert_flow(
+            live,
+            src_entity_id=protected_ip,
+            case_title="Protected IP Sweep scenario label T1046",
+        )
+        try:
+            preview_soar_playbook(live, flow_id=bad_flow)
+        except ValueError as exc:
+            assert "protected_infrastructure_ip" in str(exc)
+        else:
+            raise AssertionError(f"Expected protected_infrastructure_ip refusal for {protected_ip}")
+
 
 def test_azure_status_reads_the_portal_state_file(tmp_path: Path) -> None:
     path = tmp_path / "azure_portal_state.json"
@@ -272,6 +298,7 @@ def test_azure_status_reads_the_portal_state_file(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
+    path.chmod(0o600)
     status = azure_portal_status(path)
     assert status["connected"] is True
     assert status["tenant_id"] == "tenant-1"

@@ -1,0 +1,6 @@
+FROM python:3.11.10-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN python -m pip install --no-cache-dir pydantic==2.13.5

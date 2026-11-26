@@ -236,7 +236,9 @@ def _smoothed_class_weights(labels: np.ndarray, categories: np.ndarray) -> torch
     weights = weights / max(float(weights.mean()), 1e-9)
     print(
         "class_weights "
-        + " ".join(f"{name}={weight:.3f}" for name, weight in zip(CATEGORIES, weights, strict=True)),
+        + " ".join(
+            f"{name}={weight:.3f}" for name, weight in zip(CATEGORIES, weights, strict=True)
+        ),
         flush=True,
     )
     return torch.tensor(weights, dtype=torch.float32)
@@ -263,7 +265,9 @@ def _balanced_epoch_indices(labels: np.ndarray, categories: np.ndarray, epoch: i
         if pool.size == 0:
             continue
         limit = caps.get(category_id, 4_000)
-        chosen.append(rng.choice(pool, size=min(limit, max(int(pool.size), 1)), replace=pool.size < limit))
+        chosen.append(
+            rng.choice(pool, size=min(limit, max(int(pool.size), 1)), replace=pool.size < limit)
+        )
     order = np.concatenate(chosen)
     rng.shuffle(order)
     return order
@@ -280,7 +284,9 @@ def _train(
     model.to(device)
     attack_count = float(labels.sum())
     normal_count = float(len(labels) - attack_count)
-    pos_weight = torch.tensor([normal_count / max(attack_count, 1.0)], dtype=torch.float32, device=device)
+    pos_weight = torch.tensor(
+        [normal_count / max(attack_count, 1.0)], dtype=torch.float32, device=device
+    )
     class_weights = _smoothed_class_weights(labels, categories).to(device)
     binary_loss = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     category_loss = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.02)
@@ -346,7 +352,9 @@ def _align_scenario_rows(
         if category_id not in focus:
             continue
         canonical = _canonical_matrix(train.iloc[pool])
-        forest_probability = forest.predict_proba(np.ascontiguousarray(canonical, dtype=np.float64))[:, 1]
+        forest_probability = forest.predict_proba(
+            np.ascontiguousarray(canonical, dtype=np.float64)
+        )[:, 1]
         hot = pool[forest_probability >= 0.50]
         if hot.size == 0:
             continue
@@ -359,7 +367,9 @@ def _align_scenario_rows(
     class_weights = _smoothed_class_weights(labels, categories)
     binary_loss = nn.BCEWithLogitsLoss()
     category_loss = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.01)
-    optimizer = torch.optim.Adam((param for param in model.parameters() if param.requires_grad), lr=2e-4)
+    optimizer = torch.optim.Adam(
+        (param for param in model.parameters() if param.requires_grad), lr=2e-4
+    )
     tensor_x = torch.from_numpy(scaled_train)
     tensor_y = torch.from_numpy(labels.astype(np.float32))
     tensor_c = torch.from_numpy(categories.astype(np.int64))
@@ -452,7 +462,9 @@ def _nudge_focus_category_head(
         if category_id not in {2, 3, 5, 6}:
             continue
         canonical = _canonical_matrix(train.iloc[pool])
-        forest_probability = forest.predict_proba(np.ascontiguousarray(canonical, dtype=np.float64))[:, 1]
+        forest_probability = forest.predict_proba(
+            np.ascontiguousarray(canonical, dtype=np.float64)
+        )[:, 1]
         hot = pool[forest_probability >= 0.50]
         if hot.size:
             chosen.append(rng.choice(hot, size=2000, replace=True))
@@ -495,7 +507,9 @@ def _fit_hot_scenario_rows(
         if pool.size == 0:
             continue
         canonical = _canonical_matrix(train.iloc[pool])
-        forest_probability = forest.predict_proba(np.ascontiguousarray(canonical, dtype=np.float64))[:, 1]
+        forest_probability = forest.predict_proba(
+            np.ascontiguousarray(canonical, dtype=np.float64)
+        )[:, 1]
         hot = pool[forest_probability >= 0.50]
         if hot.size:
             chosen.append(np.resize(hot, 8000 if category_id == 6 else 2000))
@@ -509,7 +523,9 @@ def _fit_hot_scenario_rows(
     for name, param in model.named_parameters():
         param.requires_grad_(name.startswith("category_head") or name.startswith("trunk.squeeze"))
     loss_fn = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam((param for param in model.parameters() if param.requires_grad), lr=5e-4)
+    optimizer = torch.optim.Adam(
+        (param for param in model.parameters() if param.requires_grad), lr=5e-4
+    )
     tensor_x = torch.from_numpy(scaled_train)
     tensor_c = torch.from_numpy(categories.astype(np.int64))
     model.eval()
@@ -572,9 +588,9 @@ def _canonical_matrix(frame: pd.DataFrame) -> np.ndarray:
     rate = frame["rate"].to_numpy(dtype=np.float64)
     positive_duration = duration > 0
     bytes_per_second = np.zeros(len(frame), dtype=np.float64)
-    bytes_per_second[positive_duration] = (sbytes[positive_duration] + dbytes[positive_duration]) / duration[
-        positive_duration
-    ]
+    bytes_per_second[positive_duration] = (
+        sbytes[positive_duration] + dbytes[positive_duration]
+    ) / duration[positive_duration]
     fwd_mean = np.zeros(len(frame), dtype=np.float64)
     bwd_mean = np.zeros(len(frame), dtype=np.float64)
     fwd_positive = spkts > 0
@@ -610,7 +626,9 @@ def _exact_row_overlap_count(train_rows: np.ndarray, test_rows: np.ndarray) -> i
     """Count test rows whose 14 feature values are byte-identical to a train row."""
     train_keys = {row.tobytes() for row in np.ascontiguousarray(train_rows, dtype=np.float64)}
     return sum(
-        1 for row in np.ascontiguousarray(test_rows, dtype=np.float64) if row.tobytes() in train_keys
+        1
+        for row in np.ascontiguousarray(test_rows, dtype=np.float64)
+        if row.tobytes() in train_keys
     )
 
 
@@ -687,7 +705,9 @@ _AE_ANOMALY_THRESHOLD = 0.1181361214680695
 _AE_SHA256 = "c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23"
 
 
-def _per_class_metrics(matrix: list[list[int]], classes: tuple[str, ...]) -> list[dict[str, object]]:
+def _per_class_metrics(
+    matrix: list[list[int]], classes: tuple[str, ...]
+) -> list[dict[str, object]]:
     metrics: list[dict[str, object]] = []
     for index, name in enumerate(classes):
         row = matrix[index]
@@ -907,7 +927,11 @@ def main() -> int:
     nine_class_matrix = _nine_class_confusion(attack_truth, attack_predicted)
     per_class = _per_class_metrics(nine_class_matrix, CATEGORIES)
     overlap_count = _exact_row_overlap_count(train_matrix, test_matrix)
-    if float(binary["accuracy"]) < 0.97 or float(binary["recall"]) < 0.99 or nine_class_accuracy < 0.78:
+    if (
+        float(binary["accuracy"]) < 0.97
+        or float(binary["recall"]) < 0.99
+        or nine_class_accuracy < 0.78
+    ):
         raise SystemExit(
             "held-out metrics below the clean-model floor: "
             + json.dumps(
@@ -946,7 +970,9 @@ def main() -> int:
     staged_path = output_dir / "dnn_model.pt.staged"
     torch.save(
         {
-            "state_dict": {name: tensor.detach().cpu() for name, tensor in model.state_dict().items()},
+            "state_dict": {
+                name: tensor.detach().cpu() for name, tensor in model.state_dict().items()
+            },
             "scaler_mean": torch.tensor(mean, dtype=torch.float32),
             "scaler_std": torch.tensor(std, dtype=torch.float32),
             "canonical_mean": torch.tensor(canonical_mean, dtype=torch.float32),
@@ -1026,14 +1052,19 @@ def main() -> int:
     }
     report_path = output_dir / "evaluation_report.json"
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({
-        "model_sha256": digest,
-        "train_rows": report["train_rows"],
-        "test_rows": report["test_rows"],
-        "accuracy": report["accuracy"],
-        "nine_class_accuracy": nine_class_accuracy,
-        "fyp1_random_forest_binary_accuracy": rf_report.get("binary_accuracy"),
-    }), flush=True)
+    print(
+        json.dumps(
+            {
+                "model_sha256": digest,
+                "train_rows": report["train_rows"],
+                "test_rows": report["test_rows"],
+                "accuracy": report["accuracy"],
+                "nine_class_accuracy": nine_class_accuracy,
+                "fyp1_random_forest_binary_accuracy": rf_report.get("binary_accuracy"),
+            }
+        ),
+        flush=True,
+    )
     return 0
 
 

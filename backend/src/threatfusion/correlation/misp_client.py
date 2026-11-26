@@ -11,22 +11,36 @@ import re
 from typing import Any
 
 _INTEGER_ONLY = re.compile(r"^[0-9]+$")
-_HEX_ENCODED = re.compile(r"^0x[0-9a-fA-F]+$")
+_HEX_ENCODED = re.compile(r"^0[xX][0-9a-fA-F]+$")
 _OCTAL_TOKEN = re.compile(r"^0[0-7]+$")
 _DOTTED_LEADING_ZERO = re.compile(r"(^|\.)0[0-7]")
+_NUMERIC_DOT_LABEL = re.compile(r"^(?:[0-9]+|0[xX][0-9a-fA-F]+|0[0-7]+)$")
 
 
 def _looks_like_ip_attempt(text: str) -> bool:
-    lowered = text.lower()
-    if lowered in {"localhost"}:
+    candidate = text.strip()
+    if not candidate:
+        return False
+    lowered = candidate.lower()
+    if lowered in {"localhost", "localhost.localdomain"}:
         return True
-    if text.startswith("[") or text.endswith("]"):
+    if candidate.startswith("[") or candidate.endswith("]"):
         return True
-    if _HEX_ENCODED.match(text) or _INTEGER_ONLY.match(text) or _OCTAL_TOKEN.match(text):
+    if ":" in candidate:
         return True
-    if _DOTTED_LEADING_ZERO.search(text):
+    base = candidate.split("/", 1)[0] if "/" in candidate else candidate
+    if _HEX_ENCODED.match(base) or _INTEGER_ONLY.match(base) or _OCTAL_TOKEN.match(base):
         return True
-    return "." in text or ":" in text
+    try:
+        ipaddress.ip_address(base)
+        return True
+    except ValueError:
+        pass
+    if "." in base:
+        parts = base.split(".")
+        if all(part and _NUMERIC_DOT_LABEL.match(part) for part in parts):
+            return True
+    return False
 
 
 def _evades_standard_formatting(text: str) -> bool:
