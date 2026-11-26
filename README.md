@@ -99,7 +99,7 @@ All 7 frozen binaries/specs are verified byte-identical by `scripts/audit_repo_t
 
 | Component | Artifact Path | SHA-256 Prefix (`Full Digest`) | Governance Status |
 | :--- | :--- | :--- | :--- |
-| **Frozen Random Forest** | `artifacts/models/network_random_forest/full-network-random-forest-6d69c72-v1/random_forest.joblib` | `bd2853a6` (`bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9`) | **Product Inference Authority** |
+| **Frozen Random Forest** | `artifacts/models/network_random_forest_baseline/full-network-random-forest-6d69c72-v1/random_forest.joblib` | `bd2853a6` (`bd2853a6f9d7f65038cc8bd2da282a2221cb73bda1f1e4c1c714098e8bfcffa9`) | **Product Inference Authority** |
 | **Logistic Regression** | `artifacts/models/network_logistic_baseline/full-network-logistic-5e70ed9-v1/logistic_regression.joblib` | `2cf4de66` (`2cf4de6686d937c485d4dbcbfa21d3e90f65bbb922087c8b31be4b012d7fb148`) | Linear Comparator Baseline |
 | **Frozen v2 Autoencoder** | `artifacts/models/network_autoencoder/full-benign-autoencoder-2a51c94-v2/autoencoder_state.pt` | `c8675d13` (`c8675d13869308babf41f269f9437d083daf827781293357e1749d4df0af4b23`) | Unfused Experimental Ranker |
 | **Rate-Log1p Candidate** | `artifacts/models/network_rate_log1p_autoencoder/rate-log1p-autoencoder-b5e6e5d-v1/autoencoder_state.pt` | `1d02e5bb` (`1d02e5bba556cb28709bd0faefce5f29da424a419a2d95332ad27a8995b26f63`) | `BLOCKED_preserve_baseline` |
@@ -114,7 +114,7 @@ All 7 frozen binaries/specs are verified byte-identical by `scripts/audit_repo_t
 | Evaluation Split / Model | Sample Count | Precision | Recall | F1 Score | FPR | Accuracy / Notes |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **UNSW-NB15 January Validation — Frozen RF (`bd2853a6`)** | `216,568` (`4,358` GT attacks; `4,246` RF predicted alerts) | `95.266%` | `92.818%` | `94.026%` | `0.095%` (`201 / 212,210`) | `99.763%` Accuracy; `98.039%` alert volume reduction (`4,246 / 216,568`) |
-| **UNSW-NB15 January Validation — Frozen v2 AE (`c8675d13`)** | `216,568` (`threshold = 0.1181361214680695`) | `54.975%` | `45.617%` | `49.859%` | `0.767%` (`1,628 / 212,210`) | `98.154%` Accuracy; strict `>` threshold comparison; unfused |
+| **UNSW-NB15 January Validation — Frozen v2 AE (`c8675d13`)** | `216,568` (`threshold = 0.1181361214680695`) | `54.978%` | `45.617%` | `49.862%` | `0.767%` (`1,628 / 212,210`) | `98.154%` Accuracy; strict `>` threshold comparison; unfused |
 | **Section 8 Counterfactual Fusion (RF OR v2 AE)** | `216,568` | `70.00%` | `95.021%` | `80.60%` | `0.836%` | **Blocked (`production_fusion_enabled = False`)**: `+2.203 pp recall gain (92.818% -> 95.021%; +2.373% relative TP increase, 96/4,045)` costs `1,574` extra benign FPs (`8.8308x` inflation, `16.3958` FPs/extra TP) |
 | **UNSW-NB15 February Benchmark — Frozen RF** | `1,452,844` rows (exposed under `TF-007`) | `95.675%` | `97.354%` | `96.507%` | **`1.141%`** (`13,163 / 1,153,776`) | Development-informing benchmark (`TF-007` open; not independent held-out proof) |
 | **CSE-CIC-IDS2018 Cross-Source — Frozen RF** | `2,097,145` accepted rows | `0.696%` | `0.444%` | **`0.542%`** (`0.54%`) | `16.498%` | `BLOCKED_SEMANTIC_MISMATCH`: byte-layer & extractor semantics fail cross-source transfer (`TF-002`, `TF-003`, `TF-012`) |

@@ -22,6 +22,12 @@
   const AZURE_LOCAL_CONTAINMENT_BADGE = 'CONTAINMENT APPLIED — Source 172.29.0.10 blocked at Azure & Local firewall (iptables DROP active).';
   let selectedFlowId = null;
   let identityGateSwitchMode = false;
+  let consoleEnvironmentPosture = 'lab';
+  let authSessionExpired = false;
+  let advisoryTraceRequestSerial = 0;
+  let modelProofRequestSerial = 0;
+  let soarPreviewRequestSerial = 0;
+  let boundEscapeHandler = false;
   const nativeFetch = window.fetch.bind(window);
   async function ensureLiveCsrf() {
     if (liveCsrfToken) return liveCsrfToken;
@@ -50,7 +56,15 @@
       opts.credentials = opts.credentials || 'same-origin';
     }
     opts.headers = headers;
-    return nativeFetch(url, opts);
+    const resp = await nativeFetch(url, opts);
+    const isAuthRoute = target.indexOf('/api/rbac/login') !== -1
+      || target.indexOf('/api/rbac/register') !== -1
+      || target.indexOf('/api/rbac/session') !== -1
+      || target.indexOf('/api/rbac/logout') !== -1;
+    if (resp && resp.status === 401 && target.indexOf('/api/') !== -1 && !isAuthRoute) {
+      handleAuthExpired('Session expired (HTTP 401). Please sign in again.');
+    }
+    return resp;
   };
 
   // ========================================================================
@@ -614,7 +628,9 @@
       node.classList.toggle('is-active', node.getAttribute('data-soc-view') === name);
     });
     document.querySelectorAll('[data-soc-nav]').forEach(node => {
-      node.classList.toggle('is-active', node.getAttribute('data-soc-nav') === name);
+      const active = node.getAttribute('data-soc-nav') === name;
+      node.classList.toggle('is-active', active);
+      node.setAttribute('aria-selected', active ? 'true' : 'false');
     });
     if (name === 'graph') renderActionGraph();
     if (name === 'hunter') {
@@ -622,6 +638,15 @@
       renderMitreCoverageMatrix();
       refreshHuntingGuides();
     }
+  }
+
+  function syncDrawerVisibilityAria() {
+    ['labControlsDrawer', 'enterpriseWorkspaceDrawer', 'healthGovernanceDrawer'].forEach(id => {
+      const node = document.getElementById(id);
+      if (node) {
+        node.setAttribute('aria-hidden', node.classList.contains('is-open') ? 'false' : 'true');
+      }
+    });
   }
 
   function openLabDrawer(open) {
@@ -633,6 +658,7 @@
       if (health) health.classList.remove('is-open');
     }
     if (drawer) drawer.classList.toggle('is-open', Boolean(open));
+    syncDrawerVisibilityAria();
   }
 
   function openHealthDrawer(open) {
@@ -644,6 +670,7 @@
       if (ent) ent.classList.remove('is-open');
     }
     if (drawer) drawer.classList.toggle('is-open', Boolean(open));
+    syncDrawerVisibilityAria();
   }
 
   function selectedIncident() {
@@ -681,6 +708,7 @@
       const resp = await fetch('/api/v1/live/posture');
       if (!resp.ok) return;
       const data = await resp.json();
+      consoleEnvironmentPosture = String((data && data.environment) || 'lab').toLowerCase();
       const label = data.posture_label || 'POSTURE: LAB DEMO';
       document.querySelectorAll('[data-posture-pill]').forEach((node) => {
         node.textContent = label;
@@ -753,6 +781,7 @@
   function activeIncidents() {
     if (!campaignFetchSettled) return [];
     if (liveQueueLoaded) return liveCampaignIncidents;
+    if (consoleEnvironmentPosture === 'production' || authSessionExpired) return [];
     return SAMPLE_INCIDENTS;
   }
 
@@ -925,9 +954,7 @@
   }
 
   function isMissingEndpoint(val) {
-    if (!val) return true;
-    const str = String(val).trim();
-    return str === '' || str === 'not recorded' || str === 'not-recorded';
+    return !isStoredIpToken(val);
   }
 
   function isRecordedUnsw(inc) {
@@ -1746,8 +1773,16 @@
         + '<td>' + entitiesHtml + '</td>'
         + '<td>' + escapeHtml(sourceDisplayName(inc.sourceLabel)) + '</td>'
         + '<td>' + escapeHtml(triage) + ' <span class="priority-pill priority-info">' + escapeHtml(rfDecisionLabel(inc)) + '</span>' + escapeHtml(analystNote) + '</td>';
+      itemEl.tabIndex = 0;
       itemEl.addEventListener('click', () => {
         selectInvestigation(inc);
+      });
+      itemEl.addEventListener('keydown', (event) => {
+        if (event.target && event.target.closest && event.target.closest('.copy-incident-id')) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          selectInvestigation(inc);
+        }
       });
       const copyButton = itemEl.querySelector('.copy-incident-id');
       if (copyButton) {
@@ -1977,7 +2012,7 @@
       renderRemediation(null);
       setInspectorText('inspectorPlaybook', 'none');
       setInspectorText('inspectorChain', 'Playbook hash chain: unavailable');
-      setInspectorText('inspectorCallback', 'Callback receipt: not recorded');
+      setInspectorText('inspectorCallback', 'not recorded');
       setInspectorText('inspectorExecutionPath', 'not dispatched');
       const rangeBadge = document.getElementById('rangeConnectivityBadge');
       if (rangeBadge) {
@@ -2069,7 +2104,7 @@
         rangeBadge.setAttribute('data-connectivity', 'simulated');
         rangeBadge.setAttribute('data-evidence-state', 'simulated');
       } else if (inc.containmentState === 'applied') {
-        const azureBadge = azureLocalContainmentBadge(latestDualFirewallProbe);
+        const azureBadge = src === '172.29.0.10' ? azureLocalContainmentBadge(latestDualFirewallProbe) : '';
         rangeBadge.textContent = azureBadge || (src + ' -> ' + dst + ': BLOCKED (iptables DROP active)');
         rangeBadge.setAttribute('data-connectivity', 'blocked');
         rangeBadge.setAttribute('data-evidence-state', 'verified');
@@ -2101,7 +2136,7 @@
     const signed = inc.live === true
       && typeof inc.callbackSignature === 'string'
       && SHA256_HEX_REGEX.test(inc.callbackSignature);
-    setInspectorText('inspectorCallback', signed ? 'Callback receipt: recorded' : 'Callback receipt: not recorded');
+    setInspectorText('inspectorCallback', signed ? 'recorded' : 'not recorded');
     const callbackNode = document.getElementById('inspectorCallback');
     if (callbackNode) callbackNode.setAttribute('data-evidence-state', 'unavailable');
     const executionPath = inc.executionPath === 'n8n_live_container'
@@ -2201,7 +2236,17 @@
     const verified = ledger && ledger.status === 'VERIFIED';
     const fenceActive = !!(envelope && envelope.envelope_sha256);
     if (verified && fenceActive) {
-      fence.textContent = 'Ledger Verified · Fence Active';
+      const activeInc = selectedIncident();
+      const soarDispatched = !!(
+        activeInc && (
+          playbookChainVerified(activeInc)
+          || activeInc.callbackRecorded === true
+          || (activeInc.executionPath && activeInc.executionPath !== 'not dispatched')
+        )
+      );
+      fence.textContent = soarDispatched
+        ? 'Ledger Verified · Fence Active'
+        : 'Telemetry Grounded · Fence Active';
       fence.setAttribute('data-ledger-status', 'verified');
       return;
     }
@@ -2328,13 +2373,21 @@
     const raw = inc && (inc.flowId != null ? inc.flowId : inc.flow_id);
     const flowId = Number(raw);
     if (!Number.isInteger(flowId) || flowId <= 0) return;
+    const serial = ++advisoryTraceRequestSerial;
+    const targetId = inc && inc.id ? String(inc.id) : '';
     try {
       const resp = await fetch('/api/v1/live/advisory-trace?flow_id=' + encodeURIComponent(String(flowId)));
       const data = await readActionPayload(resp);
+      if (serial !== advisoryTraceRequestSerial) return;
+      const current = selectedIncident();
+      if (current && targetId && String(current.id || '') !== targetId) return;
       if (!resp.ok || !data || !Array.isArray(data.components)) return;
       if (inc) inc.advisoryTrace = data;
       renderAdvisoryTrace(data);
     } catch (err) {
+      if (serial !== advisoryTraceRequestSerial) return;
+      const current = selectedIncident();
+      if (current && targetId && String(current.id || '') !== targetId) return;
       renderAdvisoryTrace(inc && inc.advisoryTrace);
     }
   }
@@ -2894,8 +2947,11 @@
     tabButtons.forEach(btn => {
       btn.addEventListener('click', () => {
         const target = btn.getAttribute('data-tab-target');
-        tabButtons.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
+        tabButtons.forEach(b => {
+          const isCurrent = b === btn;
+          b.classList.toggle('active', isCurrent);
+          b.setAttribute('aria-selected', isCurrent ? 'true' : 'false');
+        });
         tabPanes.forEach(pane => {
           if (pane.getAttribute('data-inspector-tab') === target) {
             pane.classList.add('active');
@@ -3205,6 +3261,47 @@
     bindControl(['btnRbacLogin', 'identityLoginBtn'], () => { submitRbacLogin(false); });
     bindControl(['btnRbacEntra', 'identityTokenBtn'], () => { submitRbacLogin(true); });
     bindControl(['btnRbacRegister', 'identityRegisterBtn'], () => { submitRbacRegister(); });
+    ['rbacUsername', 'rbacAccessCode'].forEach(id => {
+      const node = document.getElementById(id);
+      if (node && node.dataset.boundEnter !== '1') {
+        node.dataset.boundEnter = '1';
+        node.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            submitRbacLogin(false);
+          }
+        });
+      }
+    });
+    const regNameInput = document.getElementById('rbacRegisterName');
+    if (regNameInput && regNameInput.dataset.boundEnter !== '1') {
+      regNameInput.dataset.boundEnter = '1';
+      regNameInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          submitRbacRegister();
+        }
+      });
+    }
+    if (!boundEscapeHandler && typeof document.addEventListener === 'function') {
+      boundEscapeHandler = true;
+      document.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        const schemaModal = document.getElementById('n8nSchemaModal');
+        if (schemaModal && !schemaModal.hidden) {
+          schemaModal.hidden = true;
+          return;
+        }
+        const identityModal = document.getElementById('identityModal');
+        if (identityModal && !identityModal.hidden && identityGateSwitchMode && isSessionAuthenticated()) {
+          openIdentityModal(false);
+          return;
+        }
+        openLabDrawer(false);
+        openHealthDrawer(false);
+        openEnterpriseDrawer(false);
+      });
+    }
     const logoutButton = document.getElementById('btnRbacLogout');
     if (logoutButton) logoutButton.addEventListener('click', () => { submitRbacLogout(); });
     const copyAzure = document.getElementById('btnCopyAzureSnippet');
@@ -3388,12 +3485,12 @@
       return 'SIMULATED SCENARIO CONTAINMENT (No Host Firewall Rule Executed — Recorded in Ledger)';
     }
     if (state === 'applied') {
-      const azureBadge = azureLocalContainmentBadge(latestDualFirewallProbe);
-      if (azureBadge && (!srcIp || srcIp === '172.29.0.10')) return azureBadge;
+      const azureBadge = srcIp === '172.29.0.10' ? azureLocalContainmentBadge(latestDualFirewallProbe) : '';
+      if (azureBadge) return azureBadge;
       return 'CONTAINMENT APPLIED — Source ' + srcIp + ' blocked at firewall (iptables DROP active). Click Rollback to restore.';
     }
     if (state === 'rolled_back') {
-      if (latestAzureRollback && (!srcIp || srcIp === '172.29.0.10')) {
+      if (latestAzureRollback && srcIp === '172.29.0.10') {
         return 'CONTAINMENT ROLLED BACK — Firewall block on 172.29.0.10 removed from Azure & Local firewall.';
       }
       return 'CONTAINMENT ROLLED BACK — Firewall block on ' + srcIp + ' removed and rollback recorded in SHA-256 ledger.';
@@ -3696,7 +3793,7 @@
   function showStoredContainment(views) {
     const selected = selectedIncident();
     const selectedSrc = selected && selected.provenance ? String(selected.provenance.srcIp || '') : '';
-    if (selectedSrc && selectedSrc !== '172.29.0.10') return;
+    if (!selected || selected.decision !== 'Attack' || selectedSrc !== '172.29.0.10') return;
     const blocked = (views || []).some(item => item.containmentState === 'applied' && item.provenance && item.provenance.srcIp === '172.29.0.10');
     const rolled = (views || []).some(item => item.containmentState === 'rolled_back' && item.provenance && item.provenance.srcIp === '172.29.0.10');
     if (blocked) setRangeConnectivity(true);
@@ -3785,6 +3882,17 @@
         if (!queueOnly) await refreshAssetInventory();
         const resp = await fetch('/api/v1/live/campaigns');
         if (generation !== campaignRefreshGeneration) return;
+        if (resp.status === 401) {
+          campaignFingerprint = null;
+          liveQueueLoaded = false;
+          liveCampaignIncidents = [];
+          campaignFetchSettled = true;
+          setSampleSurfacesHidden(true);
+          handleAuthExpired('Session expired. Sign in to view live campaigns.');
+          renderIncidentQueue();
+          renderForensicDrawer();
+          return;
+        }
         if (!resp.ok) throw new Error('campaign status');
         const data = await resp.json();
         if (generation !== campaignRefreshGeneration) return;
@@ -3881,8 +3989,14 @@
         campaignFingerprint = null;
         liveQueueLoaded = false;
         campaignFetchSettled = true;
-        setSampleSurfacesHidden(false);
-        setLiveText('campaignQueueStatus', 'Campaign store unavailable. The recorded queue is the fallback.', 'unavailable');
+        if (consoleEnvironmentPosture === 'production' || authSessionExpired) {
+          liveCampaignIncidents = [];
+          setSampleSurfacesHidden(true);
+          setLiveText('campaignQueueStatus', 'Authentication required to load live campaigns.', 'unavailable');
+        } else {
+          setSampleSurfacesHidden(false);
+          setLiveText('campaignQueueStatus', 'Campaign store unavailable. The recorded queue is the fallback.', 'unavailable');
+        }
         renderTelemetryReductionFunnel(null, []);
         renderMitreCoverageMatrix();
         renderScoringTimeProvenance(selectedIncident());
@@ -4033,7 +4147,7 @@
   function paintSessionIdentity(session) {
     if (!session || session.authenticated === false) {
       paintOperatorBadge('unverified local label', false);
-      applyTier3SoarAffordance();
+      applyContainmentGuard(selectedIncident());
       return;
     }
     const line = headerLineForSession(session);
@@ -4048,7 +4162,7 @@
     }
     const profile = document.getElementById('operatorProfileName');
     if (profile) profile.textContent = session.display_name || line;
-    applyTier3SoarAffordance();
+    applyContainmentGuard(selectedIncident());
   }
 
   function showOperatorStamp(stamp) {
@@ -4585,7 +4699,12 @@
     }
     const probability = Number(inc.dnnAttackProbability);
     if (inc.decision === 'Benign' || (Number.isFinite(probability) && probability < 0.5)) {
-      const percent = Number.isFinite(probability) ? ' (' + (probability * 100).toFixed(1) + '%)' : '';
+      const normalConfidence = Number.isFinite(probability)
+        ? Math.max(0, Math.min(1, 1 - probability))
+        : NaN;
+      const percent = Number.isFinite(normalConfidence)
+        ? ' (' + (normalConfidence * 100).toFixed(1) + '%)'
+        : '';
       node.textContent = 'PyTorch DNN (9-Class): Normal' + percent;
       return;
     }
@@ -4637,7 +4756,6 @@
     renderIncidentQueue();
     renderForensicDrawer();
     showSocView('detail');
-    loadModelProofForSelection(inc);
     loadAdvisoryTrace(inc);
     refreshCopilotForSelection(inc, true);
   }
@@ -4678,10 +4796,15 @@
     if (!Number.isInteger(flowId) || flowId <= 0) return;
     if (modelProofLoadedFlowId === flowId) return;
     modelProofLoadedFlowId = flowId;
+    const serial = ++modelProofRequestSerial;
     const results = document.getElementById('modelProofResults');
     try {
       const resp = await fetch('/api/v1/live/model-proof?flow_id=' + encodeURIComponent(String(flowId)));
       const data = await readActionPayload(resp);
+      if (serial !== modelProofRequestSerial) return;
+      const activeInc = selectedIncident();
+      const activeFlow = activeInc ? Number(activeInc.flowId || activeInc.flow_id) : 0;
+      if (activeInc && activeFlow !== flowId) return;
       const features = data && data.original && data.original.features;
       if (features && typeof features === 'object') {
         inc.dnnFeatures = features;
@@ -4702,7 +4825,11 @@
         results.textContent = actionFailureText(data, resp);
       }
     } catch (err) {
-      modelProofLoadedFlowId = null;
+      if (modelProofLoadedFlowId === flowId) modelProofLoadedFlowId = null;
+      if (serial !== modelProofRequestSerial) return;
+      const activeInc = selectedIncident();
+      const activeFlow = activeInc ? Number(activeInc.flowId || activeInc.flow_id) : 0;
+      if (activeInc && activeFlow !== flowId) return;
       if (results) results.textContent = 'Live inference unavailable.';
     }
   }
@@ -4814,10 +4941,16 @@
       if (results) results.textContent = 'Select a stored flow first.';
       return;
     }
+    const flowId = Number(inc.flowId);
+    const serial = ++modelProofRequestSerial;
     if (inc.dnnFeatures) fillModelProofInputs(inc.dnnFeatures);
     try {
-      const resp = await fetch('/api/v1/live/model-proof?flow_id=' + encodeURIComponent(String(inc.flowId)));
+      const resp = await fetch('/api/v1/live/model-proof?flow_id=' + encodeURIComponent(String(flowId)));
       const data = await readActionPayload(resp);
+      if (serial !== modelProofRequestSerial) return;
+      const activeInc = selectedIncident();
+      const activeFlow = activeInc ? Number(activeInc.flowId || activeInc.flow_id) : 0;
+      if (activeInc && activeFlow !== flowId) return;
       renderVisualObservatory(data);
       if (results && data && data.original) {
         const latency = Number(data.inference_latency_ms);
@@ -4830,6 +4963,7 @@
         results.textContent = actionFailureText(data, resp);
       }
     } catch (err) {
+      if (serial !== modelProofRequestSerial) return;
       if (results) results.textContent = 'Live inference unavailable.';
     }
   }
@@ -4841,17 +4975,23 @@
       if (results) results.textContent = 'Select a stored flow first.';
       return;
     }
+    const flowId = Number(inc.flowId);
+    const serial = ++modelProofRequestSerial;
     const featuresOverride = Object.assign({}, readModelProofInputs(), extraOverride || {});
     try {
       const resp = await fetch('/api/v1/live/model-proof', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          flow_id: inc.flowId,
+          flow_id: flowId,
           features_override: featuresOverride
         })
       });
       const data = await readActionPayload(resp);
+      if (serial !== modelProofRequestSerial) return;
+      const activeInc = selectedIncident();
+      const activeFlow = activeInc ? Number(activeInc.flowId || activeInc.flow_id) : 0;
+      if (activeInc && activeFlow !== flowId) return;
       const latency = Number(data.inference_latency_ms);
       const text = [
         'Before',
@@ -4866,6 +5006,7 @@
       }
       if (resp.ok) renderVisualObservatory(data);
     } catch (err) {
+      if (serial !== modelProofRequestSerial) return;
       if (results) results.textContent = 'Live inference unavailable.';
     }
   }
@@ -5143,9 +5284,18 @@
   }
 
   function selectedLiveFlowId() {
-    if (Number.isInteger(selectedFlowId) && selectedFlowId > 0) return selectedFlowId;
     const inc = selectedIncident();
-    return bindSelectedFlowId(inc);
+    const raw = inc && (inc.flowId != null ? inc.flowId : inc.flow_id);
+    const fromIncident = Number(raw);
+    if (Number.isInteger(fromIncident) && fromIncident > 0) {
+      selectedFlowId = fromIncident;
+      return fromIncident;
+    }
+    if (inc) {
+      selectedFlowId = null;
+      return null;
+    }
+    return Number.isInteger(selectedFlowId) && selectedFlowId > 0 ? selectedFlowId : null;
   }
 
   function firstConstituentAttackFlowId(preferredDecision) {
@@ -5296,8 +5446,12 @@
     const ids = Array.isArray(guide.matching_flow_ids) ? guide.matching_flow_ids : [];
     const flowId = Number(ids[0]);
     const selected = Number.isInteger(flowId) && flowId > 0 ? flowId : null;
-    if (selected) selectedFlowId = selected;
-    const query = 'Hunt ' + String(guide.mitre_technique || '') + ' ' + String(guide.title || '');
+    const tech = String(guide.mitre_technique || '').trim();
+    const title = String(guide.title || '').trim();
+    const cleanTitle = tech && title.toUpperCase().indexOf(tech.toUpperCase()) === 0
+      ? title.slice(tech.length).replace(/^[\s:\u2013\u2014-]+/, '').trim()
+      : title;
+    const query = ['Hunt', tech, cleanTitle].filter(Boolean).join(' ');
     const queryNode = document.getElementById('hunterDraftRuleQuery');
     if (queryNode) queryNode.value = query;
     await draftHunterDetectionRule({ flowId: selected, query: query, guideId: guide.guide_id });
@@ -5637,20 +5791,34 @@
   async function saveLiveAnalystNote() {
     const input = document.getElementById('analystNoteText');
     const note = input ? input.value : '';
+    const flowId = selectedLiveFlowId();
+    if (!flowId) {
+      const missingMsg = 'A stored flow is required to save an analyst note.';
+      setLiveText('liveQueueStatus', missingMsg, 'unavailable');
+      showActionBanner(missingMsg, 'unavailable');
+      return;
+    }
     try {
       const resp = await fetch('/api/v1/live/notes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ author_id: operatorActorId(), note_text: note })
+        body: JSON.stringify({
+          flow_id: flowId,
+          author_id: operatorActorId(),
+          note_text: note
+        })
       });
-      const data = await resp.json();
-      setLiveText(
-        'liveQueueStatus',
-        data.evidence_state === 'verified' ? 'Analyst note saved.' : 'Analyst note refused.',
-        data.evidence_state || 'unavailable'
-      );
+      const data = await readActionPayload(resp);
+      const saved = resp.ok && data.evidence_state === 'verified';
+      const message = saved
+        ? ('Analyst note saved for flow ' + flowId + '.')
+        : (actionFailureText(data, resp) || 'Analyst note refused.');
+      setLiveText('liveQueueStatus', message, saved ? 'verified' : 'unavailable');
+      showActionBanner(message, saved ? 'verified' : 'unavailable');
     } catch (err) {
-      setLiveText('liveQueueStatus', 'Analyst note unavailable.', 'unavailable');
+      const message = err && err.message ? String(err.message) : 'Analyst note unavailable.';
+      setLiveText('liveQueueStatus', message, 'unavailable');
+      showActionBanner(message, 'unavailable');
     }
   }
 
@@ -5749,6 +5917,14 @@
 
   function patchCopilotSectionFive(flowId, receiptStatus) {
     const flow = Number(flowId);
+    const activeFlowId = selectedLiveFlowId();
+    if (
+      Number.isInteger(flow) && flow > 0
+      && Number.isInteger(activeFlowId) && activeFlowId > 0
+      && activeFlowId !== flow
+    ) {
+      return;
+    }
     pendingSectionFive = {
       flowId: Number.isFinite(flow) ? flow : 0,
       status: String(receiptStatus || 'unavailable')
@@ -5840,6 +6016,7 @@
       if (health) health.classList.remove('is-open');
     }
     if (drawer) drawer.classList.toggle('is-open', Boolean(open));
+    syncDrawerVisibilityAria();
     if (open) {
       renderActiveSessionCard();
       loadEnterpriseControls();
@@ -5902,9 +6079,12 @@
 
   function renderVisualObservatory(data) {
     if (!data || typeof data !== 'object') return;
+    const isPerturbed = Boolean(data.perturbed && typeof data.perturbed === 'object');
     const block = data.perturbed || data.original || data;
     const currentInc = selectedIncident();
-    if (currentInc && block && typeof block === 'object') {
+    const currentFlow = currentInc ? Number(currentInc.flowId || currentInc.flow_id) : 0;
+    const dataFlow = data.flow_id != null ? Number(data.flow_id) : currentFlow;
+    if (!isPerturbed && currentInc && block && typeof block === 'object' && (!Number.isFinite(dataFlow) || dataFlow === currentFlow)) {
       if (block.top_attack_class) currentInc.topAttackClass = String(block.top_attack_class);
       if (Number.isFinite(Number(block.top_attack_probability))) {
         currentInc.topAttackProbability = Number(block.top_attack_probability);
@@ -5979,7 +6159,8 @@
         + '</td></tr>';
     }).join('');
     node.innerHTML = ''
-      + '<p>Held-out split: ' + escapeHtml(String(scorecard.train_rows == null ? 'unavailable' : scorecard.train_rows))
+      + '<p>Exploratory Same-Split DNN Reference (Non-Held-Out; 39.3% CSV Overlap): '
+      + escapeHtml(String(scorecard.train_rows == null ? 'unavailable' : scorecard.train_rows))
       + ' train / ' + escapeHtml(String(scorecard.test_rows == null ? 'unavailable' : scorecard.test_rows))
       + ' test. Nine-class attack accuracy '
       + escapeHtml(percentText(scorecard.nine_class_attack_accuracy)) + '.</p>'
@@ -5991,7 +6172,7 @@
       + '<p>Frozen v2 AE threshold ' + escapeHtml(String(autoencoder.threshold || EVAL_PACK_REV2.aeThreshold))
       + ', +' + escapeHtml(String(autoencoder.recall_gain_percentage_points || 2.203))
       + ' pp recall gain. production_fusion_enabled = False. The three models stay separate.</p>'
-      + '<p>Binary held-out precision ' + escapeHtml(percentText(binary.precision))
+      + '<p>Exploratory same-split binary precision ' + escapeHtml(percentText(binary.precision))
       + ', recall ' + escapeHtml(percentText(binary.recall))
       + ', FPR ' + escapeHtml(percentText(binary.fpr)) + '.</p>'
       + '<table class="scorecard-table"><thead><tr><th>Class</th><th>Precision</th><th>Recall</th><th>Support</th></tr></thead><tbody>'
@@ -6007,22 +6188,34 @@
     } catch (err) {
       const node = document.getElementById('modelBenchmarkScorecard');
       if (node && !node.querySelector('table')) {
-        node.textContent = 'Held-out scorecard unavailable.';
+        node.textContent = 'Model scorecard unavailable.';
       }
     }
   }
 
   function renderRangeFirewall(telemetry) {
     const node = document.getElementById('rangeFirewallStatus');
-    if (!node || !telemetry) return;
+    if (!node) return;
+    if (
+      !telemetry
+      || telemetry.error
+      || telemetry.evidence_state === 'unavailable'
+      || Number(telemetry.http_status) >= 400
+    ) {
+      node.textContent = (telemetry && (telemetry.reason || telemetry.error)) || 'Victim firewall telemetry unavailable.';
+      node.setAttribute('data-evidence-state', 'unavailable');
+      return;
+    }
     const probe = telemetry.reachability_probe || {};
     rememberDualFirewallProbe(probe);
     const azureBadge = azureLocalContainmentBadge(probe);
     if (azureBadge) {
       node.textContent = azureBadge;
       node.setAttribute('data-evidence-state', 'verified');
+      const selected = selectedIncident();
+      const selectedSrc = selected && selected.provenance ? String(selected.provenance.srcIp || '') : '';
       const rangeBadge = document.getElementById('rangeConnectivityBadge');
-      if (rangeBadge) {
+      if (rangeBadge && selected && selected.decision === 'Attack' && selectedSrc === '172.29.0.10') {
         rangeBadge.textContent = azureBadge;
         rangeBadge.setAttribute('data-connectivity', 'blocked');
         rangeBadge.setAttribute('data-evidence-state', 'verified');
@@ -6107,7 +6300,15 @@
         if (operators.active_actor_id) operatorSelect.value = operators.active_actor_id;
       }
       renderSensorRegistry(sensors);
-      renderRangeFirewall(telemetry);
+      if (responses[3] && responses[3].ok && telemetry && telemetry.evidence_state !== 'unavailable') {
+        renderRangeFirewall(telemetry);
+      } else {
+        setLiveText(
+          'rangeFirewallStatus',
+          actionFailureText(telemetry, responses[3]) || 'Range telemetry unavailable.',
+          'unavailable'
+        );
+      }
       renderEntraIdentity(payloads[4]);
       await loadAzurePortalStatus();
     } catch (err) {
@@ -6285,6 +6486,17 @@
     }
   }
 
+  function handleAuthExpired(reason) {
+    authSessionExpired = true;
+    sessionIdentity = null;
+    liveCsrfToken = '';
+    clearLegacyClientSessionStorage();
+    paintOperatorBadge('unverified local label', false);
+    applyContainmentGuard(null);
+    enforceAuthGate();
+    identityStatus(reason || 'Session expired (HTTP 401). Please sign in again.', 'unavailable');
+  }
+
   function applyAuthenticatedSession(data) {
     clearLegacyClientSessionStorage();
     if (!data || data.authenticated !== true) {
@@ -6293,6 +6505,7 @@
       renderActiveSessionCard();
       return;
     }
+    authSessionExpired = false;
     sessionIdentity = data;
     if (data.csrf_token) {
       liveCsrfToken = String(data.csrf_token);
@@ -6302,6 +6515,26 @@
     const select = document.getElementById('operatorRoleSelect');
     if (select && data.actor_id) select.value = data.actor_id;
     renderActiveSessionCard();
+  }
+
+  async function hydrateAuthenticatedConsole() {
+    campaignFingerprint = null;
+    modelProofLoadedFlowId = null;
+    lastCopilotFlowId = 0;
+    await Promise.allSettled([
+      refreshPosture(),
+      refreshReadyz(),
+      refreshOperationalVelocity(),
+      refreshAdvisoryStatus(),
+      refreshOperatorStamp(),
+      refreshLiveQueue(),
+      refreshHuntingGuides(),
+      refreshN8nSchema(false),
+      loadEnterpriseControls(),
+      refreshLiveCampaigns({ force: true })
+    ]);
+    const inc = selectedIncident();
+    if (inc) await loadAdvisoryTrace(inc);
   }
 
   function identityStatus(text, state) {
@@ -6347,6 +6580,7 @@
         identityStatus(headerLineForSession(data), data.identity_verified ? 'verified' : 'unavailable');
         identityGateSwitchMode = false;
         hideLoginGate();
+        await hydrateAuthenticatedConsole();
         return;
       }
       identityStatus(actionFailureText(data, resp), 'unavailable');
@@ -6376,6 +6610,7 @@
         identityStatus(headerLineForSession(data), 'unavailable');
         identityGateSwitchMode = false;
         hideLoginGate();
+        await hydrateAuthenticatedConsole();
         return;
       }
       identityStatus(actionFailureText(data, resp), 'unavailable');
@@ -6395,8 +6630,11 @@
       identityStatus('Sign-out unavailable.', 'unavailable');
     }
     sessionIdentity = null;
+    liveCsrfToken = '';
+    authSessionExpired = false;
     clearLegacyClientSessionStorage();
     paintOperatorBadge('unverified local label', false);
+    applyContainmentGuard(null);
     identityStatus('Signed out. Authenticate to re-enter the SOC console.', 'unavailable');
     identityGateSwitchMode = false;
     enforceAuthGate();
@@ -6435,19 +6673,29 @@
 
   async function loadSoarPlaybookPreview(inc) {
     const flowId = inc && (inc.flowId || inc.flow_id);
+    const serial = ++soarPreviewRequestSerial;
     if (!flowId) {
       renderPlaybookPreview(null);
       return;
     }
+    const targetFlowId = Number(flowId);
     try {
-      const resp = await fetch('/api/soar/playbook-preview?flow_id=' + encodeURIComponent(String(flowId)));
+      const resp = await fetch('/api/soar/playbook-preview?flow_id=' + encodeURIComponent(String(targetFlowId)));
       const data = await readActionPayload(resp);
+      if (serial !== soarPreviewRequestSerial) return;
+      const activeInc = selectedIncident();
+      const activeFlow = activeInc ? Number(activeInc.flowId || activeInc.flow_id) : 0;
+      if (activeInc && activeFlow !== targetFlowId) return;
       if (!resp.ok) {
         renderPlaybookPreview(null);
         return;
       }
       renderPlaybookPreview(data);
     } catch (err) {
+      if (serial !== soarPreviewRequestSerial) return;
+      const activeInc = selectedIncident();
+      const activeFlow = activeInc ? Number(activeInc.flowId || activeInc.flow_id) : 0;
+      if (activeInc && activeFlow !== targetFlowId) return;
       renderPlaybookPreview(null);
     }
   }
@@ -6633,10 +6881,18 @@
       const inc = selectedIncident();
       if (inc && Number(inc.flowId || inc.flow_id) === selectedFlowId) {
         selectInvestigation(inc);
-        loadSoarPlaybookPreview(inc);
       }
-      const telemetry = await fetch('/api/v1/live/range/telemetry');
-      renderRangeFirewall(await readActionPayload(telemetry));
+      const telemetryResp = await fetch('/api/v1/live/range/telemetry');
+      const telemetryData = await readActionPayload(telemetryResp);
+      if (telemetryResp.ok) {
+        renderRangeFirewall(telemetryData);
+      } else {
+        setLiveText(
+          'rangeFirewallStatus',
+          actionFailureText(telemetryData, telemetryResp) || 'Range telemetry unavailable.',
+          'unavailable'
+        );
+      }
     } catch (err) {
       setLiveText('rangeFirewallStatus', 'Range launch unavailable.', 'unavailable');
     }
@@ -6704,6 +6960,28 @@
     copyPortableHandoffBrief,
     primePortableHandoffBrief,
     portableHandoffEvidenceState,
+    escapeHtml,
+    formatCopilotAnswer,
+    setDnnBadge,
+    selectedLiveFlowId,
+    inspectHuntGuide,
+    saveLiveAnalystNote,
+    renderAdvisoryTrace,
+    renderLedgerFencePill,
+    renderVisualObservatory,
+    renderRangeFirewall,
+    isMissingEndpoint,
+    showStoredContainment,
+    hydrateAuthenticatedConsole,
+    submitRbacLogin,
+    submitRbacLogout,
+    loadEnterpriseControls,
+    paintSessionIdentity,
+    applyContainmentGuard,
+    refreshHuntingGuides,
+    refreshLiveCampaigns,
+    selectInvestigation,
+    renderHuntingGuideRow,
     initApp
   };
 

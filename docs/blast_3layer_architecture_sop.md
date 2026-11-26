@@ -119,11 +119,11 @@ State transitions (`new` $\to$ `in_review` $\to$ `closed` / `escalated`) are gov
 | Component / Tool | Source Implementation | Pure Deterministic Function | Probabilistic AI Status |
 |:---|:---|:---|:---|
 | **Suricata Flow Adapter** | `threatfusion.datasets.adapters.suricata_flow` | Maps Suricata `eve.json` flows to 14 canonical behavior features (10 numeric + 4 one-hot protocol indicators). | **BANNED** (Pure math & dictionary mapping) |
-| **Production Inference (RF)** | `threatfusion.models.inference_worker` | Evaluates frozen 100-tree Random Forest (`bd2853a6...`); generates alert if $P(\text{Attack}) \ge 0.5$. | **BANNED** (Pure decision tree traversal) |
-| **Unfused Anomaly Signal (AE)** | `threatfusion.models.autoencoder_scoring` | Computes Mean Squared Error (MSE) reconstruction loss; flags anomaly if loss $> 0.118136$. | **BANNED** (Pure matrix multiplication) |
-| **Sliding Window Correlator** | `threatfusion.correlation.engine` | Groups alerts across 30.0s burst and 600.0s campaign windows using deterministic `PivotKey` hashing. | **BANNED** (Pure temporal & set operations) |
+| **Production Inference (RF)** | `threatfusion.models.network_inference` (`threatfusion.api.producer_inference_worker`) | Evaluates frozen 100-tree Random Forest (`bd2853a6...`); generates alert if $P(\text{Attack}) \ge 0.5$. | **BANNED** (Pure decision tree traversal) |
+| **Unfused Anomaly Signal (AE)** | `threatfusion.models.network_autoencoder` | Computes Mean Squared Error (MSE) reconstruction loss; flags anomaly if loss $> 0.118136$. | **BANNED** (Pure matrix multiplication) |
+| **Sliding Window Correlator** | `threatfusion.alerts.correlation_engine` | Groups alerts across 30.0s burst and 600.0s campaign windows using deterministic `PivotKey` hashing. | **BANNED** (Pure temporal & set operations) |
 | **RFC 1918 Threat-Intel Guard** | `threatfusion.enrichment.threat_intel` | Deterministically tests IPs against RFC 1918 subnets (`10/8`, `172.16/12`, `192.168/16`); blocks external leakage. | **BANNED** (Pure bitmask comparison) |
-| **Reversible SOAR Ledger** | `threatfusion.soar.ledger` | Enforces state machine: `pending_approval` $\to$ `approved` $\to$ `executed_simulated` $\to$ `rolled_back`. | **BANNED** (Pure deterministic state machine) |
+| **Reversible SOAR Ledger** | `threatfusion.soar.playbook_ledger` | Enforces state machine: `pending_approval` $\to$ `approved` $\to$ `executed_simulated` $\to$ `rolled_back`. | **BANNED** (Pure deterministic state machine) |
 
 ---
 
@@ -155,7 +155,7 @@ The integrity of the 3-Layer Deterministic Architecture is verified by automated
 
 1. **Deterministic Zero-Trust Repository Truth Audit Gate (`scripts/audit_repo_truth.py`):**
    - **Check 1:** Workspace Isolation & Branch verification (`gemini/product-20260924`).
-   - **Check 2:** Byte-identical SHA-256 verification of all 4 frozen model artifacts.
+   - **Check 2:** Byte-identical SHA-256 verification of all 7 frozen artifacts (4 models, preprocessor state, exploratory 9-class DNN, and calibrated runtime fixtures).
    - **Check 3:** Canonical Evaluation Pack Rev2 (`AI-FYP-2006`) population and metric consistency.
    - **Check 4:** Section 8 `production_fusion_enabled=False` runtime invariant enforcement.
    - **Check 5:** Zero split-paste duplicate package detection.
@@ -185,7 +185,7 @@ To ensure enterprise-grade reproducibility and auditability, ThreatFusion enforc
 
 ### Rule 1: Programmatic Workspace & Whole-Tree Symlink Rejection
 - Audit Check 1 (`_check_1_workspace_and_git_state`) actively verifies that `git rev-parse --show-toplevel` resolves to the exact canonical workspace root (`<repo_root>`).
-- Check 1 recursively traverses `repo_root / "backend"`, `repo_root / "scripts"`, `repo_root / "docs"`, and `repo_root / "design_guidelines" using `os.walk(..., followlinks=False)`. If even a single symlink is detected anywhere in these trees, the audit **fails closed** immediately with:
+- Check 1 recursively traverses `repo_root / "backend"`, `repo_root / "scripts"`, `repo_root / "docs"`, and `repo_root / "design_guidelines"` using `os.walk(..., followlinks=False)`. If even a single symlink is detected anywhere in these trees, the audit **fails closed** immediately with:
   `"Unexpected symlink detected in workspace tree: <path>"`.
 - Symlink-based file aliasing or cross-tree shadowing is strictly banned.
 

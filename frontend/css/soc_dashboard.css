@@ -11,6 +11,8 @@
 
 .enterprise-drawer {
   display: none;
+  visibility: hidden;
+  pointer-events: none;
   position: fixed;
   top: 0;
   right: 0;
@@ -21,11 +23,13 @@
   color: #e6edf3;
   border-left: 1px solid #30363d;
   padding: 1rem;
-  z-index: 30;
+  z-index: 60;
 }
 
 .enterprise-drawer.is-open {
   display: block;
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .enterprise-drawer section {
@@ -212,7 +216,7 @@
 .identity-modal {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: 90;
   background: rgba(9, 13, 22, 0.72);
   display: flex;
   align-items: flex-start;

@@ -20,12 +20,12 @@
 - The command-line preflight now calls the same implementation as the repository-truth audit, so the two gates cannot drift.
 - Frozen Random Forest authority, the four model digests, Gate G9, and the open status of TF-008 through TF-011 are unchanged. Storage-backup test failures were left for a later task.
 - Verification on this tree: `git diff --check` clean, focused pytest passed (the prior 47 plus the two B6 cases, and the existing B0–B5 class), boundary preflight B0–B6 GO, repository-truth audit 7/7 GO.
-- Next: TF-SecOps-QA-Sentinel re-runs those four gates read-only. The co-founder signs off after that. No new product feature until that sign-off.
+- Next: Independent verification of those four gates and review sign-off prior to advancing to the next product slice.
 
 === 30-SECOND CEO SKIM REPORT ===
 - Fixed snapshot restore. A WAL database no longer leaves `-wal` and `-shm` sidecars in the backup directory, which had made every snapshot look corrupt.
 - All 13 storage-backup integration tests pass. The four focused gates still pass, including boundary check B6.
-- Usage is about 9% of the weekly meter, with a reset in about 2 days. This is a building window. A full owner report is due when usage reaches about 95%, or when you say "weekly report".
+- Checkpoint note: Snapshot restore and storage-backup integration gates verified cleanly on the working tree.
 - Frozen Random Forest authority, the four model digests, Gate G9, and TF-008 through TF-011 stay as they are.
 - Next product gap: the walkthrough screen still shows sample incidents. The authenticated analyst page is the real queue.
 

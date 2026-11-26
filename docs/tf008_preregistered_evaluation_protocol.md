@@ -2,7 +2,7 @@
 
 **Protocol Identifier:** `TF-008-PREREGISTERED-HOLDOUT-PROTOCOL-V1`  
 **Schema Version:** `independent_holdout_evaluation_report_v1`  
-**Governing Issue:** [TF-008 (`docs/issue_register.md`)](file://<repo_root>/docs/issue_register.md#L28)\
+**Governing Issue:** [TF-008 (`docs/issue_register.md`)](issue_register.md#L28)\
 **Status:** Canonical Pre-Registered Protocol Specification (Issue TF-008 remains strictly **OPEN**)  
 **Last Updated:** 2026-10-18  
 

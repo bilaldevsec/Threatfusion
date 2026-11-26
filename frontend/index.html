@@ -215,6 +215,12 @@
         white-space: normal;
         overflow-wrap: anywhere;
       }
+      #identityModal .identity-modal-card {
+        padding: 18px;
+      }
+      #identityModal .role-quick-grid {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
@@ -229,11 +235,11 @@
             <span class="brand-subtitle">Investigations, evidence, and approval-gated response</span>
           </div>
         </div>
-        <nav class="view-switcher" aria-label="View switcher">
-          <button class="view-tab is-active" type="button" data-soc-nav="investigations">Investigations</button>
-          <button class="view-tab" type="button" data-soc-nav="detail">Investigation Detail</button>
-          <button class="view-tab" type="button" data-soc-nav="graph">AI Action Graph</button>
-          <button class="view-tab" type="button" data-soc-nav="hunter">AI Threat Hunter</button>
+        <nav class="view-switcher" aria-label="View switcher" role="tablist">
+          <button class="view-tab is-active" type="button" id="navTabInvestigations" data-soc-nav="investigations" role="tab" aria-selected="true" aria-controls="socViewInvestigations">Investigations</button>
+          <button class="view-tab" type="button" id="navTabDetail" data-soc-nav="detail" role="tab" aria-selected="false" aria-controls="socViewDetail">Investigation Detail</button>
+          <button class="view-tab" type="button" id="navTabGraph" data-soc-nav="graph" role="tab" aria-selected="false" aria-controls="socViewGraph">AI Action Graph</button>
+          <button class="view-tab" type="button" id="navTabHunter" data-soc-nav="hunter" role="tab" aria-selected="false" aria-controls="socViewHunter">AI Threat Hunter</button>
         </nav>
         <div class="header-telemetry">
           <button id="btnOpenHealthDrawer" class="btn" type="button">Health &amp; Governance</button>
@@ -245,7 +251,7 @@
         </div>
       </header>
 
-      <section class="soc-view is-active" data-soc-view="investigations" aria-label="Investigations">
+      <section class="soc-view is-active" id="socViewInvestigations" data-soc-view="investigations" role="tabpanel" aria-labelledby="navTabInvestigations" aria-label="Investigations">
         <details class="pipeline-strip" id="pipelineTelemetryCollapse">
           <summary class="pipeline-strip-summary">
             <span>Pipeline Telemetry &amp; Compression Funnel</span>
@@ -369,7 +375,7 @@
         </div>
       </section>
 
-      <section class="soc-view" data-soc-view="detail" aria-label="Investigation Detail">
+      <section class="soc-view" id="socViewDetail" data-soc-view="detail" role="tabpanel" aria-labelledby="navTabDetail" aria-label="Investigation Detail">
         <div class="detail-top">
           <button id="btnBackToInvestigations" class="btn" type="button">Back to Investigations</button>
           <button id="btnOpenActionGraph" class="btn" type="button">AI Action Graph</button>
@@ -421,16 +427,16 @@
             </div>
           </div>
           <div id="actionStatusBanner" role="status" aria-live="polite" data-evidence-state="unavailable">No analyst action recorded yet.</div>
-          <nav class="inspector-tab-nav" aria-label="Investigation Inspector Tabs">
-            <button class="inspector-tab-btn active" data-tab-target="1" type="button">Summary</button>
-            <button class="inspector-tab-btn" data-tab-target="2" type="button">Findings &amp; Telemetry</button>
-            <button class="inspector-tab-btn" data-tab-target="3" type="button">Evidence Locker</button>
-            <button class="inspector-tab-btn" data-tab-target="4" type="button">Remediations &amp; SOAR</button>
-            <button class="inspector-tab-btn" data-tab-target="6" type="button">Notes &amp; Handoff</button>
-            <button class="inspector-tab-btn" data-tab-target="5" type="button">Changelog</button>
+          <nav class="inspector-tab-nav" aria-label="Investigation Inspector Tabs" role="tablist">
+            <button class="inspector-tab-btn active" id="inspectorTabBtn1" data-tab-target="1" type="button" role="tab" aria-selected="true" aria-controls="inspectorTabPane1">Summary</button>
+            <button class="inspector-tab-btn" id="inspectorTabBtn2" data-tab-target="2" type="button" role="tab" aria-selected="false" aria-controls="inspectorTabPane2">Findings &amp; Telemetry</button>
+            <button class="inspector-tab-btn" id="inspectorTabBtn3" data-tab-target="3" type="button" role="tab" aria-selected="false" aria-controls="inspectorTabPane3">Evidence Locker</button>
+            <button class="inspector-tab-btn" id="inspectorTabBtn4" data-tab-target="4" type="button" role="tab" aria-selected="false" aria-controls="inspectorTabPane4">Remediations &amp; SOAR</button>
+            <button class="inspector-tab-btn" id="inspectorTabBtn6" data-tab-target="6" type="button" role="tab" aria-selected="false" aria-controls="inspectorTabPane6">Notes &amp; Handoff</button>
+            <button class="inspector-tab-btn" id="inspectorTabBtn5" data-tab-target="5" type="button" role="tab" aria-selected="false" aria-controls="inspectorTabPane5">Changelog</button>
           </nav>
           <div id="inspectorTabPanes">
-            <div class="inspector-tab-pane active" data-inspector-tab="1">
+            <div class="inspector-tab-pane active" id="inspectorTabPane1" data-inspector-tab="1" role="tabpanel" aria-labelledby="inspectorTabBtn1">
               <div class="detail-split">
                 <div class="detail-main">
                   <section id="forensicScopePanel" class="forensic-card-grid" aria-label="Patient Zero and attack story">
@@ -534,7 +540,7 @@
                       <li>
                         <button id="btnDispatchCallback" type="button" disabled>2. Dispatch via Live n8n Container</button>
                         <div><b>SOAR path:</b> <span id="inspectorExecutionPath">not dispatched</span></div>
-                        <div><b>Callback:</b> <span id="inspectorCallback" data-evidence-state="unavailable">Callback receipt: not recorded</span></div>
+                        <div><b>Callback receipt:</b> <span id="inspectorCallback" data-evidence-state="unavailable">not recorded</span></div>
                       </li>
                       <li>
                         <button id="btnContainRange" type="button" disabled>3. Isolate Attacker (selected flow) in Victim Firewall</button>
@@ -551,7 +557,7 @@
                 </aside>
               </div>
             </div>
-            <div class="inspector-tab-pane" data-inspector-tab="2">
+            <div class="inspector-tab-pane" id="inspectorTabPane2" data-inspector-tab="2" role="tabpanel" aria-labelledby="inspectorTabBtn2">
               <div class="card" data-anatomy-block="2" style="background: #111827;">
                 <h3>Findings &amp; Telemetry</h3>
                 <div><b>Correlation Window:</b> <span class="badge badge-corr">30.0s Burst Window</span> &middot; <b>Campaign Window:</b> <span class="badge badge-corr">600.0s Campaign</span></div>
@@ -567,7 +573,7 @@
                 <div id="timelineGroupedView" data-timeline-mode="journal" data-evidence-state="unavailable">No correlated timeline yet.</div>
               </div>
             </div>
-            <div class="inspector-tab-pane" data-inspector-tab="3">
+            <div class="inspector-tab-pane" id="inspectorTabPane3" data-inspector-tab="3" role="tabpanel" aria-labelledby="inspectorTabBtn3">
               <div class="card" style="background: #111827;">
                 <h3>Evidence Locker (14-Feat)</h3>
                 <div>Canonical 14 UNSW-NB15 / Suricata Features</div>
@@ -607,8 +613,8 @@
                     <div id="dnnSoftmaxChart">9-class softmax waits for a stored flow.</div>
                     <h4>Autoencoder Per-Feature Anomaly Attribution</h4>
                     <div id="aeFeatureErrorChart">Per-feature anomaly attribution waits for a stored flow.</div>
-                    <h4>Held-Out UNSW-NB15 Model Evaluation and Confusion Matrix Scorecard</h4>
-                    <div id="modelBenchmarkScorecard">Held-out scorecard waits for the evaluation report. production_fusion_enabled = False.</div>
+                    <h4>Exploratory Same-Split DNN Reference (Non-Held-Out; 39.3% CSV Overlap) &amp; Frozen Model Scorecard</h4>
+                    <div id="modelBenchmarkScorecard">Exploratory Same-Split DNN Reference (Non-Held-Out; 39.3% CSV Overlap) waits for the evaluation report. production_fusion_enabled = False.</div>
                   </section>
                   <details id="manualWhatIfDetails">
                     <summary>Advanced: Manual 14-Feature Perturbation &amp; What-If Simulator</summary>
@@ -622,7 +628,7 @@
                 </div>
               </div>
             </div>
-            <div class="inspector-tab-pane" data-inspector-tab="4">
+            <div class="inspector-tab-pane" id="inspectorTabPane4" data-inspector-tab="4" role="tabpanel" aria-labelledby="inspectorTabBtn4">
               <div class="card" style="background: #111827;">
                 <h3>Remediations &amp; SOAR</h3>
                 <div><b>Technique:</b> <span id="remediationTechnique">unavailable</span></div>
@@ -638,7 +644,7 @@
                 </section>
               </div>
             </div>
-            <div class="inspector-tab-pane" data-inspector-tab="6">
+            <div class="inspector-tab-pane" id="inspectorTabPane6" data-inspector-tab="6" role="tabpanel" aria-labelledby="inspectorTabBtn6">
               <div class="card" style="background: #111827;">
                 <h3>Notes &amp; Handoff</h3>
                 <label for="analystNoteText">Analyst note</label>
@@ -651,7 +657,7 @@
                 <pre id="shiftHandoffReport" data-evidence-state="unavailable">No shift handoff exported yet.</pre>
               </div>
             </div>
-            <div class="inspector-tab-pane" data-inspector-tab="5">
+            <div class="inspector-tab-pane" id="inspectorTabPane5" data-inspector-tab="5" role="tabpanel" aria-labelledby="inspectorTabBtn5">
               <div class="card" data-anatomy-block="4" style="background: #111827;">
                 <h3>Changelog</h3>
                 <div><b>Audit chain:</b> <span id="inspectorChain" data-evidence-state="unavailable">unavailable</span></div>
@@ -662,7 +668,7 @@
         </section>
       </section>
 
-      <section class="soc-view" data-soc-view="graph" aria-label="AI Action Graph">
+      <section class="soc-view" id="socViewGraph" data-soc-view="graph" role="tabpanel" aria-labelledby="navTabGraph" aria-label="AI Action Graph">
         <p id="threeAmPolicyBanner" class="badge" data-evidence-state="verified">AI Prepares · Tier-3 Human Decides (3 A.M. Policy)</p>
         <div class="hunter-draft-actions">
           <button id="btnN8nDryRun" type="button">Dry-Run Simulation (Non-Destructive · TF-009 Open)</button>
@@ -734,7 +740,7 @@
         </section>
       </section>
 
-      <section class="soc-view" data-soc-view="hunter" aria-label="AI Threat Hunter">
+      <section class="soc-view" id="socViewHunter" data-soc-view="hunter" role="tabpanel" aria-labelledby="navTabHunter" aria-label="AI Threat Hunter">
         <article class="card" id="recommendedHuntingGuides" style="background: #111827;" aria-label="Recommended Hunting Guides">
           <h3>Recommended Hunting Guides (Continuous Background Hunt)</h3>
           <div class="inv-table-wrap">
@@ -774,33 +780,33 @@
           </div>
           <p id="hunterVerifyBadge" class="badge" data-evidence-state="unavailable">VERIFY RULE · 0/0 Live Flows Matched</p>
           <div class="rule-tab-bar" role="tablist" aria-label="Detection rule formats">
-            <button type="button" class="rule-tab-btn is-active" data-rule-tab="suricata" role="tab" aria-selected="true">Suricata</button>
-            <button type="button" class="rule-tab-btn" data-rule-tab="sigma" role="tab" aria-selected="false">Sigma YAML</button>
-            <button type="button" class="rule-tab-btn" data-rule-tab="spl" role="tab" aria-selected="false">SPL</button>
-            <button type="button" class="rule-tab-btn" data-rule-tab="yara" role="tab" aria-selected="false">YARA-L</button>
+            <button type="button" class="rule-tab-btn is-active" id="ruleTabSuricata" data-rule-tab="suricata" role="tab" aria-selected="true" aria-controls="rulePaneSuricata">Suricata</button>
+            <button type="button" class="rule-tab-btn" id="ruleTabSigma" data-rule-tab="sigma" role="tab" aria-selected="false" aria-controls="rulePaneSigma">Sigma YAML</button>
+            <button type="button" class="rule-tab-btn" id="ruleTabSpl" data-rule-tab="spl" role="tab" aria-selected="false" aria-controls="rulePaneSpl">SPL</button>
+            <button type="button" class="rule-tab-btn" id="ruleTabYara" data-rule-tab="yara" role="tab" aria-selected="false" aria-controls="rulePaneYara">YARA-L</button>
           </div>
-          <div class="rule-tab-pane is-active" data-rule-pane="suricata">
+          <div class="rule-tab-pane is-active" id="rulePaneSuricata" data-rule-pane="suricata" role="tabpanel" aria-labelledby="ruleTabSuricata">
             <div class="rule-tab-pane-head">
               <label for="hunterRuleSuricata">Suricata</label>
               <button id="btnCopySuricata" type="button" data-copy-target="hunterRuleSuricata">Copy Suricata</button>
             </div>
             <pre id="hunterRuleSuricata" class="hunter-draft-preview" data-rule-format="suricata" data-evidence-state="unavailable"></pre>
           </div>
-          <div class="rule-tab-pane" data-rule-pane="sigma">
+          <div class="rule-tab-pane" id="rulePaneSigma" data-rule-pane="sigma" role="tabpanel" aria-labelledby="ruleTabSigma">
             <div class="rule-tab-pane-head">
               <label for="hunterRuleSigma">Sigma YAML</label>
               <button id="btnCopySigma" type="button" data-copy-target="hunterRuleSigma">Copy Sigma YAML</button>
             </div>
             <pre id="hunterRuleSigma" class="hunter-draft-preview" data-rule-format="sigma_yaml" data-evidence-state="unavailable"></pre>
           </div>
-          <div class="rule-tab-pane" data-rule-pane="spl">
+          <div class="rule-tab-pane" id="rulePaneSpl" data-rule-pane="spl" role="tabpanel" aria-labelledby="ruleTabSpl">
             <div class="rule-tab-pane-head">
               <label for="hunterRuleSpl">SPL</label>
               <button id="btnCopySpl" type="button" data-copy-target="hunterRuleSpl">Copy SPL</button>
             </div>
             <pre id="hunterRuleSpl" class="hunter-draft-preview" data-rule-format="spl" data-evidence-state="unavailable"></pre>
           </div>
-          <div class="rule-tab-pane" data-rule-pane="yara">
+          <div class="rule-tab-pane" id="rulePaneYara" data-rule-pane="yara" role="tabpanel" aria-labelledby="ruleTabYara">
             <div class="rule-tab-pane-head">
               <label for="hunterRuleYara">YARA-L</label>
               <button id="btnCopyYara" type="button" data-copy-target="hunterRuleYara">Copy YARA-L</button>
@@ -1002,7 +1008,7 @@
       </footer>
     </div>
 
-    <aside class="health-drawer" id="healthGovernanceDrawer" aria-label="System Health and Governance">
+    <aside class="health-drawer" id="healthGovernanceDrawer" aria-label="System Health and Governance" aria-hidden="true">
       <div class="lab-drawer-head">
         <h2>System Health &amp; Governance</h2>
         <button id="btnCloseHealthDrawer" type="button">Close</button>
@@ -1035,7 +1041,7 @@
       </div>
     </aside>
 
-    <aside class="lab-drawer" id="labControlsDrawer" aria-label="Lab Range and Simulation Controls">
+    <aside class="lab-drawer" id="labControlsDrawer" aria-label="Lab Range and Simulation Controls" aria-hidden="true">
       <div class="lab-drawer-head">
         <h2>Lab Range &amp; Simulation Controls</h2>
         <button id="btnCloseLabDrawer" type="button">Close</button>
@@ -1086,7 +1092,7 @@
         </div>
       </section>
     </aside>
-    <aside class="enterprise-drawer" id="enterpriseWorkspaceDrawer" aria-label="Enterprise Workspaces, RBAC and Live Range">
+    <aside class="enterprise-drawer" id="enterpriseWorkspaceDrawer" aria-label="Enterprise Workspaces, RBAC and Live Range" aria-hidden="true">
       <div class="lab-drawer-head">
         <h2>Enterprise Workspaces, RBAC &amp; Live Range</h2>
         <button id="btnCloseEnterpriseDrawer" type="button">Close</button>

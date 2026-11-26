@@ -254,10 +254,10 @@ In accordance with root `AGENTS.md` and `docs/project_status.md`, the following 
 
 | Issue ID | Canonical Issue Title | Relevance to this SOP | Current Status |
 |:---:|:---|:---|:---:|
-| **TF-008** | Bounded registered alert to read-only browser boundary | Governs the read-only rendered HTML view model and progressive disclosure hierarchy. | **OPEN** (Visual evidence verified; operational lifecycle open) |
-| **TF-009** | Quantitative evaluation of analyst alert fatigue and triage timing | Governs the Tier 3 triage timing telemetry hooks to measure MTTT reduction. | **OPEN** (Telemetry schema defined; longitudinal user study pending) |
-| **TF-010** | Cross-source dataset compatibility and generalization | Governs representation parity between UNSW training and live Suricata flow ingestion. | **OPEN** (Single-record contract verified; cross-source evaluation pending) |
-| **TF-011** | Live Azure VM Suricata capture path deployment | Governs deployment on remote Azure network VMs vs local recorded replay. | **OPEN** (Integration path verified; live cloud deployment pending) |
+| **TF-008** | Independent Model Benchmark Beyond Inspected January/February UNSW Splits | Qualifies all displayed January/February RF and AE benchmark context as previously inspected; prevents claiming unseen holdout generalization in UI badges. | **OPEN** (Visual evidence verified; untouched external holdout benchmark open) |
+| **TF-009** | Measured Reduction of Analyst Workload / Alert Fatigue | Governs the Tier 3 triage timing telemetry hooks and Section 13.F study harness to measure MTTT reduction across >= 10 human analyst trials. | **OPEN** (Counterfactual FP shield and SQLite study harness verified; >= 10 human analyst trials open) |
+| **TF-010** | External FAST-NUCES FYP-II Jury Rubric & Signed Supervisor/Jury Evaluation Alignment | Ensures UI disclosures, model/dataset dispositions, and defense artifacts match internal traceability pending attachment of the signed external jury rubric. | **OPEN** (Internal traceability aligned; external signed FAST-NUCES jury rubric pending) |
+| **TF-011** | Real Operational SIEM / Threat-Intelligence Production Source Proof | Distinguishes bounded recorded/loopback sensor ingestion and RFC 1918 threat-intel enrichment from live enterprise SIEM/feed deployment. | **OPEN** (Bounded local/recorded integration path verified; live operational SIEM/TI deployment open) |
 
 ---
 

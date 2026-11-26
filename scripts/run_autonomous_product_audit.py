@@ -224,12 +224,14 @@ def run_red_team_suite() -> dict[str, Any]:
             pass
 
         old_env = {
+            "THREATFUSION_ENV": os.environ.get("THREATFUSION_ENV"),
             "THREATFUSION_LIVE_CONSOLE_DB": os.environ.get("THREATFUSION_LIVE_CONSOLE_DB"),
             "THREATFUSION_SOAR_LEDGER_DB_PATH": os.environ.get("THREATFUSION_SOAR_LEDGER_DB_PATH"),
             "THREATFUSION_OPERATOR_POLICY_DIR": os.environ.get("THREATFUSION_OPERATOR_POLICY_DIR"),
             "THREATFUSION_SENSOR_INGEST_TOKEN": os.environ.get("THREATFUSION_SENSOR_INGEST_TOKEN"),
         }
 
+        os.environ["THREATFUSION_ENV"] = "lab"
         os.environ["THREATFUSION_LIVE_CONSOLE_DB"] = str(live_db)
         os.environ["THREATFUSION_SOAR_LEDGER_DB_PATH"] = str(soar_db)
         os.environ["THREATFUSION_OPERATOR_POLICY_DIR"] = str(policy_dir)
@@ -328,10 +330,21 @@ def run_red_team_suite() -> dict[str, Any]:
                 "expected_behavior_rule": "Host 198.51.100.66 is authorized external partner traffic",
                 "service_or_port": "80",
             }
+            health_req = urllib.request.Request(
+                f"{base_url}/api/v1/live/health",
+                headers={"Origin": base_url, "Sec-Fetch-Site": "same-origin"},
+                method="GET",
+            )
+            with urllib.request.urlopen(health_req, timeout=10) as health_resp:
+                health_data = json.loads(health_resp.read().decode("utf-8"))
+            csrf_token = str(health_data.get("csrf_token") or "")
+            p7_headers = {"Content-Type": "application/json", "Origin": base_url}
+            if csrf_token:
+                p7_headers["X-ThreatFusion-CSRF"] = csrf_token
             req_p7 = urllib.request.Request(
                 f"{base_url}/api/v1/live/context-memory",
                 data=json.dumps(p7_payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                headers=p7_headers,
                 method="POST",
             )
             p7_status = None
@@ -946,7 +959,10 @@ def generate_reports(audit_data: dict[str, Any], output_dir: Path) -> tuple[Path
 
     # Sanitize JSON data to guarantee zero leakage of the protected workspace path
     sanitized_json = _sanitize_data(audit_data)
-    json_path.write_text(json.dumps(sanitized_json, indent=2, sort_keys=True), encoding="utf-8")
+    json_path.write_text(
+        json.dumps(sanitized_json, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
     # Generate comprehensive Markdown report
     overall_verdict = audit_data.get("overall_decision", "NO-GO")

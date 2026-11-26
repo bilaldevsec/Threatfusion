@@ -3,7 +3,7 @@
 ## Authority and purpose
 
 This charter defines persistent product acceptance requirements. Repository-wide working rules are in
-[`AGENTS.md`](../AGENTS.md), current evidence is in [`project_status.md`](project_status.md), and
+[`CONTRIBUTING.md`](../CONTRIBUTING.md) (and local untracked `AGENTS.md` when present), current evidence is in [`project_status.md`](project_status.md), and
 prioritized gaps are in [`issue_register.md`](issue_register.md). Phase and experiment documents remain
 the detailed evidence records; this charter does not overwrite their provenance or results.
 

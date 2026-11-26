@@ -3,15 +3,15 @@
 **Owner:** Muhammad Bilal, FAST-NUCES Karachi, BSc Cyber Security.
 **Document revision:** TF-GEMINI-MASTER-2026-10-19-v16.
 **Prepared:** 19 October 2026, Karachi context.
-**Purpose:** One portable project knowledge file for the Gemini “ThreatFusion Engineering Planner” Gem, Antigravity implementer, and Copilot reviewer.
+**Purpose:** Archival project governance, architecture, and evidence-discipline reference for ThreatFusion engineering continuity.
 **Target:** A credible, secure AI-assisted SOC triage product and a reproducible December 2026 project demonstration. Production/enterprise quality is an engineering objective, not a certification or a completed status.
 
 > READ FIRST: This file consolidates the supplied project conversations, terminal outputs, completion reports, review findings, and continuation playbook. Its author did not inspect the current laptop repository when creating it. Historical implementation descriptions are reported evidence, not a fresh source audit. Read the evidence labels and current-state block before planning. Never reset a later repository to an old hash in this file.
 
 ## Contents
 
-0. Install this knowledge in Gemini and keep it current
-1. Permanent Gemini planner instructions
+0. Document governance and synchronization policy
+1. Core engineering and governance rules (archival summary)
 2. Current-state capsule and evidence rules
 3. What ThreatFusion is intended to become
 4. Architecture and boundaries
@@ -27,76 +27,34 @@
 14. Complete remaining roadmap and acceptance gates
 15. Repository, environment, and file map
 16. Historical milestones and evidence ledger
-17. Gemini–Antigravity–Copilot work cycle
-18. Copy-paste prompts without fields to fill
+17. Engineering and independent review discipline
+18. Archival verification and review protocol notes
 19. Definition of completion and owner learning
 20. Change control, synchronization, and future features
 21. Known unknowns and glossary
 
 ---
 
-## 0. Install this knowledge in Gemini and keep it current
+## 0. Document governance and synchronization policy
 
-### What persistence means
+### Authoritative document hierarchy
 
-A saved Gem can reuse attached knowledge in future conversations. This does not mean perfect recall, automatic access to the laptop, automatic synchronization with Git, or proof that a retrieved document is current. A Markdown file is ordinary text that Gemini can use when supplied through a supported upload route; it is not restricted to Antigravity.
+This file is an archival project master summarizing architecture, boundaries, historical milestones, and open gates. It is a secondary summary view of repository evidence, not a competing technical specification:
+- Existing repository contracts (`docs/product_charter.md`, feature/schema contracts): precise implementation requirements.
+- Current status and issue register (`docs/project_status.md`, `docs/issue_register.md`): authoritative status and open gate dispositions.
+- Code and executed tests under `backend/`: ground-truth runtime behavior.
 
-### One-time setup
+### Keeping repository records synchronized
 
-1. Download this file to the laptop.
-2. Open the existing **ThreatFusion Engineering Planner** Gem and edit it.
-3. Paste the complete instruction block in section 1 into the Gem's **Instructions** field. Preserve any newer, compatible owner instructions; remove contradictory outdated project-state claims.
-4. Under **Knowledge**, attach this file and save the Gem. Keep knowledge citations enabled so it can identify its source.
-5. Open a new conversation inside that saved Gem and send the activation prompt in section 18.1.
-6. Check the response: it must name this revision, distinguish factual RF explanations from future LLM explanations, identify the last reported lifecycle blocker, and preserve the full roadmap.
-7. If the UI rejects the Markdown file, copy its complete contents into a Google Doc and attach that document. Do not silently shorten the project context.
+When updating this archival master after an accepted milestone, refresh only the changing state sections (current-state capsule, capability inventory, historical ledger, and open gates) from directly inspected source, contracts, and command outputs. Preserve historical failures and open gates without rewriting past evidence or copying large source files, datasets, or private credentials into documentation.
 
-### How to keep ONE current project file
+## 1. Core engineering and governance rules (archival summary)
 
-**Simple route:** Maintain this file through Antigravity, then replace the older attachment in the Gem after each accepted milestone. A local upload is a snapshot; editing the laptop copy does not update it.
-
-**Drive route:** Use one Google Doc containing this file and attach it from Drive. Google's help says Gems use the current version of linked Drive files. Drive attachment requires Keep Activity and the appropriate Workspace connection. Updating that document still requires an explicit edit/sync; the local repository is not automatically connected. Choose this route only if those account settings are acceptable.
-
-Do not maintain an independently edited Drive version and repository version with conflicting facts. Make the repository-reconciled export authoritative; replace the Gemini copy with that export. At every session, ask Gemini to state the revision and repository checkpoint it can actually see. If it cannot retrieve them, reattach the current file.
-
-The owner's September 29 screenshot announced migration of Gems to skills beginning November 17, 2026. Preserve this portable file and recheck that the instructions and knowledge remain attached after migration. Do not build project continuity around a product label.
-
-**Official setup reference checked 2026-09-29:** https://support.google.com/gemini/answer/15146780
-
-### Reconcile this initial snapshot once
-
-Ask Antigravity to read this file alongside current code, contracts, status, and pending changes. Have it update the current-state capsule and capability table from evidence, preserving the full product scope. It may keep a maintained copy at `docs/GEMINI_PROJECT_MASTER.md` if that does not duplicate an existing canonical project export. Existing detailed contracts remain authoritative for interfaces. Do not copy huge source files or private credentials into this file.
-
-A useful division is:
-- Existing repository contracts: precise implementation requirements.
-- Existing canonical handoff: short operational next action.
-- This single Gemini export: complete product context plus an up-to-date snapshot derived from those documents.
-
-The export is a view of repository evidence, not a competing technical specification.
-
-## 1. Permanent Gemini planner instructions
-
-Copy the following block into the Gem's Instructions field:
-
-```text
-You are ThreatFusion's engineering planner and critical reviewer for Muhammad Bilal. Use the attached THREATFUSION_GEMINI_PROJECT_MASTER.md as the complete product context. Retrieve it at the beginning of each new project session and state its revision and last reported checkpoint. If you cannot read it, say so; never pretend to remember its contents.
-
-Your goal is to complete the full product through coherent, testable phases. Keep ML and DL, supported telemetry, defensible correlation, threat intelligence, LLM assistance, MISP/TheHive/n8n, justified Pi-hole and ChromaDB roles, analyst workflows, controlled containment, Azure operations, recovery and endurance in scope. Do not silently reduce the project to a read-only dashboard or repeatedly rename unfinished work as complete.
-
-Distinguish current source evidence, observed execution, owner-reported observations, inherited reports, proposals and blocked capabilities. You usually do not have the laptop repository. Never claim you inspected it or ran tests without actual tool access and results. Newer verified repository evidence supersedes old state in the knowledge file. An unresolved disagreement must be traced to code, contracts and a reachable example, not resolved by model confidence or test counts.
-
-When I say continue, give one complete Antigravity prompt for the next coherent implementation milestone, with rationale, scope, observable acceptance criteria, focused verification and a stopping condition. Authorize routine in-scope engineering choices. Do not make me fill bracketed fields. Let the local agent discover current signatures, paths, schemas and mandatory gates. Do not fabricate them.
-
-Require preservation of staged, unstaged and untracked work. Work in ~/projects/threatfusion-gemini on the verified intended branch. Use threatfusion-venv/bin tools directly, never the copied .venv. No access to the protected ~/projects/threatfusion. No model/dataset changes, training, rescoring, cloud costs, remote publication, external data transmission or containment execution unless specifically authorized for that task. Roadmap inclusion is not authorization. Leave implementation unstaged and uncommitted by default.
-
-Every implementation report must end with a fully populated COPY INTO COPILOT review prompt containing actual workspace, branch, HEAD, files, acceptance criteria, risks and evidence. Copilot independently reads actual source and all relevant new files, remains read-only, and distinguishes tests it personally ran from inherited reports. No placeholders and no asking me to assemble review fields.
-
-If a blocking review finding remains, request a bounded reproduction and repair before advancing dependent work. Require focused tests first, one relevant final combined gate including the changed component, applicable quality checks, and a complete reviewable patch including new files. Do not require unrelated model evaluations or endless optional reruns. Two failed repair attempts should trigger a fresh focused review and simpler design analysis, not another cosmetic prompt rewrite.
-
-After accepted milestones, require the local agent to update the canonical handoff and regenerate the current-state portions of this project master from repository evidence. Tell me to replace the Gem knowledge file or linked document; do not claim it synchronized automatically. Keep historical failures as history, and preserve open gates for TF-008/TF-009 until their real acceptance criteria are met.
-
-Explain decisions in clear language so I can defend the project to my supervisor. Lead with current capability, evidence, limits and next action. Avoid unsupported accuracy, causal, zero-day, enterprise-readiness or model-superiority claims. Planning models and coding subscriptions are separate from the runtime LLM API and its costs.
-```
+- **Workspace & Environment Isolation:** Work strictly within `~/projects/threatfusion-gemini` on branch `gemini/product-20260924` using `threatfusion-venv/bin/` tools directly (`env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1`). Never access, import from, or modify the preserved reference copy at `~/projects/threatfusion` or use the copied `.venv`.
+- **Scope & Scientific Integrity:** Preserve the full ML + DL, supported telemetry, provenance-gated correlation, threat intelligence, advisory explanation, analyst workflow, controlled SOAR, deployment, and recovery scope. Distinguish source-verified, execution-verified, owner-observed, reported, planned, and blocked evidence.
+- **Frozen Model & Authorization Guardrails:** Preserve frozen model artifacts, dataset splits, and `production_fusion_enabled = False`. Do not trigger model training, rescoring, cloud spending, external data transmission, autonomous containment, or Git publication without explicit authorization.
+- **Verification Discipline:** Reproduce blocking findings before advancing dependent work. Run focused tests, combined gates, `git diff HEAD --check`, `boundary_preflight.py`, and `audit_repo_truth.py`. Distinguish directly executed checks from inherited reports.
+- **Open Issue Honesty:** Keep `TF-008`, `TF-009`, `TF-010`, and `TF-011` honestly `open` until their documented acceptance gates are satisfied. Avoid unsupported accuracy, causal, zero-day, or enterprise-readiness claims.
 
 ## 2. Current-state capsule and evidence rules
 
@@ -115,7 +73,7 @@ Explain decisions in clear language so I can defend the project to my supervisor
 | Correlation | Provenance-gated dual-window engine (`EntityProvenanceContract`, 30s burst, 10m campaign, 100% critical scenario retention, fail-closed singleton for unverified UNSW, NAT/clock-skew boundary enforcement, candidate deduplication, per-event member justifications, and audited manual grouping corrections) implemented and persisted to `incidents.sqlite3` |
 | RF / AE / candidate | Frozen RF active (`bd2853a6...`); v2 AE experimental and unfused (`c8675d13...`); rate-log1p candidate blocked (`1d02e5bb...`); 7-signal missing-data dynamic risk policy active; Section 8 `fusion_disabled = True` invariant enforced (8.831x FP inflation shield); non-fused AE queue priority ranker active; model supply-chain manifest verifier active; read-only 14-feature PSI drift monitor active |
 | Open issues | **TF-008** (`open`): Independent Model Benchmark Beyond Inspected January/February UNSW Splits; **TF-009** (`open`): Measured Reduction of Analyst Workload / Alert Fatigue (`tf_009_closure_eligible = False` until >=10 human trials); **TF-010** (`open`): External FAST-NUCES FYP-II Jury Rubric & Signed Supervisor/Jury Evaluation Alignment; **TF-011** (`open`): Real Operational SIEM / Threat-Intelligence Production Source Proof |
-| Immediate next action | Keep Mega-Milestone #32–#34 changes unstaged; present post-execution decision report and Copilot prompt |
+| Immediate next action | Keep verified milestone changes aligned with repository truth audit and open governance gates (TF-008 through TF-011 remain open) |
 
 If newer local evidence exists, reconcile this table before implementing. Do not undo later work to match this snapshot.
 
@@ -675,111 +633,25 @@ These hashes and summaries come from supplied user terminal output. Current hist
 
 Historical 60/179/199/205/172/17-test counts refer to different revisions/scopes. Never compare them as one monotonically growing quality score or reuse old timing as current execution.
 
-## 17. Gemini–Antigravity–Copilot work cycle
+## 17. Engineering and independent review discipline
 
-| Participant | Job | Must not claim |
+| Participant | Responsibility | Boundary |
 |---|---|---|
-| Gemini Gem | Maintain full vision, reconcile supplied evidence, select milestone and generate complete task | Local source inspection/testing without access |
-| Antigravity | One active writer: inspect source, implement, test, fix in scope, update docs/export | Self-reported completion equals independent acceptance |
-| Copilot | Independent stable-tree review of code, tests and contracts | Inherited test results are personally executed; agreement proves correctness |
-| Muhammad | Scope/cost/publication decisions, manual observations, final checkpoint | A test count or screenshot alone proves production readiness |
+| Engineering Planner | Maintain full product vision, reconcile evidence, and scope bounded milestones | Does not claim live code or test execution without repository access |
+| Active Implementer | One active writer: inspect source, implement, test, fix in scope, update docs | Self-reported completion does not replace independent review |
+| Independent Reviewer | Read-only inspection of code, tests, diffs, untracked files, and contracts | Distinguishes directly executed checks from inherited reports |
+| Project Owner | Scope, cost, publication decisions, manual observations, and checkpoint approval | A test count or screenshot alone does not prove production readiness |
 
-Use a capable reasoning model for boundary/security/concurrency tasks; current availability and quota must be checked in the actual tool. Do not embed a permanent “required” commercial model name into the architecture. A cheaper/faster model can handle bounded low-risk changes after the contract is clear. No model can infer missing provenance reliably enough to turn it into evidence.
+Use a capable reasoning model for boundary/security/concurrency tasks; verify availability in the active environment rather than hardcoding a commercial model name into the architecture. Maintain one active writer at a time, freeze edits during independent review, and anchor review findings to exact files, lines, reachable sequences, and corrections.
 
-Daily sequence:
-1. Inspect current state; attach latest project master to Gemini.
-2. Gemini selects one coherent outcome with prerequisites and acceptance tests.
-3. Antigravity implements and verifies, leaving reviewable changes uncommitted.
-4. Copy its ready-made review block into Copilot.
-5. Return confirmed findings to Antigravity; reproduce and fix, then review only affected risks plus required gates.
-6. Owner accepts the reviewed scope and commits explicit files after inspecting the staged diff.
-7. Regenerate this master’s status sections; replace the Gem attachment; proceed to the next phase.
+## 18. Archival verification and review protocol notes
 
-Keep one writer at a time. Freeze edits during independent review. A reviewer finding should state severity, exact file/line, reachable sequence, impact and correction; uncertain concerns should be labeled questions. Do not manufacture a defect merely to appear adversarial.
+Historical milestone workflows followed a structured verification and review discipline (archival summary; operational copy-paste prompts retired):
 
-## 18. Copy-paste prompts without fields to fill
-
-### 18.1 Activate Gemini with this file
-
-```text
-Read THREATFUSION_GEMINI_PROJECT_MASTER.md completely and use it as the knowledge baseline for this Gem. First report the document revision, last reported checkpoint, current blocked milestone, full target architecture, and the distinction between reported implementation and future features. Do not begin by generating another broad blueprint.
-
-Give me a concise implemented/pending/blocked summary and one fully specified Antigravity task for the next justified milestone. If you cannot read the file, tell me instead of guessing. Preserve the full ML+DL, correlation, integrations, LLM, analyst-response and deployment scope. Require the local agent to reconcile current source before editing and end with a fully populated COPY INTO COPILOT prompt.
-```
-
-### 18.2 Reconcile and maintain the single Gemini export in Antigravity
-
-```text
-Read the attached THREATFUSION_GEMINI_PROJECT_MASTER.md and reconcile it with the current ThreatFusion development repository. Work only in ~/projects/threatfusion-gemini; do not access the protected original. Verify branch, HEAD and staged/unstaged/untracked state. Preserve all existing work.
-
-Read applicable AGENTS.md, GEMINI.md, the charter, current status, issue register, relevant contracts, and source/tests needed to settle the current-state claims. Do not run unrelated evaluations, train models, reset files, stage, commit or push. This is a documentation reconciliation, not a new feature implementation.
-
-Maintain one canonical Gemini export, preferably docs/GEMINI_PROJECT_MASTER.md if no equivalent already exists. Preserve the stable complete product vision and all deferred features. Update the revision, current-state capsule, capability status, blockers, evidence references and next action from actual evidence. Mark inherited reports and unknowns explicitly. Do not remove historical failures or open requirements merely to simplify the file. Do not export private keys, credentials, datasets or raw sensitive telemetry.
-
-Check the final document for contradictory status claims and run git diff HEAD --check. Report the exact path of the updated single file I should upload to my Gemini Gem, what changed, what remains unverified and one next action. Never claim the Gemini upload or Drive copy was updated unless you actually performed that separately authorized action.
-```
-
-### 18.3 Continue a development phase through Gemini
-
-```text
-Continue ThreatFusion from the current project master and the latest report/review I supplied. State the revision you can see. Select the next coherent implementation phase or bounded milestone that advances the full product. Resolve a confirmed blocking defect before dependent features. If a branch is blocked by unavailable source evidence, select a justified independent branch instead of repeating the same research.
-
-Give me one complete Antigravity prompt with current context, allowed scope, acceptance criteria, inspection requirements, implementation, focused tests and final relevant gate, documentation/export update, stopping condition and a fully populated Copilot review handoff requirement. No placeholders. The local agent must verify facts and interfaces you cannot inspect. Routine in-scope decisions need no further confirmation. Preserve explicit artifact, workspace, cost and publication boundaries.
-```
-
-### 18.4 Immediate lifecycle repair prompt
-
-```text
-Resume the existing uncommitted human credential/listener lifecycle work in ~/projects/threatfusion-gemini on the verified intended branch gemini/product-20260924. Last reported HEAD is a6158cda69de1427d9cab30f5c96345c66fc0d16; preserve any later legitimate changes and do not reset to it. Do not access ~/projects/threatfusion, stage, commit, push, change models/datasets or deploy. Use threatfusion-venv/bin tools directly.
-
-Read applicable AGENTS.md, GEMINI.md, current status, operator/authentication contracts, human_credentials.py, human_listener_lifecycle.py, both human listeners, and all relevant tests/new files. Inspect actual staged, unstaged and untracked work. The latest supplied Copilot re-audit withdrew approval: before-native-creation KeyboardInterrupt may leave cleanup waiting forever, post-native creation interruption lacks direct coverage, and an arbitrary Exception from start() is treated as proof of non-start. Verify whether current source still has these defects.
-
-Trace the actual supported Python runtime and define the startup/shutdown guarantee before editing. Write deterministic bounded regressions for first and second workers: interruption before native creation, interruption after creation before start returns, ordinary native creation failure, and any confirmed partial-bookkeeping path. Use process isolation/watchdogs for potential hangs; distinguish realistic runtime behavior from artificial wrappers. Record pre-fix failures for confirmed defects without reverting unrelated work.
-
-Implement a coherent repair preserving admission stop, socket closure, admitted transition completion, rollback of partial startup, worker ownership/joins, policy reconstruction, and UUIDv4 replay. Do not replace the bug with a timeout that drops live handles or falsely declares clean shutdown. Do not wait indefinitely for a worker that cannot exist. Explain platform or signal limitations honestly and do not impose a speculative design just to match a reviewer's wording.
-
-Run focused regressions, fix in-scope failures, then the relevant combined gate including test_human_listener_lifecycle.py, test_operator_human_credentials.py, test_analyst_tls_service.py, test_analyst_browser_tls_service.py, test_analyst_security_audit.py and test_analyst_state.py at their verified paths. Apply repository-required gates. Distinguish environmental loopback/ownership restrictions from product failures and use only the platform's authorized execution path. Stop optional reruns after the acceptance risks are covered.
-
-Inspect the complete final diff and relevant untracked contents. Update contracts/status and the canonical handoff/Gemini master export. Keep TF-008/TF-009 open for unmet gates. Leave implementation unstaged/uncommitted. Report exact commands, exits, raw summaries, pre/post repair evidence, current status, whitespace check and full reviewable patch including new files.
-
-End with COPY INTO COPILOT containing a ready-to-paste independent review prompt with the actual workspace, branch, HEAD, exact files, criteria, evidence and residual risks. Copilot must inspect actual code, startup paths and test realism, remain read-only, and label inherited test results; no test execution unless separately authorized. No placeholders. Stop after this handoff.
-```
-
-### 18.5 Requirement to add to EVERY Antigravity task
-
-```text
-Finish with a section named COPY INTO COPILOT containing the complete independent review prompt, already filled from the actual final state. Include workspace, branch, HEAD, implementation objective, exact modified/untracked files, acceptance criteria, known risks and raw evidence locations. Tell the reviewer to inspect current code/contracts and all relevant new files rather than trust this report; report severity, file/line, reachable behavior and correction; keep the review read-only and distinguish inherited execution results. Do not ask me to fill fields or copy separate sections together.
-
-Also update the single Gemini project-master export from the current repository and give its exact path for replacing the knowledge attachment. Do not claim that the remote Gem was updated automatically.
-```
-
-### 18.6 Give Copilot an Antigravity report directly
-
-Paste this instruction, then Antigravity's report in the same message:
-
-```text
-Independently review the current ThreatFusion work described below. Infer the review scope and acceptance claims from the report, verify actual workspace/branch/HEAD, read applicable repository instructions and relevant contracts, inspect the full diff and contents of all relevant untracked files. Do not treat the report as proof.
-
-Keep this review read-only: no edits, tests, formatting, staging, commits, push, or protected-original access. Trace failure paths and whether the tests would detect the reported defect. Distinguish verified findings from questions and inherited test claims. For each blocker provide severity, exact file/line, reachable sequence, impact and specific correction. If none is found, say precisely what was inspected and what remains unverified. Do not give full-product approval for component evidence.
-```
-
-### 18.7 Return a review for repair
-
-```text
-Verify the review below against the current source and contracts. Reproduce confirmed blockers with meaningful bounded regressions, repair them within this milestone, rerun affected tests and applicable gates, and update the project-master export. Explain any finding you reject with exact source and evidence. Preserve all unrelated work and constraints. Do not start another feature, stage, commit or push. Regenerate the fully populated COPY INTO COPILOT block after repairs.
-```
-
-### 18.8 Finish an accepted checkpoint
-
-```text
-Prepare local checkpoint commands for the reviewed and accepted milestone. Inspect existing staged content first and list anything outside the accepted scope. Name every file explicitly, including accepted new files. Include staged whitespace, names, stat and full-diff checks before the proposed commit, then status/log after it. Do not stage or commit for me, use git add ., commit -a, reset, clean, push or alter the remote guard. Preserve secrets and generated artifacts outside the commit. Update the canonical handoff and single Gemini project-master export, and tell me exactly which file to replace in the Gem.
-```
-
-### 18.9 Resume tomorrow
-
-```text
-Resume ThreatFusion from the attached current project master. State the revision and last known evidence first. Use the latest accepted handoff and outstanding review, not an old chat completion claim. Give one complete implementation prompt for the next coherent outcome and require the filled Copilot review block plus an updated project-master export. Do not repeat completed setup or discard uncommitted work.
-```
+1. **Pre-Edit Reconciliation:** Verify branch (`gemini/product-20260924`), `HEAD`, staged/unstaged/untracked state, and relevant contracts (`docs/product_charter.md`, `docs/project_status.md`, `docs/issue_register.md`) before modifying files, preserving unrelated work.
+2. **Lifecycle & Boundary Invariants:** Keep `~/projects/threatfusion` isolated, execute via `threatfusion-venv/bin/`, preserve frozen artifact SHA-256 digests and `production_fusion_enabled = False`, and keep `TF-008` through `TF-011` honestly `open` until their acceptance gates are satisfied.
+3. **Verification & Handoff:** Run focused regressions, combined gates, `git diff HEAD --check`, `scripts/boundary_preflight.py`, and `scripts/audit_repo_truth.py`. Record exact commands, changed/untracked paths, residual risks, and directly observed results separately from inherited reports.
+4. **Independent Review & Checkpoint:** Perform read-only inspection across diffs, untracked files, failure paths, and contracts before staging or committing explicit files, keeping `remote.origin.pushurl` guarded and generated artifacts untracked.
 
 ## 19. Definition of completion and owner learning
 
@@ -806,13 +678,10 @@ Give a short explanation of: what input enters, what output leaves, what is pers
 
 ### Update procedure after accepted progress
 
-1. Local agent reads current canonical documents and exact repository state.
-2. It updates this export's revision, capsule, inventory, blocker and next-action sections, preserving the enduring vision.
-3. It records whether the implementation is uncommitted, committed, reviewed or deployed; these are different states.
-4. Owner replaces the Gem attachment or the linked Drive document with the updated content.
-5. In a new Gem conversation, ask for revision, accepted capabilities, blocker and next action to verify retrieval.
-
-Do not trust a statement such as “I have remembered everything permanently.” File availability plus explicit retrieval and version checks is the repeatable mechanism.
+1. Inspect current canonical documents (`docs/product_charter.md`, `docs/project_status.md`, `docs/issue_register.md`) and exact repository state.
+2. Update this master's revision, capsule, inventory, blocker, and next-action sections, preserving the enduring architecture vision.
+3. Record whether the implementation is uncommitted, committed, reviewed, or deployed; these are distinct states.
+4. Keep repository status documents and this master aligned via direct inspection rather than assuming automatic external synchronization.
 
 ### Stable facts versus changing facts
 
@@ -872,4 +741,4 @@ Do useful inspection rather than ask the owner for details that the repository c
 
 ---
 
-**Final instruction to Gemini:** Keep the complete destination visible, but plan from the current verified starting point. Preserve what works, resolve real blockers, produce meaningful implementation outcomes, require honest evidence, and refresh this single knowledge file after accepted progress. The next action at this revision is to verify and repair the human listener lifecycle startup/cleanup blocker unless newer source evidence shows it has already been resolved.
+**Archival governance summary:** Preserve verified baselines, resolve confirmed defects before dependent work, require reproducible evidence, refresh status records after accepted progress, and keep open gates (`TF-008`, `TF-009`, `TF-010`, `TF-011`) strictly open until their acceptance criteria are met.

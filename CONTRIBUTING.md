@@ -1,15 +1,15 @@
 # Contributing to ThreatFusion
 
-Thank you for your interest in contributing to ThreatFusion! ThreatFusion is a deterministic-first AI Security Operations Center (SOC) platform designed to eliminate alert fatigue while maintaining strict cryptographic boundaries.
+Thank you for your interest in contributing to ThreatFusion! ThreatFusion is a deterministic-first AI Security Operations Center (SOC) platform designed to mitigate alert fatigue while maintaining strict cryptographic boundaries.
 
 ## Development Environment Setup
 
-ThreatFusion relies on Python 3.11+ and isolated virtual environments.
+ThreatFusion relies on Python >=3.11,<3.12 and isolated virtual environments.
 
 ### 1. Prerequisites
 - Python 3.11 (`uv python install 3.11`)
 - Git 2.30+
-- Linux (Ubuntu 24.04 LTS recommended)
+- Linux (Ubuntu 24.04 LTS recommended) or macOS (Apple Silicon / Intel)
 
 ### 2. Environment Initialization
 ```bash
@@ -47,7 +47,7 @@ Expected baseline: `1,726+ tests collected, 0 failed; 1–11 environment-gated s
 ## Architectural Guidelines
 
 1. **Deterministic Alert Authority:**
-   - The frozen Random Forest (`artifacts/models/frozen_random_forest/rf_model.joblib`) remains the sole alert authority.
+   - The frozen Random Forest (`artifacts/models/network_random_forest_baseline/full-network-random-forest-6d69c72-v1/random_forest.joblib`) remains the sole alert authority.
    - `production_fusion_enabled` MUST remain `False`. Secondary autoencoder or DNN models are strictly advisory or queue-ranking components.
 2. **Gate G9 Decoupling:**
    - Advisory components (`threatfusion.advisory.*`) and the MCP server must NEVER write alert decisions.

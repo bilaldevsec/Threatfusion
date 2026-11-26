@@ -710,8 +710,14 @@ def draft_detection_rule(
         if flow
         else {"technique_id": technique, "dst_port": "any" if dst_port is None else dst_port}
     )
+    vector_clean = re.sub(
+        rf"^(?:{re.escape(technique)}(?:[\s:\u2013\u2014-]+|$))+",
+        "",
+        vector.strip(),
+        flags=re.IGNORECASE,
+    ).strip()
     raw_msg = (
-        _flatten_rule_text(f"THREATFUSION {technique} {vector or 'hunt'}")
+        _flatten_rule_text(f"THREATFUSION {technique} {vector_clean or 'hunt'}")
         .replace('"', "")
         .replace(";", " ")
         .strip()[:120]

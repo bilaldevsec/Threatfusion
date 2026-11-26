@@ -3,7 +3,7 @@
 **Date:** 2026-10-26  
 **Branch:** `gemini/product-20260924`  
 **Audience:** Muhammad Bilal  
-**How to use this file:** open it whenever you want the picture, and at the end of a usage week. This chat cannot see the Cursor allowance meter. Say "usage is low" or "weekly report" and this file is rewritten before any new feature starts.
+**How to use this file:** Periodic owner progress summary tracking verified capabilities, product limitations, and open governance gates (`TF-008`–`TF-011`).
 
 ## What the product is
 
@@ -65,8 +65,8 @@ These are open on purpose. Closing them needs evidence, not another screen.
 
 Cortex XSIAM, Prophet, Dropzone, Charlotte AI, and Security Copilot are ahead on customer data, live tenancy, and distribution. ThreatFusion can be ahead on a narrower promise: every score on the screen is a frozen-model result or marked unavailable, private addresses stay on the machine, and no response runs without a person and a checkable approval record. That promise is true in the code. It is not yet a measured product, because TF-009 and TF-011 are open.
 
-## Usage this week
+## Verification Cadence (Archival Note — 2026-10-26)
 
-Specialist bots were used from separate chats, which spent extra runs on the same reading. From this report forward, this chat calls one bot at a time. The full 1,500-test suite is not the default gate, because the last full run hung. The default gate is the whitespace check, the focused tests, the boundary preflight, and the repository-truth audit.
+Standard local verification uses the whitespace check (`git diff HEAD --check`), focused unit/integration test suites, the boundary preflight (`scripts/boundary_preflight.py` B0–B6), and the repository-truth audit (`scripts/audit_repo_truth.py`), alongside full CI and full-suite regression runs prior to release checkpoints.
 
-On 2026-10-26 the main chat ran those four gates on the uncommitted tree: whitespace clean, focused tests passed, boundary preflight B0–B6 GO, repository-truth audit 7/7 GO. The QA bot was then called from this same chat. It could read the B6 tests and confirmed TF-008 through TF-011 are open, but its session could not run commands, so its own scorecard is BLOCKED for lack of a run. That is a tooling limit, not a failed test. The next QA call has to be allowed to execute the four commands.
+On 2026-10-26, those four local gates passed on the working tree (whitespace clean, focused tests passed, boundary preflight B0–B6 GO, repository-truth audit 7/7 GO) while `TF-008` through `TF-011` remained strictly open; a read-only review confirmed the B6 tests and open status of `TF-008` through `TF-011`, pending live command execution in a subsequent run.

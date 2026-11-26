@@ -10,9 +10,9 @@
 - Muhammad Suhaib Shaikh (`22K-4302`)
 - Muhammad Hasnain (`22K-4718`)
 
-**Harmonized Presentation Artifact:** [`artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx`](file://<repo_root>/artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx)\
+**Harmonized Presentation Artifact:** `artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx` (gitignored generated artifact)\
 **Source Presentation Input:** `<external-download>/Final Presentation (1).pptx`\
-**Generator Script:** [`scripts/generate_harmonized_defense_deck.py`](file://<repo_root>/scripts/generate_harmonized_defense_deck.py)\
+**Generator Script:** [`scripts/generate_harmonized_defense_deck.py`](../scripts/generate_harmonized_defense_deck.py)\
 **Evaluation Baseline:** Canonical Evaluation Pack Rev2 (`AI-FYP-2006`, checkpoint `6a36dcd9af17bf509977bcf966f2ace72644d5b2`)  
 **Date:** 2026-10-16  
 
@@ -59,7 +59,7 @@ The following table provides the comprehensive mapping from the draft deck (`Fin
 
 ## 3. Cryptographic Ground-Truth & Repository Verification Evidence
 
-The presentation deck's harmonized numbers are not static estimates; they are cryptographically pinned to immutable repository baselines and verified by the **Deterministic Zero-Trust Repository Truth Audit Gate** ([`scripts/audit_repo_truth.py`](file://<repo_root>/scripts/audit_repo_truth.py)):
+The presentation deck's harmonized numbers are not static estimates; they are cryptographically pinned to immutable repository baselines and verified by the **Deterministic Zero-Trust Repository Truth Audit Gate** ([`scripts/audit_repo_truth.py`](../scripts/audit_repo_truth.py)):
 
 ### 3.1 Immutable Model SHA-256 Hashes
 Every model referenced in the slides exists on disk and is verified byte-identical against its immutable digest:
@@ -161,7 +161,7 @@ This section provides authoritative talking points for **Sir Sameer Faisal** and
 
 **Defense Talking Point:**
 > *"In strict accordance with our repository truth audit gate, four issues remain honestly OPEN:*
-> - *`TF-008`: Evaluation beyond inspected January/February UNSW splits. (Requires evaluation on an untouched external benchmark like CIC-IDS2017 without feature retuning).*
+> - *`TF-008`: Evaluation beyond inspected January/February UNSW splits. (Requires evaluation on an untouched external benchmark without feature retuning).*
 > - *`TF-009`: Measured reduction of analyst workload in human trials. (Requires controlled cohort trials across $\ge 10$ human analysts measuring time-to-disposition).*
 > - *`TF-010`: External FAST-NUCES signed jury rubric. (Internal traceability matrix is complete; requires the official external signed rubric from the department).*
 > - *`TF-011`: Live operational enterprise SIEM feed proof. (Suricata adapter and mTLS transport are verified; requires live corporate telemetry).*
@@ -172,7 +172,7 @@ This section provides authoritative talking points for **Sir Sameer Faisal** and
 
 ## 5. Verification Gate & Deliverable Integrity
 
-1. **Slide Deck Generator**: [`scripts/generate_harmonized_defense_deck.py`](file://<repo_root>/scripts/generate_harmonized_defense_deck.py) exits with code 0 and outputs [`artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx`](file://<repo_root>/artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx) (`92,623` bytes, exactly 15 slides).
+1. **Slide Deck Generator**: [`scripts/generate_harmonized_defense_deck.py`](../scripts/generate_harmonized_defense_deck.py) exits with code 0 and outputs `artifacts/reports/ThreatFusion_FYP2_Final_Defense_Harmonized.pptx` (gitignored generated artifact; `92,623` bytes, exactly 15 slides).
 2. **Code Hygiene & Test Verification**:
    - `threatfusion-venv/bin/ruff check .` passes with 0 errors across the entire codebase.
    - `threatfusion-venv/bin/black --check .` confirms 202 files cleanly formatted.

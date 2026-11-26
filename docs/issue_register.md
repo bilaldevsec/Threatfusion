@@ -743,7 +743,7 @@ TF-010 repository-side disposition registry is implemented in `backend/src/threa
 
 1. **Jury Requirements Traceability Registry (`jury_traceability_matrix_v1`, TF-010 open (repository-side traceability helper implemented; external FAST-NUCES jury rubric remains open)):**
    - Implemented `backend/src/threatfusion/models/jury_traceability.py` and published `docs/jury_requirements_traceability.md`.
-   - Immutable registry defines formal dispositions, schema contracts, and leakage boundaries for all 6 jury-approved datasets (`UNSW-NB15`, `CIC-IDS2017`, `CSE-CIC-IDS2018_subset`, `Mordor_scenarios`, `Synthetic_UEBA`, `Authorized_Lab_Sensor`) and 5 model families (`Logistic_Regression`, `Random_Forest`, `Autoencoder_v2`, `Rate_Log1p_Candidate`, `Heuristic_Statistical_Signals`).
+   - Immutable registry defines formal dispositions, schema contracts, and leakage boundaries for the 5 registered datasets (`UNSW-NB15`, `CSE-CIC-IDS2018_subset`, `Mordor_scenarios`, `Synthetic_UEBA`, `Authorized_Lab_Sensor`; unsupported historical cross-source placeholder removed in Wave C) and 5 model families (`Logistic_Regression`, `Random_Forest`, `Autoencoder_v2`, `Rate_Log1p_Candidate`, `Heuristic_Statistical_Signals`).
    - `verify_jury_traceability_completeness()` asserts that every required dataset and model family has a non-empty disposition, valid artifact/contract reference, and explicit leakage boundary. Verifies disk SHA-256 digests for all baseline artifacts (`random_forest.joblib`: `bd2853a6...`, `autoencoder_state.pt`: `c8675d13...`, `logistic_regression.joblib`: `2cf4de66...`, `rate_log1p`: `1d02e5bb...`).
 
 2. **Missing-Data Aware Multi-Signal Risk Engine (`dynamic_risk_assessment_v1`, TF-002/TF-003/TF-004):**

@@ -32,7 +32,6 @@
   /* Typography Colors */
   --text-primary: #e6edf3;
   --text-secondary: #8b949e;
-  --text-muted: #6e7681;
   --text-link: #58a6ff;
   --text-code: #79c0ff;
 
@@ -430,12 +429,10 @@ a:hover {
   box-shadow: none !important;
 }
 
-.badge[data-evidence-state="unavailable"],
-[data-evidence-state="unavailable"] {
+.badge[data-evidence-state="unavailable"] {
   background: var(--color-slate-bg) !important;
-  color: #c9d1d9 !important;
+  color: #F8FAFC !important;
   border: 1px solid rgba(110, 118, 129, 0.4) !important;
-  opacity: 0.85;
 }
 
 /* Standard Badges */
@@ -465,8 +462,8 @@ a:hover {
 }
 
 .badge-role {
-  background: var(--text-muted);
-  color: #fff;
+  background: var(--color-slate-bg);
+  color: #F8FAFC;
 }
 
 .badge-neutral {
@@ -1588,9 +1585,14 @@ button:hover,
 
 label[for="analystRationale"],
 label[for="contextMemoryRule"],
-label[for="shiftHandoffNote"],
+label[for="shiftHandoffNote"] {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
 #analystRationale,
-#contextMemoryRule,
 #shiftHandoffNote {
   display: flex;
   flex-direction: column;
@@ -1845,6 +1847,35 @@ label[for="shiftHandoffNote"],
   background: #090d16;
 }
 
+.soc-app .action-group input,
+.soc-app .action-group select,
+.action-group input,
+.action-group select {
+  display: inline-block;
+  width: auto;
+  flex: 0 1 auto;
+  min-width: 115px;
+  max-width: 170px;
+  margin: 0;
+  height: var(--ctrl-h, 30px);
+  min-height: var(--ctrl-h, 30px);
+}
+
+.soc-app .action-group label,
+.action-group label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.soc-app .action-group button,
+.action-group button {
+  margin: 0;
+  height: var(--ctrl-h, 30px);
+  min-height: var(--ctrl-h, 30px);
+  white-space: nowrap;
+}
+
 .action-group-label {
   font-size: 0.68rem;
   letter-spacing: 0.04em;
@@ -2055,6 +2086,8 @@ label[for="shiftHandoffNote"],
 
 .lab-drawer {
   display: none;
+  visibility: hidden;
+  pointer-events: none;
   position: fixed;
   top: 0;
   right: 0;
@@ -2064,11 +2097,13 @@ label[for="shiftHandoffNote"],
   background: #111827;
   border-left: 1px solid #30363d;
   padding: 1rem;
-  z-index: 20;
+  z-index: 60;
 }
 
 .lab-drawer.is-open {
   display: block;
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .lab-drawer-head {
@@ -2762,7 +2797,9 @@ html, body {
   right: 0;
   bottom: 0;
   width: min(460px, 100vw);
-  z-index: 80;
+  z-index: 60;
+  visibility: hidden;
+  pointer-events: none;
   background: var(--bg-surface-1, #0f1219);
   border-left: 1px solid rgba(255, 255, 255, 0.1);
   padding: 1rem;
@@ -2774,6 +2811,8 @@ html, body {
 
 .health-drawer.is-open {
   transform: translateX(0);
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .health-drawer-grid {

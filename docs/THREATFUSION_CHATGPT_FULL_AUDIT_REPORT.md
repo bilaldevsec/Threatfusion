@@ -26,24 +26,10 @@ An exhaustive, line-by-line architectural audit was executed across Muhammad Bil
 | ChatGPT JSON Export (`conversations-*.json`) | 6 shards (557 convs total) | 48 ThreatFusion-matching threads | 1,127 | 5,262 | 6,389 | 6,290,140 bytes (~6.0 MB text) |
 | **Core Technical Engineering Threads (JSON)** | Shards 002, 003, 004 | **21 dedicated engineering threads** | **962** | **4,279** | **5,241** | **5,412,890 bytes** |
 
-The 21 core technical engineering threads encompass all major project discussions:
-1. `Project Audit Plan` (ID `6a9336c6-7ac8-83ee-bcc8-bb9622b295b8`): 3,428 messages (534 User, 2,894 Assistant), 2.81 MB text.
-2. `ThreatFusion Master Plan` (ID `6a96b28b-f760-83ee-b7de-a62ce1838803`): 43 messages (5 User, 38 Assistant).
-3. `Explain Full Project` (ID `6a9dd2c8-c144-83e8-b2a7-d9b722d25ecc`): 56 messages (6 User, 50 Assistant).
-4. `LinkedIn Project Update` (ID `6aa08329-3738-83e8-9774-4b53dafeef98`): 12 messages (2 User, 10 Assistant).
-5. `ThreatFusion Demo Overview` (ID `6ab0aff9-5de8-83e8-9402-1a4c51882a95`): 16 messages (2 User, 14 Assistant).
-6. `AI Stack Recommendation` (ID `6ab6e74c-47a0-83e8-a15f-598d89e49a1d`): 31 messages (5 User, 26 Assistant).
-7. `Zip folder count` (ID `6ab79d07-aa44-83e8-b789-f5eb3fbb4675`): 14 messages (2 User, 12 Assistant).
-8. `Generate Handoff Markdown Files` (ID `6ab9dfe1-dd60-83e8-a7ce-bca1202e7aa2`): 9 messages (1 User, 8 Assistant).
-9. `Cursor FYP Build Plan` (ID `6ace1e0c-1280-83ee-b944-cf6c6a67260b`): 7 messages (1 User, 6 Assistant).
-10. `FYP Evaluation Feedback` (ID `699cad17-f5dc-83e8-9fc6-ff1795c64c1f`): 111 messages (54 User, 57 Assistant).
-11. `PDF Review and Implementation Plan` (ID `6a93123a-e670-83ee-9c06-c03db39b6691`): 16 messages (5 User, 11 Assistant).
-12. Three Untitled Early Engineering Threads (IDs `6a8ad217...`, `6ab0c515...`, `6ab0e292...`): 952 messages (253 User, 699 Assistant) detailing UNSW-NB15 cleaning, column definitions, SMOTE vs class weighting, and multiclass vs multi-label formulation.
-13. `Unified Lab Project Plan` (ID `6ab7a348-10a4-83e8-bf06-fa3d9bf35a44`): 44 messages.
-14. `Enterprise Zero Trust Project` (ID `6ab82596-f948-83e8-8a88-75b2bfdfa6f4`): 180 messages.
-15. `Project Integration Plan` (ID `6ab9eb3c-dd14-83e8-b956-658bc667a485`): 50 messages.
-16. `Admissions Feasibility & Literature Review` (ID `6ab274a1...`): 100 messages.
-17. `Pakistan AI Student Offers & Tool Evaluation`: 135 messages.
+The 21 core technical engineering threads in the JSON export (5,241 messages: 962 User, 4,279 Assistant; 5,412,890 bytes across shards 002–004) span the major ThreatFusion architecture and engineering workstreams:
+- **Core Architecture & Audit Planning (~3,527 messages):** End-to-end project audit planning, master architecture roadmap, system walkthroughs, and evaluation feedback reconciliation.
+- **UNSW-NB15 Preprocessing & Modeling (~952 messages across three early engineering threads):** Dataset cleaning, column definitions, class-imbalance handling (SMOTE vs class weighting), and binary vs multiclass formulation.
+- **Zero-Trust Security, Lab Integration & Tooling (~762 messages):** Unified lab integration planning, zero-trust control architecture, PDF specification review, AI stack selection, handoff synthesis, and literature review.
 
 ---
 
@@ -85,7 +71,7 @@ Deployed on a single Linux workstation, costing $0, operating fully offline, and
 During the OpenAI Codex sprint up to baseline commit `d3f485aa3933fda996b8784ffe11dc54d43bbb8e`:
 - **UNSW-NB15 Dataset Formalization:** Full row assignment into 865,480 TRAIN, 216,568 January VALIDATION, and 1,452,844 February TEST records.
 - **Frozen 14-Feature Preprocessing:** 10 continuous rate/byte features z-score normalized on TRAIN only, plus 4 protocol one-hot indicators (`proto_tcp`, `proto_udp`, `proto_icmp`, `proto_other`).
-- **Baseline Models:** Logistic Regression and Random Forest (`n_estimators=200`, `max_depth=20`) fitted strictly on TRAIN data.
+- **Baseline Models:** Logistic Regression and Random Forest (`n_estimators=100`, `max_depth=16`, `min_samples_leaf=5`) fitted strictly on TRAIN data.
 - **PyTorch Autoencoder (v1 & v2):** Benign-only Autoencoder (14-8-3-8-14) trained for 30 epochs on 847,837 benign TRAIN records. Under `TF-016`, batch-instability and float32 residual discrepancies were resolved by creating canonical per-record float64 v2 scoring.
 - **Rate-log1p Candidate Rejection:** A single authorized experiment testing `log1p` on rate features failed all four preregistered numerical gates and was classified as `BLOCKED_preserve_baseline`.
 - **Producer Ingestion & Worker Isolation:** An mTLS 1.3 loopback producer boundary, ephemeral worker process isolation (`bounded_inference_worker`), SQLite replay journal (`producer_replay_journal_sqlite_v1`), and structured audit logging (`producer_security_audit_sqlite_v2`).

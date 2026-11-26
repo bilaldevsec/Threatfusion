@@ -212,7 +212,7 @@ def generate_presenter_guide_markdown() -> str:
   >
   > The schema comprises 14 transformed features: 10 numeric metrics capturing flow duration, forward and backward packet counts, bytes, transmission rates, mean packet lengths, and destination port, complemented by 4 one-hot protocol indicators for TCP, UDP, ICMP, and Other.
   >
-  > Crucially, every detector executes on a strict single-record (1, 14) forward pass contract. This guarantees that live flows adapted from Suricata IDS exhibit byte-for-byte feature parity with our offline training records."
+  > Crucially, every detector executes on a strict single-record (1, 14) forward pass contract. This enforces a deterministic 14-column schema and TRAIN-fitted z-score projection across offline records and Suricata-adapted flows, while cross-extractor byte-layer and flow-termination comparability remains explicitly qualified and open under TF-003 and TF-012."
 
 #### Slide 4: ThreatFusion Model Families & Production Boundaries
 - **Slide Title:** `MODEL FAMILY ROLES`
