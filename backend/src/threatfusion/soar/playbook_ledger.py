@@ -23,6 +23,7 @@ import sqlite3
 import stat
 import threading
 import uuid
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -341,7 +342,7 @@ class SoarPlaybookSqliteRepository:
         except FileNotFoundError:
             precreate_sqlite_0600(self.db_path)
         with scoped_umask_077():
-            with self._get_connection() as conn:
+            with closing(self._get_connection()) as conn, conn:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS soar_playbook_records (
                         playbook_id TEXT PRIMARY KEY,
@@ -450,7 +451,7 @@ class SoarPlaybookSqliteRepository:
         raise SoarStateTransitionError("raw_save_record_disabled_use_atomic_transition")
 
     def get_record(self, playbook_id: str) -> SoarPlaybookRecord | None:
-        with self._get_connection() as conn:
+        with closing(self._get_connection()) as conn:
             cursor = conn.execute(
                 "SELECT * FROM soar_playbook_records WHERE playbook_id = ?",
                 (playbook_id,),
@@ -461,7 +462,7 @@ class SoarPlaybookSqliteRepository:
             return self._row_to_record(row)
 
     def list_records_for_candidate(self, candidate_id: str) -> list[SoarPlaybookRecord]:
-        with self._get_connection() as conn:
+        with closing(self._get_connection()) as conn:
             cursor = conn.execute(
                 "SELECT * FROM soar_playbook_records WHERE candidate_id = ? ORDER BY created_at_utc ASC",
                 (candidate_id,),
@@ -850,7 +851,7 @@ class SoarPlaybookSqliteRepository:
         return entry
 
     def list_audit_events(self, playbook_id: str) -> list[dict[str, Any]]:
-        with self._get_connection() as conn:
+        with closing(self._get_connection()) as conn:
             cursor = conn.execute(
                 "SELECT * FROM soar_audit_events WHERE playbook_id = ? ORDER BY rowid ASC",
                 (playbook_id,),
@@ -858,7 +859,7 @@ class SoarPlaybookSqliteRepository:
             return [dict(row) for row in cursor.fetchall()]
 
     def list_audit_entries(self, playbook_id: str) -> list[SoarAuditEntry]:
-        with self._get_connection() as conn:
+        with closing(self._get_connection()) as conn:
             cursor = conn.execute(
                 "SELECT * FROM soar_audit_events WHERE playbook_id = ? ORDER BY rowid ASC",
                 (playbook_id,),
@@ -1319,7 +1320,7 @@ class SoarPlaybookSqliteRepository:
 
     def list_response_timings(self) -> list[dict[str, Any]]:
         """Return all recorded MTTR intervals."""
-        with self._get_connection() as conn:
+        with closing(self._get_connection()) as conn:
             cursor = conn.execute("""
                 SELECT playbook_id, candidate_id, state, t_approval_queued, t_callback_verified, t_response
                 FROM soar_playbook_records

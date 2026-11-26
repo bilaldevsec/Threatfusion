@@ -45,7 +45,7 @@ Open `http://127.0.0.1:8766/` in Chrome/Firefox and click any role card in the s
 ### 2. Local Docker Stack (Suricata + n8n + SOAR Sidecar)
 
 ```bash
-docker compose -f docker/docker-compose.soc-stack.yml up -d
+docker compose -f docker/docker-compose.soc-stack.yml up -d --build
 # Optional isolated attacker/victim range containers:
 docker compose -f docker/docker-compose.range.yml up -d
 ```

@@ -1126,7 +1126,7 @@ if command -v systemctl >/dev/null 2>&1; then
   sudo systemctl restart suricata || true
 fi
 echo "[3/6] Starting SOC stack without a second publisher on port 5678"
-sudo docker compose --env-file .env -f docker/docker-compose.soc-stack.yml up -d
+sudo docker compose --env-file .env -f docker/docker-compose.soc-stack.yml up -d --build
 if [[ -f docker/docker-compose.n8n.yml ]] && ! grep -q '5678:5678' docker/docker-compose.soc-stack.yml; then
   sudo docker compose --env-file .env -f docker/docker-compose.n8n.yml up -d
 fi

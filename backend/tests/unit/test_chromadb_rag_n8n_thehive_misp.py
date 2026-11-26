@@ -11,18 +11,24 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import hashlib
+import hmac
 import http.server
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import stat
+import subprocess
 import threading
+from typing import Any
 import urllib.error
 import urllib.request
 
 import pytest
+import yaml
 
 from scripts.run_misp_and_callback_contract_server import (
     MispAndCallbackContractHandler,
@@ -533,6 +539,9 @@ class TestN8nDeterministicPlaybookClient:
         assert receipt.status in ("dispatched_live", "queued_durable_outbox")
         assert len(receipt.signature_sha256) == 64
         assert receipt.idempotency_key == f"idem_{approved.playbook_id}_2"
+        assert receipt.payload["idempotency_key"] == receipt.idempotency_key
+        assert receipt.payload["timestamp_utc"] == receipt.dispatched_at_utc
+        assert receipt.payload["dispatched_at_utc"] == receipt.dispatched_at_utc
         assert receipt.payload["mitre_technique_id"] == "T1046"
         assert receipt.payload["audit_chain_verified"] is True
 
@@ -623,11 +632,19 @@ class TestDockerStackAndN8nWorkflow:
         # Invariant (b): zero :latest tags
         assert ":latest" not in content
 
-        # Invariant (b): pinned exact versions
+        # Invariant (b): pinned exact versions and Dockerfile.contract runtime image
         assert "n8nio/n8n:1.68.0" in content
         assert "strangebee/thehive:5.2.10" in content
         assert "chromadb/chroma:0.5.20" in content
-        assert "python:3.11.10-slim" in content
+        assert "threatfusion-contract-runtime:3.11.10-slim" in content
+        assert "Dockerfile.contract" in content
+        assert "image: python:3.11.10-slim" not in content
+        dockerfile_contract = (REPO_ROOT / "docker" / "Dockerfile.contract").read_text(
+            encoding="utf-8"
+        )
+        assert "FROM python:3.11.10-slim" in dockerfile_contract
+        assert ":latest" not in dockerfile_contract
+        assert "pydantic==2.13.5" in dockerfile_contract
 
         # Invariant (b): N8N_BASIC_AUTH_ACTIVE=true and fail-closed secrets
         assert "N8N_BASIC_AUTH_ACTIVE=true" in content
@@ -644,6 +661,41 @@ class TestDockerStackAndN8nWorkflow:
         assert "127.0.0.1:9000:9000" in content
         assert "127.0.0.1:5678:5678" in content
         assert "127.0.0.1:8000:8000" in content
+
+    def test_p1_1_soc_stack_wires_dockerfile_contract_and_build_boot_path(self) -> None:
+        """Verify misp-connector and threatfusion-callback build from Dockerfile.contract cleanly."""
+        compose_path = REPO_ROOT / "docker" / "docker-compose.soc-stack.yml"
+        compose_doc = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+        services = compose_doc["services"]
+
+        for service_name in ("misp-connector", "threatfusion-callback"):
+            svc = services[service_name]
+            build_cfg = svc.get("build")
+            assert isinstance(build_cfg, dict), f"{service_name} must declare a build section"
+            assert build_cfg.get("context") == "."
+            assert build_cfg.get("dockerfile") == "Dockerfile.contract"
+            assert svc.get("image") == "threatfusion-contract-runtime:3.11.10-slim"
+            assert svc.get("image") != "python:3.11.10-slim"
+            for vol in svc.get("volumes", []):
+                assert "/home/" not in str(vol)
+
+        dockerfile_text = (REPO_ROOT / "docker" / "Dockerfile.contract").read_text(encoding="utf-8")
+        assert "FROM python:3.11.10-slim" in dockerfile_text
+        assert "pydantic==2.13.5" in dockerfile_text
+        assert ":latest" not in dockerfile_text
+
+        entrypoint_text = (REPO_ROOT / "docker" / "contract-entrypoint.sh").read_text(
+            encoding="utf-8"
+        )
+        assert "--no-index --find-links" in entrypoint_text
+
+        cloud_deploy = (REPO_ROOT / "scripts" / "deploy_cloud_range.sh").read_text(encoding="utf-8")
+        assert (
+            "sudo docker compose --env-file .env -f docker/docker-compose.soc-stack.yml up -d --build"
+            in cloud_deploy
+        )
+        readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        assert "docker compose -f docker/docker-compose.soc-stack.yml up -d --build" in readme_text
 
 
 class TestMispAndCallbackContractServer:
@@ -1059,6 +1111,287 @@ class TestMispAndCallbackContractServer:
             MispAndCallbackContractHandler.soar_db_path = orig_db_path
             server.shutdown()
             server.server_close()
+
+    def test_p1_2_n8n_client_end_to_end_node1b_and_verify_state_contract(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Verify N8nDeterministicPlaybookClient payload passes real node-1b JS and verify-state."""
+        assert shutil.which("node"), "node binary is required for cross-boundary SOAR E2E test"
+        monkeypatch.setenv("THREATFUSION_SOAR_HMAC_SECRET", TEST_SOAR_HMAC_SECRET)
+        monkeypatch.delenv("THREATFUSION_SOAR_LEDGER_DB_PATH", raising=False)
+
+        soar_db = tmp_path / "w3_e2e_soar.sqlite3"
+        soar_repo = SoarPlaybookSqliteRepository(soar_db)
+        soar_engine = ApprovalGatedSoarEngine(soar_repo)
+        prov = EntityProvenanceContract(
+            entity_namespace_id="test_w3",
+            clock_synchronized=True,
+            src_entity_id="10.0.0.4",
+            dst_entity_id="10.0.0.5",
+            protocol="tcp",
+            service_or_port="80",
+        )
+
+        approved_records = {}
+        for cand_id in (
+            "cand_w3_e2e_node",
+            "cand_w3_e2e_direct",
+            "cand_w3_neg_idem",
+            "cand_w3_neg_stale",
+        ):
+            recs = soar_engine.recommend_actions_for_alert(cand_id, prov)
+            approved_records[cand_id] = soar_engine.decide_recommendation(
+                recs[0].playbook_id,
+                actor_id="soc-approver",
+                decision="approve",
+                reason="Wave 3 cross-boundary SOAR contract test",
+                expected_version=1,
+            )
+
+        wf_path = REPO_ROOT / "docker" / "n8n" / "workflows" / "threatfusion_soar_playbook.json"
+        wf_data = json.loads(wf_path.read_text(encoding="utf-8"))
+        node_1b = next(n for n in wf_data["nodes"] if n["id"] == "node-1b-verify-hmac-ledger")
+        js_code = str(node_1b["parameters"]["jsCode"])
+
+        captured_requests: list[tuple[dict[str, str], bytes]] = []
+
+        class _WebhookCaptureHandler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length") or "0")
+                raw_body = self.rfile.read(length)
+                norm_headers = {k.lower(): v for k, v in self.headers.items()}
+                captured_requests.append((norm_headers, raw_body))
+                resp_bytes = json.dumps({"captured": True}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp_bytes)))
+                self.end_headers()
+                self.wfile.write(resp_bytes)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        orig_db_path = MispAndCallbackContractHandler.soar_db_path
+        orig_misp_key = MispAndCallbackContractHandler.misp_api_key
+        MispAndCallbackContractHandler.soar_db_path = str(soar_db)
+        MispAndCallbackContractHandler.misp_api_key = "threatfusion_soc_test_misp_key_2026_secure"
+        MispAndCallbackContractHandler.seen_verify_idempotency_keys.clear()
+        MispAndCallbackContractHandler.seen_callback_idempotency_keys.clear()
+        MispAndCallbackContractHandler.in_flight_idempotency_keys.clear()
+
+        contract_srv = http.server.ThreadingHTTPServer(
+            ("127.0.0.1", 0), MispAndCallbackContractHandler
+        )
+        webhook_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _WebhookCaptureHandler)
+        contract_thread = threading.Thread(target=contract_srv.serve_forever, daemon=True)
+        webhook_thread = threading.Thread(target=webhook_srv.serve_forever, daemon=True)
+        contract_thread.start()
+        webhook_thread.start()
+
+        contract_base = f"http://127.0.0.1:{contract_srv.server_port}"
+        webhook_base = f"http://127.0.0.1:{webhook_srv.server_port}"
+        verify_url = f"{contract_base}/api/v1/soar/verify-state"
+
+        runner_js = """
+const fs = require('fs');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+(async () => {
+  const fn = new AsyncFunction('$json', '$env', 'require', input.jsCode);
+  const result = await fn(input.json, input.env, require);
+  const headers = input.json.headers || {};
+  const body = input.json.body || {};
+  const idemKey = headers['x-idempotency-key'] || headers['X-Idempotency-Key'];
+  const bodyIdemMatches = String(body.idempotency_key || '') === String(idemKey || '');
+  const tsMs = Date.parse(String(body.timestamp_utc || ''));
+  const tsFresh = Number.isFinite(tsMs) && Math.abs(Date.now() - tsMs) <= 300000;
+  process.stdout.write(JSON.stringify({
+    result,
+    diagnostics: { bodyIdemMatches, tsFresh }
+  }));
+})().catch((err) => {
+  console.error(err && err.stack ? err.stack : String(err));
+  process.exit(1);
+});
+"""
+
+        def _run_node1b(headers: dict[str, str], body_obj: dict[str, Any]) -> dict[str, Any]:
+            proc = subprocess.run(
+                ["node", "-e", runner_js],
+                input=json.dumps(
+                    {
+                        "jsCode": js_code,
+                        "json": {"headers": headers, "body": body_obj},
+                        "env": {
+                            "THREATFUSION_SOAR_HMAC_SECRET": TEST_SOAR_HMAC_SECRET,
+                            "THREATFUSION_VERIFY_STATE_URL": verify_url,
+                        },
+                    }
+                ),
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            assert proc.returncode == 0, f"node-1b runner failed: {proc.stderr}"
+            return json.loads(proc.stdout)
+
+        def _post_raw(
+            raw_bytes: bytes, signature: str, idem_key: str
+        ) -> tuple[int, dict[str, Any]]:
+            req = urllib.request.Request(
+                verify_url,
+                data=raw_bytes,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-ThreatFusion-Signature-256": signature,
+                    "X-Idempotency-Key": idem_key,
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
+                    return int(resp.status), json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                return int(exc.code), json.loads(exc.read().decode("utf-8"))
+
+        try:
+            client = N8nDeterministicPlaybookClient(
+                webhook_url=webhook_base,
+                secret_key=TEST_SOAR_HMAC_SECRET,
+                outbox_db_path=tmp_path / "w3_outbox.sqlite3",
+            )
+
+            # 1. Whole-number float confidence (92.0) through real node-1b JS -> live verify-state
+            rec_node = approved_records["cand_w3_e2e_node"]
+            receipt_node = client.trigger_soar_playbook(
+                soar_record=rec_node,
+                soar_repo=soar_repo,
+                rf_confidence_pct=92.0,
+                queue_priority_rank=1,
+                mitre_technique_id="T1046",
+            )
+            assert receipt_node.status == "dispatched_live"
+            hdrs_node, raw_node = captured_requests[-1]
+            body_node = json.loads(raw_node.decode("utf-8"))
+            assert body_node["idempotency_key"] == receipt_node.idempotency_key
+            assert body_node["timestamp_utc"] == receipt_node.dispatched_at_utc
+            assert body_node["dispatched_at_utc"] == receipt_node.dispatched_at_utc
+            assert hdrs_node["x-threatfusion-signature-256"] == receipt_node.signature_sha256
+            assert hdrs_node["x-idempotency-key"] == receipt_node.idempotency_key
+
+            node_out = _run_node1b(hdrs_node, body_node)
+            assert node_out["diagnostics"]["bodyIdemMatches"] is True
+            assert node_out["diagnostics"]["tsFresh"] is True
+            assert node_out["result"]["hmac_and_ledger_verified"] is True
+            assert node_out["result"]["verified_idempotency_key"] == receipt_node.idempotency_key
+
+            # Confirm node-1b actually persisted the claim on MispAndCallbackContractHandler
+            replay_code, replay_data = _post_raw(
+                raw_node,
+                hdrs_node["x-threatfusion-signature-256"],
+                hdrs_node["x-idempotency-key"],
+            )
+            assert replay_code == 409
+            assert replay_data["state_verified"] is False
+
+            # 2. Direct forward of real client envelope (88.5) to real MispAndCallbackContractHandler
+            rec_direct = approved_records["cand_w3_e2e_direct"]
+            receipt_direct = client.trigger_soar_playbook(
+                soar_record=rec_direct,
+                soar_repo=soar_repo,
+                rf_confidence_pct=88.5,
+                queue_priority_rank=2,
+                mitre_technique_id="T1498",
+            )
+            assert receipt_direct.status == "dispatched_live"
+            hdrs_direct, raw_direct = captured_requests[-1]
+            status_direct, data_direct = _post_raw(
+                raw_direct,
+                hdrs_direct["x-threatfusion-signature-256"],
+                hdrs_direct["x-idempotency-key"],
+            )
+            assert status_direct == 200
+            assert data_direct["state_verified"] is True
+            assert data_direct["verified"] is True
+            assert data_direct["playbook_id"] == rec_direct.playbook_id
+            assert data_direct["idempotency_key"] == receipt_direct.idempotency_key
+
+            # 3. Negative: mismatched body.idempotency_key rejected by node-1b and HTTP 403
+            rec_neg_idem = approved_records["cand_w3_neg_idem"]
+            receipt_neg_idem = client.trigger_soar_playbook(
+                soar_record=rec_neg_idem,
+                soar_repo=soar_repo,
+                rf_confidence_pct=91.0,
+            )
+            hdrs_neg_idem, raw_neg_idem = captured_requests[-1]
+            mutated_body = json.loads(raw_neg_idem.decode("utf-8"))
+            mutated_body["idempotency_key"] = f"{receipt_neg_idem.idempotency_key}_tampered"
+            mutated_bytes = json.dumps(mutated_body, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+            mutated_sig = hmac.new(
+                TEST_SOAR_HMAC_SECRET.encode("utf-8"), mutated_bytes, hashlib.sha256
+            ).hexdigest()
+            neg_idem_headers = {
+                "x-threatfusion-signature-256": mutated_sig,
+                "x-idempotency-key": hdrs_neg_idem["x-idempotency-key"],
+            }
+            node_neg_idem = _run_node1b(neg_idem_headers, mutated_body)
+            assert node_neg_idem["diagnostics"]["bodyIdemMatches"] is False
+            assert node_neg_idem["result"]["hmac_and_ledger_verified"] is False
+
+            status_neg_idem, err_neg_idem = _post_raw(
+                mutated_bytes, mutated_sig, hdrs_neg_idem["x-idempotency-key"]
+            )
+            assert status_neg_idem == 403
+            assert err_neg_idem["error"] == "idempotency_key_binding_mismatch"
+            assert err_neg_idem["state_verified"] is False
+            assert err_neg_idem["verified"] is False
+
+            # 4. Negative: stale timestamp_utc (>300s) rejected by node-1b and HTTP 403
+            rec_neg_stale = approved_records["cand_w3_neg_stale"]
+            client.trigger_soar_playbook(
+                soar_record=rec_neg_stale,
+                soar_repo=soar_repo,
+                rf_confidence_pct=87.5,
+            )
+            hdrs_neg_stale, raw_neg_stale = captured_requests[-1]
+            stale_body = json.loads(raw_neg_stale.decode("utf-8"))
+            stale_body["timestamp_utc"] = (datetime.now(UTC) - timedelta(seconds=601)).isoformat()
+            stale_bytes = json.dumps(stale_body, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+            stale_sig = hmac.new(
+                TEST_SOAR_HMAC_SECRET.encode("utf-8"), stale_bytes, hashlib.sha256
+            ).hexdigest()
+            neg_stale_headers = {
+                "x-threatfusion-signature-256": stale_sig,
+                "x-idempotency-key": hdrs_neg_stale["x-idempotency-key"],
+            }
+            node_neg_stale = _run_node1b(neg_stale_headers, stale_body)
+            assert node_neg_stale["diagnostics"]["tsFresh"] is False
+            assert node_neg_stale["result"]["hmac_and_ledger_verified"] is False
+
+            status_neg_stale, err_neg_stale = _post_raw(
+                stale_bytes, stale_sig, hdrs_neg_stale["x-idempotency-key"]
+            )
+            assert status_neg_stale == 403
+            assert err_neg_stale["error"] == "timestamp_skew_or_missing"
+            assert err_neg_stale["state_verified"] is False
+            assert err_neg_stale["verified"] is False
+        finally:
+            MispAndCallbackContractHandler.soar_db_path = orig_db_path
+            MispAndCallbackContractHandler.misp_api_key = orig_misp_key
+            MispAndCallbackContractHandler.seen_verify_idempotency_keys.clear()
+            MispAndCallbackContractHandler.seen_callback_idempotency_keys.clear()
+            MispAndCallbackContractHandler.in_flight_idempotency_keys.clear()
+            contract_srv.shutdown()
+            contract_srv.server_close()
+            webhook_srv.shutdown()
+            webhook_srv.server_close()
+            contract_thread.join(timeout=5)
+            webhook_thread.join(timeout=5)
 
 
 class TestEndToEndSocDemoAndDashboardIntegration:

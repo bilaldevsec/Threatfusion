@@ -30,7 +30,10 @@ services:
       - threatfusion_soc_net
 
   misp-connector:
-    image: python:3.11.10-slim
+    build:
+      context: .
+      dockerfile: Dockerfile.contract
+    image: threatfusion-contract-runtime:3.11.10-slim
     container_name: threatfusion_misp_connector
     restart: unless-stopped
     entrypoint: ["/bin/sh", "/app/docker/contract-entrypoint.sh"]
@@ -58,7 +61,10 @@ services:
         ipv4_address: 172.28.0.10
 
   threatfusion-callback:
-    image: python:3.11.10-slim
+    build:
+      context: .
+      dockerfile: Dockerfile.contract
+    image: threatfusion-contract-runtime:3.11.10-slim
     container_name: threatfusion_callback
     restart: unless-stopped
     entrypoint: ["/bin/sh", "/app/docker/contract-entrypoint.sh"]

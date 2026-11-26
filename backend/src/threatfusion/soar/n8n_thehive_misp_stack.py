@@ -27,6 +27,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -855,6 +856,14 @@ class N8nDeterministicPlaybookClient:
         execution_id = f"exec_{uuid.uuid4().hex[:12]}"
         idempotency_key = f"idem_{db_record.playbook_id}_{db_record.version}"
         now_str = datetime.now(UTC).isoformat()
+        # Normalize whole-number floats so Python json.dumps and JS JSON.stringify match bytes.
+        normalized_confidence: int | float = (
+            int(rf_confidence_pct)
+            if isinstance(rf_confidence_pct, float)
+            and math.isfinite(rf_confidence_pct)
+            and rf_confidence_pct.is_integer()
+            else rf_confidence_pct
+        )
 
         payload: dict[str, Any] = {
             "execution_id": execution_id,
@@ -865,12 +874,14 @@ class N8nDeterministicPlaybookClient:
             "soar_state": db_record.state,
             "actor_id": db_record.actor_id,
             "decision_reason": db_record.decision_reason,
-            "rf_confidence_pct": rf_confidence_pct,
+            "rf_confidence_pct": normalized_confidence,
             "queue_priority_rank": queue_priority_rank,
             "incident_id": incident_id,
             "thehive_case_id": thehive_case_id,
             "mitre_technique_id": mitre_technique_id,
             "audit_chain_verified": True,
+            "idempotency_key": idempotency_key,
+            "timestamp_utc": now_str,
             "dispatched_at_utc": now_str,
         }
 
